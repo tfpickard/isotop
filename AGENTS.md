@@ -113,4 +113,11 @@ match your own shell.
 
 - The interactive shell may be zsh, which does not word-split unquoted variables. Use
   `bash -c` for loops that rely on splitting.
+
+## Git workflow
+
+- `main` only changes through pull requests. Do each piece of work on a branch named
+  `feat/...`, `fix/...` or `docs/...` cut from an up-to-date `main`, and open a PR with `gh`.
+- Run the gates before pushing a branch. The PR description says what changed and how it was
+  checked, including screenshots for visual changes.
 - Commits are attributed to the human author only, with no AI `Co-authored-by` trailers.
