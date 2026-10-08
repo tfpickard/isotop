@@ -2330,6 +2330,7 @@ impl Scene {
             .iter()
             .map(|&root| (processes[root].id, extents[root] + SYSTEM_GAP))
             .collect();
+        let before = self.systems.len();
         self.systems
             .retain(|id, (_, reserved)| needed.get(id).is_some_and(|&need| need <= *reserved));
         let mut pending: Vec<_> = needed
@@ -2337,6 +2338,10 @@ impl Scene {
             .filter(|(id, _)| !self.systems.contains_key(id))
             .map(|(&id, &need)| (id, need))
             .collect();
+        if self.systems.len() != before || !pending.is_empty() {
+            // A system left, arrived or was re-placed: the pivot has to be found again.
+            self.galaxy_members.clear();
+        }
         pending.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         for (id, need) in pending {
             // Headroom absorbs memory drift so systems are only re-placed when their structure grows.
@@ -3345,6 +3350,22 @@ mod tests {
             turned += usize::from(placement.0 != before[id].0);
         }
         assert!(turned >= 7, "only {turned} systems revolved");
+        let service = snapshot
+            .processes
+            .iter()
+            .find(|p| p.id.pid == 100)
+            .unwrap()
+            .id;
+        let reserved = scene.systems[&service].1;
+        snapshot
+            .processes
+            .extend((1000..1040).map(|pid| process(pid, 100)));
+        render(&mut scene, &snapshot, View::Orbit, 121.0);
+        assert!(
+            scene.systems[&service].1 > reserved,
+            "the grown system was re-placed"
+        );
+        assert_ne!(scene.galaxy, center, "re-placing a system moves the pivot");
         let systems: Vec<_> = scene.systems.values().copied().collect();
         for (i, (a, ra)) in systems.iter().enumerate() {
             for (b, rb) in &systems[i + 1..] {
