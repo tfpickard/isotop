@@ -48,26 +48,22 @@ impl Reef {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1));
         self.last = Some(time);
-        let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
         for (index, process) in processes.iter().enumerate() {
             if process.kind != Kind::Kernel {
-                groups
-                    .entry(process.group.as_str())
-                    .or_default()
-                    .push(index);
+                groups.entry(habitat(process)).or_default().push(index);
             }
         }
         self.seats.assign(
-            processes
-                .iter()
-                .filter(|p| p.kind != Kind::Kernel)
-                .map(|p| (p.id, p.group.as_str())),
+            groups.iter().flat_map(|(name, members)| {
+                members.iter().map(|&i| (processes[i].id, name.as_str()))
+            }),
         );
         let needs: Vec<(String, f32)> = groups
             .keys()
-            .map(|&name| {
+            .map(|name| {
                 let span = self.seats.span(name) as f32;
-                (name.to_owned(), 1.6 * span.sqrt() + 2.0)
+                (name.clone(), 1.6 * span.sqrt() + 2.0)
             })
             .collect();
         let homes = self.homes.arrange(&needs);
@@ -80,9 +76,9 @@ impl Reef {
             .collect();
         self.fish.retain(|id, _| alive.contains_key(id));
         let mut shown = 0;
-        let mut names: Vec<&&str> = groups.keys().collect();
+        let mut names: Vec<&String> = groups.keys().collect();
         names.sort();
-        for &&name in &names {
+        for name in names {
             let members = &groups[name];
             let home = homes[name];
             let room = self.homes.reserved(name) / 1.15;
@@ -270,7 +266,7 @@ impl Reef {
         dt: f32,
     ) -> usize {
         let time = stage.time;
-        let phase = spin(&processes[members[0]].group);
+        let phase = spin(&habitat(processes[members[0]]));
         let target = [
             home[0] + room * 0.4 * (time * 0.05 + phase).cos(),
             home[1] + room * 0.4 * (time * 0.05 + phase).sin(),
@@ -556,6 +552,50 @@ impl Reef {
     }
 }
 
+/// The colony, school or gang a process belongs to: its cgroup, which leaf names alone can't
+/// tell apart (a system and a user `dbus.service`), and its kind, which decides the creature.
+fn habitat(process: &Process) -> String {
+    let path = if process.cgroup.is_empty() {
+        &process.group
+    } else {
+        &process.cgroup
+    };
+    format!("{:?} {path}", process.kind)
+}
+
 fn hash(value: u32) -> u32 {
     value.wrapping_mul(2_654_435_761) ^ value.wrapping_mul(2_246_822_519).rotate_left(13)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_named_units_of_different_cgroups_live_apart() {
+        let unit = |kind: Kind, cgroup: &str| Process {
+            id: Identity { pid: 1, start: 1 },
+            parent: 0,
+            name: "dbus-daemon".into(),
+            command: String::new(),
+            group: "dbus.service".into(),
+            kind,
+            state: 'S',
+            cpu: 0.0,
+            memory: 0,
+            io_rate: None,
+            threads: 1,
+            gpu_memory: 0,
+            core: 0,
+            cpu_time: 0.0,
+            cgroup: cgroup.into(),
+        };
+        let system = unit(Kind::System, "/system.slice/dbus.service");
+        let session = unit(
+            Kind::Session,
+            "/user.slice/user-1000.slice/user@1000.service/session.slice/dbus.service",
+        );
+        assert_ne!(habitat(&system), habitat(&session));
+        assert_eq!(habitat(&system), habitat(&system.clone()));
+    }
 }
