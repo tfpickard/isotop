@@ -3,6 +3,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
+use crate::{cells, cores, globe, reef, strata};
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
@@ -18,18 +19,18 @@ const PALETTE: [Color; 8] = [
     [166, 185, 104],
 ];
 /// Screen pixels per world unit at zoom 1: sqrt(3/2), the isometric foreshortening.
-const SCALE: f32 = 1.224_745;
+pub(crate) const SCALE: f32 = 1.224_745;
 /// Elevation of a true isometric view, asin(1/sqrt(3)).
 pub const ISOMETRIC: f32 = 0.615_480;
 /// The camera centre sits slightly below the middle to leave headroom for buildings.
 pub const ORIGIN_Y: f32 = 0.57;
 /// Depth assigned to background stars, below every scene object.
 pub const BACKGROUND: f32 = -10000.0;
-const MIN_BODY_PX: f32 = 3.5;
+pub(crate) const MIN_BODY_PX: f32 = 3.5;
 const GROW_SECONDS: f32 = 0.9;
 const FADE_SECONDS: f32 = 1.2;
-const WARM: Color = [255, 190, 110];
-const NVIDIA: Color = [118, 214, 60];
+pub(crate) const WARM: Color = [255, 190, 110];
+pub(crate) const NVIDIA: Color = [118, 214, 60];
 const LINK: Color = [80, 175, 235];
 const LINK_HOT: Color = [150, 232, 255];
 const OUTSIDE: Color = [255, 110, 200];
@@ -40,17 +41,47 @@ pub enum View {
     Orbit,
     Ripple,
     Flow,
+    Cores,
+    Cells,
+    Strata,
+    Globe,
+    Reef,
 }
 
 impl View {
+    /// Every view in Tab order; number keys 1 to 9 pick from this list.
+    pub const ALL: [View; 9] = [
+        Self::City,
+        Self::Orbit,
+        Self::Ripple,
+        Self::Flow,
+        Self::Cores,
+        Self::Cells,
+        Self::Strata,
+        Self::Globe,
+        Self::Reef,
+    ];
+
     pub fn next(&mut self) {
-        *self = match self {
-            Self::City => Self::Orbit,
-            Self::Orbit => Self::Ripple,
-            Self::Ripple => Self::Flow,
-            Self::Flow => Self::City,
-        };
+        let index = Self::ALL.iter().position(|v| v == self).unwrap_or(0);
+        *self = Self::ALL[(index + 1) % Self::ALL.len()];
     }
+
+    fn backdrop(self) -> Backdrop {
+        match self {
+            Self::City | Self::Cells | Self::Strata => Backdrop::Dusk,
+            Self::Reef => Backdrop::Sea,
+            Self::Orbit | Self::Ripple | Self::Flow | Self::Cores | Self::Globe => Backdrop::Space,
+        }
+    }
+}
+
+/// The sky behind a view. The GPU shader receives the discriminant as `globals.sky.x`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backdrop {
+    Dusk = 0,
+    Space = 1,
+    Sea = 2,
 }
 
 /// Which socket links to draw.
@@ -71,7 +102,7 @@ impl Links {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Camera {
     pub center: [f32; 2],
     pub zoom: f32,
@@ -139,7 +170,7 @@ impl Camera {
     }
 
     /// Unit vector from the scene towards the viewer, for specular highlights.
-    fn viewer(&self) -> Point {
+    pub(crate) fn viewer(&self) -> Point {
         let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
         let (ps, pc) = self.pitch.sin_cos();
         [s * pc, c * pc, ps]
@@ -162,10 +193,10 @@ impl Camera {
     }
 }
 
-/// Background: flat space (orbit) or a dusk gradient (city), plus pressure haze.
+/// Background gradient plus pressure haze.
 #[derive(Clone, Copy, Debug)]
 pub struct Sky {
-    pub orbit: bool,
+    pub backdrop: Backdrop,
     /// Haze colour already scaled by its strength, added where the haze field is dense.
     pub haze: [f32; 3],
     pub time: f32,
@@ -173,10 +204,10 @@ pub struct Sky {
 
 impl Sky {
     pub fn base(&self, y: f32) -> [f32; 3] {
-        if self.orbit {
-            [5.0, 8.0, 18.0]
-        } else {
-            [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0]
+        match self.backdrop {
+            Backdrop::Space => [5.0, 8.0, 18.0],
+            Backdrop::Dusk => [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0],
+            Backdrop::Sea => [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0],
         }
     }
 
@@ -264,7 +295,7 @@ impl Frame {
             identities: Vec::new(),
             anchor: None,
         };
-        if sky.orbit {
+        if sky.backdrop == Backdrop::Space {
             for i in 0..(width * height / 1100).clamp(200, 4000) {
                 let hash = i.wrapping_mul(2654435761);
                 let x = (hash % width) as f32;
@@ -525,7 +556,7 @@ impl Frame {
         }
     }
 
-    fn project(&self, camera: &Camera, p: Point) -> Point {
+    pub(crate) fn project(&self, camera: &Camera, p: Point) -> Point {
         let v = camera.view(p);
         [
             self.width as f32 * 0.5 + v[0] * camera.zoom,
@@ -534,12 +565,12 @@ impl Frame {
         ]
     }
 
-    fn facet(&mut self, camera: &Camera, points: [Point; 3], color: Color, pick: u32) {
+    pub(crate) fn facet(&mut self, camera: &Camera, points: [Point; 3], color: Color, pick: u32) {
         let p = points.map(|p| self.project(camera, p));
         self.items.push(Item::Triangle(p, color, pick));
     }
 
-    fn quad(&mut self, camera: &Camera, points: [Point; 4], color: Color, pick: u32) {
+    pub(crate) fn quad(&mut self, camera: &Camera, points: [Point; 4], color: Color, pick: u32) {
         let p = points.map(|p| self.project(camera, p));
         self.items
             .push(Item::Triangle([p[0], p[1], p[2]], color, pick));
@@ -547,7 +578,7 @@ impl Frame {
             .push(Item::Triangle([p[0], p[2], p[3]], color, pick));
     }
 
-    fn line(&mut self, camera: &Camera, a: Point, b: Point, color: Color) {
+    pub(crate) fn line(&mut self, camera: &Camera, a: Point, b: Point, color: Color) {
         let a = self.project(camera, a);
         let b = self.project(camera, b);
         // Skip unbounded work when the camera is far inside a large scene.
@@ -565,7 +596,14 @@ impl Frame {
         }
     }
 
-    fn glow(&mut self, camera: &Camera, position: Point, radius: f32, color: Color, strength: f32) {
+    pub(crate) fn glow(
+        &mut self,
+        camera: &Camera,
+        position: Point,
+        radius: f32,
+        color: Color,
+        strength: f32,
+    ) {
         let p = self.project(camera, position);
         self.items.push(Item::Glow {
             center: [p[0], p[1]],
@@ -575,7 +613,7 @@ impl Frame {
         });
     }
 
-    fn beam(&mut self, camera: &Camera, a: Point, b: Point, color: Color, weight: f32) {
+    pub(crate) fn beam(&mut self, camera: &Camera, a: Point, b: Point, color: Color, weight: f32) {
         let a = self.project(camera, a);
         let b = self.project(camera, b);
         if (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) <= 12000.0 {
@@ -584,7 +622,7 @@ impl Frame {
         }
     }
 
-    fn sphere(
+    pub(crate) fn sphere(
         &mut self,
         camera: &Camera,
         position: Point,
@@ -604,6 +642,27 @@ impl Frame {
         });
     }
 
+    /// A sphere at its exact projected size, for large bodies with geometry drawn on their
+    /// surface. `sphere` draws bodies at `radius * zoom` pixels, about 18% smaller than their
+    /// projection, which the other views' spacing was tuned with.
+    pub(crate) fn world_sphere(
+        &mut self,
+        camera: &Camera,
+        position: Point,
+        radius: f32,
+        color: Color,
+    ) {
+        let center = self.project(camera, position);
+        self.items.push(Item::Sphere {
+            center,
+            radius: radius * camera.zoom * SCALE,
+            depth: radius,
+            color,
+            pick: NONE,
+            selected: false,
+        });
+    }
+
     pub fn write_png(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let mut encoder = png::Encoder::new(
             std::io::BufWriter::new(std::fs::File::create(path)?),
@@ -615,6 +674,53 @@ impl Frame {
         encoder.write_header()?.write_image_data(&self.pixels)?;
         Ok(())
     }
+}
+
+/// Spawn animation progress, 0 to 1, easing out over GROW_SECONDS after a process appears.
+fn growth(births: &HashMap<Identity, f32>, id: Identity, time: f32) -> f32 {
+    let born = births.get(&id).copied().unwrap_or(f32::NEG_INFINITY);
+    if time < born {
+        return 1.0;
+    }
+    let t = ((time - born) / GROW_SECONDS).min(1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// What a view module draws with and reports back to the scene.
+pub(crate) struct Stage<'a> {
+    pub frame: &'a mut Frame,
+    pub camera: &'a Camera,
+    pub selected: Option<Identity>,
+    pub time: f32,
+    births: &'a HashMap<Identity, f32>,
+    /// Where each drawn process is, for picking anchors, labels and the tour.
+    pub positions: &'a mut HashMap<Identity, Point>,
+    /// World-anchored text labels.
+    pub places: &'a mut Vec<(Point, String)>,
+    /// Points the camera fit must include; empty means fit the positions on the ground.
+    pub bounds: &'a mut Vec<Point>,
+    /// Extra lines for a process's inspector popup.
+    pub notes: &'a mut HashMap<Identity, Vec<String>>,
+}
+
+impl Stage<'_> {
+    pub fn growth(&self, id: Identity) -> f32 {
+        growth(self.births, id, self.time)
+    }
+}
+
+/// Points around a horizontal circle at two heights, for fitting the camera to a round view.
+pub(crate) fn ring_bounds(center: [f32; 2], radius: f32, low: f32, high: f32) -> Vec<Point> {
+    (0..24)
+        .flat_map(|k| {
+            let angle = k as f32 / 24.0 * TAU;
+            let [x, y] = [
+                center[0] + radius * angle.cos(),
+                center[1] + radius * angle.sin(),
+            ];
+            [[x, y, low], [x, y, high]]
+        })
+        .collect()
 }
 
 pub fn tint(color: Color, scale: f32) -> Color {
@@ -631,7 +737,7 @@ fn process_color(process: &Process, group: usize) -> Color {
 }
 
 /// Orbit colours by role: slate kernel, teal system, amber session, violet containers.
-fn kind_color(process: &Process) -> Color {
+pub(crate) fn kind_color(process: &Process) -> Color {
     let base = match (process.state, process.kind) {
         ('Z', _) => return [213, 97, 126],
         ('T' | 't', _) => return [225, 161, 75],
@@ -736,6 +842,14 @@ pub struct Scene {
     pub stars: Vec<(Identity, usize, f32)>,
     /// For orbit bodies with children: memory of the subtree they anchor and its process count.
     pub mass: HashMap<Identity, (u64, usize)>,
+    pub places: Vec<(Point, String)>,
+    bounds: Vec<Point>,
+    pub notes: HashMap<Identity, Vec<String>>,
+    cores: cores::Track,
+    cells: cells::Dishes,
+    strata: strata::Strata,
+    globe: globe::Globe,
+    reef: reef::Reef,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
     pub visible: usize,
@@ -768,6 +882,14 @@ impl Scene {
             positions: HashMap::new(),
             stars: Vec::new(),
             mass: HashMap::new(),
+            places: Vec::new(),
+            bounds: Vec::new(),
+            notes: HashMap::new(),
+            cores: cores::Track::default(),
+            cells: cells::Dishes::default(),
+            strata: strata::Strata::default(),
+            globe: globe::Globe::default(),
+            reef: reef::Reef::default(),
             spare: Buffers::default(),
             visible: 0,
             collapsed: 0,
@@ -775,12 +897,22 @@ impl Scene {
     }
 
     fn growth(&self, id: Identity, time: f32) -> f32 {
-        let born = self.births.get(&id).copied().unwrap_or(f32::NEG_INFINITY);
-        if time < born {
-            return 1.0;
-        }
-        let t = ((time - born) / GROW_SECONDS).min(1.0);
-        1.0 - (1.0 - t).powi(3)
+        growth(&self.births, id, time)
+    }
+
+    /// Whether the last view drawn gave explicit bounds; such views grow as data arrives.
+    pub fn bounded(&self) -> bool {
+        !self.bounds.is_empty()
+    }
+
+    /// Feeds a new sample to views that keep their own history, whichever view is shown.
+    pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
+        self.strata.record(snapshot, time);
+    }
+
+    #[cfg(test)]
+    fn strata_rows(&self) -> Vec<Identity> {
+        self.strata.rows()
     }
 
     fn city_positions(&mut self, processes: &[&Process], snapshot: &Snapshot) {
@@ -828,7 +960,7 @@ impl Scene {
     }
 
     pub fn fit(&self, camera: &mut Camera, width: u32, height: u32) {
-        if self.positions.is_empty() {
+        if self.positions.is_empty() && self.bounds.is_empty() {
             return;
         }
         let probe = Camera {
@@ -838,14 +970,27 @@ impl Scene {
         };
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
-        for p in self.positions.values() {
-            let q = probe.view([p[0], p[1], 0.0]);
+        let points: Vec<Point> = if self.bounds.is_empty() {
+            self.positions.values().map(|p| [p[0], p[1], 0.0]).collect()
+        } else {
+            self.bounds.clone()
+        };
+        for &p in &points {
+            let q = probe.view(p);
             for i in 0..2 {
                 min[i] = min[i].min(q[i]);
                 max[i] = max[i].max(q[i]);
             }
         }
         camera.center = probe.ground((min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5);
+        if !self.bounds.is_empty() {
+            camera.zoom =
+                (width as f32 / (max[0] - min[0])).min(height as f32 / (max[1] - min[1])) * 0.9;
+            // Frames are drawn around a point ORIGIN_Y down the screen; centre the bounds exactly.
+            let lift = (ORIGIN_Y - 0.5) * height as f32 / camera.zoom;
+            camera.center = probe.ground((min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5 + lift);
+            return;
+        }
         // The vertical margin leaves headroom for the tallest building above the ground plane.
         let headroom = 24.0_f32.max(self.tallest * camera.pitch.cos() * SCALE + 8.0);
         camera.zoom = (width as f32 / (max[0] - min[0] + 12.0))
@@ -924,7 +1069,7 @@ impl Scene {
         let [cpu, memory, io] = snapshot.pressure;
         let (c, m, i) = (bounded(cpu, 20.0), bounded(memory, 10.0), bounded(io, 20.0));
         let sky = Sky {
-            orbit: view != View::City,
+            backdrop: view.backdrop(),
             haze: [
                 c * 110.0 + m * 140.0 + i * 30.0,
                 c * 70.0 + m * 20.0 + i * 50.0,
@@ -938,6 +1083,9 @@ impl Scene {
         self.collapsed = 0;
         self.stars.clear();
         self.mass.clear();
+        self.places.clear();
+        self.bounds.clear();
+        self.notes.clear();
         if view != View::City {
             self.tallest = 0.0;
         }
@@ -957,12 +1105,36 @@ impl Scene {
                     &mut frame, &processes, camera, selected, time, snapshot, stir,
                 )
             }
+            View::Cores | View::Cells | View::Strata | View::Globe | View::Reef => {
+                self.positions.clear();
+                let mut stage = Stage {
+                    frame: &mut frame,
+                    camera,
+                    selected,
+                    time,
+                    births: &self.births,
+                    positions: &mut self.positions,
+                    places: &mut self.places,
+                    bounds: &mut self.bounds,
+                    notes: &mut self.notes,
+                };
+                let shown = match view {
+                    View::Cores => self.cores.draw(&mut stage, &processes, snapshot),
+                    View::Cells => self.cells.draw(&mut stage, &processes, snapshot),
+                    View::Strata => self.strata.draw(&mut stage, &processes, snapshot),
+                    View::Globe => self.globe.draw(&mut stage, &processes, snapshot),
+                    _ => self.reef.draw(&mut stage, &processes, snapshot),
+                };
+                self.visible = shown;
+                self.collapsed = processes.len().saturating_sub(shown);
+            }
         }
         self.splashes.clear();
         self.newborn.clear();
         let lift = if view == View::City { 1.5 } else { 0.0 };
-        // Flow shows sockets as rivers; arcs remain only for highlighted processes.
-        self.draw_links(&mut frame, camera, snapshot, time, lift, view == View::Flow);
+        // Only the city and orbit draw every link; elsewhere arcs remain for highlighted processes.
+        let quiet = !matches!(view, View::City | View::Orbit | View::Ripple);
+        self.draw_links(&mut frame, camera, snapshot, time, lift, quiet);
         for (id, &point) in &self.previous {
             if !alive.contains(id) {
                 self.deaths.push((point, time));
@@ -2247,7 +2419,7 @@ impl Scene {
 
 /// The first point on a golden-angle spiral out from the origin where a disc of `radius` clears
 /// every placed (centre, radius) disc.
-fn vacant(placed: &[([f32; 2], f32)], radius: f32) -> [f32; 2] {
+pub(crate) fn vacant(placed: &[([f32; 2], f32)], radius: f32) -> [f32; 2] {
     let step = (radius * 0.4).max(1.0);
     (0_u32..)
         .map(|k| {
@@ -2277,7 +2449,7 @@ struct Cluster {
 }
 
 /// A stable angle per name, so clusters don't all share one spiral orientation.
-fn spin(name: &str) -> f32 {
+pub(crate) fn spin(name: &str) -> f32 {
     let hash = name.bytes().fold(2_166_136_261_u32, |h, b| {
         (h ^ b as u32).wrapping_mul(16_777_619)
     });
@@ -2336,11 +2508,11 @@ fn territories(grid: &Grid, bodies: &[Body], located: &[[f32; 2]], radii: &[f32]
     owners
 }
 
-fn dot(a: Point, b: Point) -> f32 {
+pub(crate) fn dot(a: Point, b: Point) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn normalize(a: Point) -> Point {
+pub(crate) fn normalize(a: Point) -> Point {
     let length = dot(a, a).sqrt().max(1e-6);
     a.map(|v| v / length)
 }
@@ -2348,7 +2520,7 @@ fn normalize(a: Point) -> Point {
 const MAX_DEPTH: usize = 3;
 const ORBIT_GAP: f32 = 0.6;
 const SYSTEM_GAP: f32 = 2.5;
-const GOLDEN_ANGLE: f32 = 2.399_963;
+pub(crate) const GOLDEN_ANGLE: f32 = 2.399_963;
 /// Clearance between neighbouring ripple pebbles, and open water around each cluster.
 const PEBBLE_GAP: f32 = 1.0;
 const POND_GAP: f32 = 3.0;
@@ -2359,7 +2531,7 @@ const RIPPLE_SHINE: f32 = 0.6;
 
 /// Body radius from memory in bytes: volume proportional to memory, so a 1 GiB process is about
 /// five times as wide as a 6 MiB one and idle kernel threads stay specks.
-fn mass_radius(bytes: f32) -> f32 {
+pub(crate) fn mass_radius(bytes: f32) -> f32 {
     (0.24 * (bytes / 1048576.0).max(0.0).cbrt()).clamp(0.25, 4.5)
 }
 
@@ -2564,6 +2736,9 @@ mod tests {
             io_rate: None,
             threads: 1,
             gpu_memory: 0,
+            core: 0,
+            cpu_time: 0.0,
+            cgroup: "/system.slice/g.service".into(),
         }
     }
 
@@ -2585,7 +2760,7 @@ mod tests {
 
     fn blank(width: u32, height: u32) -> Frame {
         let sky = Sky {
-            orbit: false,
+            backdrop: Backdrop::Dusk,
             haze: [0.0; 3],
             time: 0.0,
         };
@@ -2837,6 +3012,158 @@ mod tests {
             .max()
             .unwrap();
         assert!(brightest < 190, "water reached {brightest}");
+    }
+
+    #[test]
+    fn every_view_renders_the_demo_and_an_empty_machine() {
+        let snapshot = demo(30.0, 128);
+        for view in View::ALL {
+            let mut scene = Scene::new();
+            for k in 0..4 {
+                render(&mut scene, &snapshot, view, 30.0 + k as f32 * 0.1);
+            }
+            assert!(scene.visible > 0, "{view:?} shows nothing");
+            assert!(!scene.positions.is_empty(), "{view:?} has no positions");
+            let mut camera = Camera::default();
+            scene.fit(&mut camera, 320, 180);
+            let mut frame = scene.render(&snapshot, view, &camera, 320, 180, None, 30.5, 512, None);
+            frame.rasterize();
+            let picks = frame.picks.iter().filter(|&&p| p != NONE).count();
+            assert!(picks > 0, "{view:?} has nothing to click");
+            assert!(
+                frame
+                    .picks
+                    .iter()
+                    .all(|&p| p == NONE || (p as usize) < frame.identities.len())
+            );
+            render(&mut Scene::new(), &Snapshot::default(), view, 0.0);
+        }
+    }
+
+    #[test]
+    fn marbles_hop_lanes_when_the_scheduler_moves_them() {
+        let mut snapshot = demo(1.0, 16);
+        for p in &mut snapshot.processes {
+            p.cpu = 0.0;
+            p.state = 'S';
+        }
+        snapshot.processes[3].cpu = 60.0;
+        snapshot.processes[3].core = 0;
+        let id = snapshot.processes[3].id;
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Cores, 1.0);
+        let resting = scene.positions[&id][2];
+        snapshot.processes[3].core = 12;
+        render(&mut scene, &snapshot, View::Cores, 1.1);
+        render(&mut scene, &snapshot, View::Cores, 1.4);
+        assert!(scene.positions[&id][2] > resting + 0.5, "airborne mid-hop");
+        assert!(scene.notes[&id][0].contains("cpu12") && scene.notes[&id][0].contains("1 hop "));
+        render(&mut scene, &snapshot, View::Cores, 2.0);
+        let landed = scene.positions[&id];
+        assert!(
+            landed[0].hypot(landed[1]) > 20.0,
+            "efficiency lanes are outside"
+        );
+        assert_eq!(scene.visible, 1, "idle processes stay off the track");
+    }
+
+    #[test]
+    fn strata_ridges_follow_busy_processes_in_kind_order() {
+        let mut scene = Scene::new();
+        let mut snapshot = demo(0.0, 64);
+        for step in 0..30 {
+            snapshot.elapsed = step as f64;
+            for (i, p) in snapshot.processes.iter_mut().enumerate() {
+                p.cpu = if i % 4 == 0 { 30.0 + step as f32 } else { 0.0 };
+            }
+            // History builds up while another view is shown.
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, View::City, step as f32);
+        }
+        render(&mut scene, &snapshot, View::Strata, 29.0);
+        assert_eq!(scene.visible, 16);
+        let first = snapshot.processes[0].id;
+        assert!(
+            scene.notes[&first][0].ends_with("over the last 29 s"),
+            "{:?}",
+            scene.notes[&first]
+        );
+        let rows: HashMap<Identity, f32> =
+            scene.positions.iter().map(|(id, p)| (*id, p[1])).collect();
+        snapshot.elapsed = 30.0;
+        snapshot.processes[33].cpu = 50.0;
+        render(&mut scene, &snapshot, View::Strata, 30.0);
+        assert_eq!(scene.visible, 17, "a newly busy process earns a ridge");
+        for (id, y) in &rows {
+            assert_eq!(scene.positions[id][1], *y, "an existing ridge moved row");
+        }
+        let order: Vec<u8> = scene
+            .strata_rows()
+            .iter()
+            .map(|id| {
+                let kind = snapshot
+                    .processes
+                    .iter()
+                    .find(|p| p.id == *id)
+                    .unwrap()
+                    .kind;
+                [Kind::Kernel, Kind::System, Kind::Session, Kind::Container]
+                    .iter()
+                    .position(|&k| k == kind)
+                    .unwrap() as u8
+            })
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "{order:?}");
+    }
+
+    #[test]
+    fn dishes_and_globe_talkers_keep_their_places() {
+        let mut snapshot = demo(10.0, 128);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Cells, 10.0);
+        let containers: Vec<(Identity, Point)> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.kind == Kind::Container)
+            .map(|p| (p.id, scene.positions[&p.id]))
+            .collect();
+        let session = snapshot
+            .processes
+            .iter()
+            .find(|p| p.kind == Kind::Session)
+            .unwrap()
+            .cgroup
+            .clone();
+        snapshot.units.get_mut(&session).unwrap().memory *= 400;
+        render(&mut scene, &snapshot, View::Cells, 10.1);
+        render(&mut scene, &snapshot, View::Cells, 10.2);
+        for (id, at) in &containers {
+            assert_eq!(scene.positions[id], *at, "the container dish moved");
+        }
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Globe, 0.0);
+        let mut talkers: Vec<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
+        talkers.sort();
+        let before: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
+        snapshot.remotes.retain(|r| r.id != talkers[0]);
+        render(&mut scene, &snapshot, View::Globe, 0.0);
+        let after: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
+        assert_eq!(
+            before, after,
+            "a process closing its connections reshuffled the others"
+        );
+    }
+
+    #[test]
+    fn globe_shows_only_processes_with_remote_connections() {
+        let snapshot = demo(10.0, 128);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Globe, 10.0);
+        let talkers: HashSet<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
+        assert_eq!(scene.visible, talkers.len());
+        assert!(scene.positions.keys().all(|id| talkers.contains(id)));
+        let id = snapshot.remotes[0].id;
+        assert!(scene.notes[&id][0].contains(&snapshot.remotes[0].address.to_string()));
     }
 
     #[test]

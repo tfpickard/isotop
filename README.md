@@ -1,8 +1,10 @@
 # isotop
 
-A living picture of your machine inside the terminal: a process city, an orbital
-observatory, a rippling sea, and a spacetime weather map. Linux-first, written in
-Rust, with real process data and pixel graphics through the Kitty graphics
+A living picture of your machine inside the terminal, in nine views: a process
+city, an orbital observatory, a rippling pond, a spacetime weather map, a race
+track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
+history, a globe of network connections, and a coral reef. Linux-first, written
+in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
 ## Run
@@ -11,7 +13,7 @@ protocol. Ghostty is the primary target.
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef
 ```
 
 Run directly in a graphics-capable terminal such as Ghostty or Kitty; tmux does
@@ -20,8 +22,8 @@ startup and fails fast when it is missing. `--force-graphics` bypasses that quer
 
 The scene renders at the window's native resolution up to 1920 pixels wide
 (`--width` lowers the cap) and animation targets 20 FPS. Process data is sampled
-once per second; sockets and NVIDIA GPU usage every two seconds on a background
-thread. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
+once per second; sockets, cgroup accounting and NVIDIA GPU usage every two
+seconds on a background thread. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
 fully occupied CPU core. Sizes ease toward each sample over 0.3 seconds;
 inspector values remain the sampled measurements.
 
@@ -52,8 +54,10 @@ process collector.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-city, orbit, ripple and flow. Orbit, ripple and flow share one layout, so a
-process sits in the same place in each.
+the nine views in order and the number keys 1 to 9 jump straight to one. Orbit
+and flow share one layout, so a process sits in the same place in each. Views
+that grow as data arrives (cores, cells, strata, globe, reef) keep the camera
+framed until you move it; Home, Tab or a number key frames them again.
 
 ### City
 
@@ -124,6 +128,81 @@ memory bends.
 - Connections that leave the machine send sparks rising off the sheet; exits
   burst outward; pressure adds turbulence.
 
+### Cores
+
+A race track with one lane per CPU: performance cores inside in gold, efficiency
+cores outside in teal (from `/sys/devices/cpu_core` and `cpu_atom` on hybrid
+Intel CPUs), banked like a velodrome.
+
+- Lane brightness: how busy that CPU was (`/proc/stat`). Chevrons run at its
+  clock speed (`cpufreq`).
+- Red marbles queued behind the start line: tasks waiting for that CPU, from
+  run-queue delay in `/proc/schedstat`.
+- Marbles: running processes, sized by memory. A marble covers one lap per 10
+  seconds of CPU time, so a process using a full core laps every 10 seconds. When
+  the scheduler moves a process to another CPU, its marble hops across lanes;
+  the inspector counts the hops.
+- Idle processes stay off the track and only count towards their lane's label.
+
+### Cells
+
+Every cgroup is a cell in a petri dish: one dish each for system services, your
+session and containers. Accounting comes from the cgroup v2 files
+(`memory.current`, `memory.max`, `cpu.stat`, `cpu.max`, `memory.events`,
+`pids.current`, `*.pressure`).
+
+- Cell size: the cgroup's memory. A dashed ring marks its memory limit, reddening
+  as usage nears it; an arc around the membrane shows CPU use against its quota.
+- The membrane trembles with the cgroup's pressure, flashes red when its CPU
+  quota throttles it, and bursts when the OOM killer strikes inside it.
+- Organelles: its processes, with the largest as the nucleus. Kernel threads
+  belong to no cell and are only counted.
+
+### Strata
+
+The last minute of CPU use as a ridgeline landscape. Each of up to 40 busy
+processes is a ridge whose height traces its CPU over time, with now at the
+front edge; rows run from kernel threads at the back through system services and
+your session to containers at the front. A process keeps its ridge, in the same
+row, while it stays busy. History is recorded whichever view is shown, so the
+landscape is already a minute deep when you switch to it.
+
+### Globe
+
+Where the machine's TCP connections go. The world turns once every five minutes;
+arcs rise from home to every remote place, brighter with more traffic, cyan when
+mostly downloading and pink when mostly uploading, with pulses travelling the way
+the bytes flow. Processes with connections hover above home, and their inspector
+lists each connection with its round-trip time and rates (from the kernel's
+`tcp_info` through sock_diag).
+
+Locations come from a local GeoIP database, read the first time the globe is
+shown; nothing is sent anywhere.
+
+- A city-level MaxMind-format database gives cities: pass `--geoip PATH`, or put
+  one in `~/.local/share/isotop/` (any `*.mmdb`). DB-IP's free
+  [IP to City Lite](https://db-ip.com/db/download/ip-to-city-lite) works and is
+  credited on screen as "IP Geolocation by DB-IP", as its CC BY 4.0 license
+  requires; GeoLite2 City in `/usr/share/GeoIP` or `/var/lib/GeoIP` is found
+  automatically.
+- Otherwise the legacy country database many distributions ship
+  (`/usr/share/GeoIP/GeoIP.dat`) places connections at country label points.
+- Private, loopback and carrier-grade NAT addresses have no location;
+  connections the database cannot place circle the north pole.
+- Home is the system time zone's city (`/etc/localtime` and `zone1970.tab`), or
+  `--home LAT,LON`.
+
+Coastlines and country label points are from [Natural Earth](https://www.naturalearthdata.com/)
+(public domain).
+
+### Reef
+
+The machine as a coral reef under a sea sky. System services grow as coral
+colonies, one per cgroup, with a polyp per process that glows with CPU; your
+session's apps swim in schools whose speed follows their CPU; containers are
+crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
+memory everywhere, I/O rises as bubbles, and zombies float belly-up.
+
 ### Links and weather
 
 Socket links come from the kernel: loopback TCP pairs from `/proc/net/tcp{,6}`
@@ -160,7 +239,8 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view: city, orbit, ripple, flow |
+| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef |
+| `1`-`9` | Jump to a view in that order |
 | Two-finger scroll / wheel | Pan (vertical and horizontal) |
 | Ctrl + scroll | Zoom towards the pointer |
 | Alt + scroll | Rotate |
@@ -212,8 +292,10 @@ combines PID and start time to distinguish PID reuse.
 ```
 
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
-uses a 16:9 viewport; ripple and flow simulate four seconds first so the media
-have developed. Live headless output takes two samples to measure CPU.
+uses a 16:9 viewport; ripple, flow, cores and reef simulate four seconds first so
+the media and creatures have settled, and demo strata replays a minute of
+history. Live headless output takes two samples to measure CPU, so live strata
+shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
 reports presented frame throughput after restoring the terminal.
@@ -239,5 +321,7 @@ also be checked in Ghostty.
 ## Next milestones
 
 - A macOS process collector, so the Metal path can run on Apple GPUs.
+- The orbit view's systems revolving slowly about the centre, like satellite
+  galaxies.
 - Zoom-dependent aggregation for very dense systems.
 - Optional GUI presentation using the same monitoring and scene model.
