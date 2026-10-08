@@ -1,6 +1,6 @@
 //! Strata: a minute of CPU history as a ridgeline landscape. Each busy process is a ridge whose
-//! profile is its CPU use over time, newest at the front edge; rows run from kernel threads at the
-//! back to containers at the front, grouped by cgroup.
+//! profile is its CPU use over time, newest at the front edge. Ridges are seated from kernel
+//! threads at the back to containers at the front and keep their row while they stay busy.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -22,13 +22,33 @@ pub struct Strata {
     history: VecDeque<(f64, HashMap<Identity, f32>)>,
     /// Scene time at which the newest sample arrived, so the landscape scrolls smoothly in between.
     arrived: f32,
-    rows: Vec<Identity>,
+    /// Each ridge's row, 0 at the back; a ridge keeps its row for as long as it has one.
+    rows: HashMap<Identity, usize>,
 }
 
 impl Strata {
     #[cfg(test)]
-    pub fn rows(&self) -> &[Identity] {
-        &self.rows
+    pub fn rows(&self) -> Vec<Identity> {
+        let mut rows: Vec<(usize, Identity)> = self.rows.iter().map(|(&id, &r)| (r, id)).collect();
+        rows.sort();
+        rows.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Keeps a sample in the history. The scene records every sample, whichever view is shown, so
+    /// the landscape is already a minute deep when the view opens.
+    pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
+        if self
+            .history
+            .back()
+            .is_none_or(|&(elapsed, _)| snapshot.elapsed > elapsed)
+        {
+            let sample = snapshot.processes.iter().map(|p| (p.id, p.cpu)).collect();
+            self.history.push_back((snapshot.elapsed, sample));
+            self.arrived = time;
+            while self.history.len() > SAMPLES {
+                self.history.pop_front();
+            }
+        }
     }
 
     pub fn draw(
@@ -37,18 +57,7 @@ impl Strata {
         processes: &[&Process],
         snapshot: &Snapshot,
     ) -> usize {
-        if self
-            .history
-            .back()
-            .is_none_or(|&(elapsed, _)| snapshot.elapsed > elapsed)
-        {
-            let sample = snapshot.processes.iter().map(|p| (p.id, p.cpu)).collect();
-            self.history.push_back((snapshot.elapsed, sample));
-            self.arrived = stage.time;
-            while self.history.len() > SAMPLES {
-                self.history.pop_front();
-            }
-        }
+        self.record(snapshot, stage.time);
         let now = snapshot.elapsed;
         let window: Vec<&(f64, HashMap<Identity, f32>)> = self
             .history
@@ -77,10 +86,10 @@ impl Strata {
                 .fold(0.0_f32, f32::max)
         };
         self.rows
-            .retain(|id| index.contains_key(id) && peak(id) >= BUSY);
+            .retain(|id, _| index.contains_key(id) && peak(id) >= BUSY);
         let mut candidates: Vec<(f32, Identity)> = processes
             .iter()
-            .filter(|p| !self.rows.contains(&p.id))
+            .filter(|p| !self.rows.contains_key(&p.id))
             .map(|p| (peak(&p.id), p.id))
             .filter(|&(value, _)| value >= BUSY)
             .collect();
@@ -89,22 +98,24 @@ impl Strata {
             if self.rows.len() >= ROWS {
                 break;
             }
-            self.rows.push(id);
+            // Each kind owns a quarter of the floor, back to front; a newcomer takes the free row
+            // nearest the middle of its kind's quarter, spilling into neighbours when it is full.
+            let rank = match processes[index[&id]].kind {
+                Kind::Kernel => 0,
+                Kind::System => 1,
+                Kind::Session => 2,
+                Kind::Container => 3,
+            };
+            let home = rank * ROWS / 4 + ROWS / 8;
+            let taken: Vec<usize> = self.rows.values().copied().collect();
+            let row = (0..ROWS)
+                .filter(|row| !taken.contains(row))
+                .min_by_key(|&row| (row.abs_diff(home), row))
+                .expect("fewer than ROWS rows are taken");
+            self.rows.insert(id, row);
         }
-        let rank = |kind: Kind| match kind {
-            Kind::Kernel => 0,
-            Kind::System => 1,
-            Kind::Session => 2,
-            Kind::Container => 3,
-        };
-        self.rows.sort_by_cached_key(|id| {
-            let p = processes[index[id]];
-            (rank(p.kind), p.group.clone(), *id)
-        });
         let width = WINDOW as f32 * SPAN;
-        // The floor always holds ROWS ridges, with fewer centred on it, so the framing is stable.
         let depth = ROWS as f32 * SPACING;
-        let offset = (ROWS - self.rows.len()) as f32 * SPACING * 0.5;
         let height = |cpu: f32| 0.15 + PEAK * bounded(cpu, 60.0);
         let frame = &mut *stage.frame;
         let camera = stage.camera;
@@ -134,10 +145,10 @@ impl Strata {
             };
             stage.places.push(([x, depth + 2.5, 0.0], text));
         }
-        for (row, id) in self.rows.iter().enumerate() {
+        for (id, &row) in &self.rows {
             let process = processes[index[id]];
             let pick = index[id] as u32;
-            let y = offset + row as f32 * SPACING;
+            let y = row as f32 * SPACING;
             let mut profile: Vec<[f32; 2]> = window
                 .iter()
                 .map(|(elapsed, sample)| {

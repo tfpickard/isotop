@@ -4,7 +4,7 @@
 //! when the quota throttles it and bursts when the OOM killer strikes. Processes are organelles,
 //! the largest as the nucleus.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use crate::model::{Kind, Process, Snapshot, Unit, bounded, bytes};
@@ -29,8 +29,10 @@ const CRISIS: Color = [255, 96, 80];
 #[derive(Default)]
 pub struct Dishes {
     cells: [Discs; 3],
-    /// Each dish's reserved radius; it only grows, so dishes keep their places.
+    /// Each dish's drawn radius, which only grows, and the dishes' own placement: a dish keeps
+    /// its place until it outgrows the room reserved for it, and then only that dish moves.
     radii: [f32; 3],
+    dishes: Discs,
     seats: Seats,
     /// OOM kill count last seen per cgroup, and when its latest burst began.
     kills: HashMap<String, (u64, f32)>,
@@ -108,13 +110,15 @@ impl Dishes {
                 self.radii[dish] = needed * 1.05;
             }
         }
-        let mut centers = [[0.0_f32; 2]; 3];
-        let mut x = 0.0;
-        for (center, radius) in centers.iter_mut().zip(self.radii) {
-            x += radius;
-            *center = [x, 0.0];
-            x += radius + DISH_GAP;
-        }
+        let needs: Vec<(String, f32)> = DISHES
+            .iter()
+            .zip(self.radii)
+            .map(|(&(_, title, _), radius)| (title.to_owned(), radius + DISH_GAP * 0.5))
+            .collect();
+        let placed = self.dishes.arrange(&needs);
+        let centers: [[f32; 2]; 3] = DISHES.map(|(_, title, _)| placed[title]);
+        let present: HashSet<&str> = cells.iter().flatten().map(|c| c.name.as_str()).collect();
+        self.kills.retain(|name, _| present.contains(name.as_str()));
         let camera = stage.camera;
         let mut shown = 0;
         for (dish, &(_, title, color)) in DISHES.iter().enumerate() {
@@ -155,12 +159,9 @@ impl Dishes {
         }
         let kernel = processes.iter().filter(|p| p.kind == Kind::Kernel).count();
         if kernel > 0 {
+            let [cx, cy] = centers[0];
             stage.places.push((
-                [
-                    x * 0.5,
-                    -self.radii.iter().fold(0.0_f32, |a, &b| a.max(b)) - 3.0,
-                    0.0,
-                ],
+                stage.camera.front([cx, cy, 0.0], self.radii[0] + 3.0),
                 format!("{kernel} kernel threads live outside any cell"),
             ));
         }

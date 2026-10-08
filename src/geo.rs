@@ -21,7 +21,9 @@ const CITY_DATABASES: [&str; 4] = [
 ];
 
 pub struct Geo {
-    city: Option<maxminddb::Reader<maxminddb::Mmap>>,
+    candidates: Vec<PathBuf>,
+    loaded: bool,
+    city: Option<maxminddb::Reader<Vec<u8>>>,
     legacy: [Option<Vec<u8>>; 2],
     cache: HashMap<IpAddr, Option<Place>>,
     /// Which database answers lookups, for the status strip.
@@ -29,6 +31,8 @@ pub struct Geo {
 }
 
 impl Geo {
+    /// Finds the databases but reads none: a city database can be over 100 MB, so it is only
+    /// loaded by the first lookup.
     pub fn open(explicit: Option<&Path>) -> Self {
         let mut candidates: Vec<PathBuf> = explicit.map(Path::to_path_buf).into_iter().collect();
         if let Some(home) = std::env::var_os("HOME") {
@@ -44,17 +48,27 @@ impl Geo {
             }
         }
         candidates.extend(CITY_DATABASES.iter().map(PathBuf::from));
-        let city = candidates.iter().find_map(|path| {
-            // SAFETY: GeoIP databases are replaced by renaming a new file into place, which leaves
-            // this mapping intact; only truncating the file in place could invalidate it.
-            let reader = unsafe { maxminddb::Reader::open_mmap(path) }.ok()?;
-            Some((path, reader))
-        });
-        let legacy = [
+        Self {
+            candidates,
+            loaded: false,
+            city: None,
+            legacy: [None, None],
+            cache: HashMap::new(),
+            source: "loading the GeoIP database".into(),
+        }
+    }
+
+    fn load(&mut self) {
+        self.loaded = true;
+        let city = self
+            .candidates
+            .iter()
+            .find_map(|path| Some((path, maxminddb::Reader::open_readfile(path).ok()?)));
+        self.legacy = [
             fs::read("/usr/share/GeoIP/GeoIP.dat").ok(),
             fs::read("/usr/share/GeoIP/GeoIPv6.dat").ok(),
         ];
-        let source = match (&city, &legacy) {
+        self.source = match (&city, &self.legacy) {
             (Some((path, reader)), _) => {
                 let name = path.file_name().map_or_else(
                     || path.display().to_string(),
@@ -73,12 +87,7 @@ impl Geo {
             }
             (None, _) => "no GeoIP database (see --geoip)".into(),
         };
-        Self {
-            city: city.map(|(_, reader)| reader),
-            legacy,
-            cache: HashMap::new(),
-            source,
-        }
+        self.city = city.map(|(_, reader)| reader);
     }
 
     pub fn locate(&mut self, address: IpAddr) -> Option<Place> {
@@ -91,6 +100,9 @@ impl Geo {
         }
         if let Some(known) = self.cache.get(&address) {
             return known.clone();
+        }
+        if !self.loaded {
+            self.load();
         }
         let found = self
             .city_lookup(address)
@@ -236,6 +248,13 @@ mod tests {
         assert!(!public("fd00::1".parse().unwrap()));
         assert!(public("8.8.8.8".parse().unwrap()));
         assert_eq!(country("JP").unwrap().name, "Japan");
+        const PSEUDO: [&str; 6] = ["--", "AP", "EU", "A1", "A2", "O1"];
+        for code in LEGACY_CODES.iter().filter(|c| !PSEUDO.contains(c)) {
+            assert!(
+                country(code).is_some(),
+                "legacy code {code} has no label point"
+            );
+        }
     }
 
     #[test]

@@ -1091,6 +1091,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         return Err("--duration must be finite and positive".into());
     }
     let mut collector = Collector::new(options.geoip.clone(), options.home);
+    collector.locate(options.view == View::Globe);
     let mut snapshot = if options.demo {
         model::demo(
             if options.output.is_some() || options.benchmark.is_some() {
@@ -1191,8 +1192,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 let snapshot = if options.demo {
                     model::demo(origin.elapsed().as_secs_f64(), options.processes as usize)
                 } else {
+                    collector.locate(app.view == View::Globe);
                     collector.sample()?
                 };
+                app.scene.record(&snapshot, app.animation);
                 app.history.push_back(snapshot);
                 if app.history.len() > options.history as usize {
                     app.history.pop_front();

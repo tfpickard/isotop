@@ -183,8 +183,9 @@ session and containers. Accounting comes from the cgroup v2 files
 The last minute of CPU use as a ridgeline landscape. Each of up to 40 busy
 processes is a ridge whose height traces its CPU over time, with now at the
 front edge; rows run from kernel threads at the back through system services and
-your session to containers at the front. A process keeps its ridge while it
-stays busy.
+your session to containers at the front. A process keeps its ridge, in the same
+row, while it stays busy. History is recorded whichever view is shown, so the
+landscape is already a minute deep when you switch to it.
 
 ### Globe
 
@@ -195,7 +196,8 @@ the bytes flow. Processes with connections hover above home, and their inspector
 lists each connection with its round-trip time and rates (from the kernel's
 `tcp_info` through sock_diag).
 
-Locations come from a local GeoIP database; nothing is sent anywhere.
+Locations come from a local GeoIP database, read the first time the globe is
+shown; nothing is sent anywhere.
 
 - A city-level MaxMind-format database gives cities: pass `--geoip PATH`, or put
   one in `~/.local/share/isotop/` (any `*.mmdb`). DB-IP's free

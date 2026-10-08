@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
+use std::net::IpAddr;
 
 use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
+use crate::pack::Seats;
 use crate::render::{
     Color, GOLDEN_ANGLE, NONE, Point, SCALE, Stage, dot, kind_color, mass_radius, normalize, tint,
 };
@@ -26,6 +28,9 @@ const HOME: Color = [255, 214, 150];
 #[derive(Default)]
 pub struct Globe {
     coast: Vec<Vec<[f32; 2]>>,
+    /// Places in the cloud above home, kept for life so connections coming and going don't
+    /// reshuffle the other processes.
+    seats: Seats,
 }
 
 /// Remote connections that land in the same place.
@@ -36,7 +41,16 @@ struct Endpoint {
     count: usize,
     /// The process moving the most bytes there, which clicking the endpoint selects.
     top: (f32, Identity),
-    key: u64,
+    key: Spot,
+    /// A stable number derived from the key, for display angles and pulse phases.
+    phase: u64,
+}
+
+/// Where connections are grouped: located ones by rounded coordinates, unlocated ones per address.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Spot {
+    Place(i32, i32),
+    Address(IpAddr),
 }
 
 impl Globe {
@@ -125,7 +139,7 @@ impl Globe {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
-        let mut endpoints: HashMap<u64, Endpoint> = HashMap::new();
+        let mut endpoints: HashMap<Spot, Endpoint> = HashMap::new();
         let mut per_process: HashMap<Identity, Vec<&Remote>> = HashMap::new();
         for remote in snapshot
             .remotes
@@ -134,12 +148,11 @@ impl Globe {
         {
             per_process.entry(remote.id).or_default().push(remote);
             let key = match &remote.place {
-                Some(place) => {
-                    let lat = (place.latitude.round() as i64 + 90) as u64;
-                    let lon = (place.longitude.round() as i64 + 180) as u64;
-                    lat * 1000 + lon
-                }
-                None => 1_000_000 + hash(&remote.address.to_string()) % 1000,
+                Some(place) => Spot::Place(
+                    place.latitude.round() as i32,
+                    place.longitude.round() as i32,
+                ),
+                None => Spot::Address(remote.address),
             };
             let traffic = remote.up + remote.down;
             let endpoint = endpoints.entry(key).or_insert_with(|| Endpoint {
@@ -149,6 +162,10 @@ impl Globe {
                 count: 0,
                 top: (-1.0, remote.id),
                 key,
+                phase: hash(&match key {
+                    Spot::Place(lat, lon) => format!("{lat},{lon}"),
+                    Spot::Address(address) => address.to_string(),
+                }),
             });
             endpoint.up += remote.up;
             endpoint.down += remote.down;
@@ -167,7 +184,7 @@ impl Globe {
             let target = match &endpoint.place {
                 Some(place) => direction(place.latitude, place.longitude),
                 None => {
-                    let angle = (endpoint.key % 1000) as f32 / 1000.0 * TAU + spin;
+                    let angle = (endpoint.phase % 1000) as f32 / 1000.0 * TAU + spin;
                     normalize([0.45 * angle.cos(), 0.45 * angle.sin(), 1.0])
                 }
             };
@@ -196,7 +213,8 @@ impl Globe {
                 let speed = 0.15 + 0.5 * bounded(traffic, 100_000.0);
                 for k in 0..3 {
                     let mut t =
-                        (time * speed + k as f32 / 3.0 + (endpoint.key % 97) as f32 / 97.0).fract();
+                        (time * speed + k as f32 / 3.0 + (endpoint.phase % 97) as f32 / 97.0)
+                            .fract();
                     if toward_home {
                         t = 1.0 - t;
                     }
@@ -234,8 +252,10 @@ impl Globe {
         let (east, north) = tangents(up);
         let mut talkers: Vec<Identity> = per_process.keys().copied().collect();
         talkers.sort();
-        for (k, id) in talkers.iter().enumerate() {
+        self.seats.assign(talkers.iter().map(|&id| (id, "home")));
+        for id in &talkers {
             let process = processes[index[id]];
+            let k = self.seats.seat(*id).unwrap_or(0);
             let distance = 0.9 * (k as f32 + 0.5).sqrt();
             let angle = k as f32 * GOLDEN_ANGLE;
             let offset =
@@ -307,7 +327,12 @@ fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
 
 /// East and north unit vectors on the surface at unit vector `up`.
 fn tangents(up: Point) -> (Point, Point) {
-    let east = normalize([-up[1], up[0], 0.0]);
+    // At a pole every horizontal direction is a tangent and "east" is undefined; pick one.
+    let east = if up[0].hypot(up[1]) < 1e-4 {
+        [1.0, 0.0, 0.0]
+    } else {
+        normalize([-up[1], up[0], 0.0])
+    };
     let north = [
         up[1] * east[2] - up[2] * east[1],
         up[2] * east[0] - up[0] * east[2],
@@ -362,7 +387,11 @@ mod tests {
         let middle = slerp(a, b, PI / 2.0, 0.5);
         assert!((dot(middle, middle) - 1.0).abs() < 1e-5);
         assert!((middle[0] - middle[1]).abs() < 1e-5);
-        let (east, north) = tangents([0.0, 0.0, 1.0]);
-        assert!(dot(east, north).abs() < 1e-5);
+        for up in [[0.6, 0.8, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
+            let (east, north) = tangents(up);
+            assert!((dot(east, east) - 1.0).abs() < 1e-5, "{up:?}");
+            assert!((dot(north, north) - 1.0).abs() < 1e-5, "{up:?}");
+            assert!(dot(east, north).abs() < 1e-5 && dot(east, up).abs() < 1e-5);
+        }
     }
 }
