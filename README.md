@@ -95,7 +95,12 @@ existing ones.
 - Large sibling sets fill concentric shells that share one eccentricity and
   orientation, so they are scaled copies of each other and never cross; siblings
   on a shell share one ellipse and keep their order.
-- Systems are packed around the centre, largest first, and keep their place.
+- Systems are packed around the centre, largest first, and the whole galaxy
+  revolves about its memory-weighted barycenter like satellite galaxies:
+  systems whose rings overlap turn together, and detached outer systems turn at
+  their own slower Kepler rate (once every 2 to 15 minutes), so they never
+  collide. A system only moves out of its place on the wheel when it outgrows
+  the room reserved for it.
 
 Four levels are drawn per system; deeper processes are counted as collapsed.
 
@@ -319,7 +324,5 @@ also be checked in Ghostty.
 ## Next milestones
 
 - A macOS process collector, so the Metal path can run on Apple GPUs.
-- The orbit view's systems revolving slowly about the centre, like satellite
-  galaxies.
 - Zoom-dependent aggregation for very dense systems.
 - Optional GUI presentation using the same monitoring and scene model.

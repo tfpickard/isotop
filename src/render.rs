@@ -817,6 +817,12 @@ pub struct Scene {
     occupancy: Vec<HashMap<usize, Identity>>,
     resources: HashMap<Identity, (f32, f32)>,
     systems: HashMap<Identity, ([f32; 2], f32)>,
+    /// Point the orbit systems revolve about and the systems it was computed for, the motion
+    /// time they were last turned to, and each system's angular speed in radians per second.
+    galaxy: [f32; 2],
+    galaxy_members: Vec<Identity>,
+    galaxy_time: Option<f32>,
+    galaxy_speed: HashMap<Identity, f32>,
     last_time: Option<f32>,
     births: HashMap<Identity, f32>,
     previous: HashMap<Identity, Point>,
@@ -864,6 +870,10 @@ impl Scene {
             occupancy: Vec::new(),
             resources: HashMap::new(),
             systems: HashMap::new(),
+            galaxy: [0.0; 2],
+            galaxy_members: Vec::new(),
+            galaxy_time: None,
+            galaxy_speed: HashMap::new(),
             last_time: None,
             births: HashMap::new(),
             previous: HashMap::new(),
@@ -1492,7 +1502,7 @@ impl Scene {
             reach,
             masses,
         };
-        let centers = self.place_systems(processes, &roots, &tree.extents);
+        let centers = self.place_systems(processes, &roots, &tree.extents, &tree.masses, motion);
         let mut visited = HashSet::new();
         let mut paths = Vec::new();
         let mut bodies = Vec::new();
@@ -2308,6 +2318,8 @@ impl Scene {
         processes: &[&Process],
         roots: &[usize],
         extents: &[f32],
+        masses: &[f32],
+        motion: f32,
     ) -> Vec<[f32; 2]> {
         let needed: HashMap<Identity, f32> = roots
             .iter()
@@ -2328,10 +2340,80 @@ impl Scene {
             let center = vacant(&placed, reserved);
             self.systems.insert(id, (center, reserved));
         }
+        let weights: HashMap<Identity, f32> = roots
+            .iter()
+            .map(|&root| (processes[root].id, masses[root]))
+            .collect();
+        self.revolve(&weights, motion);
         roots
             .iter()
             .map(|&root| self.systems[&processes[root].id].0)
             .collect()
+    }
+
+    /// Turns the systems about their memory-weighted barycenter by the motion time elapsed since
+    /// the last call. The barycenter is taken when systems come or go, so the pivot stays put
+    /// while they turn. Systems whose distances from it, give or take their reserved radius,
+    /// overlap form a band that turns rigidly; bands occupy disjoint annuli, so whatever their
+    /// speeds no two systems can collide. Each band turns at its own Kepler rate, outer bands
+    /// slower, and phase accumulates, so a band changing speed never makes a system jump.
+    fn revolve(&mut self, masses: &HashMap<Identity, f32>, motion: f32) {
+        let dt = self.galaxy_time.map_or(0.0, |last| motion - last);
+        self.galaxy_time = Some(motion);
+        let weight = |id: &Identity| masses.get(id).copied().unwrap_or(0.0).max(1.0);
+        let mut members: Vec<Identity> = self.systems.keys().copied().collect();
+        members.sort();
+        if members != self.galaxy_members {
+            let total: f32 = members.iter().map(weight).sum();
+            let mut center = [0.0_f32; 2];
+            for (id, (at, _)) in &self.systems {
+                for k in 0..2 {
+                    center[k] += at[k] * weight(id) / total.max(1.0);
+                }
+            }
+            self.galaxy = center;
+            self.galaxy_members = members;
+        }
+        let center = self.galaxy;
+        let mut rings: Vec<(Identity, f32, f32)> = self
+            .systems
+            .iter()
+            .map(|(&id, &(at, reserved))| {
+                let distance = (at[0] - center[0]).hypot(at[1] - center[1]);
+                (id, distance, reserved)
+            })
+            .collect();
+        rings.sort_by(|a, b| (a.1 - a.2).total_cmp(&(b.1 - b.2)).then(a.0.cmp(&b.0)));
+        let mut bands: Vec<(f32, Vec<(Identity, f32)>)> = Vec::new();
+        for (id, distance, reserved) in rings {
+            match bands.last_mut() {
+                Some((outer, members)) if distance - reserved < *outer => {
+                    *outer = outer.max(distance + reserved);
+                    members.push((id, distance));
+                }
+                _ => bands.push((distance + reserved, vec![(id, distance)])),
+            }
+        }
+        self.galaxy_speed.clear();
+        let mut enclosed = 0.0;
+        for (_, members) in &bands {
+            let mass: f32 = members.iter().map(|(id, _)| weight(id)).sum();
+            enclosed += mass;
+            let radius = members.iter().map(|(id, d)| d * weight(id)).sum::<f32>() / mass;
+            let speed = TAU / galactic_period(radius, enclosed);
+            for (id, _) in members {
+                self.galaxy_speed.insert(*id, speed);
+            }
+        }
+        // Skip pauses, rewinds and view switches rather than spinning through them.
+        if !(dt > 0.0 && dt <= 0.5) {
+            return;
+        }
+        for (id, (at, _)) in &mut self.systems {
+            let (s, c) = (self.galaxy_speed[id] * dt).sin_cos();
+            let [x, y] = [at[0] - center[0], at[1] - center[1]];
+            *at = [center[0] + x * c - y * s, center[1] + x * s + y * c];
+        }
     }
 
     /// Places a body and its descendants. `target` is the settled position used for layout,
@@ -2590,6 +2672,14 @@ fn elements(pid: u32) -> (f32, f32) {
 fn period(a: f32, parent_bytes: f32) -> f32 {
     let mass = (parent_bytes / (512.0 * 1048576.0)).max(1.0 / 512.0);
     (30.0 * (a / 3.0).powf(1.5) / mass.sqrt()).clamp(8.0, 600.0)
+}
+
+/// Seconds for a system to circle the galaxy once at `radius` world units with `enclosed` bytes
+/// of systems inside its band: Kepler's T ~ sqrt(r^3 / M), normalised to four minutes at 30
+/// units around 4 GiB and clamped so the galaxy always turns slowly next to its planets.
+fn galactic_period(radius: f32, enclosed: f32) -> f32 {
+    let mass = (enclosed / (4.0 * 1073741824.0)).max(1.0 / 4096.0);
+    (240.0 * (radius.max(1.0) / 30.0).powf(1.5) / mass.sqrt()).clamp(120.0, 900.0)
 }
 
 /// Solves Kepler's equation M = E - e sin E for the eccentric anomaly E by Newton's method.
@@ -3171,11 +3261,73 @@ mod tests {
             }
         }
         snapshot.processes[5].cpu = 800.0;
-        render(&mut scene, &snapshot, View::Orbit, 0.5);
-        assert_eq!(scene.systems.len(), 8);
-        for (id, placement) in &scene.systems {
-            assert!(systems.contains(placement), "system {id:?} moved");
+        let center = scene.galaxy;
+        let reach = |placement: &([f32; 2], f32)| {
+            (placement.0[0] - center[0]).hypot(placement.0[1] - center[1])
+        };
+        let before = scene.systems.clone();
+        for step in 1..=240 {
+            render(&mut scene, &snapshot, View::Orbit, step as f32 * 0.5);
         }
+        assert_eq!(scene.systems.len(), 8, "turning never re-places a system");
+        assert_eq!(
+            scene.galaxy, center,
+            "the pivot stays put while membership is stable"
+        );
+        let mut turned = 0;
+        for (id, placement) in &scene.systems {
+            assert!(
+                (reach(placement) - reach(&before[id])).abs() < 0.01,
+                "{id:?} left its orbit"
+            );
+            assert_eq!(placement.1, before[id].1);
+            turned += usize::from(placement.0 != before[id].0);
+        }
+        assert!(turned >= 7, "only {turned} systems revolved");
+        let systems: Vec<_> = scene.systems.values().copied().collect();
+        for (i, (a, ra)) in systems.iter().enumerate() {
+            for (b, rb) in &systems[i + 1..] {
+                assert!((a[0] - b[0]).hypot(a[1] - b[1]) >= ra + rb - 1e-2);
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_rings_turn_together_and_detached_systems_turn_slower() {
+        let id = |pid: u32| Identity { pid, start: 1 };
+        let mut scene = Scene::new();
+        scene.systems = HashMap::from([
+            (id(1), ([0.0, 0.0], 5.0)),
+            (id(2), ([8.5, 0.0], 3.0)),
+            (id(3), ([60.0, 0.0], 3.0)),
+        ]);
+        let masses = HashMap::from([(id(1), 4e9), (id(2), 1e9), (id(3), 1e8)]);
+        scene.revolve(&masses, 0.0);
+        let speed = |scene: &Scene, pid| scene.galaxy_speed[&id(pid)];
+        assert_eq!(
+            speed(&scene, 1),
+            speed(&scene, 2),
+            "touching rings share a band"
+        );
+        assert!(
+            speed(&scene, 3) < speed(&scene, 2),
+            "outer bands turn slower"
+        );
+        assert!(TAU / speed(&scene, 3) <= 900.0 && TAU / speed(&scene, 1) >= 120.0);
+        for step in 1..=2000 {
+            scene.revolve(&masses, step as f32 * 0.5);
+        }
+        let [(a, ra), (b, rb), (c, rc)] = [1, 2, 3].map(|pid| scene.systems[&id(pid)]);
+        let gap = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        assert!((gap(a, b) - 8.5).abs() < 0.01, "a band turns rigidly");
+        assert!(gap(a, c) >= ra + rc && gap(b, c) >= rb + rc);
+        assert!(c[1].abs() > 1.0, "the detached system moved round");
+        scene.revolve(&masses, 5000.0);
+        assert_eq!(
+            scene.systems[&id(3)].0,
+            c,
+            "a jump in time does not spin the galaxy"
+        );
     }
 
     #[test]
