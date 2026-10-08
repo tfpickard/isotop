@@ -823,6 +823,10 @@ pub struct Scene {
     galaxy_members: Vec<Identity>,
     galaxy_time: Option<f32>,
     galaxy_speed: HashMap<Identity, f32>,
+    /// Frames rendered, and the frame the galaxy last turned in: it only turns across
+    /// consecutive frames, so switching to another view and back never spins it.
+    frames: u64,
+    galaxy_frame: u64,
     last_time: Option<f32>,
     births: HashMap<Identity, f32>,
     previous: HashMap<Identity, Point>,
@@ -874,6 +878,8 @@ impl Scene {
             galaxy_members: Vec::new(),
             galaxy_time: None,
             galaxy_speed: HashMap::new(),
+            frames: 0,
+            galaxy_frame: 0,
             last_time: None,
             births: HashMap::new(),
             previous: HashMap::new(),
@@ -1022,6 +1028,7 @@ impl Scene {
         limit: usize,
         focus: Option<Identity>,
     ) -> Frame {
+        self.frames += 1;
         let dt = self.last_time.map_or(0.0, |previous| time - previous);
         if !(0.0..=2.0).contains(&dt) {
             self.resources.clear();
@@ -2370,6 +2377,8 @@ impl Scene {
     fn revolve(&mut self, masses: &HashMap<Identity, f32>, motion: f32) {
         let dt = self.galaxy_time.map_or(0.0, |last| motion - last);
         self.galaxy_time = Some(motion);
+        let continuous = self.galaxy_frame + 1 == self.frames;
+        self.galaxy_frame = self.frames;
         let weight = |id: &Identity| masses.get(id).copied().unwrap_or(0.0).max(1.0);
         let mut members: Vec<Identity> = self.systems.keys().copied().collect();
         members.sort();
@@ -2406,17 +2415,21 @@ impl Scene {
         }
         self.galaxy_speed.clear();
         let mut enclosed = 0.0;
+        let mut inner = f32::INFINITY;
         for (_, members) in &bands {
             let mass: f32 = members.iter().map(|(id, _)| weight(id)).sum();
             enclosed += mass;
             let radius = members.iter().map(|(id, d)| d * weight(id)).sum::<f32>() / mass;
-            let speed = TAU / galactic_period(radius, enclosed);
+            // A heavy band outside a light one would otherwise outpace it; outer never turns faster.
+            let speed = (TAU / galactic_period(radius, enclosed)).min(inner);
+            inner = speed;
             for (id, _) in members {
                 self.galaxy_speed.insert(*id, speed);
             }
         }
-        // Skip pauses, rewinds and view switches rather than spinning through them.
-        if !(dt > 0.0 && dt <= 0.5) {
+        // Turn only between consecutive frames and by at most MAX_TURN_STEP (above the 1 s frame
+        // interval of --fps 1), so pauses, rewinds and view switches don't spin the galaxy.
+        if !(continuous && dt > 0.0 && dt <= MAX_TURN_STEP) {
             return;
         }
         for (id, (at, _)) in &mut self.systems {
@@ -2683,6 +2696,9 @@ fn period(a: f32, parent_bytes: f32) -> f32 {
     let mass = (parent_bytes / (512.0 * 1048576.0)).max(1.0 / 512.0);
     (30.0 * (a / 3.0).powf(1.5) / mass.sqrt()).clamp(8.0, 600.0)
 }
+
+/// Longest motion step, in seconds, that the galaxy turns through between two frames.
+const MAX_TURN_STEP: f32 = 2.0;
 
 /// Seconds for a system to circle the galaxy once at `radius` world units with `enclosed` bytes
 /// of systems inside its band: Kepler's T ~ sqrt(r^3 / M), normalised to four minutes at 30
@@ -3384,6 +3400,7 @@ mod tests {
             (id(3), ([60.0, 0.0], 3.0)),
         ]);
         let masses = HashMap::from([(id(1), 4e9), (id(2), 1e9), (id(3), 1e8)]);
+        scene.frames += 1;
         scene.revolve(&masses, 0.0);
         let speed = |scene: &Scene, pid| scene.galaxy_speed[&id(pid)];
         assert_eq!(
@@ -3397,6 +3414,7 @@ mod tests {
         );
         assert!(TAU / speed(&scene, 3) <= 900.0 && TAU / speed(&scene, 1) >= 120.0);
         for step in 1..=2000 {
+            scene.frames += 1;
             scene.revolve(&masses, step as f32 * 0.5);
         }
         let [(a, ra), (b, rb), (c, rc)] = [1, 2, 3].map(|pid| scene.systems[&id(pid)]);
@@ -3404,11 +3422,48 @@ mod tests {
         assert!((gap(a, b) - 8.5).abs() < 0.01, "a band turns rigidly");
         assert!(gap(a, c) >= ra + rc && gap(b, c) >= rb + rc);
         assert!(c[1].abs() > 1.0, "the detached system moved round");
+        scene.frames += 1;
         scene.revolve(&masses, 5000.0);
         assert_eq!(
             scene.systems[&id(3)].0,
             c,
             "a jump in time does not spin the galaxy"
+        );
+    }
+
+    #[test]
+    fn the_galaxy_turns_at_one_frame_per_second_but_not_across_view_switches() {
+        let id = |pid: u32| Identity { pid, start: 1 };
+        let mut scene = Scene::new();
+        scene.systems = HashMap::from([(id(1), ([0.0, 0.0], 5.0)), (id(2), ([40.0, 0.0], 3.0))]);
+        let masses = HashMap::from([(id(1), 4e9), (id(2), 1e8)]);
+        let mut motion = 0.0;
+        let mut turn = |scene: &mut Scene, frames: u64, seconds: f32| {
+            scene.frames += frames;
+            motion += seconds;
+            scene.revolve(&masses, motion);
+            scene.systems[&id(2)].0
+        };
+        turn(&mut scene, 1, 0.0);
+        let start = turn(&mut scene, 1, 1.0);
+        let next = turn(&mut scene, 1, 1.0);
+        assert_ne!(
+            start, next,
+            "--fps 1 frames are a second apart and still turn it"
+        );
+        let away = turn(&mut scene, 3, 0.3);
+        assert_eq!(
+            away, next,
+            "frames drawn in another view are skipped, however short"
+        );
+        // A light band close in and a heavy one further out, about a pivot that stays put.
+        let mut scene = Scene::new();
+        scene.systems = HashMap::from([(id(1), ([20.0, 0.0], 3.0)), (id(2), ([60.0, 0.0], 3.0))]);
+        scene.galaxy_members = vec![id(1), id(2)];
+        scene.revolve(&HashMap::from([(id(1), 1e6), (id(2), 64e9)]), 0.0);
+        assert!(
+            scene.galaxy_speed[&id(2)] <= scene.galaxy_speed[&id(1)],
+            "outer bands never outpace inner ones"
         );
     }
 
