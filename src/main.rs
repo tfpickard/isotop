@@ -1195,6 +1195,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     collector.locate(app.view == View::Globe);
                     collector.sample()?
                 };
+                app.scene.record(&snapshot, app.animation);
                 app.history.push_back(snapshot);
                 if app.history.len() > options.history as usize {
                     app.history.pop_front();

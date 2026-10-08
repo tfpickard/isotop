@@ -905,8 +905,13 @@ impl Scene {
         !self.bounds.is_empty()
     }
 
+    /// Feeds a new sample to views that keep their own history, whichever view is shown.
+    pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
+        self.strata.record(snapshot, time);
+    }
+
     #[cfg(test)]
-    fn strata_rows(&self) -> &[Identity] {
+    fn strata_rows(&self) -> Vec<Identity> {
         self.strata.rows()
     }
 
@@ -3071,9 +3076,27 @@ mod tests {
             for (i, p) in snapshot.processes.iter_mut().enumerate() {
                 p.cpu = if i % 4 == 0 { 30.0 + step as f32 } else { 0.0 };
             }
-            render(&mut scene, &snapshot, View::Strata, step as f32);
+            // History builds up while another view is shown.
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, View::City, step as f32);
         }
+        render(&mut scene, &snapshot, View::Strata, 29.0);
         assert_eq!(scene.visible, 16);
+        let first = snapshot.processes[0].id;
+        assert!(
+            scene.notes[&first][0].ends_with("over the last 29 s"),
+            "{:?}",
+            scene.notes[&first]
+        );
+        let rows: HashMap<Identity, f32> =
+            scene.positions.iter().map(|(id, p)| (*id, p[1])).collect();
+        snapshot.elapsed = 30.0;
+        snapshot.processes[33].cpu = 50.0;
+        render(&mut scene, &snapshot, View::Strata, 30.0);
+        assert_eq!(scene.visible, 17, "a newly busy process earns a ridge");
+        for (id, y) in &rows {
+            assert_eq!(scene.positions[id][1], *y, "an existing ridge moved row");
+        }
         let order: Vec<u8> = scene
             .strata_rows()
             .iter()
