@@ -7,6 +7,17 @@ history, a globe of network connections, and a coral reef. Linux-first, written
 in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
+![Orbit: process trees as solar systems revolving about the galaxy's barycenter](docs/media/orbit-motion.webp)
+
+| | | |
+|:-:|:-:|:-:|
+| ![City](docs/media/city.webp)<br>**1 City** | ![Orbit](docs/media/orbit.webp)<br>**2 Orbit** | ![Ripple](docs/media/ripple.webp)<br>**3 Ripple** |
+| ![Flow](docs/media/flow.webp)<br>**4 Flow** | ![Cores](docs/media/cores.webp)<br>**5 Cores** | ![Cells](docs/media/cells.webp)<br>**6 Cells** |
+| ![Strata](docs/media/strata.webp)<br>**7 Strata** | ![Globe](docs/media/globe.webp)<br>**8 Globe** | ![Reef](docs/media/reef.webp)<br>**9 Reef** |
+
+Screenshots and recordings are of Ghostty running `isotop --demo`, the synthetic
+workload, so they show no real machine.
+
 ## Run
 
 ```sh
@@ -106,6 +117,8 @@ Four levels are drawn per system; deeper processes are counted as collapsed.
 
 ### Ripple
 
+![Ripple: pebble clusters driving interfering ripples](docs/media/ripple-motion.webp)
+
 The machine as a pond: a damped 2D wave equation (nine-point stencil, absorbing
 border) simulated on a grid and drawn as a smoothly lit surface.
 
@@ -134,6 +147,8 @@ memory bends.
   burst outward; pressure adds turbulence.
 
 ### Cores
+
+![Cores: marbles lapping a lane per CPU](docs/media/cores-motion.webp)
 
 A race track with one lane per CPU: performance cores inside in gold, efficiency
 cores outside in teal (from `/sys/devices/cpu_core` and `cpu_atom` on hybrid
@@ -199,6 +214,8 @@ Coastlines and country label points are from [Natural Earth](https://www.natural
 (public domain).
 
 ### Reef
+
+![Reef: coral, schools of fish and crabs](docs/media/reef-motion.webp)
 
 The machine as a coral reef under a sea sky. System services grow as coral
 colonies, one per cgroup, with a polyp per process that glows with CPU; your
