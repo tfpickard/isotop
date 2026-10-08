@@ -722,6 +722,9 @@ pub struct Scene {
     newborn: Vec<Identity>,
     wave: Option<Wave>,
     flow: Option<Flow>,
+    /// Ripple pebble clusters by cgroup, and each process's cluster and slot in it.
+    clusters: HashMap<String, Cluster>,
+    pebbles: HashMap<Identity, (String, usize)>,
     started: bool,
     /// Animate the processes that are already running when the first frame is drawn.
     pub intro: bool,
@@ -756,6 +759,8 @@ impl Scene {
             newborn: Vec::new(),
             wave: None,
             flow: None,
+            clusters: HashMap::new(),
+            pebbles: HashMap::new(),
             started: false,
             intro: false,
             links: Links::All,
@@ -1457,9 +1462,9 @@ impl Scene {
         }
     }
 
-    /// The machine as a body of water: a damped wave equation on a grid under the process layout.
-    /// Busy processes drive ripples at their own frequency and loudness, so their waves interfere
-    /// where activity meets; buoys float on the surface sized by memory; every patch of water
+    /// The machine as a pond: each cgroup is a cluster of pebbles, and every busy process drives
+    /// ripples at its own pitch, so a cluster's rings interfere with each other and spread over
+    /// open water to the next. Buoys float on the surface sized by memory; every patch of water
     /// belongs to its nearest process; births drip and exits splash. Pressure raises a swell.
     #[allow(clippy::too_many_arguments)]
     fn draw_ripples(
@@ -1471,7 +1476,16 @@ impl Scene {
         time: f32,
         stir: f32,
     ) {
-        let (tree, _, bodies) = self.layout(processes, time, 0.0);
+        let radii = self.scatter(processes);
+        let bodies: Vec<Body> = processes
+            .iter()
+            .enumerate()
+            .map(|(index, process)| Body {
+                index,
+                position: self.positions[&process.id],
+                grow: self.growth(process.id, time),
+            })
+            .collect();
         let Some((grid, located)) = self.footprint(processes, &bodies, 150) else {
             return;
         };
@@ -1510,7 +1524,7 @@ impl Scene {
                 wave.drive(at, loudness * (omega * now + phase).sin() * dt);
             }
         });
-        let owners = territories(&grid, &bodies, &located, &tree.radii);
+        let owners = territories(&grid, &bodies, &located, &radii);
         let swell = 0.01 + 0.12 * stir;
         let surface = |x: f32, y: f32, height: f32| {
             height * 0.09
@@ -1520,9 +1534,10 @@ impl Scene {
                         + 0.5 * ((x + y) * 0.13 + time * 1.3 + 2.1).sin())
                     / 2.2
         };
+        let (columns, rows) = (grid.columns, grid.rows);
         let heights: Vec<f32> = (0..grid.len())
             .map(|i| {
-                let [x, y] = grid.world((i % grid.columns) as f32, (i / grid.columns) as f32);
+                let [x, y] = grid.world((i % columns) as f32, (i / columns) as f32);
                 surface(x, y, wave.height[i])
             })
             .collect();
@@ -1534,43 +1549,61 @@ impl Scene {
             light[1] + viewer[1],
             light[2] + viewer[2],
         ]);
-        for y in 0..grid.rows - 1 {
-            for x in 0..grid.columns - 1 {
-                let i = y * grid.columns + x;
-                let corner = |dx: usize, dy: usize| {
-                    let [wx, wy] = grid.world((x + dx) as f32, (y + dy) as f32);
-                    [wx, wy, heights[(y + dy) * grid.columns + x + dx]]
+        // Lit per node from the height field's gradient and averaged over each facet, so the two
+        // triangles of a cell shade alike. Highlights blend towards moonlight by at most
+        // RIPPLE_SHINE and never add up to white.
+        let shades: Vec<[f32; 3]> = (0..grid.len())
+            .map(|i| {
+                let (x, y) = (i % columns, i / columns);
+                let gradient = |a: usize, b: usize, cells: usize| {
+                    (heights[b] - heights[a]) / (cells.max(1) as f32 * grid.cell)
                 };
-                let (a, b, c, d) = (corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1));
-                let owner = owners[i];
-                let tint = processes
-                    .get(owner as usize)
-                    .map_or([40, 60, 90], |p| kind_color(p));
+                let (x0, x1) = (x.saturating_sub(1), (x + 1).min(columns - 1));
+                let (y0, y1) = (y.saturating_sub(1), (y + 1).min(rows - 1));
+                let normal = normalize([
+                    -gradient(y * columns + x0, y * columns + x1, x1 - x0),
+                    -gradient(y0 * columns + x, y1 * columns + x, y1 - y0),
+                    1.0,
+                ]);
+                let diffuse = dot(normal, light).max(0.0);
+                let glint = dot(normal, half).max(0.0).powi(48);
+                let crest = (heights[i] * 1.8).clamp(-0.5, 1.0);
                 let foam = (wave.velocity[i].abs() * 0.05).min(1.0);
-                for facet in [[a, b, c], [a, c, d]] {
-                    let n = normalize(cross(sub(facet[1], facet[0]), sub(facet[2], facet[0])));
-                    let diffuse = dot(n, light).max(0.0);
-                    let specular = dot(n, half).max(0.0).powi(24);
-                    let crest = ((facet[0][2] + facet[1][2] + facet[2][2]) * 0.6).clamp(0.0, 1.0);
+                let tint = processes
+                    .get(owners[i] as usize)
+                    .map_or(RIPPLE_DEEP, |p| kind_color(p).map(f32::from));
+                let shine = (glint * 0.75 + foam * 0.25).min(RIPPLE_SHINE);
+                [0, 1, 2].map(|k| {
+                    let water = (RIPPLE_DEEP[k] * 0.92 + tint[k] * 0.08) * (0.55 + 0.5 * diffuse)
+                        + RIPPLE_CREST[k] * crest;
+                    water + (RIPPLE_MOON[k] - water) * shine
+                })
+            })
+            .collect();
+        let corner = |node: usize| {
+            let [x, y] = grid.world((node % columns) as f32, (node / columns) as f32);
+            [x, y, heights[node]]
+        };
+        for y in 0..rows - 1 {
+            for x in 0..columns - 1 {
+                let a = y * columns + x;
+                let (b, c, d) = (a + 1, a + columns + 1, a + columns);
+                for nodes in [[a, b, c], [a, c, d]] {
                     let color = [0, 1, 2].map(|k| {
-                        let water = [8.0, 22.0, 42.0][k] * 0.84 + tint[k] as f32 * 0.16 * 0.5;
-                        (water * (0.5 + 0.6 * diffuse)
-                            + [150.0, 200.0, 240.0][k] * specular * 0.8
-                            + [40.0, 90.0, 140.0][k] * crest
-                            + [90.0, 140.0, 170.0][k] * foam * 0.4)
-                            .min(255.0) as u8
+                        (nodes.iter().map(|&n| shades[n][k]).sum::<f32>() / 3.0).clamp(0.0, 255.0)
+                            as u8
                     });
-                    frame.facet(camera, facet, color, owner);
+                    frame.facet(camera, nodes.map(corner), color, owners[a]);
                 }
             }
         }
         for (body, &at) in bodies.iter().zip(&located) {
             let process = processes[body.index];
-            let radius = tree.radii[body.index] * body.grow;
+            let radius = radii[body.index] * body.grow;
             let z = grid.sample(&heights, at, mix) + radius * 0.35;
             let position = [at[0], at[1], z];
             self.positions.insert(process.id, position);
-            self.glows(frame, camera, process, position, tree.radii[body.index]);
+            self.glows(frame, camera, process, position, radii[body.index]);
             frame.sphere(
                 camera,
                 position,
@@ -1977,6 +2010,107 @@ impl Scene {
         Some((grid, located))
     }
 
+    /// Ripple layout: places every process as a pebble in its cgroup's cluster and records the
+    /// positions. A process keeps its slot while it lives; a cluster spreads out or moves only
+    /// when it outgrows the water reserved for it. Returns each process's pebble radius.
+    fn scatter(&mut self, processes: &[&Process]) -> Vec<f32> {
+        let radii: Vec<f32> = processes
+            .iter()
+            .map(|p| mass_radius(p.memory as f32))
+            .collect();
+        let members: HashMap<Identity, (&str, f32, u64)> = processes
+            .iter()
+            .zip(&radii)
+            .map(|(p, &r)| (p.id, (p.group.as_str(), r, p.memory)))
+            .collect();
+        self.pebbles.retain(|id, (group, slot)| {
+            let stays = members.get(id).is_some_and(|m| m.0 == group);
+            if !stays && let Some(cluster) = self.clusters.get_mut(group) {
+                cluster.slots.remove(slot);
+            }
+            stays
+        });
+        self.clusters.retain(|_, cluster| !cluster.slots.is_empty());
+        for process in processes {
+            if !self.pebbles.contains_key(&process.id) {
+                let cluster = self.clusters.entry(process.group.clone()).or_default();
+                let slot = (0..=cluster.slots.len())
+                    .find(|slot| !cluster.slots.contains_key(slot))
+                    .expect("one of len + 1 slots is free");
+                cluster.slots.insert(slot, process.id);
+                self.pebbles
+                    .insert(process.id, (process.group.clone(), slot));
+            }
+        }
+        let mut pending = Vec::new();
+        for (name, cluster) in &mut self.clusters {
+            let largest = cluster
+                .slots
+                .values()
+                .map(|id| members[id].1)
+                .fold(0.0, f32::max);
+            // Spiral neighbours sit at least ~1.6 spacings apart; jitter takes up to 0.2 of that.
+            let needed = (2.0 * largest + PEBBLE_GAP) / 1.4;
+            if needed > cluster.spacing {
+                cluster.spacing = needed * 1.15;
+            }
+            let outermost = cluster.slots.keys().max().copied().unwrap_or(0);
+            cluster.extent = cluster.spacing * (outermost as f32 + 1.0).sqrt() + largest;
+            let reach = cluster.extent + POND_GAP;
+            if reach > cluster.reserved {
+                cluster.reserved = 0.0;
+                pending.push((name.clone(), reach));
+            }
+        }
+        pending.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (name, reach) in pending {
+            let placed: Vec<_> = self
+                .clusters
+                .values()
+                .filter(|c| c.reserved > 0.0)
+                .map(|c| (c.center, c.reserved))
+                .collect();
+            let reserved = reach * 1.1;
+            let center = vacant(&placed, reserved);
+            if let Some(cluster) = self.clusters.get_mut(&name) {
+                cluster.center = center;
+                cluster.reserved = reserved;
+            }
+        }
+        self.positions.clear();
+        for process in processes {
+            let (group, slot) = &self.pebbles[&process.id];
+            let cluster = &self.clusters[group];
+            let k = *slot as f32;
+            let distance = cluster.spacing * (k + 0.5).sqrt();
+            let angle = k * GOLDEN_ANGLE + spin(group);
+            let hash = process.id.pid.wrapping_mul(2_654_435_761);
+            let jitter = cluster.spacing * 0.1 * (hash & 0xffff) as f32 / 65536.0;
+            let toss = (hash >> 16) as f32 / 65536.0 * TAU;
+            self.positions.insert(
+                process.id,
+                [
+                    cluster.center[0] + distance * angle.cos() + jitter * toss.cos(),
+                    cluster.center[1] + distance * angle.sin() + jitter * toss.sin(),
+                    0.0,
+                ],
+            );
+        }
+        for cluster in self.clusters.values() {
+            if let Some((_, &anchor)) = cluster.slots.iter().min_by_key(|(slot, _)| **slot)
+                && cluster.slots.len() > 1
+            {
+                let count = cluster.slots.len();
+                let memory = cluster.slots.values().map(|id| members[id].2).sum();
+                self.stars.push((anchor, count, cluster.extent));
+                self.mass.insert(anchor, (memory, count));
+            }
+        }
+        self.stars
+            .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        radii
+    }
+
     /// Warm CPU glow and green NVIDIA glow around a body, as in the orbit view.
     fn glows(&self, frame: &mut Frame, camera: &Camera, process: &Process, at: Point, radius: f32) {
         let core = (radius * camera.zoom).max(MIN_BODY_PX);
@@ -2023,29 +2157,14 @@ impl Scene {
         for (id, need) in pending {
             // Headroom absorbs memory drift so systems are only re-placed when their structure grows.
             let reserved = need * 1.08;
-            let center = self.vacant(reserved);
+            let placed: Vec<_> = self.systems.values().copied().collect();
+            let center = vacant(&placed, reserved);
             self.systems.insert(id, (center, reserved));
         }
         roots
             .iter()
             .map(|&root| self.systems[&processes[root].id].0)
             .collect()
-    }
-
-    fn vacant(&self, radius: f32) -> [f32; 2] {
-        let step = (radius * 0.4).max(1.0);
-        (0_u32..)
-            .map(|k| {
-                let distance = step * (k as f32).sqrt();
-                let angle = k as f32 * GOLDEN_ANGLE;
-                [distance * angle.cos(), distance * angle.sin()]
-            })
-            .find(|c| {
-                self.systems
-                    .values()
-                    .all(|(o, r)| (c[0] - o[0]).hypot(c[1] - o[1]) >= radius + r)
-            })
-            .expect("the spiral eventually clears every placed system")
     }
 
     /// Places a body and its descendants. `target` is the settled position used for layout,
@@ -2126,6 +2245,45 @@ impl Scene {
     }
 }
 
+/// The first point on a golden-angle spiral out from the origin where a disc of `radius` clears
+/// every placed (centre, radius) disc.
+fn vacant(placed: &[([f32; 2], f32)], radius: f32) -> [f32; 2] {
+    let step = (radius * 0.4).max(1.0);
+    (0_u32..)
+        .map(|k| {
+            let distance = step * (k as f32).sqrt();
+            let angle = k as f32 * GOLDEN_ANGLE;
+            [distance * angle.cos(), distance * angle.sin()]
+        })
+        .find(|c| {
+            placed
+                .iter()
+                .all(|(o, r)| (c[0] - o[0]).hypot(c[1] - o[1]) >= radius + r)
+        })
+        .expect("the spiral eventually clears every placed disc")
+}
+
+/// One cgroup's processes on the ripple pond: pebbles on a sunflower spiral around the centre,
+/// slot k at sqrt(k + 1/2) spacings out and k golden angles round.
+#[derive(Default)]
+struct Cluster {
+    center: [f32; 2],
+    spacing: f32,
+    /// Centre to the far edge of the outermost pebble.
+    extent: f32,
+    /// Radius of open water reserved around the centre; zero until placed.
+    reserved: f32,
+    slots: HashMap<usize, Identity>,
+}
+
+/// A stable angle per name, so clusters don't all share one spiral orientation.
+fn spin(name: &str) -> f32 {
+    let hash = name.bytes().fold(2_166_136_261_u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(16_777_619)
+    });
+    (hash >> 8) as f32 / 16_777_216.0 * TAU
+}
+
 /// A socket link as a two-lane river in the flow field.
 #[derive(Clone, Copy)]
 struct Lane {
@@ -2178,18 +2336,6 @@ fn territories(grid: &Grid, bodies: &[Body], located: &[[f32; 2]], radii: &[f32]
     owners
 }
 
-fn sub(a: Point, b: Point) -> Point {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: Point, b: Point) -> Point {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 fn dot(a: Point, b: Point) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
@@ -2203,6 +2349,13 @@ const MAX_DEPTH: usize = 3;
 const ORBIT_GAP: f32 = 0.6;
 const SYSTEM_GAP: f32 = 2.5;
 const GOLDEN_ANGLE: f32 = 2.399_963;
+/// Clearance between neighbouring ripple pebbles, and open water around each cluster.
+const PEBBLE_GAP: f32 = 1.0;
+const POND_GAP: f32 = 3.0;
+const RIPPLE_DEEP: [f32; 3] = [10.0, 30.0, 46.0];
+const RIPPLE_CREST: [f32; 3] = [14.0, 34.0, 40.0];
+const RIPPLE_MOON: [f32; 3] = [150.0, 190.0, 210.0];
+const RIPPLE_SHINE: f32 = 0.6;
 
 /// Body radius from memory in bytes: volume proportional to memory, so a 1 GiB process is about
 /// five times as wide as a 6 MiB one and idle kernel threads stay specks.
@@ -2616,6 +2769,74 @@ mod tests {
             particles.iter().any(|p| !p.bright),
             "background reveals the field"
         );
+    }
+
+    #[test]
+    fn pebbles_cluster_by_cgroup_without_touching_and_stay_put() {
+        let mut snapshot = demo(1.0, 64);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Ripple, 1.0);
+        assert_eq!(scene.clusters.len(), 4);
+        let flat = |scene: &Scene, id: &Identity| {
+            let p = scene.positions[id];
+            [p[0], p[1]]
+        };
+        for (i, a) in snapshot.processes.iter().enumerate() {
+            let at = flat(&scene, &a.id);
+            let home = scene.clusters[&a.group].center;
+            for (name, cluster) in &scene.clusters {
+                let d = |c: [f32; 2]| (at[0] - c[0]).hypot(at[1] - c[1]);
+                assert!(*name == a.group || d(home) < d(cluster.center));
+            }
+            for b in snapshot.processes[i + 1..]
+                .iter()
+                .filter(|b| b.group == a.group)
+            {
+                let gap = (at[0] - flat(&scene, &b.id)[0]).hypot(at[1] - flat(&scene, &b.id)[1]);
+                let touching = mass_radius(a.memory as f32) + mass_radius(b.memory as f32);
+                assert!(gap >= touching, "{} and {} overlap", a.name, b.name);
+            }
+        }
+        let before: HashMap<Identity, [f32; 2]> = snapshot
+            .processes
+            .iter()
+            .map(|p| (p.id, flat(&scene, &p.id)))
+            .collect();
+        snapshot.processes.remove(20);
+        snapshot.processes[30].memory += snapshot.processes[30].memory / 20;
+        snapshot.processes[31].cpu = 400.0;
+        render(&mut scene, &snapshot, View::Ripple, 1.1);
+        for p in &snapshot.processes {
+            assert_eq!(flat(&scene, &p.id), before[&p.id], "{} moved", p.name);
+        }
+    }
+
+    #[test]
+    fn ripple_water_stays_dim_however_hard_it_is_stirred() {
+        let mut snapshot = demo(2.0, 64);
+        snapshot.pressure = [90.0; 3];
+        for p in &mut snapshot.processes {
+            p.cpu = 400.0;
+        }
+        let mut scene = Scene::new();
+        let mut frame = render(&mut scene, &snapshot, View::Ripple, 0.0);
+        for k in 1..80 {
+            if k % 10 == 0 {
+                scene.splashes.push([0.0; 3]);
+            }
+            frame = render(&mut scene, &snapshot, View::Ripple, k as f32 * 0.05);
+        }
+        assert!(scene.wave.as_ref().unwrap().energy() > 1.0);
+        let brightest = frame
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Triangle(_, color, _) => color.iter().max().copied(),
+                _ => None,
+            })
+            .max()
+            .unwrap();
+        assert!(brightest < 190, "water reached {brightest}");
     }
 
     #[test]

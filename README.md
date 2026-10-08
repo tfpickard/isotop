@@ -97,13 +97,15 @@ Four levels are drawn per system; deeper processes are counted as collapsed.
 
 ### Ripple
 
-The machine as a body of water: a damped 2D wave equation (nine-point stencil,
-absorbing border) simulated on a grid under the layout and drawn as a lit
-low-poly surface.
+The machine as a pond: a damped 2D wave equation (nine-point stencil, absorbing
+border) simulated on a grid and drawn as a smoothly lit surface.
 
-- Busy processes drive ripples at their own pitch, louder with more CPU; where
-  neighbours are busy, their waves interfere.
-- Buoys float on the surface, sized by memory as in orbit.
+- Processes are pebbles, clustered by cgroup like handfuls thrown into the
+  water. A pebble keeps its place for life; a cluster moves only when it
+  outgrows the open water around it.
+- Busy pebbles drive ripples at their own pitch, louder with more CPU, so a
+  cluster's rings interfere and spread out to its neighbours.
+- Pebbles float on the surface, sized by memory.
 - Every patch of water belongs to its nearest process and is tinted by it;
   hovering the water names its owner.
 - New processes drip; exiting processes splash. Pressure raises a swell.

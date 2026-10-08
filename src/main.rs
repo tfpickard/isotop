@@ -523,7 +523,7 @@ impl App {
             || match self.view {
                 View::City => " Height = CPU | footprint = RSS | district = cgroup | amber lights = CPU | cyan pulses = IO".into(),
                 View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
-                View::Ripple => " Ripples = CPU, each process at its own pitch | buoy size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
+                View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
                 View::Flow => " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure".into(),
             }, |p| format!(" {}", p.command)));
         if let Some(search) = &self.search {

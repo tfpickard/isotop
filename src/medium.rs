@@ -9,6 +9,9 @@ const WAVE_SPEED: f32 = 14.0;
 const DAMPING: f32 = 0.35;
 const SPONGE: f32 = 6.0;
 const SPONGE_CELLS: f32 = 10.0;
+/// Pull back to the rest level per second squared. A uniform offset has no curvature, so without
+/// it the impulses of births and exits would leave the whole pond permanently raised or lowered.
+const RESTORE: f32 = 0.5;
 /// Trail points kept per particle.
 pub const TRAIL: usize = 20;
 
@@ -83,7 +86,7 @@ pub fn mix2(a: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
     [mix(a[0], b[0], t), mix(a[1], b[1], t)]
 }
 
-/// Damped wave equation h_tt = c^2 laplacian(h) - damping * h_t + forcing, integrated with
+/// Damped wave equation h_tt = c^2 laplacian(h) - damping * h_t - restore * h + forcing, integrated with
 /// semi-implicit Euler in substeps that respect the CFL limit. The border absorbs outgoing waves.
 pub struct Wave {
     pub grid: Grid,
@@ -148,7 +151,8 @@ impl Wave {
                     + h[i + w + 1]
                     - 20.0 * h[i])
                     / 6.0;
-                self.velocity[i] += (c2 * laplacian - self.damping[i] * self.velocity[i]) * dt;
+                self.velocity[i] +=
+                    (c2 * laplacian - self.damping[i] * self.velocity[i] - RESTORE * h[i]) * dt;
             }
         }
         for (height, velocity) in self.height.iter_mut().zip(&self.velocity) {
