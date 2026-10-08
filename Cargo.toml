@@ -1,0 +1,28 @@
+[package]
+name = "isotop"
+version = "0.1.0"
+edition = "2024"
+description = "A living process city and orbital observatory inside your terminal"
+license = "MPL-2.0"
+
+[dependencies]
+base64 = "0.22"
+bytemuck = { version = "1", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+flate2 = "1.1"
+libc = "0.2"
+maxminddb = "0.32"
+png = "0.18"
+pollster = "1"
+wgpu = "30"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
