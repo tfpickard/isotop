@@ -151,7 +151,8 @@ processes are labelled; `l` toggles labels. Hovering a body or building shows it
 name and a short description of what it is. After 20 seconds without input
 (`--tour`, `0` disables), a guided tour eases the camera between notable
 processes: system stars, the busiest, and the largest. Each gets a callout with
-a pointer. Any key or mouse movement ends the tour.
+a pointer. `g` starts the tour at any time, even with the idle tour disabled.
+Any key or mouse movement ends the tour.
 
 ## Controls
 
@@ -174,6 +175,7 @@ a pointer. Any key or mouse movement ends the tour.
 | Left click on empty space | Close the popup |
 | Left drag | Pan |
 | `l` | Toggle labels |
+| `g` | Start the guided tour now; `g` again (or any input) ends it |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
 | Tab while searching / `n` afterward | Next match |

@@ -442,34 +442,34 @@ impl App {
     }
 
     fn update_tour(&mut self, after: Option<Duration>) {
-        let Some(after) = after else {
-            return;
-        };
         let now = Instant::now();
         let due = match &self.tour {
-            None => now.duration_since(self.last_input) >= after,
+            None => after.is_some_and(|after| now.duration_since(self.last_input) >= after),
             Some(tour) => {
                 now.duration_since(tour.since) >= TOUR_STEP
                     || !self.scene.positions.contains_key(&tour.target)
             }
         };
         if due {
-            let targets = self.tour_targets();
-            let index = self.tour.as_ref().map_or(0, |tour| tour.index + 1);
-            self.tour = (!targets.is_empty()).then(|| Tour {
-                index,
-                target: targets[index % targets.len()],
-                since: now,
-            });
-            if self.tour.is_some() {
-                self.selected = None;
-                self.goal.zoom = self.fit_zoom * 2.2;
-            }
+            self.visit(self.tour.as_ref().map_or(0, |tour| tour.index + 1));
         }
         if let Some(tour) = &self.tour
             && let Some(p) = self.scene.positions.get(&tour.target)
         {
             self.goal.center = [p[0], p[1]];
+        }
+    }
+
+    fn visit(&mut self, index: usize) {
+        let targets = self.tour_targets();
+        self.tour = (!targets.is_empty()).then(|| Tour {
+            index,
+            target: targets[index % targets.len()],
+            since: Instant::now(),
+        });
+        if self.tour.is_some() {
+            self.selected = None;
+            self.goal.zoom = self.fit_zoom * 2.2;
         }
     }
 
@@ -532,9 +532,9 @@ impl App {
                 self.matches.len()
             ));
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab view | f focus | l labels | c links".into());
+            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab view | g tour | f focus | l labels | c links".into());
         } else {
-            lines.push(" Tab next view | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | ? help | q quit".into());
+            lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | ? help | q quit".into());
         }
         let [cpu, memory, io] = s.pressure;
         let links = match self.scene.links {
@@ -748,6 +748,8 @@ impl App {
     }
 
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
+        let touring = self.tour.is_some();
+        self.touch();
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             return true;
         }
@@ -796,6 +798,7 @@ impl App {
                 };
             }
             KeyCode::Char('l') => self.labels = !self.labels,
+            KeyCode::Char('g') if !touring => self.visit(0),
             KeyCode::Char('c') => self.scene.links.cycle(),
             KeyCode::Home => self.fit = true,
             KeyCode::Char('r') => {
@@ -1120,7 +1123,6 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    app.touch();
                     quit = app.key(key.code, key.modifiers, layout.width as f32 * 0.04);
                 }
                 Event::Resize(_, _) => {
@@ -1162,5 +1164,31 @@ fn main() {
     if let Err(error) = run(Options::parse()) {
         eprintln!("isotop: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tour_key_toggles_a_tour_that_runs_even_with_the_idle_tour_off() {
+        let mut app = App::new(View::Orbit, model::demo(1.0, 64));
+        app.render(320, 180, 512);
+        let press = |app: &mut App, c: char| app.key(KeyCode::Char(c), KeyModifiers::NONE, 10.0);
+        press(&mut app, 'g');
+        let target = app.tour.as_ref().expect("g starts the tour").target;
+        app.update_tour(None);
+        let at = app.scene.positions[&target];
+        assert_eq!(app.goal.center, [at[0], at[1]]);
+        let tour = app.tour.as_mut().unwrap();
+        tour.since = tour.since.checked_sub(TOUR_STEP).unwrap();
+        app.update_tour(None);
+        assert_eq!(app.tour.as_ref().unwrap().index, 1, "steps without --tour");
+        press(&mut app, 'g');
+        assert!(app.tour.is_none(), "g again ends it");
+        press(&mut app, 'g');
+        press(&mut app, '+');
+        assert!(app.tour.is_none(), "any other key ends it");
     }
 }

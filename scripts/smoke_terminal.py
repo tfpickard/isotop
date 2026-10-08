@@ -29,6 +29,7 @@ def exercise(binary, demo, shared_memory):
     decoded = []
     headers = set()
     commands_sent = False
+    tour_sent = False
     started = time.monotonic()
     try:
         while time.monotonic() - started < 8:
@@ -40,7 +41,7 @@ def exercise(binary, demo, shared_memory):
                         break
                     raise
                 buffer += data
-                for header in [b"/ CITY /", b"/ ORBIT /", b"/ PAUSED"]:
+                for header in [b"/ CITY /", b"/ ORBIT /", b"/ PAUSED", b"/ TOUR"]:
                     if header in data:
                         headers.add(header)
                 while b"\x1b_G" in buffer:
@@ -85,6 +86,9 @@ def exercise(binary, demo, shared_memory):
             if frame_count >= 2 and not commands_sent:
                 os.write(master, b"\t/worker\r+ef \x1b")
                 commands_sent = True
+            if frame_count >= 5 and commands_sent and not tour_sent:
+                os.write(master, b" g")
+                tour_sent = True
             if frame_count >= 8:
                 os.write(master, b"q")
                 break
@@ -95,11 +99,12 @@ def exercise(binary, demo, shared_memory):
         assert len(set(decoded)) >= 2, "frames never changed"
         assert b"/ CITY /" in headers and b"/ ORBIT /" in headers, headers
         assert b"/ PAUSED" in headers, "pause did not take effect"
+        assert b"/ TOUR" in headers, "g did not start the tour"
         assert not (termios.tcgetattr(slave)[3] & termios.ICANON) == 0, "raw mode was not restored"
         leftovers = [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{child.pid}-")]
         assert not leftovers, f"shared memory left behind: {leftovers}"
         transport = "shared memory" if shared_memory else "inline zlib"
-        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, search, focus, pause, quit, terminal restoration passed")
+        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, search, focus, pause, tour, quit, terminal restoration passed")
     finally:
         if child.poll() is None:
             child.kill()
