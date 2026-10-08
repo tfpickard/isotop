@@ -1,8 +1,10 @@
+mod geo;
 mod gpu;
 mod medium;
 mod model;
 mod net;
 mod nvml;
+mod places;
 mod render;
 mod terminal;
 
@@ -97,6 +99,31 @@ struct Options {
     /// Exit after this many seconds and report end-to-end presentation throughput
     #[arg(long)]
     duration: Option<f64>,
+    /// City-level GeoIP database (MaxMind format, such as DB-IP Lite or GeoLite2 City) for the
+    /// globe; found in ~/.local/share/isotop and /usr/share/GeoIP when not given
+    #[arg(long)]
+    geoip: Option<PathBuf>,
+    /// This machine's location as LAT,LON for the globe; defaults to the system time zone's city
+    #[arg(long, value_parser = parse_home, allow_hyphen_values = true)]
+    home: Option<(f32, f32)>,
+}
+
+fn parse_home(text: &str) -> Result<(f32, f32), String> {
+    let (latitude, longitude) = text
+        .split_once(',')
+        .ok_or("expected LAT,LON, for example 40.7,-74.0")?;
+    let latitude: f32 = latitude
+        .trim()
+        .parse()
+        .map_err(|_| "latitude is not a number")?;
+    let longitude: f32 = longitude
+        .trim()
+        .parse()
+        .map_err(|_| "longitude is not a number")?;
+    if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
+        return Err("latitude must be within ±90 and longitude within ±180".into());
+    }
+    Ok((latitude, longitude))
 }
 
 #[derive(Clone, Copy)]
@@ -995,7 +1022,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     if options.duration.is_some_and(|v| !v.is_finite() || v <= 0.0) {
         return Err("--duration must be finite and positive".into());
     }
-    let mut collector = Collector::new();
+    let mut collector = Collector::new(options.geoip.clone(), options.home);
     let mut snapshot = if options.demo {
         model::demo(
             if options.output.is_some() || options.benchmark.is_some() {

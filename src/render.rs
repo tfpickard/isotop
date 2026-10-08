@@ -2564,6 +2564,9 @@ mod tests {
             io_rate: None,
             threads: 1,
             gpu_memory: 0,
+            core: 0,
+            cpu_time: 0.0,
+            cgroup: "/system.slice/g.service".into(),
         }
     }
 
