@@ -490,7 +490,7 @@ impl Gpu {
             size: [width as f32, height as f32],
             depth: [depth[0], 1.0 / (depth[1] - depth[0]).max(1e-3)],
             haze: [sky.haze[0], sky.haze[1], sky.haze[2], sky.time],
-            sky: [if sky.orbit { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            sky: [sky.backdrop as u32 as f32, 0.0, 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));

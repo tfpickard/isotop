@@ -7,7 +7,7 @@ struct Globals {
     depth: vec2<f32>,
     // Pressure haze in 0-255 units, and animation time in w.
     haze: vec4<f32>,
-    // x: 1 for the orbit sky, 0 for the city gradient.
+    // x: the backdrop, 0 dusk gradient, 1 flat space, 2 sea gradient.
     sky: vec4<f32>,
 };
 
@@ -46,6 +46,8 @@ fn sky_fragment(@builtin(position) position: vec4<f32>) -> Targets {
     var base = vec3<f32>(5.0, 8.0, 18.0);
     if globals.sky.x < 0.5 {
         base = vec3<f32>(8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0);
+    } else if globals.sky.x > 1.5 {
+        base = vec3<f32>(24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0);
     }
     let density = profile(x, 0.0) * profile(y, 1.9);
     let color = min(base + globals.haze.xyz * density, vec3<f32>(255.0));

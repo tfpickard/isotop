@@ -1,11 +1,17 @@
+mod cells;
+mod cores;
 mod geo;
+mod globe;
 mod gpu;
 mod medium;
 mod model;
 mod net;
 mod nvml;
+mod pack;
 mod places;
+mod reef;
 mod render;
+mod strata;
 mod terminal;
 
 use std::cmp::Reverse;
@@ -254,6 +260,8 @@ struct App {
     matches: Vec<Identity>,
     match_index: usize,
     fit: bool,
+    /// The camera still frames the whole view, so views that grow are refitted as they do.
+    framed: bool,
     snap: bool,
     fit_zoom: f32,
     show_help: bool,
@@ -286,6 +294,7 @@ impl App {
             matches: Vec::new(),
             match_index: 0,
             fit: true,
+            framed: true,
             snap: true,
             fit_zoom: 5.0,
             show_help: false,
@@ -507,6 +516,11 @@ impl App {
             View::Orbit => "ORBIT",
             View::Ripple => "RIPPLE",
             View::Flow => "FLOW",
+            View::Cores => "CORES",
+            View::Cells => "CELLS",
+            View::Strata => "STRATA",
+            View::Globe => "GLOBE",
+            View::Reef => "REEF",
         };
         let mode = match (self.paused, &self.tour) {
             (true, _) => "PAUSED",
@@ -552,6 +566,11 @@ impl App {
                 View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
                 View::Flow => " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure".into(),
+                View::Cores => " Lane = CPU (gold performance, teal efficiency) | brightness = busy | chevrons = clock | red queue = waiting tasks | marble = running process, one lap per 10 s of CPU, hops = migrations".into(),
+                View::Cells => " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into(),
+                View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
+                View::Globe => format!(" Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}", s.geo),
+                View::Reef => " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into(),
             }, |p| format!(" {}", p.command)));
         if let Some(search) = &self.search {
             lines.push(format!(
@@ -559,7 +578,7 @@ impl App {
                 self.matches.len()
             ));
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab view | g tour | f focus | l labels | c links".into());
+            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab or 1-9 view | g tour | f focus | l labels | c links".into());
         } else {
             lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | ? help | q quit".into());
         }
@@ -631,6 +650,7 @@ impl App {
                         "sockets: {local} to local processes, {outside} leaving the machine"
                     ));
                 }
+                lines.extend(self.scene.notes.get(&id).into_iter().flatten().cloned());
                 lines.extend([
                     p.group.clone(),
                     p.command.clone(),
@@ -718,6 +738,21 @@ impl App {
         if !self.labels {
             return (labels, panels);
         }
+        for (point, text) in &self.scene.places {
+            if let Some(at) = frame.locate(&self.camera, *point) {
+                let width = text.chars().count() as u16;
+                let (column, row) = layout.cell_of(at);
+                let column = column.saturating_sub(width / 2);
+                if row < layout.rows && board.claim(column, row, width, 1) {
+                    labels.push(Label {
+                        column,
+                        row,
+                        text: text.clone(),
+                        tone: Tone::Quiet,
+                    });
+                }
+            }
+        }
         for &(id, members, reach) in &self.scene.stars {
             if let Some(p) = lookup.get(&id)
                 && let Some(at) = self.screen(frame, id)
@@ -775,6 +810,22 @@ impl App {
     }
 
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
+        let before = self.goal.clone();
+        let quit = self.command(code, modifiers, step);
+        self.follow(&before);
+        quit
+    }
+
+    /// Moving the camera by hand stops it following the view; fitting it again resumes.
+    fn follow(&mut self, before: &Camera) {
+        if self.fit {
+            self.framed = true;
+        } else if self.goal != *before {
+            self.framed = false;
+        }
+    }
+
+    fn command(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
         let touring = self.tour.is_some();
         self.touch();
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
@@ -825,6 +876,10 @@ impl App {
                 };
             }
             KeyCode::Char('l') => self.labels = !self.labels,
+            KeyCode::Char(digit @ '1'..='9') => {
+                self.view = View::ALL[digit as usize - '1' as usize];
+                self.fit = true;
+            }
             KeyCode::Char('g') if !touring => self.visit(0),
             KeyCode::Char('c') => self.scene.links.cycle(),
             KeyCode::Home => self.fit = true,
@@ -875,6 +930,19 @@ impl App {
     }
 
     fn mouse(
+        &mut self,
+        mouse: MouseEvent,
+        layout: &Layout,
+        frame: &Frame,
+        panels: &[Popup],
+        pixels: bool,
+    ) {
+        let before = self.goal.clone();
+        self.pointer_event(mouse, layout, frame, panels, pixels);
+        self.follow(&before);
+    }
+
+    fn pointer_event(
         &mut self,
         mouse: MouseEvent,
         layout: &Layout,
@@ -1044,8 +1112,23 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let limit = options.limit as usize;
     if options.output.is_some() || options.benchmark.is_some() {
         let height = options.width * 9 / 16;
-        // Simulated media (ripple, flow) start empty: let them develop before the captured frame.
-        if matches!(options.view, View::Ripple | View::Flow) && options.output.is_some() {
+        // Simulated media (ripple, flow, the reef's fish) start empty: let them develop before
+        // the captured frame. Strata needs a history, which the demo workload can replay.
+        if options.view == View::Strata && options.demo && options.output.is_some() {
+            for back in (1..=60).rev() {
+                let at = options.time - back as f64;
+                app.history = VecDeque::from([model::demo(at, options.processes as usize)]);
+                app.animation = at as f32;
+                let warmup = app.render(options.width, height, limit);
+                app.scene.spare = warmup.release();
+            }
+            app.history = VecDeque::from([model::demo(options.time, options.processes as usize)]);
+        }
+        if matches!(
+            options.view,
+            View::Ripple | View::Flow | View::Reef | View::Cores
+        ) && options.output.is_some()
+        {
             for step in 0..80 {
                 app.animation = options.time as f32 - 4.0 + step as f32 * 0.05;
                 let warmup = app.render(options.width, height, limit);
@@ -1115,6 +1198,9 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                     app.history.pop_front();
                 }
                 last_sample = Instant::now();
+                if app.framed && app.tour.is_none() && app.scene.bounded() {
+                    app.fit = true;
+                }
             }
         }
         let goal = app.goal.clone();
@@ -1217,5 +1303,19 @@ mod tests {
         press(&mut app, 'g');
         press(&mut app, '+');
         assert!(app.tour.is_none(), "any other key ends it");
+    }
+
+    #[test]
+    fn camera_follows_growing_views_until_moved_by_hand() {
+        let mut app = App::new(View::Cells, model::demo(1.0, 64));
+        app.render(320, 180, 512);
+        assert!(app.framed && app.scene.bounded());
+        app.key(KeyCode::Left, KeyModifiers::NONE, 10.0);
+        assert!(!app.framed, "panning takes over the camera");
+        app.key(KeyCode::Char('8'), KeyModifiers::NONE, 10.0);
+        assert!(
+            app.framed && app.view == View::Globe,
+            "switching view frames it again"
+        );
     }
 }
