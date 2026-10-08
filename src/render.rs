@@ -3,7 +3,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::{cells, cores, globe, reef, strata};
+use crate::{cells, cores, globe, glyphs, matrix, reef, strata};
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
@@ -46,11 +46,12 @@ pub enum View {
     Strata,
     Globe,
     Reef,
+    Matrix,
 }
 
 impl View {
-    /// Every view in Tab order; number keys 1 to 9 pick from this list.
-    pub const ALL: [View; 9] = [
+    /// Every view in Tab order; number keys 1 to 9, then 0, pick from this list.
+    pub const ALL: [View; 10] = [
         Self::City,
         Self::Orbit,
         Self::Ripple,
@@ -60,6 +61,7 @@ impl View {
         Self::Strata,
         Self::Globe,
         Self::Reef,
+        Self::Matrix,
     ];
 
     pub fn next(&mut self) {
@@ -67,10 +69,16 @@ impl View {
         *self = Self::ALL[(index + 1) % Self::ALL.len()];
     }
 
+    pub fn previous(&mut self) {
+        let index = Self::ALL.iter().position(|v| v == self).unwrap_or(0);
+        *self = Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()];
+    }
+
     fn backdrop(self) -> Backdrop {
         match self {
             Self::City | Self::Cells | Self::Strata => Backdrop::Dusk,
             Self::Reef => Backdrop::Sea,
+            Self::Matrix => Backdrop::Void,
             Self::Orbit | Self::Ripple | Self::Flow | Self::Cores | Self::Globe => Backdrop::Space,
         }
     }
@@ -82,6 +90,7 @@ pub enum Backdrop {
     Dusk = 0,
     Space = 1,
     Sea = 2,
+    Void = 3,
 }
 
 /// Which socket links to draw.
@@ -208,6 +217,7 @@ impl Sky {
             Backdrop::Space => [5.0, 8.0, 18.0],
             Backdrop::Dusk => [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0],
             Backdrop::Sea => [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0],
+            Backdrop::Void => [0.0; 3],
         }
     }
 
@@ -250,6 +260,14 @@ pub enum Item {
     Beam([f32; 2], [f32; 2], Color, f32),
     /// Background point behind everything.
     Star([f32; 2], Color),
+    /// Bitmap text glyph (see `glyphs`) at an integer pixel origin, each font pixel drawn as a
+    /// `scale`-sized square over whatever is already drawn, without depth or picking.
+    Glyph {
+        origin: [f32; 2],
+        scale: u32,
+        bits: u128,
+        color: Color,
+    },
 }
 
 /// A finished frame's allocations, handed to the next frame so steady-state rendering does not
@@ -348,9 +366,38 @@ impl Frame {
                 Item::Star([x, y], color) => {
                     self.pixel(x as i32, y as i32, BACKGROUND, color, NONE)
                 }
+                Item::Glyph {
+                    origin,
+                    scale,
+                    bits,
+                    color,
+                } => self.glyph(origin, scale, bits, color),
             }
         }
         self.items = items;
+    }
+
+    fn glyph(&mut self, origin: [f32; 2], scale: u32, bits: u128, color: Color) {
+        for row in 0..glyphs::HEIGHT {
+            for column in 0..glyphs::WIDTH {
+                if bits >> (row * glyphs::WIDTH + column) & 1 == 0 {
+                    continue;
+                }
+                for dy in 0..scale {
+                    let y = origin[1] as i64 + (row * scale + dy) as i64;
+                    if !(0..self.height as i64).contains(&y) {
+                        continue;
+                    }
+                    for dx in 0..scale {
+                        let x = origin[0] as i64 + (column * scale + dx) as i64;
+                        if (0..self.width as i64).contains(&x) {
+                            let i = (y as usize * self.width as usize + x as usize) * 3;
+                            self.pixels[i..i + 3].copy_from_slice(&color);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn paint_sky(&mut self) {
@@ -860,6 +907,7 @@ pub struct Scene {
     strata: strata::Strata,
     globe: globe::Globe,
     reef: reef::Reef,
+    pub matrix: matrix::Rain,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
     pub visible: usize,
@@ -906,6 +954,7 @@ impl Scene {
             strata: strata::Strata::default(),
             globe: globe::Globe::default(),
             reef: reef::Reef::default(),
+            matrix: matrix::Rain::default(),
             spare: Buffers::default(),
             visible: 0,
             collapsed: 0,
@@ -1084,7 +1133,11 @@ impl Scene {
             processes.truncate(limit);
         }
         let [cpu, memory, io] = snapshot.pressure;
-        let (c, m, i) = (bounded(cpu, 20.0), bounded(memory, 10.0), bounded(io, 20.0));
+        let (c, m, i) = if view == View::Matrix {
+            (0.0, 0.0, 0.0)
+        } else {
+            (bounded(cpu, 20.0), bounded(memory, 10.0), bounded(io, 20.0))
+        };
         let sky = Sky {
             backdrop: view.backdrop(),
             haze: [
@@ -1121,6 +1174,11 @@ impl Scene {
                 self.draw_flow(
                     &mut frame, &processes, camera, selected, time, snapshot, stir,
                 )
+            }
+            View::Matrix => {
+                self.positions.clear();
+                self.matrix.draw(&mut frame, time);
+                self.visible = 0;
             }
             View::Cores | View::Cells | View::Strata | View::Globe | View::Reef => {
                 self.positions.clear();
@@ -3128,7 +3186,8 @@ mod tests {
     #[test]
     fn every_view_renders_the_demo_and_an_empty_machine() {
         let snapshot = demo(30.0, 128);
-        for view in View::ALL {
+        // The matrix draws the journal, not processes; its own tests cover it.
+        for view in View::ALL.into_iter().filter(|&view| view != View::Matrix) {
             let mut scene = Scene::new();
             for k in 0..4 {
                 render(&mut scene, &snapshot, view, 30.0 + k as f32 * 0.1);

@@ -2,7 +2,10 @@ mod cells;
 mod cores;
 mod geo;
 mod globe;
+mod glyphs;
 mod gpu;
+mod journal;
+mod matrix;
 mod medium;
 mod model;
 mod net;
@@ -27,6 +30,7 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use journal::Journal;
 use model::{Collector, Identity, Process, Snapshot, bytes, describe};
 use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View};
 use terminal::{Label, Popup, Terminal, Tone};
@@ -521,6 +525,7 @@ impl App {
             View::Strata => "STRATA",
             View::Globe => "GLOBE",
             View::Reef => "REEF",
+            View::Matrix => "MATRIX",
         };
         let mode = match (self.paused, &self.tour) {
             (true, _) => "PAUSED",
@@ -556,6 +561,14 @@ impl App {
             } else {
                 format!(" pid {} exited / unavailable in this snapshot", id.pid)
             }
+        } else if self.view == View::Matrix {
+            format!(
+                " > {}",
+                self.scene
+                    .matrix
+                    .latest()
+                    .unwrap_or("waiting for the journal...")
+            )
         } else {
             " Click or hover a building/body to inspect; / searches name, command or PID".into()
         };
@@ -571,6 +584,14 @@ impl App {
                 View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
                 View::Globe => format!(" Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}", s.geo),
                 View::Reef => " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into(),
+                View::Matrix => format!(
+                    " Journal lines decode as the rain passes | red = error, amber = warning, green = info, teal = debug | {} queued{}",
+                    self.scene.matrix.pending(),
+                    match self.scene.matrix.skipped {
+                        0 => String::new(),
+                        skipped => format!(", {skipped} skipped"),
+                    }
+                ),
             }, |p| format!(" {}", p.command)));
         if let Some(search) = &self.search {
             lines.push(format!(
@@ -578,7 +599,7 @@ impl App {
                 self.matches.len()
             ));
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab or 1-9 view | g tour | f focus | l labels | c links".into());
+            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | g tour | f focus | l labels | c links".into());
         } else {
             lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | ? help | q quit".into());
         }
@@ -858,6 +879,10 @@ impl App {
                 self.view.next();
                 self.fit = true;
             }
+            KeyCode::BackTab => {
+                self.view.previous();
+                self.fit = true;
+            }
             KeyCode::Left | KeyCode::Char('a') => self.goal.pan(-step, 0.0),
             KeyCode::Right | KeyCode::Char('d') => self.goal.pan(step, 0.0),
             KeyCode::Up | KeyCode::Char('w') => self.goal.pan(0.0, -step),
@@ -876,8 +901,8 @@ impl App {
                 };
             }
             KeyCode::Char('l') => self.labels = !self.labels,
-            KeyCode::Char(digit @ '1'..='9') => {
-                self.view = View::ALL[digit as usize - '1' as usize];
+            KeyCode::Char(digit @ '0'..='9') => {
+                self.view = View::ALL[(digit as usize + 10 - '1' as usize) % 10];
                 self.fit = true;
             }
             KeyCode::Char('g') if !touring => self.visit(0),
@@ -1092,6 +1117,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     }
     let mut collector = Collector::new(options.geoip.clone(), options.home);
     collector.locate(options.view == View::Globe);
+    let mut journal = (options.view == View::Matrix && !options.demo).then(Journal::start);
     let mut snapshot = if options.demo {
         model::demo(
             if options.output.is_some() || options.benchmark.is_some() {
@@ -1132,6 +1158,18 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         {
             for step in 0..80 {
                 app.animation = options.time as f32 - 4.0 + step as f32 * 0.05;
+                let warmup = app.render(options.width, height, limit);
+                app.scene.spare = warmup.release();
+            }
+        }
+        // The rain needs several seconds to fill the screen.
+        if options.view == View::Matrix {
+            let mut fed = options.time - 8.0;
+            for step in 0..=160 {
+                let at = options.time - 8.0 + step as f64 * 0.05;
+                feed(&mut app, journal.as_ref(), options.demo, fed, at);
+                fed = at;
+                app.animation = at as f32;
                 let warmup = app.render(options.width, height, limit);
                 app.scene.spare = warmup.release();
             }
@@ -1182,6 +1220,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut quit = false;
     let mut frames = 0_u64;
     let mut total_wire = 0_u64;
+    let mut fed = 0.0;
     while !quit {
         let frame_start = Instant::now();
         let elapsed = last_frame.elapsed().as_secs_f32();
@@ -1207,6 +1246,15 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
         }
         let goal = app.goal.clone();
+        if app.view == View::Matrix {
+            if !options.demo && journal.is_none() {
+                journal = Some(Journal::start());
+            }
+            let now = origin.elapsed().as_secs_f64();
+            fed = f64::max(fed, now - 2.0);
+            feed(&mut app, journal.as_ref(), options.demo, fed, now);
+            fed = now;
+        }
         app.camera.approach(&goal, 1.0 - (-elapsed / 0.2).exp());
         app.update_tour(tour_after);
         let mut frame = app.render(layout.width, layout.height, limit);
@@ -1276,6 +1324,19 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Hands the matrix view its journal lines: synthetic ones arriving in `(from, to]` demo seconds,
+/// or whatever `journalctl` has written since the last call.
+fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64) {
+    let lines = match (demo, source) {
+        (true, _) => journal::demo(from, to),
+        (false, Some(source)) => source.drain(),
+        (false, None) => Vec::new(),
+    };
+    for line in lines {
+        app.scene.matrix.push(line);
+    }
+}
+
 fn main() {
     if let Err(error) = run(Options::parse()) {
         eprintln!("isotop: {error}");
@@ -1306,6 +1367,15 @@ mod tests {
         press(&mut app, 'g');
         press(&mut app, '+');
         assert!(app.tour.is_none(), "any other key ends it");
+    }
+
+    #[test]
+    fn shift_tab_steps_back_through_the_views_and_wraps() {
+        let mut app = App::new(View::City, model::demo(1.0, 16));
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT, 10.0);
+        assert_eq!(app.view, View::Matrix);
+        app.key(KeyCode::Tab, KeyModifiers::NONE, 10.0);
+        assert_eq!(app.view, View::City);
     }
 
     #[test]

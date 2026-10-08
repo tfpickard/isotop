@@ -1,9 +1,10 @@
 # isotop
 
-A living picture of your machine inside the terminal, in nine views: a process
+A living picture of your machine inside the terminal, in ten views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, and a coral reef. Linux-first, written
+history, a globe of network connections, a coral reef, and the systemd journal
+as Matrix rain. Linux-first, written
 in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
@@ -24,7 +25,7 @@ workload, so they show no real machine.
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix
 ```
 
 Run directly in a graphics-capable terminal such as Ghostty or Kitty; tmux does
@@ -65,7 +66,8 @@ process collector.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the nine views in order and the number keys 1 to 9 jump straight to one. Orbit
+the ten views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. Orbit
 and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
@@ -225,6 +227,25 @@ session's apps swim in schools whose speed follows their CPU; containers are
 crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
 memory everywhere, I/O rises as bubbles, and zombies float belly-up.
 
+### Matrix
+
+![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
+
+The systemd journal decoded out of digital rain. `journalctl -f` runs on a
+background thread from the moment the view is first shown, starting with the
+last 200 entries. The screen is a log of `source[pid]: message` lines written
+horizontally, newest at the bottom, coloured by severity: red for errors and
+worse, amber for warnings, green for notices and information, teal for debug.
+Each character resolves only when a falling stream of rain passes over it,
+flashing white before it settles; every new line brings a shower down onto its
+own characters, and anything the rain misses appears after three seconds.
+Between the lines falls cmatrix-style rain of flickering green glyphs. Lines
+are written one at a time, faster when they queue up; a flood that outruns the
+log is trimmed, and the status strip counts what was skipped. The camera and
+process controls do nothing here. Glyphs are the public-domain X11 misc-fixed
+7x14 font, and `--demo` writes synthetic entries. Without the `adm` or
+`systemd-journal` group, journalctl shows only your own user's journal.
+
 ### Links and weather
 
 Socket links come from the kernel: loopback TCP pairs from `/proc/net/tcp{,6}`
@@ -261,8 +282,9 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef |
-| `1`-`9` | Jump to a view in that order |
+| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix |
+| Shift + Tab | Previous view |
+| `1`-`9`, `0` | Jump to a view in that order |
 | Two-finger scroll / wheel | Pan (vertical and horizontal) |
 | Ctrl + scroll | Zoom towards the pointer |
 | Alt + scroll | Rotate |
