@@ -3094,6 +3094,44 @@ mod tests {
     }
 
     #[test]
+    fn dishes_and_globe_talkers_keep_their_places() {
+        let mut snapshot = demo(10.0, 128);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Cells, 10.0);
+        let containers: Vec<(Identity, Point)> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.kind == Kind::Container)
+            .map(|p| (p.id, scene.positions[&p.id]))
+            .collect();
+        let session = snapshot
+            .processes
+            .iter()
+            .find(|p| p.kind == Kind::Session)
+            .unwrap()
+            .cgroup
+            .clone();
+        snapshot.units.get_mut(&session).unwrap().memory *= 400;
+        render(&mut scene, &snapshot, View::Cells, 10.1);
+        render(&mut scene, &snapshot, View::Cells, 10.2);
+        for (id, at) in &containers {
+            assert_eq!(scene.positions[id], *at, "the container dish moved");
+        }
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, View::Globe, 0.0);
+        let mut talkers: Vec<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
+        talkers.sort();
+        let before: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
+        snapshot.remotes.retain(|r| r.id != talkers[0]);
+        render(&mut scene, &snapshot, View::Globe, 0.0);
+        let after: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
+        assert_eq!(
+            before, after,
+            "a process closing its connections reshuffled the others"
+        );
+    }
+
+    #[test]
     fn globe_shows_only_processes_with_remote_connections() {
         let snapshot = demo(10.0, 128);
         let mut scene = Scene::new();
