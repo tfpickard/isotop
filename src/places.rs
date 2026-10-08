@@ -47,7 +47,7 @@ pub const COUNTRIES: &[(&str, f32, f32, &str)] = &[
     ("CL", -38.15, -72.32, "Chile"),
     ("CM", 4.59, 12.47, "Cameroon"),
     ("CN", 32.50, 106.34, "China"),
-    ("CN-TW", 23.65, 120.87, "Taiwan"),
+    ("TW", 23.65, 120.87, "Taiwan"),
     ("CO", 3.37, -73.17, "Colombia"),
     ("CR", 10.07, -84.08, "Costa Rica"),
     ("CU", 21.33, -77.98, "Cuba"),
@@ -239,6 +239,21 @@ pub const COUNTRIES: &[(&str, f32, f32, &str)] = &[
     ("ZA", -29.71, 23.67, "South Africa"),
     ("ZM", -14.66, 26.40, "Zambia"),
     ("ZW", -18.91, 29.93, "Zimbabwe"),
+    // Territories Natural Earth folds into their parent country, which the legacy database
+    // still reports on their own: approximate centres.
+    ("BQ", 12.18, -68.24, "Caribbean Netherlands"),
+    ("BV", -54.42, 3.36, "Bouvet Island"),
+    ("CC", -12.17, 96.87, "Cocos Is."),
+    ("CX", -10.49, 105.62, "Christmas I."),
+    ("GF", 3.93, -53.13, "French Guiana"),
+    ("GI", 36.14, -5.35, "Gibraltar"),
+    ("GP", 16.25, -61.58, "Guadeloupe"),
+    ("MQ", 14.64, -61.02, "Martinique"),
+    ("RE", -21.12, 55.54, "Reunion"),
+    ("SJ", 78.22, 15.65, "Svalbard and Jan Mayen"),
+    ("TK", -9.2, -171.85, "Tokelau"),
+    ("UM", 19.28, 166.65, "U.S. Minor Outlying Is."),
+    ("YT", -12.83, 45.17, "Mayotte"),
 ];
 
 /// Country codes by legacy GeoIP country index (as exported by libGeoIP).

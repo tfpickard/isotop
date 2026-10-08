@@ -248,6 +248,13 @@ mod tests {
         assert!(!public("fd00::1".parse().unwrap()));
         assert!(public("8.8.8.8".parse().unwrap()));
         assert_eq!(country("JP").unwrap().name, "Japan");
+        const PSEUDO: [&str; 6] = ["--", "AP", "EU", "A1", "A2", "O1"];
+        for code in LEGACY_CODES.iter().filter(|c| !PSEUDO.contains(c)) {
+            assert!(
+                country(code).is_some(),
+                "legacy code {code} has no label point"
+            );
+        }
     }
 
     #[test]
