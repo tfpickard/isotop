@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -155,8 +156,10 @@ pub struct Collector {
     hz: f32,
     page_size: u64,
     extras: Option<Arc<Mutex<Extras>>>,
-    /// Cgroup paths the background thread should account.
+    /// Cgroup paths the background thread should account, and whether to locate remote
+    /// addresses (only the globe shows them, and the first lookup loads the GeoIP database).
     wanted: Arc<Mutex<HashSet<String>>>,
+    locating: Arc<AtomicBool>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
@@ -167,6 +170,7 @@ pub struct Collector {
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
+    locating: Arc<AtomicBool>,
 ) -> Option<Arc<Mutex<Extras>>> {
     let shared = Arc::new(Mutex::new(Extras::default()));
     let writer = Arc::clone(&shared);
@@ -180,7 +184,8 @@ fn background(
             while Arc::strong_count(&writer) > 1 {
                 let paths = wanted.lock().map(|set| set.clone()).unwrap_or_default();
                 let network = net::sample();
-                let remotes = remotes(&network.remotes, &mut sockets, &mut geo);
+                let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
+                let remotes = remotes(&network.remotes, &mut sockets, locator);
                 let extras = Extras {
                     network,
                     gpu: nvml.as_ref().map(nvml::Nvml::sample).unwrap_or_default(),
@@ -203,7 +208,7 @@ fn background(
 fn remotes(
     sockets: &[net::Remote],
     previous: &mut HashMap<u64, (Instant, u64, u64)>,
-    geo: &mut geo::Geo,
+    mut geo: Option<&mut geo::Geo>,
 ) -> Vec<Remote> {
     let now = Instant::now();
     let mut next = HashMap::new();
@@ -231,7 +236,7 @@ fn remotes(
                 rtt: socket.rtt as f32 / 1000.0,
                 up,
                 down,
-                place: geo.locate(socket.address),
+                place: geo.as_mut().and_then(|geo| geo.locate(socket.address)),
             }
         })
         .collect();
@@ -424,15 +429,25 @@ impl Collector {
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
             extras: None,
             wanted: Arc::new(Mutex::new(HashSet::new())),
+            locating: Arc::new(AtomicBool::new(false)),
             geoip,
             home: geo::home(home),
             started: false,
         }
     }
 
+    /// Turns locating remote addresses on or off for the following samples.
+    pub fn locate(&self, on: bool) {
+        self.locating.store(on, Ordering::Relaxed);
+    }
+
     pub fn sample(&mut self) -> std::io::Result<Snapshot> {
         if !std::mem::replace(&mut self.started, true) {
-            self.extras = background(self.geoip.clone(), Arc::clone(&self.wanted));
+            self.extras = background(
+                self.geoip.clone(),
+                Arc::clone(&self.wanted),
+                Arc::clone(&self.locating),
+            );
         }
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().max(0.001);
