@@ -93,7 +93,7 @@ impl Terminal {
     }
 
     fn transmit_shared(&mut self, frame: &Frame) -> io::Result<String> {
-        let name = format!("/isotop-{}-{}", std::process::id(), self.serial);
+        let name = frame_name(std::process::id(), self.serial);
         self.serial += 1;
         write_shared(&name, &frame.pixels)?;
         self.pending.push_back(name.clone());
@@ -232,6 +232,17 @@ impl Drop for Terminal {
     }
 }
 
+/// macOS limits a shared-memory name, leading slash included, to `PSHMNAMLEN` bytes; longer
+/// names fail in `shm_open` with ENAMETOOLONG.
+const SHARED_NAME_LIMIT: usize = 31;
+
+/// Name of the shared-memory object for one frame. The serial wraps at twelve digits so the
+/// name stays within `SHARED_NAME_LIMIT` for any pid (`/isotop-` + 10 + `-` + 12 = 31 bytes);
+/// only a handful of frames are alive at once, so a wrapped serial never collides.
+fn frame_name(pid: u32, serial: u64) -> String {
+    format!("/isotop-{pid}-{}", serial % 1_000_000_000_000)
+}
+
 /// Writes pixels into a new POSIX shared-memory object of exactly their size.
 fn write_shared(name: &str, data: &[u8]) -> io::Result<()> {
     let path = CString::new(name).map_err(io::Error::other)?;
@@ -266,13 +277,14 @@ fn fill_shared(file: &mut std::fs::File, data: &[u8]) -> io::Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn fill_shared(file: &mut std::fs::File, data: &[u8]) -> io::Result<()> {
     file.set_len(data.len() as u64)?;
-    // SAFETY: the object is data.len() bytes long and mapped shared for writing; the mapping is
-    // released before returning and never escapes this block.
+    // SAFETY: the object was sized to data.len() bytes just above and is mapped shared for
+    // reading and writing (some systems refuse a write-only mapping); the mapping is released
+    // before returning and never escapes this block.
     unsafe {
         let address = libc::mmap(
             std::ptr::null_mut(),
             data.len(),
-            libc::PROT_WRITE,
+            libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_SHARED,
             std::os::fd::AsRawFd::as_raw_fd(file),
             0,
@@ -286,10 +298,11 @@ fn fill_shared(file: &mut std::fs::File, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Removes a shared-memory object; one the terminal already consumed is simply gone.
+/// Removes a shared-memory object. The terminal unlinks each frame itself after reading it, so
+/// a second unlink finds nothing (ENOENT); that and every other failure is ignored.
 fn unlink_shared(name: &str) {
     if let Ok(path) = CString::new(name) {
-        // SAFETY: path is NUL-terminated; failure (typically ENOENT) needs no handling.
+        // SAFETY: path is NUL-terminated and outlives the call; the result is deliberately unused.
         unsafe { libc::shm_unlink(path.as_ptr()) };
     }
 }
@@ -306,6 +319,7 @@ struct Support {
 /// fail fast instead of timing out.
 fn probe() -> io::Result<Support> {
     let name = format!("/isotop-{}-probe", std::process::id());
+    debug_assert!(name.len() <= SHARED_NAME_LIMIT);
     let shared = write_shared(&name, &[0, 0, 0]).is_ok();
     let mut out = io::stdout().lock();
     write!(out, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\")?;
@@ -322,18 +336,10 @@ fn probe() -> io::Result<Support> {
     let deadline = Instant::now() + Duration::from_millis(1500);
     let mut response = Vec::new();
     while Instant::now() < deadline && !primary_attributes(&response) {
-        let mut fd = libc::pollfd {
-            fd: libc::STDIN_FILENO,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: fd points to one valid pollfd for the duration of the call.
-        let ready = unsafe { libc::poll(&mut fd, 1, 50) };
-        if ready < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if ready == 0 {
-            continue;
+        match wait_for_input(50)? {
+            Input::Timeout => continue,
+            Input::Closed => break,
+            Input::Ready => {}
         }
         let mut bytes = [0_u8; 512];
         // Read the fd directly: a buffered stdin would swallow input crossterm needs later.
@@ -352,6 +358,85 @@ fn probe() -> io::Result<Support> {
         pixels: text.contains("\x1b[?1016;1$y") || text.contains("\x1b[?1016;2$y"),
         shared_memory: text.contains("i=32;OK"),
     })
+}
+
+/// What `wait_for_input` found on standard input.
+#[derive(Debug, PartialEq, Eq)]
+enum Input {
+    /// Bytes (or end of file) can be read without blocking.
+    Ready,
+    Timeout,
+    /// The descriptor is invalid or hung up with nothing left to read.
+    Closed,
+}
+
+/// Waits up to `milliseconds` for standard input to become readable.
+fn wait_for_input(milliseconds: i32) -> io::Result<Input> {
+    // poll(2) does not support devices on macOS (see BUGS in its man page), so a terminal is
+    // waited on with select(2) there.
+    #[cfg(target_os = "macos")]
+    if io::stdin().is_terminal() {
+        return select_input(milliseconds);
+    }
+    poll_input(milliseconds)
+}
+
+fn poll_input(milliseconds: i32) -> io::Result<Input> {
+    let mut fd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: fd points to one valid pollfd for the duration of the call.
+    let ready = unsafe { libc::poll(&mut fd, 1, milliseconds) };
+    if ready < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Only POLLIN may lead to a read; POLLNVAL, POLLERR and a POLLHUP with no data pending
+    // would otherwise reach a read that can block or fail forever.
+    Ok(if ready == 0 {
+        Input::Timeout
+    } else if fd.revents & libc::POLLIN != 0 {
+        Input::Ready
+    } else {
+        Input::Closed
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn select_input(milliseconds: i32) -> io::Result<Input> {
+    let mut timeout = libc::timeval {
+        tv_sec: (milliseconds / 1000).into(),
+        tv_usec: (milliseconds % 1000) * 1000,
+    };
+    // SAFETY: an all-zero fd_set is a valid empty set; FD_ZERO and FD_SET only write inside it,
+    // and STDIN_FILENO is far below FD_SETSIZE.
+    let mut readable: libc::fd_set = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::FD_ZERO(&mut readable);
+        libc::FD_SET(libc::STDIN_FILENO, &mut readable);
+    }
+    // SAFETY: readable and timeout are valid for the call; the write and error sets are null.
+    let ready = unsafe {
+        libc::select(
+            libc::STDIN_FILENO + 1,
+            &mut readable,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut timeout,
+        )
+    };
+    if ready < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: readable was initialised above and is only read here.
+    Ok(
+        if ready > 0 && unsafe { libc::FD_ISSET(libc::STDIN_FILENO, &readable) } {
+            Input::Ready
+        } else {
+            Input::Timeout
+        },
+    )
 }
 
 /// True once the buffer holds a DA1 reply, `ESC [ ? <digits and semicolons> c`.
@@ -428,13 +513,73 @@ mod tests {
     }
 
     #[test]
+    fn frame_names_fit_the_macos_shared_memory_limit() {
+        for (pid, serial) in [(0, 0), (99_999, 1 << 20), (u32::MAX, u64::MAX)] {
+            let name = frame_name(pid, serial);
+            assert!(name.len() <= SHARED_NAME_LIMIT, "{name} is too long");
+            assert!(name.starts_with("/isotop-"));
+        }
+        assert_eq!(frame_name(7, 3), "/isotop-7-3");
+        assert_eq!(
+            frame_name(u32::MAX, 999_999_999_999).len(),
+            SHARED_NAME_LIMIT,
+            "the longest name should sit exactly at the limit"
+        );
+    }
+
+    /// Reads a shared-memory object back through shm_open and mmap, as a terminal does.
+    fn read_shared(name: &str, length: usize) -> Option<Vec<u8>> {
+        let path = CString::new(name).unwrap();
+        // SAFETY: path is NUL-terminated; the descriptor is closed below.
+        let fd = unsafe { libc::shm_open(path.as_ptr(), libc::O_RDONLY, 0) };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: the object holds at least length bytes (the caller wrote that many); the
+        // mapping is copied out and released before the descriptor is closed.
+        let bytes = unsafe {
+            let address = libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            );
+            assert_ne!(address, libc::MAP_FAILED);
+            let bytes = std::slice::from_raw_parts(address.cast::<u8>(), length).to_vec();
+            libc::munmap(address, length);
+            bytes
+        };
+        // SAFETY: fd was opened above and is not used again.
+        unsafe { libc::close(fd) };
+        Some(bytes)
+    }
+
+    #[test]
     fn shared_memory_frames_round_trip_and_are_cleaned_up() {
         let name = format!("/isotop-test-{}", std::process::id());
         let pixels: Vec<u8> = (0..300_u32).map(|i| (i * 7) as u8).collect();
         write_shared(&name, &pixels).unwrap();
-        let file = std::path::Path::new("/dev/shm").join(&name[1..]);
-        assert_eq!(std::fs::read(&file).unwrap(), pixels);
+        assert_eq!(read_shared(&name, pixels.len()).unwrap(), pixels);
+        #[cfg(target_os = "linux")]
+        {
+            let file = std::path::Path::new("/dev/shm").join(&name[1..]);
+            assert_eq!(std::fs::read(&file).unwrap(), pixels);
+            unlink_shared(&name);
+            assert!(!file.exists());
+        }
+        #[cfg(not(target_os = "linux"))]
         unlink_shared(&name);
-        assert!(!file.exists());
+        assert!(read_shared(&name, 1).is_none());
+    }
+
+    #[test]
+    fn unlinking_a_frame_the_terminal_already_removed_is_harmless() {
+        let name = format!("/isotop-test-twice-{}", std::process::id());
+        write_shared(&name, &[1, 2, 3]).unwrap();
+        unlink_shared(&name);
+        unlink_shared(&name);
+        unlink_shared("/isotop-test-never-created");
     }
 }
