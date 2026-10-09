@@ -23,9 +23,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # Both runner images ship rustup; installing through it avoids a third-party action.
+      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --check

@@ -409,9 +409,10 @@ fn select_input(milliseconds: i32) -> io::Result<Input> {
         tv_sec: (milliseconds / 1000).into(),
         tv_usec: (milliseconds % 1000) * 1000,
     };
-    // SAFETY: an all-zero fd_set is a valid empty set; FD_ZERO and FD_SET only write inside it,
-    // and STDIN_FILENO is far below FD_SETSIZE.
+    // SAFETY: an all-zero fd_set is a valid empty set.
     let mut readable: libc::fd_set = unsafe { std::mem::zeroed() };
+    // SAFETY: readable is an initialised fd_set; FD_ZERO and FD_SET only write inside it, and
+    // STDIN_FILENO is far below FD_SETSIZE.
     unsafe {
         libc::FD_ZERO(&mut readable);
         libc::FD_SET(libc::STDIN_FILENO, &mut readable);
