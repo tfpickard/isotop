@@ -301,6 +301,7 @@ Any key or mouse movement ends the tour.
 | Left click on empty space | Close the popup |
 | Left drag | Pan |
 | `l` | Toggle labels |
+| `h` | Hide or show the status panel, giving the scene the whole terminal |
 | `g` | Start the guided tour now; `g` again (or any input) ends it |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
