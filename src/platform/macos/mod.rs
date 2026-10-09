@@ -502,7 +502,8 @@ impl CfObject {
                 ffi::kCFStringEncodingUTF8,
             )
         };
-        (!string.is_null()).then_some(Self(string))
+        // Wrapped lazily: a CfObject releases what it holds, and CFRelease traps on NULL.
+        (!string.is_null()).then(|| Self(string))
     }
 
     /// A number property: a CFNumber, or the little-endian bytes of a device-tree CFData.
@@ -594,7 +595,8 @@ fn core_kinds() -> HashMap<u32, CoreKind> {
                 0,
             )
         };
-        (!value.is_null()).then_some(CfObject(value))
+        // Wrapped lazily, as in CfObject::string: a missing property is NULL.
+        (!value.is_null()).then(|| CfObject(value))
     };
     loop {
         // SAFETY: the iterator is valid; it returns retained children and 0 at the end.
