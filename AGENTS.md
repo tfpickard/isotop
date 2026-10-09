@@ -28,6 +28,8 @@ The README covers usage. This file covers how to work on the code.
 | `net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
+| `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, feeders, eggs, chicks, dust and foxes, stepped at a fixed 20 Hz |
+| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries and the seeded `Rng` |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |

@@ -1,10 +1,10 @@
 # isotop
 
-A living picture of your machine inside the terminal, in ten views: a process
+A living picture of your machine inside the terminal, in eleven views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, and the systemd journal
-as Matrix rain. Linux-first, written
+history, a globe of network connections, a coral reef, a chicken yard, and the systemd
+journal as Matrix rain. Linux-first, written
 in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
@@ -26,7 +26,7 @@ synthetic workload.
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix
 ```
 
 Run directly in a graphics-capable terminal such as Ghostty or Kitty; tmux does
@@ -67,10 +67,10 @@ process collector.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the ten views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. Orbit
-and flow share one layout, so a process sits in the same place in each. Views
-that grow as data arrives (cores, cells, strata, globe, reef) keep the camera
+the eleven views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop is reached with Tab, Shift+Tab or `--view coop`.
+Orbit and flow share one layout, so a process sits in the same place in each. Views
+that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
 
 ### City
@@ -228,6 +228,55 @@ session's apps swim in schools whose speed follows their CPU; containers are
 crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
 memory everywhere, I/O rises as bubbles, and zombies float belly-up.
 
+### Coop
+
+A fenced chicken yard in which every process is a chicken in a Vicsek flock: each one steers by the average heading of its flock mates, plus noise.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Chicken | Process | One per drawn process; picking and the inspector use the process |
+| Body radius | RSS | (0.18 × ∛MiB) clamped to 0.22 to 1.2, scaled by 0.3 + 0.7 × growth while it hatches |
+| Plumage | Kind and state | The same colours as the other views; zombies pink, stopped orange, uninterruptible sleep red |
+| Flock and henhouse | cgroup (the process group if there is none; kernel threads share one "kernel" flock) | One flock and one henhouse per group, labelled with the group name |
+| Perch seat | Seat number in the flock | Fixed ladder grid around the henhouse, nearest seats first |
+| Roosting on a perch | CPU below 0.3 % | Roosts under 0.3 %, leaves above 0.8 %, a newcomer roosts under 0.5 % |
+| Foraging speed | CPU | 0.6 + 3.4 × cpu / (cpu + 25) units per second |
+| Heading noise | CPU variation over 30 samples, CPU pressure | 0.5 + 0.5 × min(CV, 2) + 5.5 × psi / (psi + 15) radians, at most a full turn; fixed when pressure is missing |
+| Pull towards a socket peer, measured | Loopback TCP bytes per second | w = min(log2(1 + B/s ÷ 1024) / 10, 1.5); an idle connection gives 0 |
+| Pull towards a socket peer, unmeasured | CPU of both ends | w = 0.8 × min(cpu_i, cpu_k) / (min + 25) |
+| Feeders | Per-core CPU list (the core count if there is none) | Sorted by kind and id; performance cores get 3 slots and a gold trough, efficiency cores 2 and teal, unknown kinds 2 and neutral |
+| Grain brightness | Core busy fraction | Tint 0.25 + 0.85 × busy |
+| Feeding at a feeder | Running state, last core | A queue per feeder ordered by priority, then identity; an unknown core goes to the first feeder |
+| Pecking rank | Priority and nice | Shown in the inspector |
+| Frozen, crouched | Stopped or traced state | Held in place without noise |
+| Mud puddle | Uninterruptible sleep | Does not move |
+| Feet up | Zombie | Does not move |
+| Eggs | Bytes written | ⌊(written − first sight) / 1 MiB⌋ in a nest by the henhouse, up to 24 shown, each kept 60 s |
+| Dust puffs | Read rate | min(5, 1 + ⌊log2(rate / 64 KiB)⌋) puffs above 64 KiB/s |
+| Chicks | Threads | min(threads − 1, 12), following the hen along her trail |
+| Fox | Rise in a unit's OOM kill count | One to three foxes run for 3 s at the largest member that vanished |
+| Fox eyes | Memory pressure | min(6, 1 + ⌊psi / 10⌋) pairs above 0.5 %, 3 × (1 − psi / (psi + 20)) units outside the fence |
+| phi in the legend | Foragers | \|Σv\| / Σ\|v\| |
+| Inspector notes | Write rate, read rate, nice | Shown on the eggs, dust and feeding lines |
+
+Decorative: the grass grid and the dirt band under the feeders, the hedge, the fence posts and rails, the henhouse roof and door, straw in the nests, ladder stringers, ground shadows, the walking stride, the pecking head bob, the chick hop, the swirl of the dust puffs, the blink of the fox's eyes, and the fox's gallop and shape.
+
+**The Vicsek rule.** The update is synchronous: every forager's new heading is computed from the old state of its flock mates within 4 units, and then all are applied together. Only chickens of the same flock count as neighbours, found through a spatial hash. Noise comes from the process's CPU variation over its last 30 samples and from system CPU pressure, so a steady machine holds its flocks together and a stalled one scatters them. The order parameter phi = |Σv| / Σ|v| is 1 when every forager heads the same way and near 0 when headings are random. It is shown in the legend for the whole yard and in the inspector per flock. The fence is a reflecting boundary, and a henhouse pulls foragers back when they stray more than its range.
+
+**Peers.** A chicken is pulled towards the processes it holds sockets with. Loopback TCP has per-link byte counters, so those links pull by measured bytes per second. The kernel keeps no per-link byte counters for Unix sockets, so they pull by co-activity instead: the smaller of the two CPUs, and only when both ends are busy.
+
+**Feeders and the pecking order.** Each CPU core is a feeder. A running chicken walks to the feeder of the core it last ran on and pecks while it is in state R, and leaves after two consecutive samples in which it was not running. When a feeder is full, the rest queue, and a lower priority number goes first, so real-time tasks eat before nice ones.
+
+**Eggs.** The count is exact: one egg for each MiB a process has written since isotop first saw it, kept in an integer ledger rather than estimated from the rate.
+
+**The fox.** When a unit's `oom_kills` count rises, a fox runs to the largest member (by memory) that vanished since the last sample and takes it. If no member vanished, the fox leaves empty-mouthed. Memory pressure puts fox eyes in the hedge: more pairs and nearer the fence as pressure grows, and foragers near them flee.
+
+**What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the noise stays fixed at its base value. I/O counters of other users' processes are unreadable without privileges, so those chickens lay no eggs and raise no dust, and the legend counts them.
+
+**Fixed time step.** The yard advances in whole 20 Hz steps of wall-clock time, so the frame rate does not change how a flock moves; a gap longer than half a second, such as a pause, is dropped.
+
+The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) with its four bugs fixed: it updated headings in place instead of synchronously, its alignment readout summed speed magnitudes so it was always 1, it stepped once per frame instead of by time, and it searched neighbours in O(N²).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -283,7 +332,7 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix |
+| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
 | Shift + Tab | Previous view |
 | `1`-`9`, `0` | Jump to a view in that order |
 | Two-finger scroll / wheel | Pan (vertical and horizontal) |
@@ -338,9 +387,9 @@ combines PID and start time to distinguish PID reuse.
 ```
 
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
-uses a 16:9 viewport; ripple, flow, cores and reef simulate four seconds first so
-the media and creatures have settled, and demo strata replays a minute of
-history. Live headless output takes two samples to measure CPU, so live strata
+uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
+the media and creatures have settled, demo strata replays a minute of
+history, and demo coop replays 30 seconds of samples for CPU variation. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
