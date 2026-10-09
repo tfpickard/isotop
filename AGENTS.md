@@ -7,10 +7,12 @@ The README covers usage. This file covers how to work on the code.
 
 ## Pipeline
 
-1. **Sample** (`model.rs`). `Collector::sample` reads `/proc` once per `--sample-ms` and
-   returns a `Snapshot`. Slow sources (sockets in `net.rs`, NVIDIA memory in `nvml.rs`) run on a
-   background thread every 2 s and are merged in, so the frame loop never waits on them.
-   `main.rs` keeps a history ring of snapshots for pause and rewind.
+1. **Sample** (`model.rs`, `platform/`). `Collector::sample` reads the operating system through
+   `platform::Sampler` (on Linux, `/proc`) once per `--sample-ms`, smooths CPU use and returns a
+   `Snapshot`. Slow sources (sockets in `platform/linux/net.rs`, cgroup accounting, NVIDIA
+   memory in `platform/linux/nvml.rs`) run on a background thread every 2 s and are merged in,
+   so the frame loop never waits on them. `main.rs` keeps a history ring of snapshots for pause
+   and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
    The `Scene` persists between frames to hold layout, smoothing, births and deaths, and the
@@ -24,9 +26,14 @@ The README covers usage. This file covers how to work on the code.
 | File | Owns |
 |---|---|
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark |
-| `model.rs` | `Process`, `Snapshot`, `Collector`, background sampler, `/proc` parsing, demo workload, `describe` |
-| `net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
-| `nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, background thread, merge), demo workload, `describe` |
+| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `Gpu`, `journal`) and the platform-neutral `Network`; selects the implementation by `target_os` |
+| `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
+| `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
+| `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
+| `platform/linux/journal.rs` | `journalctl` in export format and its parser |
+| `platform/macos/` | Compiling stub: live mode returns an error, background sources are empty |
+| `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
 | `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, feeders, eggs, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries and the seeded `Rng` |
@@ -46,6 +53,9 @@ The README covers usage. This file covers how to work on the code.
 - **Picking.** A pickable item carries an index into `frame.identities`. `NONE` means "not
   pickable", and lines clear picking where they draw. Mouse input is cell-coarse, so
   `pick_near` searches a radius.
+- **OS access lives in `platform/`.** Nothing outside it reads `/proc` or `/sys`, calls
+  OS-specific APIs or spawns OS tools. Both platforms provide the same names; a macOS build
+  must compile without warnings (`cargo clippy --target aarch64-apple-darwin`).
 - **Sampling stays off the frame loop.** Anything slower than a `/proc/<pid>/stat` read belongs
   on the background thread.
 - **Process text is untrusted.** Names and command lines are sanitized before they reach the
@@ -104,8 +114,8 @@ match your own shell.
 - Tests live in a `tests` module at the bottom of each file. Name them as sentences about
   behaviour (`city_does_not_relocate_when_resources_or_population_change`). Rendering tests use
   `model::demo` or the `process(pid, parent)` helper in `render.rs`.
-- When you add a field to `Process` or `Snapshot`, update `parse_stat`, `model::demo` and the
-  `render.rs` test helper.
+- When you add a field to `Process` or `Snapshot`, update `parse_stat` (in
+  `platform/linux/mod.rs`), `model::demo` and the `render.rs` test helper.
 - A new view needs: a `View` variant, a `next()` entry, the status-line name and legend in
   `App::text`, and a draw function called from `Scene::render`.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
