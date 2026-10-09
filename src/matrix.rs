@@ -88,6 +88,15 @@ impl Rain {
     pub fn push(&mut self, line: Line) {
         self.latest = Some(line.text.clone());
         self.pending.push_back(line);
+        self.trim();
+    }
+
+    /// Drops the oldest queued lines beyond what two screens can show. Until the first frame sizes
+    /// the grid, nothing is dropped, so the startup history survives to fill the screen.
+    fn trim(&mut self) {
+        if self.grid.1 == 0 {
+            return;
+        }
         let capacity = self.grid.1.max(16) * 2;
         while self.pending.len() > capacity {
             self.pending.pop_front();
@@ -139,7 +148,10 @@ impl Rain {
     /// Writes the next queued line into the log and sends a shower down onto its characters.
     fn write(&mut self, line: Line, time: f32) {
         let (columns, rows, _) = self.grid;
-        for text in wrap(&line.text, columns) {
+        let wrapped = wrap(&line.text, columns);
+        // Rows that would scroll straight off the screen are never shown, so skip them.
+        let hidden = wrapped.len().saturating_sub(rows);
+        for text in wrapped.into_iter().skip(hidden) {
             if self.rows.len() == rows {
                 self.rows.pop_front();
             }
@@ -189,8 +201,11 @@ impl Rain {
             && let Some(line) = self.pending.pop_front()
         {
             self.write(line, time);
-            // Lines arrive one at a time, faster when they queue up.
-            self.release = time + 0.5 / (1.0 + self.pending.len() as f32 / 3.0);
+            // Lines arrive one at a time, faster when they queue up. Each release follows the
+            // previous one rather than this frame, so a slow frame rate still keeps pace; a burst
+            // after a long gap is limited to one second's worth, the slowest frame interval.
+            let interval = 0.5 / (1.0 + self.pending.len() as f32 / 3.0);
+            self.release = self.release.max(time - 1.0) + interval;
         }
         let (columns, rows, _) = self.grid;
         let wanted = (columns as f32 * DENSITY) as usize;
@@ -241,6 +256,7 @@ impl Rain {
             self.rows.clear();
             self.streams.clear();
             self.grid = grid;
+            self.trim();
             for line in lines {
                 self.write(line, time);
             }
@@ -490,6 +506,46 @@ mod tests {
         let frame = run(&mut rain, 0.0, 3.0);
         assert!(rain.rows.is_empty());
         assert!(frame.items.iter().any(|i| matches!(i, Item::Glyph { .. })));
+    }
+
+    #[test]
+    fn startup_history_waits_for_the_screen_size_before_trimming() {
+        let mut rain = rain();
+        for k in 0..200 {
+            rain.push(Line::new(6, format!("line {k}")));
+        }
+        assert_eq!((rain.pending(), rain.skipped), (200, 0));
+        let mut first = frame();
+        rain.draw(&mut first, 0.0);
+        let kept = rain.grid.1 * 2;
+        assert_eq!(rain.pending() + rain.rows.len(), kept);
+        assert_eq!(rain.skipped as usize, 200 - kept);
+    }
+
+    #[test]
+    fn a_slow_frame_releases_every_overdue_line() {
+        let mut rain = rain();
+        run(&mut rain, 0.0, 0.0);
+        for k in 0..6 {
+            rain.push(Line::new(6, format!("line {k}")));
+        }
+        // At one frame per second, the first line goes out at once and the queue then releases at
+        // 0.19, 0.40, 0.65 and 0.98 s, so five lines are due by the second frame.
+        run(&mut rain, 0.0, 0.0);
+        let mut late = frame();
+        rain.draw(&mut late, 1.0);
+        assert_eq!(rain.rows.len(), 5);
+    }
+
+    #[test]
+    fn a_giant_line_only_writes_what_the_screen_can_show() {
+        let mut rain = rain();
+        run(&mut rain, 0.0, 0.0);
+        let (columns, rows, _) = rain.grid;
+        rain.push(Line::new(6, "z".repeat(columns * rows * 20)));
+        run(&mut rain, 0.0, 0.0);
+        assert_eq!(rain.rows.len(), rows);
+        assert!(rain.streams.len() <= columns * rows + columns);
     }
 
     #[test]

@@ -542,7 +542,7 @@ impl App {
             bytes(s.memory_total.saturating_sub(s.memory_available)),
             bytes(s.memory_total)
         )];
-        let inspector = if let Some(id) = self.selected {
+        let inspector = if let Some(id) = self.inspected() {
             if let Some(p) = s.processes.iter().find(|p| p.id == id) {
                 format!(
                     " {} [pid {} / parent {} / {}] CPU {:.1}%  RSS {}  IO {}  {}",
@@ -573,7 +573,7 @@ impl App {
             " Click or hover a building/body to inspect; / searches name, command or PID".into()
         };
         lines.push(inspector);
-        lines.push(self.selected.and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
+        lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
                 View::City => " Height = CPU | footprint = RSS | district = cgroup | amber lights = CPU | cyan pulses = IO".into(),
                 View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
@@ -622,8 +622,14 @@ impl App {
         frame.locate(&self.camera, p)
     }
 
+    /// The selected process, unless the view draws no processes; the selection itself is kept for
+    /// when a process view returns.
+    fn inspected(&self) -> Option<Identity> {
+        self.selected.filter(|_| self.view != View::Matrix)
+    }
+
     fn popup(&self, frame: &Frame, layout: &Layout) -> Option<Popup> {
-        let id = self.selected?;
+        let id = self.inspected()?;
         let snapshot = self.snapshot();
         let lines = match snapshot.processes.iter().find(|p| p.id == id) {
             Some(p) => {
@@ -1251,9 +1257,12 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 journal = Some(Journal::start());
             }
             let now = origin.elapsed().as_secs_f64();
-            fed = f64::max(fed, now - 2.0);
-            feed(&mut app, journal.as_ref(), options.demo, fed, now);
-            fed = now;
+            // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
+            if !app.paused {
+                fed = f64::max(fed, now - 2.0);
+                feed(&mut app, journal.as_ref(), options.demo, fed, now);
+                fed = now;
+            }
         }
         app.camera.approach(&goal, 1.0 - (-elapsed / 0.2).exp());
         app.update_tour(tour_after);
@@ -1335,6 +1344,9 @@ fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64)
     for line in lines {
         app.scene.matrix.push(line);
     }
+    if let Some(source) = source {
+        app.scene.matrix.skipped += source.dropped();
+    }
 }
 
 fn main() {
@@ -1376,6 +1388,30 @@ mod tests {
         assert_eq!(app.view, View::Matrix);
         app.key(KeyCode::Tab, KeyModifiers::NONE, 10.0);
         assert_eq!(app.view, View::City);
+    }
+
+    #[test]
+    fn matrix_status_ignores_a_process_selected_in_another_view() {
+        let snapshot = model::demo(1.0, 16);
+        let selected = snapshot.processes[0].id;
+        let mut app = App::new(View::Matrix, snapshot);
+        app.selected = Some(selected);
+        app.scene
+            .matrix
+            .push(journal::Line::new(6, "sshd[1]: hello"));
+        let text = app.text(0.0, "test", 20, 512);
+        assert_eq!(text[1], " > sshd[1]: hello");
+        assert!(text[2].contains("queued"), "{}", text[2]);
+        let frame = app.render(320, 180, 512);
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        assert!(app.popup(&frame, &layout).is_none());
+        assert_eq!(app.selected, Some(selected), "kept for the process views");
     }
 
     #[test]

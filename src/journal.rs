@@ -3,10 +3,16 @@
 
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 /// Seconds between synthetic entries in demo mode.
 const DEMO_INTERVAL: f64 = 0.35;
+/// Entries held while the view is hidden or paused; later ones are dropped and counted.
+const BACKLOG: usize = 2048;
+/// Bytes kept of any one field; journal messages can be megabytes long.
+const FIELD: usize = 4096;
 /// syslog severity: 0 emergency to 3 error, 4 warning, 5 notice, 6 info, 7 debug.
 const INFO: u8 = 6;
 const ERROR: u8 = 3;
@@ -29,13 +35,15 @@ impl Line {
 
 pub struct Journal {
     lines: mpsc::Receiver<Line>,
+    dropped: Arc<AtomicU64>,
     child: Option<Child>,
 }
 
 impl Journal {
     /// Follows the journal, starting with its most recent entries so the rain begins full.
     pub fn start() -> Self {
-        let (sender, lines) = mpsc::channel();
+        let (sender, lines) = mpsc::sync_channel(BACKLOG);
+        let dropped = Arc::new(AtomicU64::new(0));
         let spawned = Command::new("journalctl")
             .args([
                 "--follow",
@@ -50,27 +58,34 @@ impl Journal {
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
-                let _ = sender.send(Line::new(
+                let _ = sender.try_send(Line::new(
                     ERROR,
                     format!("isotop: cannot run journalctl: {error}"),
                 ));
-                return Self { lines, child: None };
+                return Self {
+                    lines,
+                    dropped,
+                    child: None,
+                };
             }
         };
         let stdout = child.stdout.take().expect("stdout is piped");
         let mut stderr = child.stderr.take().expect("stderr is piped");
+        let count = Arc::clone(&dropped);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
                 match read_entry(&mut reader) {
-                    Ok(Some(line)) => {
-                        if sender.send(line).is_err() {
-                            return;
+                    Ok(Some(line)) => match sender.try_send(line) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            count.fetch_add(1, Ordering::Relaxed);
                         }
-                    }
+                        Err(mpsc::TrySendError::Disconnected(_)) => return,
+                    },
                     Ok(None) => break,
                     Err(error) => {
-                        let _ = sender.send(Line::new(
+                        let _ = sender.try_send(Line::new(
                             ERROR,
                             format!("isotop: journal read failed: {error}"),
                         ));
@@ -81,11 +96,12 @@ impl Journal {
             let mut complaint = String::new();
             let _ = stderr.read_to_string(&mut complaint);
             for line in complaint.lines().filter(|line| !line.trim().is_empty()) {
-                let _ = sender.send(Line::new(ERROR, format!("journalctl: {line}")));
+                let _ = sender.try_send(Line::new(ERROR, format!("journalctl: {line}")));
             }
         });
         Self {
             lines,
+            dropped,
             child: Some(child),
         }
     }
@@ -93,6 +109,11 @@ impl Journal {
     /// Lines that arrived since the last call.
     pub fn drain(&self) -> Vec<Line> {
         self.lines.try_iter().collect()
+    }
+
+    /// Lines dropped since the last call because the backlog was full.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.swap(0, Ordering::Relaxed)
     }
 }
 
@@ -108,7 +129,7 @@ impl Drop for Journal {
 /// Reads one entry of `journalctl --output=export` and formats it as `source[pid]: message`.
 /// Returns `None` at the end of the stream. A field is either `NAME=value` on one line or, when
 /// the value is binary or spans lines, `NAME`, a little-endian 64-bit length, the bytes, and a
-/// newline.
+/// newline. Each field keeps at most `FIELD` bytes; the rest is read and discarded.
 fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
     let mut priority = INFO;
     let mut identifier = None;
@@ -117,13 +138,9 @@ fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
     let mut message = None;
     let mut started = false;
     loop {
-        let mut line = Vec::new();
-        if reader.read_until(b'\n', &mut line)? == 0 {
+        let Some(line) = read_line(reader)? else {
             return Ok(None);
-        }
-        if line.last() == Some(&b'\n') {
-            line.pop();
-        }
+        };
         if line.is_empty() {
             if started {
                 break;
@@ -137,9 +154,11 @@ fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
                 let mut length = [0; 8];
                 reader.read_exact(&mut length)?;
                 let length = u64::from_le_bytes(length);
+                let kept = length.min(FIELD as u64);
                 let mut value = Vec::new();
-                reader.by_ref().take(length).read_to_end(&mut value)?;
-                if value.len() as u64 != length {
+                reader.by_ref().take(kept).read_to_end(&mut value)?;
+                let skipped = io::copy(&mut reader.by_ref().take(length - kept), &mut io::sink())?;
+                if value.len() as u64 + skipped != length {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
                 let mut newline = [0; 1];
@@ -164,6 +183,28 @@ fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
         None => format!("{source}: {message}"),
     };
     Ok(Some(Line::new(priority, text)))
+}
+
+/// Reads up to the next newline, which is consumed but not returned, keeping at most `FIELD`
+/// bytes. Returns `None` at the end of the stream.
+fn read_line(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
+    let mut kept = Vec::new();
+    let mut read_any = false;
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(read_any.then_some(kept));
+        }
+        read_any = true;
+        let newline = buffer.iter().position(|&b| b == b'\n');
+        let end = newline.unwrap_or(buffer.len());
+        let room = FIELD.saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..end.min(room)]);
+        reader.consume(newline.map_or(end, |at| at + 1));
+        if newline.is_some() {
+            return Ok(Some(kept));
+        }
+    }
 }
 
 /// Synthetic journal lines that arrive in `(from, to]` seconds of demo time, deterministic in time.
@@ -266,6 +307,26 @@ mod tests {
             Some(Line::new(INFO, "journal: no source"))
         );
         assert_eq!(read_entry(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn oversized_fields_are_cut_short_and_the_stream_stays_in_step() {
+        let huge = "y".repeat(FIELD * 50);
+        let mut data = format!("MESSAGE={huge}\n\n").into_bytes();
+        data.extend_from_slice(b"MESSAGE\n");
+        data.extend_from_slice(&((FIELD * 50) as u64).to_le_bytes());
+        data.extend_from_slice(huge.as_bytes());
+        data.extend_from_slice(b"\n\nMESSAGE=after\n\n");
+        let mut reader = io::BufReader::with_capacity(512, &data[..]);
+        // A text field's cap includes its `MESSAGE=` name; a binary field's covers the value only.
+        for kept in [FIELD - "MESSAGE=".len(), FIELD] {
+            let line = read_entry(&mut reader).unwrap().unwrap();
+            assert_eq!(line.text.len(), "journal: ".len() + kept);
+        }
+        assert_eq!(
+            read_entry(&mut reader).unwrap(),
+            Some(Line::new(INFO, "journal: after"))
+        );
     }
 
     #[test]
