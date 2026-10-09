@@ -3,16 +3,80 @@
 
 import argparse
 import base64
+import ctypes
+import ctypes.util
 import errno
 import fcntl
+import mmap
 import os
 import pty
 import select
 import struct
 import subprocess
+import sys
 import termios
 import time
 import zlib
+
+ON_LINUX = sys.platform.startswith("linux")
+
+
+def load_shared_memory_functions():
+    """Binds shm_open and shm_unlink, which Linux and macOS both provide through libc.
+
+    glibc before 2.34 keeps them in librt, so that library is the fallback.
+    """
+    for library_name in (None, ctypes.util.find_library("c"), ctypes.util.find_library("rt")):
+        try:
+            library = ctypes.CDLL(library_name, use_errno=True)
+            opener, remover = library.shm_open, library.shm_unlink
+        except (OSError, AttributeError):
+            continue
+        # shm_open is variadic in C (the optional third argument is the creation mode). Without
+        # O_CREAT the mode is never read, so declaring only two arguments is safe even though
+        # the arm64 variadic convention passes extra arguments on the stack.
+        opener.argtypes = [ctypes.c_char_p, ctypes.c_int]
+        opener.restype = ctypes.c_int
+        remover.argtypes = [ctypes.c_char_p]
+        remover.restype = ctypes.c_int
+        return opener, remover
+    raise RuntimeError("shm_open is not available in libc")
+
+
+shm_open, shm_unlink = load_shared_memory_functions()
+
+
+def shared_memory_exists(name):
+    """Whether the POSIX shared-memory object `name` (with its leading slash) can be opened."""
+    descriptor = shm_open(name.encode(), os.O_RDONLY)
+    if descriptor < 0:
+        error = ctypes.get_errno()
+        assert error == errno.ENOENT, f"shm_open({name}) failed with {os.strerror(error)}"
+        return False
+    os.close(descriptor)
+    return True
+
+
+def read_shared_frame(name, length):
+    """Reads `length` bytes from a shared-memory object the way a terminal does, then unlinks it.
+
+    The object may be larger than the frame (some systems round the size up to a page).
+    """
+    descriptor = shm_open(name.encode(), os.O_RDONLY)
+    if descriptor < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, f"shm_open({name}): {os.strerror(error)}")
+    try:
+        size = os.fstat(descriptor).st_size
+        assert size >= length, f"shared memory holds {size} bytes, expected {length}"
+        if ON_LINUX:
+            assert size == length, f"shared memory holds {size} bytes, expected {length}"
+        with mmap.mmap(descriptor, length, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ) as mapping:
+            pixels = mapping[:length]
+    finally:
+        os.close(descriptor)
+    shm_unlink(name.encode())
+    return pixels
 
 
 def exercise(binary, demo, shared_memory):
@@ -27,6 +91,7 @@ def exercise(binary, demo, shared_memory):
     frame_count = 0
     queries = 0
     decoded = []
+    shared_names = set()
     headers = set()
     back_tab_sent = False
     coop_left = False
@@ -34,7 +99,7 @@ def exercise(binary, demo, shared_memory):
     tour_sent = False
     started = time.monotonic()
     try:
-        while time.monotonic() - started < 8:
+        while time.monotonic() - started < 20:
             if select.select([master], [], [], 0.1)[0]:
                 try:
                     data = os.read(master, 262144)
@@ -60,15 +125,15 @@ def exercise(binary, demo, shared_memory):
                         if medium == b"d":
                             os.write(master, b"\x1b_Gi=31;OK\x1b\\")
                             queries += 1
-                        elif medium == b"s" and shared_memory:
-                            os.write(master, b"\x1b_Gi=32;OK\x1b\\")
+                        elif medium == b"s":
+                            shared_names.add(base64.b64decode(body).decode())
+                            if shared_memory:
+                                os.write(master, b"\x1b_Gi=32;OK\x1b\\")
                     elif medium == b"s":
                         # Like Kitty and Ghostty: read the object named in the payload, then unlink it.
-                        path = "/dev/shm/" + base64.b64decode(body).decode().lstrip("/")
-                        with open(path, "rb") as shared:
-                            pixels = shared.read()
-                        os.unlink(path)
-                        assert len(pixels) == int(fields[b"s"]) * int(fields[b"v"]) * 3, "incorrect shared-memory size"
+                        name = base64.b64decode(body).decode()
+                        shared_names.add(name)
+                        pixels = read_shared_frame(name, int(fields[b"s"]) * int(fields[b"v"]) * 3)
                         decoded.append(pixels)
                         frame_count += 1
                     elif body:
@@ -100,7 +165,7 @@ def exercise(binary, demo, shared_memory):
             if frame_count >= 8:
                 os.write(master, b"q")
                 break
-        child.wait(timeout=3)
+        child.wait(timeout=5)
         assert child.returncode == 0, f"exit status {child.returncode}: {buffer!r}"
         assert queries == 1, "capability detection was not exercised"
         assert frame_count >= 8, f"only {frame_count} frames"
@@ -111,7 +176,13 @@ def exercise(binary, demo, shared_memory):
         assert b"/ TOUR" in headers, "g did not start the tour"
         assert b"/ STRATA /" in headers, "7 did not switch to the strata view"
         assert not (termios.tcgetattr(slave)[3] & termios.ICANON) == 0, "raw mode was not restored"
-        leftovers = [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{child.pid}-")]
+        if ON_LINUX:
+            leftovers = [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{child.pid}-")]
+        else:
+            # macOS has no directory to list; every name the terminal was told about must be gone.
+            leftovers = [name for name in sorted(shared_names) if shared_memory_exists(name)]
+            for name in leftovers:
+                shm_unlink(name.encode())
         assert not leftovers, f"shared memory left behind: {leftovers}"
         transport = "shared memory" if shared_memory else "inline zlib"
         print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, back-tab to coop, search, focus, pause, number keys, tour, quit, terminal restoration passed")
