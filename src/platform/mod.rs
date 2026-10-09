@@ -47,6 +47,11 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::*;
 
+// The macOS collector's pure logic, so its tests also run in the Linux gates.
+#[cfg(all(test, not(target_os = "macos")))]
+#[path = "macos/logic.rs"]
+mod macos_logic;
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("isotop has platform support for Linux and macOS only");
 
