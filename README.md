@@ -8,7 +8,7 @@ as Matrix rain. Linux-first, written
 in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
-![Orbit: process trees as solar systems revolving about the galaxy's barycenter](docs/media/orbit-motion.webp)
+![A tour of all ten views, from the process city to the journal matrix](docs/media/demo.webp)
 
 | | | |
 |:-:|:-:|:-:|
