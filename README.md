@@ -33,7 +33,7 @@ not pass the graphics protocol through. The app queries graphics support on
 startup and fails fast when it is missing. `--force-graphics` bypasses that query.
 
 The scene renders at the window's native resolution up to 1920 pixels wide
-(`--width` lowers the cap) and animation targets 20 FPS. Process data is sampled
+(`--width` lowers the cap) and animation targets 10 FPS (`--fps` raises it, at a cost in CPU). Process data is sampled
 once per second; sockets, cgroup accounting and NVIDIA GPU usage every two
 seconds on a background thread. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
 fully occupied CPU core. Sizes ease toward each sample over 0.3 seconds;

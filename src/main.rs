@@ -74,7 +74,7 @@ struct Options {
     #[arg(long, default_value_t = 1920, value_parser = clap::value_parser!(u32).range(160..=2560))]
     width: u32,
     /// Target animation frame rate
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=60))]
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=60))]
     fps: u32,
     /// Process sampling interval in milliseconds
     #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u32).range(100..=10000))]
