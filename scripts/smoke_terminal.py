@@ -10,6 +10,7 @@ import fcntl
 import mmap
 import os
 import pty
+import re
 import select
 import struct
 import subprocess
@@ -165,7 +166,35 @@ def exercise(binary, demo, shared_memory):
             if frame_count >= 8:
                 os.write(master, b"q")
                 break
-        child.wait(timeout=5)
+        # Keep reading until the child exits: a pseudo-terminal with a small buffer (macOS) blocks
+        # the child's writes once it fills, and then it never reaches its exit path.
+        deadline = time.monotonic() + 5
+        while child.poll() is None and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    buffer += os.read(master, 262144)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+        child.wait(timeout=1)
+        # Output the child wrote but this loop never parsed may still name frame objects.
+        while select.select([master], [], [], 0)[0]:
+            try:
+                data = os.read(master, 262144)
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                break
+            if not data:
+                break
+            buffer += data
+        for match in re.finditer(rb"\x1b_G([^;\x1b]*);([A-Za-z0-9+/=]*)\x1b\\", buffer):
+            if b"t=s" in match.group(1).split(b","):
+                try:
+                    shared_names.add(base64.b64decode(match.group(2)).decode())
+                except (ValueError, UnicodeDecodeError):
+                    pass
         assert child.returncode == 0, f"exit status {child.returncode}: {buffer!r}"
         assert queries == 1, "capability detection was not exercised"
         assert frame_count >= 8, f"only {frame_count} frames"
@@ -179,8 +208,15 @@ def exercise(binary, demo, shared_memory):
         if ON_LINUX:
             leftovers = [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{child.pid}-")]
         else:
-            # macOS has no directory to list; every name the terminal was told about must be gone.
-            leftovers = [name for name in sorted(shared_names) if shared_memory_exists(name)]
+            # macOS has no directory to list. Every name the terminal was told about must be gone,
+            # and so must every name the app could have made: serials count up from zero, so probe
+            # up to the highest one seen plus a margin, and the capability probe's object.
+            prefix = f"/isotop-{child.pid}-"
+            serials = [int(name[len(prefix) :]) for name in shared_names if re.fullmatch(re.escape(prefix) + r"\d+", name)]
+            candidates = set(shared_names)
+            candidates.update(f"{prefix}{serial}" for serial in range(max(serials, default=0) + 17))
+            candidates.add(f"{prefix}probe")
+            leftovers = [name for name in sorted(candidates) if shared_memory_exists(name)]
             for name in leftovers:
                 shm_unlink(name.encode())
         assert not leftovers, f"shared memory left behind: {leftovers}"

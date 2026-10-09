@@ -23,6 +23,8 @@ const COAST: Color = [140, 196, 166];
 const GRATICULE: Color = [34, 66, 96];
 const DOWN: Color = [110, 220, 255];
 const UP: Color = [255, 140, 210];
+/// Arc colour when the platform reports no per-connection rates, so no direction is implied.
+const NEUTRAL: Color = [170, 190, 215];
 const HOME: Color = [255, 214, 150];
 
 #[derive(Default)]
@@ -139,6 +141,7 @@ impl Globe {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
+        let has_rates = !snapshot.missing.contains(&"socket traffic");
         let mut endpoints: HashMap<Spot, Endpoint> = HashMap::new();
         let mut per_process: HashMap<Identity, Vec<&Remote>> = HashMap::new();
         for remote in snapshot
@@ -190,7 +193,9 @@ impl Globe {
             };
             let height = if endpoint.place.is_some() { 1.01 } else { 1.25 };
             let traffic = endpoint.up + endpoint.down;
-            let color = if endpoint.down >= endpoint.up {
+            let color = if !has_rates {
+                NEUTRAL
+            } else if endpoint.down >= endpoint.up {
                 DOWN
             } else {
                 UP
@@ -281,14 +286,18 @@ impl Globe {
                 .take(4)
                 .map(|r| {
                     let place = r.place.as_ref().map_or("unlocated", |p| p.name.as_str());
-                    format!(
-                        "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
-                        r.address,
-                        r.port,
-                        r.rtt,
-                        bytes(r.up as u64),
-                        bytes(r.down as u64)
-                    )
+                    if has_rates {
+                        format!(
+                            "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
+                            r.address,
+                            r.port,
+                            r.rtt,
+                            bytes(r.up as u64),
+                            bytes(r.down as u64)
+                        )
+                    } else {
+                        format!("{}:{} {place}", r.address, r.port)
+                    }
                 })
                 .collect();
             if per_process[id].len() > 4 {
@@ -400,6 +409,54 @@ mod tests {
         let text = legend(&snapshot);
         assert!(text.contains("no per-connection rates or RTT on macOS"));
         assert!(!text.contains("cyan") && text.ends_with("| demo locations"));
+    }
+
+    #[test]
+    fn notes_and_arcs_carry_no_invented_rates_without_socket_traffic() {
+        use crate::model::demo;
+        use crate::render::{Camera, Item, Scene, View};
+        let mut snapshot = demo(10.0, 128);
+        for remote in &mut snapshot.remotes {
+            (remote.rtt, remote.up, remote.down) = (0.0, 0.0, 0.0);
+        }
+        let id = snapshot.remotes[0].id;
+        let render = |snapshot: &Snapshot| {
+            let mut scene = Scene::new();
+            let frame = scene.render(
+                snapshot,
+                View::Globe,
+                &Camera::default(),
+                320,
+                180,
+                None,
+                10.0,
+                512,
+                None,
+            );
+            (scene.notes, frame.items)
+        };
+        let (notes, _) = render(&snapshot);
+        assert!(notes[&id][0].contains(" ms | up "));
+        snapshot.missing = vec!["socket traffic"];
+        let (notes, items) = render(&snapshot);
+        let lines = &notes[&id];
+        assert!(!lines.is_empty());
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains(" ms") && !line.contains("/s")),
+            "{lines:?}"
+        );
+        assert!(lines[0].starts_with(&snapshot.remotes[0].address.to_string()));
+        let colors: Vec<Color> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Sphere { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert!(colors.contains(&NEUTRAL));
+        assert!(!colors.contains(&DOWN) && !colors.contains(&UP));
     }
 
     #[test]

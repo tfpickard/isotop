@@ -81,8 +81,8 @@ it cannot (over SSH, for example).
 
 **Privileges.** Without root, isotop can measure only your own processes. It still
 lists the others, but macOS refuses to give their CPU or memory, and isotop never
-guesses them; they are left out of the scene and counted at the end of the fourth
-status line, for example `| 212 processes unreadable (other users; run with sudo)`.
+guesses them; they are left out of the scene and counted beside the process count on the
+first status line, for example `212 processes (+57 unreadable: run with sudo)`.
 Run `sudo ./target/release/isotop` to see the whole machine. Under sudo, the
 processes of the user who ran sudo (`SUDO_UID`) still count as your session. Sockets
 follow the same rule: only processes isotop may read contribute links.

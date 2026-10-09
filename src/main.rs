@@ -546,8 +546,9 @@ impl App {
             (false, None) => "LIVE",
         };
         let mut lines = vec![format!(
-            " ISOTOP / {view} / {mode}   {} processes | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
+            " ISOTOP / {view} / {mode}   {} processes{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
             s.processes.len(),
+            unreadable_text(s),
             self.scene.visible,
             self.scene.collapsed,
             s.processes.iter().map(|p| p.cpu).sum::<f32>() / 100.0,
@@ -1110,9 +1111,7 @@ fn place_panel(
     })
 }
 
-/// Leader line from a callout to its target, with an arrowhead and a ring around the target.
-/// The pressure readings for the status line, `n/a` for each one the platform cannot measure,
-/// then how many processes belonged to other users and could not be measured at all.
+/// The pressure readings for the status line, `n/a` for each one the platform cannot measure.
 fn pressure_text(snapshot: &Snapshot) -> String {
     let [cpu, memory, io] = snapshot.pressure;
     let reading = |name: &str, value: f32| {
@@ -1125,22 +1124,25 @@ fn pressure_text(snapshot: &Snapshot) -> String {
             format!("{value:.0}%")
         }
     };
-    let mut text = format!(
+    format!(
         "pressure cpu {} mem {} io {}",
         reading("cpu", cpu),
         reading("memory", memory),
         reading("io", io)
-    );
-    match snapshot.unreadable {
-        0 => {}
-        1 => text.push_str(" | 1 process unreadable (other users; run with sudo)"),
-        count => text.push_str(&format!(
-            " | {count} processes unreadable (other users; run with sudo)"
-        )),
-    }
-    text
+    )
 }
 
+/// A short note beside the process count for processes of other users that could not be
+/// measured at all. It sits on the first status line, which is the one least likely to be
+/// clipped on a narrow terminal.
+fn unreadable_text(snapshot: &Snapshot) -> String {
+    match snapshot.unreadable {
+        0 => String::new(),
+        count => format!(" (+{count} unreadable: run with sudo)"),
+    }
+}
+
+/// Leader line from a callout to its target, with an arrowhead and a ring around the target.
 fn pointer(frame: &mut Frame, from: [f32; 2], to: [f32; 2]) {
     const COLOR: [u8; 3] = [255, 214, 150];
     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
@@ -1555,20 +1557,31 @@ mod tests {
 
     #[test]
     fn status_line_counts_unreadable_processes_only_when_there_are_some() {
-        assert!(!lines_with(View::City, &[], 0)[4].contains("unreadable"));
+        let none = lines_with(View::City, &[], 0);
+        assert!(!none[0].contains("unreadable") && !none[4].contains("unreadable"));
         let one = lines_with(View::City, &[], 1);
         assert!(
-            one[4].contains(" | 1 process unreadable (other users; run with sudo)"),
+            one[0].contains(" processes (+1 unreadable: run with sudo) | "),
             "{}",
-            one[4]
+            one[0]
         );
         let many = lines_with(View::City, &MACOS, 37);
         assert!(
-            many[4].contains(" | 37 processes unreadable (other users; run with sudo)"),
+            many[0].contains(" processes (+37 unreadable: run with sudo) | "),
             "{}",
-            many[4]
+            many[0]
         );
-        assert!(many[4].contains("io n/a | 37 processes"), "{}", many[4]);
+        assert!(!many[4].contains("unreadable"), "{}", many[4]);
+    }
+
+    #[test]
+    fn unreadable_notice_survives_an_80_column_terminal() {
+        let first = &lines_with(View::City, &MACOS, 212)[0];
+        let visible: String = first.chars().take(80).collect();
+        assert!(
+            visible.contains("(+212 unreadable: run with sudo)"),
+            "{visible}"
+        );
     }
 
     #[test]
