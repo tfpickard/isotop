@@ -686,8 +686,10 @@ impl Gpu {
             for y in 0..h {
                 let colors = &data[y * row..y * row + w * 4];
                 for (pixel, rgba) in frame.pixels[y * w * 3..(y + 1) * w * 3]
-                    .chunks_exact_mut(3)
-                    .zip(colors.chunks_exact(4))
+                    .as_chunks_mut::<3>()
+                    .0
+                    .iter_mut()
+                    .zip(colors.as_chunks::<4>().0)
                 {
                     pixel.copy_from_slice(&rgba[..3]);
                 }
@@ -699,9 +701,9 @@ impl Gpu {
                     let start = (origin[1] as usize + wy) * w + origin[0] as usize;
                     for (pick, bytes) in frame.picks[start..start + size[0] as usize]
                         .iter_mut()
-                        .zip(source.chunks_exact(4))
+                        .zip(source.as_chunks::<4>().0)
                     {
-                        *pick = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                        *pick = u32::from_le_bytes(*bytes);
                     }
                 }
             }

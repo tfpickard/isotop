@@ -414,7 +414,7 @@ impl Frame {
             let row = sky.profile(v, 1.9);
             let line = &mut self.pixels[y * w * 3..(y + 1) * w * 3];
             if sky.hazy() {
-                for (pixel, column) in line.chunks_exact_mut(3).zip(&columns) {
+                for (pixel, column) in line.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
                     let density = row * column;
                     for k in 0..3 {
                         pixel[k] = (base[k] + sky.haze[k] * density).min(255.0) as u8;
@@ -422,8 +422,8 @@ impl Frame {
                 }
             } else {
                 let color = base.map(|c| c as u8);
-                for pixel in line.chunks_exact_mut(3) {
-                    pixel.copy_from_slice(&color);
+                for pixel in line.as_chunks_mut::<3>().0 {
+                    *pixel = color;
                 }
             }
         }
