@@ -3,10 +3,10 @@
 A living picture of your machine inside the terminal, in eleven views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, a chicken yard, and the systemd
-journal as Matrix rain. Linux-first, written
-in Rust, with real process data and pixel graphics through the Kitty graphics
-protocol. Ghostty is the primary target.
+history, a globe of network connections, a coral reef, a chicken yard, and the system
+log (the systemd journal, or the unified log on macOS) as Matrix rain. Written in
+Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
+graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
 https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 
@@ -59,9 +59,83 @@ traffic. Over SSH, or with `--direct`, frames are zlib-compressed inline instead
 The image sits below cells with a background colour, so popups and labels are
 ordinary terminal text drawn over the scene.
 
-isotop only runs on Linux today: process data comes from `/proc`. The renderer
-itself is portable through wgpu's Metal backend, but a macOS port also needs a
-process collector.
+isotop runs on Linux and on macOS on Apple Silicon. Process data comes from `/proc`
+on Linux and from libproc and Mach on macOS. The renderer is the same on both. On
+macOS some readings do not exist, and each view says what it lacks; see
+[macOS](#macos).
+
+## macOS
+
+Build and run it the same way as on Linux:
+
+```sh
+cargo build --release
+./target/release/isotop --demo
+./target/release/isotop
+```
+
+Use Ghostty. Kitty works too. The GPU rasterizer draws through Metal. Frames go
+through POSIX shared memory when the terminal can read it, which it can when it
+runs on the same machine, and the startup probe falls back to inline frames when
+it cannot (over SSH, for example).
+
+**Privileges.** Without root, isotop can measure only your own processes. It still
+lists the others, but macOS refuses to give their CPU or memory, and isotop never
+guesses them; they are left out of the scene and counted at the end of the fourth
+status line, for example `| 212 processes unreadable (other users; run with sudo)`.
+Run `sudo ./target/release/isotop` to see the whole machine. Under sudo, the
+processes of the user who ran sudo (`SUDO_UID`) still count as your session. Sockets
+follow the same rule: only processes isotop may read contribute links.
+
+**Measured differently.** Memory is the physical footprint, the figure Activity
+Monitor shows. Available memory is free plus inactive pages. CPU time comes from
+Mach absolute time converted to nanoseconds. I/O is the disk bytes each process has
+read and written. Priority is `51 - Mach priority`, so an ordinary application (31)
+reads as 20 and a lower number runs first, as on Linux. Process state is R when a
+thread is running, S otherwise, T for stopped and Z for zombies. The performance and
+efficiency cores come from the IORegistry (`cluster-type`); if that cannot be read,
+the lanes have no kind and are not guessed.
+
+### What macOS does not report and how each view shows it
+
+| Missing on macOS | How it shows |
+|---|---|
+| CPU and I/O pressure | The status line prints `n/a` for each: `pressure cpu n/a mem 0% io n/a`. The coop's heading noise comes from CPU variation only, and its legend says so |
+| Memory pressure as a stall percentage | The kernel's pressure level stands in for it: normal reads 0, warning 25, critical 75. The sky's memory tint and the coop's fox eyes show that level, not a stall percentage |
+| Last CPU of each process | Cores draws the lanes with their load and no marbles, and its legend says so. In the coop, running chickens share one trough instead of walking to the feeder of the core they ran on; the feeders are still drawn, brightened by how busy each core is |
+| CPU clock | Cores shows no chevron motion, and its legend says "no clock readings" |
+| Run queue | Cores draws no red queue marbles, and its legend says "no run queue readings" |
+| cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group |
+| Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
+| Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
+| GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos |
+| The systemd journal | Matrix follows the unified log instead; see below |
+
+**Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
+(pid 0) is the kernel. A process is a container if its executable is a
+virtualization helper: Virtualization.framework (`com.apple.Virtualization.VirtualMachine`),
+OrbStack, Docker, Lima (`limactl`), UTM and other QEMU (`qemu-system-*`) processes,
+`vfkit` and `krunkit`. Otherwise it is a system process if its uid is below 500 or its
+executable is under `/System`, `/usr` (except `/usr/local`), `/bin`, `/sbin` or
+`/Library/Apple`. Otherwise it belongs to your session if it runs under your uid, and
+to the system if it does not.
+
+**Groups and parents.** A process's group is the outermost `.app` bundle in its
+path, so the helpers inside `Safari.app` all group with Safari; without a bundle it
+is the executable's name. Cells and the coop use the group, with the kind, in place
+of a cgroup. A process's parent is the app responsible for it, as macOS reports it
+through a private function isotop looks up at run time, so helpers that launchd
+started sit under their app rather than under launchd. A process whose real parent
+already descends from that app keeps its real parent, so a command in a terminal stays
+under its shell. If the function is missing or would create a loop, the real parent
+is used.
+
+**The unified log.** Matrix runs `log show --last 2m` and then `log stream` (both as
+JSON) on a background thread, so the rain starts full as it does on Linux. Lines read
+`process[pid]: message`. Severity comes from the message type: Fault is critical and
+Error is an error (both red), Default is a notice and Info is information (both
+green), Debug is debug (teal), and anything else counts as a notice. The unified log
+has no warning level, so nothing is amber.
 
 ## Worlds
 
@@ -283,7 +357,8 @@ The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) 
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
 
-The systemd journal decoded out of digital rain. `journalctl -f` runs on a
+The systemd journal decoded out of digital rain (on macOS, the unified log; see
+[macOS](#macos)). `journalctl -f` runs on a
 background thread from the moment the view is first shown, starting with the
 last 200 entries. The screen is a log of `source[pid]: message` lines written
 horizontally, newest at the bottom, coloured by severity: red for errors and
@@ -415,8 +490,11 @@ reads frames both inline and through shared memory, and exercises interactive
 controls and restoration. Visual quality, flicker, and display latency should
 also be checked in Ghostty.
 
+CI builds and tests on Linux and on macOS (`macos-15`, Apple Silicon). The macOS
+code can be type-checked from Linux with
+`cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings`.
+
 ## Next milestones
 
-- A macOS process collector, so the Metal path can run on Apple GPUs.
 - Zoom-dependent aggregation for very dense systems.
 - Optional GUI presentation using the same monitoring and scene model.

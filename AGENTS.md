@@ -40,6 +40,11 @@ The README covers usage. This file covers how to work on the code.
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
+| `platform/mod.rs` | The contract between the program and the OS (`Sampler`, `network`, `account`, `Gpu`, `journal`), with `linux` and `macos` providing it |
+| `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry), the socket scan, and the permanent gaps it reports through `missing` and `unreadable` |
+| `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
+| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, socket pairing |
+| `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
 
 ## Invariants
 
@@ -77,6 +82,12 @@ cargo test
 cargo build --release
 python3 scripts/smoke_terminal.py
 ```
+
+macOS code cannot run on Linux. Type-check it locally with
+`cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings` (give it its own
+`CARGO_TARGET_DIR`); CI runs the gates and the live renders on `macos-15`. The pure logic in
+`platform/macos/logic.rs` and `platform/macos/journal.rs` is also compiled into Linux test
+builds, so `cargo test` covers it here. Keep FFI out of those two files so that stays true.
 
 The smoke test drives the release binary through a pseudo-terminal. It runs once in demo mode
 over shared memory and once in live mode inline, and exercises view switching, search, focus,
