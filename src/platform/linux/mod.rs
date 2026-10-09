@@ -14,7 +14,7 @@ use std::time::Instant;
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Process, Unit};
 use crate::platform::{Network, RawProcess};
 
-pub use journal::journal;
+pub use journal::{JOURNAL, journal};
 pub use nvml::Nvml as Gpu;
 
 /// Reads processes, memory, pressure and CPUs, keeping the CPU counters between readings.

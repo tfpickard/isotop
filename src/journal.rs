@@ -48,7 +48,7 @@ impl Journal {
             Err(error) => {
                 let _ = sender.try_send(Line::new(
                     ERROR,
-                    format!("isotop: cannot run journalctl: {error}"),
+                    format!("isotop: cannot run {}: {error}", platform::JOURNAL),
                 ));
                 return Self {
                     lines,
@@ -84,7 +84,7 @@ impl Journal {
             let mut complaint = String::new();
             let _ = stderr.read_to_string(&mut complaint);
             for line in complaint.lines().filter(|line| !line.trim().is_empty()) {
-                let _ = sender.try_send(Line::new(ERROR, format!("journalctl: {line}")));
+                let _ = sender.try_send(Line::new(ERROR, format!("{}: {line}", platform::JOURNAL)));
             }
         });
         Self {

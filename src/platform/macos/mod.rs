@@ -18,7 +18,7 @@ use std::time::Instant;
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Process, Unit};
 use crate::platform::{Network, RawProcess};
 
-pub use journal::journal;
+pub use journal::{JOURNAL, journal};
 
 /// `ARG_MAX` on macOS, used when `kern.argmax` cannot be read.
 const ARG_MAX: usize = 1 << 20;

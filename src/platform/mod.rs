@@ -28,7 +28,9 @@
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, u64>`: GPU memory
 //!     per pid.
 //! - `journal() -> io::Result<(Child, JournalParser)>`: a running log follower with piped
-//!   stdout and stderr, and the parser that reads one entry at a time from its stdout.
+//!   stdout and stderr, and the parser that reads one entry at a time from its stdout;
+//!   `JOURNAL: &str` names the follower (`journalctl` or `log`) in the messages isotop prints
+//!   when it cannot run or when it complains on stderr.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};
@@ -54,6 +56,13 @@ mod macos_logic;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("isotop has platform support for Linux and macOS only");
+
+// The macOS log parser is std-only; Linux test builds compile it too so its tests run in the
+// Linux gates.
+#[cfg(all(test, not(target_os = "macos")))]
+#[allow(dead_code)]
+#[path = "macos/journal.rs"]
+mod macos_journal;
 
 /// One process as the OS reports it, before isotop smooths anything.
 pub struct RawProcess {
