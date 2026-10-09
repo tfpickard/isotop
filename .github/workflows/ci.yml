@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 is Apple Silicon (arm64); macos-14 is marked deprecated in
+        # GitHub's runner-images.
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+
+      - name: Render coop and orbit headless
+        run: |
+          for view in coop orbit; do
+            ./target/release/isotop --demo --view "$view" --renderer cpu \
+              --width 960 --time 12 --output "$view-${{ runner.os }}.png"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renders-${{ runner.os }}
+          path: "*-${{ runner.os }}.png"
+
+      - name: Smoke test in a pseudo-terminal
+        if: runner.os == 'Linux'
+        run: python3 scripts/smoke_terminal.py
+
+      # Metal parity evidence; the runner may not expose a GPU, so never fail on it.
+      - name: Render coop on the GPU
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          ./target/release/isotop --demo --view coop --renderer gpu \
+            --width 960 --time 12 --output coop-gpu-${{ runner.os }}.png
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        with:
+          name: renders-gpu-${{ runner.os }}
+          path: coop-gpu-${{ runner.os }}.png
