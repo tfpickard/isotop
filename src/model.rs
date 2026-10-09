@@ -34,7 +34,19 @@ pub struct Process {
     pub state: char,
     pub cpu: f32,
     pub memory: u64,
+    /// Bytes per second read from and written to storage, together; None until a second
+    /// reading exists or when /proc/<pid>/io is unreadable.
     pub io_rate: Option<f32>,
+    /// The parts of `io_rate`, in bytes per second, with the same None rules.
+    pub read_rate: Option<f32>,
+    pub write_rate: Option<f32>,
+    /// Bytes written to storage since the process started (`write_bytes`); None when unreadable.
+    pub written: Option<u64>,
+    /// Scheduler priority, /proc/<pid>/stat field 18. Normal tasks have 20 + nice (0 to 39);
+    /// real-time tasks have -1 - rt_priority (negative). Lower runs first.
+    pub priority: i32,
+    /// Nice value, -20 (favoured) to 19 (background); /proc/<pid>/stat field 19.
+    pub nice: i32,
     pub threads: u32,
     /// NVIDIA GPU memory in bytes; 1 means in use with unreported memory.
     pub gpu_memory: u64,
@@ -111,6 +123,10 @@ pub struct Snapshot {
     /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
     pub pressure: [f32; 3],
     pub links: Vec<(Identity, Identity, u32)>,
+    /// Bytes per second over loopback TCP between the two processes of a pair, both directions
+    /// together. Keys are ordered as in `links`; pairs with a measured connection but no traffic
+    /// since the previous reading are present with 0.
+    pub link_traffic: HashMap<(Identity, Identity), f32>,
     /// TCP connections leaving the machine, per process.
     pub outside: HashMap<Identity, u32>,
     pub cpus: Vec<Cpu>,
@@ -120,12 +136,56 @@ pub struct Snapshot {
     pub home: Option<Place>,
     /// Where remote locations come from, for the status line.
     pub geo: String,
+    /// System-wide sources that could not be read this sample, such as "pressure". The set of
+    /// names grows as platform ports add sources of their own (the macOS port will add more).
+    pub missing: Vec<&'static str>,
 }
 
 struct Counters {
     ticks: u64,
-    io: Option<u64>,
+    io: Option<IoBytes>,
     cpu: f32,
+}
+
+/// Cumulative `read_bytes` and `write_bytes` from /proc/<pid>/io.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct IoBytes {
+    read: u64,
+    write: u64,
+}
+
+impl IoBytes {
+    fn parse(text: &str) -> Self {
+        let mut bytes = Self::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let Ok(value) = value.trim().parse() else {
+                continue;
+            };
+            match key {
+                "read_bytes" => bytes.read = value,
+                "write_bytes" => bytes.write = value,
+                _ => {}
+            }
+        }
+        bytes
+    }
+
+    fn total(self) -> u64 {
+        self.read.saturating_add(self.write)
+    }
+
+    /// Bytes per second of read and write combined, read, and write over `dt` seconds.
+    fn rates(self, before: Self, dt: f32) -> [f32; 3] {
+        [
+            self.total().saturating_sub(before.total()),
+            self.read.saturating_sub(before.read),
+            self.write.saturating_sub(before.write),
+        ]
+        .map(|bytes| bytes as f32 / dt)
+    }
 }
 
 /// Slow measurements gathered off the frame loop.
@@ -136,6 +196,8 @@ struct Extras {
     units: HashMap<String, Unit>,
     /// Remote connections with the owning pid in `id.pid`.
     remotes: Vec<Remote>,
+    /// Loopback traffic in bytes per second between pid pairs (smaller pid first).
+    traffic: HashMap<(u32, u32), f32>,
     geo: String,
 }
 
@@ -181,16 +243,21 @@ fn background(
             let mut geo = geo::Geo::open(geoip.as_deref());
             let mut units = HashMap::new();
             let mut sockets = HashMap::new();
+            let mut loopback = HashMap::new();
+            let mut retained = HashSet::new();
             while Arc::strong_count(&writer) > 1 {
-                let paths = wanted.lock().map(|set| set.clone()).unwrap_or_default();
+                let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
+                let paths = accounted(wanted_now, &mut retained);
                 let network = net::sample();
                 let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
                 let remotes = remotes(&network.remotes, &mut sockets, locator);
+                let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
                 let extras = Extras {
                     network,
                     gpu: nvml.as_ref().map(nvml::Nvml::sample).unwrap_or_default(),
                     units: account(&paths, &mut units),
                     remotes,
+                    traffic,
                     geo: geo.source.clone(),
                 };
                 match writer.lock() {
@@ -242,6 +309,41 @@ fn remotes(
         .collect();
     *previous = next;
     found
+}
+
+/// The cgroup paths to account this cycle: those wanted now plus those wanted in the previous
+/// cycle. A cgroup whose only process was just OOM-killed is no longer wanted, but its
+/// memory.events still holds the kill, so it is read once more before being dropped.
+fn accounted(wanted: HashSet<String>, previous: &mut HashSet<String>) -> HashSet<String> {
+    let paths = wanted.union(previous).cloned().collect();
+    *previous = wanted;
+    paths
+}
+
+/// Bytes per second between pid pairs (smaller pid first) from the change in each loopback
+/// socket's received counter since the previous scan. Each end counts what it received, which
+/// is what the other end sent, so both directions together count every byte once.
+fn traffic(
+    sockets: &[net::Loopback],
+    previous: &mut HashMap<u64, (Instant, u64)>,
+    now: Instant,
+) -> HashMap<(u32, u32), f32> {
+    let mut next = HashMap::new();
+    let mut rates: HashMap<(u32, u32), f32> = HashMap::new();
+    for socket in sockets {
+        let rate = previous
+            .get(&socket.inode)
+            .map_or(0.0, |&(then, received)| {
+                let dt = now.duration_since(then).as_secs_f32().max(0.1);
+                socket.received.saturating_sub(received) as f32 / dt
+            });
+        next.insert(socket.inode, (now, socket.received));
+        *rates
+            .entry((socket.pid.min(socket.peer), socket.pid.max(socket.peer)))
+            .or_default() += rate;
+    }
+    *previous = next;
+    rates
 }
 
 /// Reads the accounting files of each cgroup. CPU use comes from the change in usage since the
@@ -397,13 +499,14 @@ fn ranges(text: &str) -> Vec<u32> {
         .collect()
 }
 
-fn pressure() -> [f32; 3] {
-    ["cpu", "memory", "io"].map(|resource| {
-        fs::read_to_string(format!("/proc/pressure/{resource}"))
-            .ok()
-            .and_then(|text| parse_pressure(&text))
-            .unwrap_or(0.0)
-    })
+/// Pressure stall percentages, and whether /proc/pressure/cpu could be read at all (kernels
+/// without PSI have no such file). Unreadable or unparsable values count as 0.
+fn pressure() -> ([f32; 3], bool) {
+    let texts = ["cpu", "memory", "io"]
+        .map(|resource| fs::read_to_string(format!("/proc/pressure/{resource}")).ok());
+    let readable = texts[0].is_some();
+    let values = texts.map(|text| text.as_deref().and_then(parse_pressure).unwrap_or(0.0));
+    (values, readable)
 }
 
 /// The `some avg10=` value from a /proc/pressure file.
@@ -451,10 +554,16 @@ impl Collector {
         }
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().max(0.001);
+        let (pressure, pressure_readable) = pressure();
         let mut snapshot = Snapshot {
             cores: std::thread::available_parallelism().map_or(1, usize::from),
             elapsed: now.duration_since(self.origin).as_secs_f64(),
-            pressure: pressure(),
+            pressure,
+            missing: if pressure_readable {
+                Vec::new()
+            } else {
+                vec!["pressure"]
+            },
             cpus: cpus(&mut self.cpu_previous, &self.core_kinds, dt),
             home: self.home.clone(),
             ..Default::default()
@@ -492,23 +601,22 @@ impl Collector {
                 continue;
             };
             process.cpu_time = ticks as f32 / self.hz;
-            let io = fs::read_to_string(path.join("io")).ok().map(|text| {
-                text.lines()
-                    .filter_map(|line| {
-                        let (key, value) = line.split_once(':')?;
-                        matches!(key, "read_bytes" | "write_bytes")
-                            .then(|| value.trim().parse::<u64>().ok())
-                            .flatten()
-                    })
-                    .sum::<u64>()
-            });
+            let io = fs::read_to_string(path.join("io"))
+                .ok()
+                .map(|text| IoBytes::parse(&text));
+            process.written = io.map(|io| io.write);
             if let Some(previous) = self.previous.get(&process.id) {
                 let raw = ticks.saturating_sub(previous.ticks) as f32 / self.hz / dt * 100.0;
                 let alpha = 1.0 - (-dt / 1.5).exp();
                 process.cpu = previous.cpu + alpha * (raw - previous.cpu);
-                process.io_rate = io
+                if let Some([total, read, write]) = io
                     .zip(previous.io)
-                    .map(|(a, b)| a.saturating_sub(b) as f32 / dt);
+                    .map(|(current, before)| current.rates(before, dt))
+                {
+                    process.io_rate = Some(total);
+                    process.read_rate = Some(read);
+                    process.write_rate = Some(write);
+                }
             }
             if let Ok(command) = fs::read(path.join("cmdline")) {
                 let text = String::from_utf8_lossy(&command).replace('\0', " ");
@@ -566,6 +674,11 @@ impl Collector {
                 .outside
                 .iter()
                 .filter_map(|(pid, &count)| Some((*ids.get(pid)?, count)))
+                .collect();
+            snapshot.link_traffic = extras
+                .traffic
+                .iter()
+                .filter_map(|(&(a, b), &rate)| Some(((*ids.get(&a)?, *ids.get(&b)?), rate)))
                 .collect();
             snapshot.units = extras.units.clone();
             snapshot.remotes = extras
@@ -641,6 +754,7 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
     let close = text.rfind(')')?;
     let fields: Vec<&str> = text.get(close + 1..)?.split_whitespace().collect();
     let number = |index: usize| fields.get(index)?.parse::<u64>().ok();
+    let signed = |index: usize| fields.get(index)?.parse::<i32>().ok();
     let name = text.get(open + 1..close)?.to_owned();
     let rss = fields.get(21)?.parse::<i64>().ok()?.max(0) as u64;
     Some((
@@ -662,6 +776,12 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             cpu: 0.0,
             memory: rss.saturating_mul(page_size),
             io_rate: None,
+            read_rate: None,
+            write_rate: None,
+            written: None,
+            // Fields 18 and 19 of /proc/<pid>/stat; priority is negative for real-time tasks.
+            priority: signed(15)?,
+            nice: signed(16)?,
             threads: number(17)? as u32,
             gpu_memory: 0,
             // Field 39 of /proc/<pid>/stat, counted from the state as field 3.
@@ -676,6 +796,29 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
 pub fn bounded(value: f32, knee: f32) -> f32 {
     let value = value.max(0.0);
     value / (value + knee)
+}
+
+/// The demo's CPU use is `scale / 16 * (1 + sin(theta))^4 + bonus` with `theta = 0.55 t + 1.71 i`.
+/// This is the exact integral of that CPU use (in percent-seconds) from time 0 to `time`, using
+/// the antiderivative of (1 + sin)^4 = 1 + 4 sin + 6 sin^2 + 4 sin^3 + sin^4 with respect to theta:
+/// 35/8 theta - 8 cos + 4/3 cos^3 - 7/4 sin 2theta + 1/32 sin 4theta.
+fn demo_cpu_integral(time: f64, index: usize) -> f64 {
+    const RATE: f64 = 0.55;
+    let antiderivative = |theta: f64| {
+        4.375 * theta - 8.0 * theta.cos() + 4.0 / 3.0 * theta.cos().powi(3)
+            - 1.75 * (2.0 * theta).sin()
+            + (4.0 * theta).sin() / 32.0
+    };
+    let start = index as f64 * 1.71;
+    let scale = 20.0 + (index % 9) as f64 * 24.0;
+    let bonus = if index.is_multiple_of(47) { 110.0 } else { 0.0 };
+    scale / 16.0 * (antiderivative(RATE * time + start) - antiderivative(start)) / RATE
+        + bonus * time
+}
+
+/// The share of a demo process's I/O that is writes.
+fn demo_write_share(index: usize) -> f32 {
+    (1 + index % 3) as f32 / 4.0
 }
 
 pub fn demo(time: f64, count: usize) -> Snapshot {
@@ -704,6 +847,24 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             Kind::Container => Some("/machine.slice"),
             Kind::System => Some("/system.slice"),
         };
+        let io_rate = if i % 7 == 0 { cpu * 65536.0 } else { 0.0 };
+        let write_rate = io_rate * demo_write_share(i);
+        // Written bytes are the integral of write_rate, which is the CPU integral scaled alike.
+        let written = if i % 7 == 0 {
+            (demo_cpu_integral(time, i) * 65536.0 * demo_write_share(i) as f64) as u64
+        } else {
+            0
+        };
+        let (priority, nice) = if kind == Kind::Kernel && i % 3 == 0 {
+            (0, -20)
+        } else if i % 61 == 17 {
+            (-51, 0)
+        } else if i % 6 == 4 {
+            (39, 19)
+        } else {
+            (20, 0)
+        };
+        let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
         processes.push(Process {
             id: Identity {
                 pid: 1000 + i as u32,
@@ -723,6 +884,10 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             kind,
             state: if i % 41 == 0 {
                 'Z'
+            } else if i == 9 {
+                'T'
+            } else if i % 13 == 6 && kind != Kind::Kernel && cpu <= 30.0 && stalled {
+                'D'
             } else if cpu > 30.0 {
                 'R'
             } else {
@@ -730,7 +895,12 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             },
             cpu,
             memory: memory as u64,
-            io_rate: Some(if i % 7 == 0 { cpu * 65536.0 } else { 0.0 }),
+            io_rate: Some(io_rate),
+            read_rate: Some(io_rate - write_rate),
+            write_rate: Some(write_rate),
+            written: Some(written),
+            priority,
+            nice,
             threads: if i % 5 == 0 { 4 << (i % 6) } else { 1 },
             gpu_memory: if i % 37 == 5 {
                 (300 + i as u64 * 7) << 20
@@ -745,6 +915,19 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
     let links = (1..count)
         .filter(|i| i % 3 == 0)
         .map(|i| (id(i), id(i * 7 + 16), 1 + (i % 4) as u32))
+        .collect();
+    // Every third link is silent, a few carry megabytes, the rest kilobytes.
+    let link_traffic = (1..count)
+        .filter(|i| i % 3 == 0)
+        .map(|i| {
+            let pulse = ((time * 0.9 + i as f64 * 0.7).sin() as f32) * 0.5 + 0.5;
+            let rate = match (i / 3) % 12 {
+                0 | 3 | 6 | 9 => 0.0,
+                7 => 1.0e6 * (1.0 + 2.0 * pulse),
+                _ => 1024.0 * (1 + i % 5) as f32 * pulse,
+            };
+            ((id(i), id(i * 7 + 16)), rate)
+        })
         .collect();
     let outside = (0..count)
         .filter(|i| i % 11 == 0)
@@ -824,10 +1007,12 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         elapsed: time,
         pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
         links,
+        link_traffic,
         outside,
         cpus,
         units,
         remotes,
+        missing: Vec::new(),
         home: Some(Place {
             latitude: 52.37,
             longitude: 4.9,
@@ -1039,5 +1224,185 @@ mod tests {
             cgroup_name("0::/system.slice/example.service\n"),
             Some("example.service".into())
         );
+    }
+
+    fn stat_line(edit: impl FnOnce(&mut Vec<&str>)) -> String {
+        let mut fields = vec!["0"; 22];
+        fields[0] = "S";
+        edit(&mut fields);
+        format!("5 (x) {}", fields.join(" "))
+    }
+
+    #[test]
+    fn stat_reads_priority_and_nice_including_real_time_priorities() {
+        let normal = stat_line(|fields| {
+            fields[15] = "39";
+            fields[16] = "19";
+        });
+        let (process, _) = parse_stat(5, &normal, 4096).unwrap();
+        assert_eq!((process.priority, process.nice), (39, 19));
+        let real_time = stat_line(|fields| fields[15] = "-51");
+        let (process, _) = parse_stat(5, &real_time, 4096).unwrap();
+        assert_eq!((process.priority, process.nice), (-51, 0));
+        let favoured = stat_line(|fields| {
+            fields[15] = "0";
+            fields[16] = "-20";
+        });
+        let (process, _) = parse_stat(5, &favoured, 4096).unwrap();
+        assert_eq!((process.priority, process.nice), (0, -20));
+    }
+
+    #[test]
+    fn io_read_and_write_rates_and_written_come_from_separate_counters() {
+        let text = "rchar: 99\nwchar: 98\nsyscr: 1\nsyscw: 1\nread_bytes: 4096\nwrite_bytes: 1000\ncancelled_write_bytes: 0\n";
+        let before = IoBytes::parse(text);
+        assert_eq!(
+            before,
+            IoBytes {
+                read: 4096,
+                write: 1000
+            }
+        );
+        let after = IoBytes {
+            read: 4096 + 6000,
+            write: 1000 + 2000,
+        };
+        assert_eq!(after.rates(before, 2.0), [4000.0, 3000.0, 1000.0]);
+        // A counter that went backwards (a recycled pid's reset) reads as no traffic.
+        assert_eq!(before.rates(after, 2.0), [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn loopback_traffic_becomes_a_rate_from_counter_deltas_and_counts_each_byte_once() {
+        let socket = |inode, pid, peer, received| net::Loopback {
+            inode,
+            pid,
+            peer,
+            received,
+        };
+        let start = Instant::now();
+        let mut previous = HashMap::new();
+        let first = [socket(1, 30, 20, 1000), socket(2, 20, 30, 500)];
+        let rates = traffic(&first, &mut previous, start);
+        assert_eq!(rates, HashMap::from([((20, 30), 0.0)]));
+        // 30 received 4000 bytes and 20 received 1000 more; 5000 bytes crossed in 2 seconds.
+        let second = [socket(1, 30, 20, 5000), socket(2, 20, 30, 1500)];
+        let rates = traffic(&second, &mut previous, start + Duration::from_secs(2));
+        assert_eq!(rates, HashMap::from([((20, 30), 2500.0)]));
+        // The interval is floored at 0.1 s, and a new socket on a known pair starts from zero.
+        let third = [
+            socket(1, 30, 20, 5100),
+            socket(2, 20, 30, 1500),
+            socket(3, 20, 30, 777),
+        ];
+        let rates = traffic(&third, &mut previous, start + Duration::from_millis(2010));
+        assert_eq!(rates, HashMap::from([((20, 30), 1000.0)]));
+    }
+
+    #[test]
+    fn a_cgroup_that_stops_being_wanted_is_accounted_for_one_more_cycle() {
+        let set = |paths: &[&str]| -> HashSet<String> {
+            paths.iter().map(|path| path.to_string()).collect()
+        };
+        let mut previous = HashSet::new();
+        assert_eq!(
+            accounted(set(&["/a", "/b"]), &mut previous),
+            set(&["/a", "/b"])
+        );
+        assert_eq!(accounted(set(&["/a"]), &mut previous), set(&["/a", "/b"]));
+        assert_eq!(accounted(set(&["/a"]), &mut previous), set(&["/a"]));
+        assert_eq!(
+            accounted(set(&["/a", "/b"]), &mut previous),
+            set(&["/a", "/b"])
+        );
+    }
+
+    #[test]
+    fn demo_read_and_write_rates_add_up_to_io_rate() {
+        for time in [0.0, 3.3, 41.0] {
+            for (i, p) in demo(time, 128).processes.iter().enumerate() {
+                let (io, read, write) = (
+                    p.io_rate.unwrap(),
+                    p.read_rate.unwrap(),
+                    p.write_rate.unwrap(),
+                );
+                let expected = if i % 7 == 0 { p.cpu * 65536.0 } else { 0.0 };
+                assert_eq!(io, expected);
+                assert!(read >= 0.0 && write >= 0.0);
+                assert!((read + write - io).abs() <= io * 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn demo_written_bytes_never_decrease_and_start_at_zero() {
+        let mut last = vec![0_u64; 64];
+        for step in 0..300 {
+            let snapshot = demo(step as f64 * 0.7, 64);
+            for (before, p) in last.iter_mut().zip(&snapshot.processes) {
+                let written = p.written.unwrap();
+                assert!(written >= *before, "{} went backwards", p.name);
+                *before = written;
+            }
+        }
+        assert!(last.iter().any(|&written| written > 0));
+        assert!(demo(0.0, 64).processes.iter().all(|p| p.written == Some(0)));
+    }
+
+    #[test]
+    fn demo_written_bytes_grow_at_write_rate() {
+        // Trapezoid integration of the sampled write_rate against the closed-form total.
+        let (end, step) = (20.0, 0.05);
+        for index in [0, 7, 14, 21, 49] {
+            let rate = |time: f64| demo(time, 64).processes[index].write_rate.unwrap() as f64;
+            let steps = (end / step) as usize;
+            let integral: f64 = (0..steps)
+                .map(|k| (rate(k as f64 * step) + rate((k + 1) as f64 * step)) / 2.0 * step)
+                .sum();
+            let written = demo(end, 64).processes[index].written.unwrap() as f64;
+            assert!(
+                (written - integral).abs() <= integral * 0.005,
+                "process {index}: {written} vs {integral}"
+            );
+        }
+    }
+
+    #[test]
+    fn demo_scheduling_classes_states_and_traffic_cover_the_coop_cases() {
+        let mut stalled = false;
+        for step in 0..200 {
+            let snapshot = demo(step as f64 * 1.3, 128);
+            assert!(snapshot.missing.is_empty());
+            for (i, p) in snapshot.processes.iter().enumerate() {
+                assert_eq!(p.state == 'Z', i % 41 == 0);
+                assert_eq!(p.state == 'T', i == 9);
+                if p.state == 'D' {
+                    stalled = true;
+                    assert!(p.kind != Kind::Kernel && p.cpu <= 30.0);
+                }
+            }
+        }
+        assert!(stalled);
+        let snapshot = demo(30.0, 128);
+        let processes = &snapshot.processes;
+        let count = |wanted: (i32, i32)| {
+            processes
+                .iter()
+                .filter(|p| (p.priority, p.nice) == wanted)
+                .count()
+        };
+        assert!(count((20, 0)) > processes.len() / 2);
+        assert!(count((39, 19)) > 0 && count((-51, 0)) > 0 && count((0, -20)) > 0);
+        assert!(
+            processes
+                .iter()
+                .filter(|p| p.priority == 0)
+                .all(|p| p.kind == Kind::Kernel)
+        );
+        let rates: Vec<f32> = snapshot.link_traffic.values().copied().collect();
+        assert!(rates.contains(&0.0));
+        assert!(rates.iter().any(|&rate| rate > 0.0 && rate < 100_000.0));
+        assert!(rates.iter().any(|&rate| rate >= 1.0e6));
+        assert_eq!(demo(30.0, 128).link_traffic, snapshot.link_traffic);
     }
 }

@@ -1,7 +1,7 @@
 //! Socket links between processes: loopback TCP pairs, Unix-socket peers, and TCP connections
 //! that leave the machine. Only sockets of processes whose file descriptors we may read are seen.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -15,6 +15,20 @@ pub struct Network {
     pub outside: HashMap<u32, u32>,
     /// Those outside connections in detail, from the kernel's TCP statistics.
     pub remotes: Vec<Remote>,
+    /// Loopback TCP sockets between two known processes, for per-link traffic.
+    pub loopback: Vec<Loopback>,
+}
+
+/// One end of an established loopback TCP connection between two different processes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loopback {
+    pub inode: u64,
+    /// The process that owns this end and the one that owns the other end.
+    pub pid: u32,
+    pub peer: u32,
+    /// Bytes received on this end since the connection opened. What one end receives the other
+    /// end sent, so summing both ends counts every byte of the connection once.
+    pub received: u64,
 }
 
 /// One established TCP connection to another machine.
@@ -49,7 +63,8 @@ pub fn sample() -> Network {
         .iter()
         .map(|c| ((c.local.as_str(), c.remote.as_str()), c.inode))
         .collect();
-    let mut local = HashSet::new();
+    // Inodes of local connections that have an owner, with the inode of the other end.
+    let mut local = HashMap::new();
     for connection in &tcp {
         let Some(&pid) = owners.get(&connection.inode) else {
             continue;
@@ -57,7 +72,7 @@ pub fn sample() -> Network {
         match endpoints.get(&(connection.remote.as_str(), connection.local.as_str())) {
             // Both directions of a local connection are listed; count the pair once.
             Some(peer) => {
-                local.insert(connection.inode);
+                local.insert(connection.inode, *peer);
                 if connection.local < connection.remote
                     && let Some(&other) = owners.get(peer)
                 {
@@ -76,7 +91,17 @@ pub fn sample() -> Network {
     }
     for family in [libc::AF_INET, libc::AF_INET6] {
         for socket in tcp_sockets(family as u8).unwrap_or_default() {
-            if local.contains(&socket.inode) {
+            if let Some(peer) = local.get(&socket.inode) {
+                if let (Some(&pid), Some(&other)) = (owners.get(&socket.inode), owners.get(peer))
+                    && pid != other
+                {
+                    network.loopback.push(Loopback {
+                        inode: socket.inode,
+                        pid,
+                        peer: other,
+                        received: socket.received,
+                    });
+                }
                 continue;
             }
             if let Some(&pid) = owners.get(&socket.inode) {
