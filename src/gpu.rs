@@ -51,6 +51,15 @@ struct Glow {
     color: [u8; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Glyph {
+    origin: [f32; 2],
+    scale: f32,
+    color: [u8; 4],
+    bits: [u32; 4],
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Pass {
     Triangles,
@@ -59,6 +68,7 @@ enum Pass {
     Stars,
     Balls,
     Glows,
+    Glyphs,
 }
 
 struct Targets {
@@ -118,9 +128,9 @@ pub struct Gpu {
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     sky: wgpu::RenderPipeline,
-    pipelines: [(Pass, wgpu::RenderPipeline); 6],
+    pipelines: [(Pass, wgpu::RenderPipeline); 7],
     targets: Option<Targets>,
-    streams: [Stream; 3],
+    streams: [Stream; 4],
     scratch: Vec<u8>,
     failure: Arc<Mutex<Option<String>>>,
 }
@@ -205,6 +215,11 @@ impl Gpu {
             array_stride: std::mem::size_of::<Glow>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Unorm8x4],
+        };
+        let glyph = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Glyph>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Unorm8x4, 3 => Uint32x4],
         };
         let make = |entry: (&str, &str),
                     buffers: &[Option<wgpu::VertexBufferLayout>],
@@ -309,6 +324,15 @@ impl Gpu {
                     translucent,
                 ),
             ),
+            (
+                Pass::Glyphs,
+                make(
+                    ("glyph_vertex", "glyph_fragment"),
+                    &[Some(glyph)],
+                    TriangleList,
+                    backdrop,
+                ),
+            ),
         ];
         let sky = make(("sky_vertex", "sky_fragment"), &[], TriangleList, backdrop);
         if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
@@ -384,6 +408,7 @@ impl Gpu {
         let mut vertices = Vec::with_capacity(frame.items.len() * 2);
         let mut balls = Vec::new();
         let mut glows = Vec::new();
+        let mut glyphs = Vec::new();
         let mut batches: Vec<(Pass, Range<u32>)> = Vec::new();
         let mut depth = [f32::INFINITY, f32::NEG_INFINITY];
         let mut track = |d: f32| {
@@ -395,6 +420,7 @@ impl Gpu {
             let (pass, start) = match *item {
                 Item::Sphere { .. } => (Pass::Balls, balls.len()),
                 Item::Glow { .. } => (Pass::Glows, glows.len()),
+                Item::Glyph { .. } => (Pass::Glyphs, glyphs.len()),
                 Item::Triangle(..) => (Pass::Triangles, vertices.len()),
                 Item::Line(..) => (Pass::Lines, vertices.len()),
                 Item::Beam(..) => (Pass::Beams, vertices.len()),
@@ -469,10 +495,22 @@ impl Gpu {
                     strength,
                     color: rgba(color, 255),
                 }),
+                Item::Glyph {
+                    origin,
+                    scale,
+                    bits,
+                    color,
+                } => glyphs.push(Glyph {
+                    origin,
+                    scale: scale as f32,
+                    color: rgba(color, 255),
+                    bits: [0, 32, 64, 96].map(|shift| (bits >> shift) as u32),
+                }),
             }
             let end = match pass {
                 Pass::Balls => balls.len(),
                 Pass::Glows => glows.len(),
+                Pass::Glyphs => glyphs.len(),
                 _ => vertices.len(),
             };
             match batches.last_mut() {
@@ -494,13 +532,15 @@ impl Gpu {
         };
         self.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        let [vertex_stream, ball_stream, glow_stream] = &mut self.streams;
+        let [vertex_stream, ball_stream, glow_stream, glyph_stream] = &mut self.streams;
         let vertex_buffer =
             vertex_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&vertices));
         let ball_buffer =
             ball_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&balls));
         let glow_buffer =
             glow_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&glows));
+        let glyph_buffer =
+            glyph_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&glyphs));
         self.targets(width, height);
         let targets = self.targets.as_ref().expect("targets exist");
         let mut encoder = self
@@ -554,11 +594,11 @@ impl Gpu {
                     .1;
                 pass.set_pipeline(pipeline);
                 match kind {
-                    Pass::Balls | Pass::Glows => {
-                        let buffer = if kind == Pass::Balls {
-                            &ball_buffer
-                        } else {
-                            &glow_buffer
+                    Pass::Balls | Pass::Glows | Pass::Glyphs => {
+                        let buffer = match kind {
+                            Pass::Balls => &ball_buffer,
+                            Pass::Glows => &glow_buffer,
+                            _ => &glyph_buffer,
                         };
                         if let Some(buffer) = buffer {
                             pass.set_vertex_buffer(0, buffer.slice(..));

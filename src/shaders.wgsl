@@ -7,7 +7,7 @@ struct Globals {
     depth: vec2<f32>,
     // Pressure haze in 0-255 units, and animation time in w.
     haze: vec4<f32>,
-    // x: the backdrop, 0 dusk gradient, 1 flat space, 2 sea gradient.
+    // x: the backdrop, 0 dusk gradient, 1 flat space, 2 sea gradient, 3 black.
     sky: vec4<f32>,
 };
 
@@ -46,6 +46,8 @@ fn sky_fragment(@builtin(position) position: vec4<f32>) -> Targets {
     var base = vec3<f32>(5.0, 8.0, 18.0);
     if globals.sky.x < 0.5 {
         base = vec3<f32>(8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0);
+    } else if globals.sky.x > 2.5 {
+        base = vec3<f32>(0.0);
     } else if globals.sky.x > 1.5 {
         base = vec3<f32>(24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0);
     }
@@ -166,4 +168,42 @@ fn glow_fragment(input: GlowVarying) -> Targets {
     }
     let weight = input.strength * (1.0 - d) * (1.0 - d);
     return Targets(vec4<f32>(input.color.rgb, weight), NONE);
+}
+
+// Glyph cells are 7 by 14 font pixels; font pixel (column, row) is bit row * 7 + column of the
+// 128-bit mask, split little-endian across four words.
+const GLYPH = vec2<f32>(7.0, 14.0);
+
+struct Glyph {
+    @location(0) origin: vec2<f32>,
+    @location(1) scale: f32,
+    @location(2) color: vec4<f32>,
+    @location(3) bits: vec4<u32>,
+};
+
+struct GlyphVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) origin: vec2<f32>,
+    @location(1) @interpolate(flat) scale: f32,
+    @location(2) @interpolate(flat) color: vec4<f32>,
+    @location(3) @interpolate(flat) bits: vec4<u32>,
+};
+
+@vertex
+fn glyph_vertex(@builtin(vertex_index) index: u32, glyph: Glyph) -> GlyphVarying {
+    let position = glyph.origin + (CORNERS[index] * 0.5 + 0.5) * GLYPH * glyph.scale;
+    return GlyphVarying(vec4<f32>(clip(position), 0.5, 1.0), glyph.origin, glyph.scale, glyph.color, glyph.bits);
+}
+
+@fragment
+fn glyph_fragment(input: GlyphVarying) -> Targets {
+    let cell = floor((floor(input.position.xy) - input.origin) / input.scale);
+    if any(cell < vec2<f32>(0.0)) || any(cell >= GLYPH) {
+        discard;
+    }
+    let bit = u32(cell.y) * 7u + u32(cell.x);
+    if ((input.bits[bit / 32u] >> (bit % 32u)) & 1u) == 0u {
+        discard;
+    }
+    return Targets(vec4<f32>(input.color.rgb, 1.0), NONE);
 }
