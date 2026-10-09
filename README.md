@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 
 The video at the top is a live session on a real machine, touring the views. The
 other screenshots and recordings are of Ghostty running `isotop --demo`, the
-synthetic workload.
+synthetic workload; the coop image is a crop of a headless `--demo --output` render.
 
 ## Run
 
@@ -229,6 +229,8 @@ crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
 memory everywhere, I/O rises as bubbles, and zombies float belly-up.
 
 ### Coop
+
+![Coop: flocks foraging by their henhouses, roosting on perch ladders and queueing at the feeders](docs/media/coop.webp)
 
 A fenced chicken yard in which every process is a chicken in a Vicsek flock: each one steers by the average heading of its flock mates, plus noise.
 
