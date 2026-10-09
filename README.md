@@ -8,7 +8,7 @@ as Matrix rain. Linux-first, written
 in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
-![Orbit: process trees as solar systems revolving about the galaxy's barycenter](docs/media/orbit-motion.webp)
+https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 
 | | | |
 |:-:|:-:|:-:|
@@ -16,8 +16,9 @@ protocol. Ghostty is the primary target.
 | ![Flow](docs/media/flow.webp)<br>**4 Flow** | ![Cores](docs/media/cores.webp)<br>**5 Cores** | ![Cells](docs/media/cells.webp)<br>**6 Cells** |
 | ![Strata](docs/media/strata.webp)<br>**7 Strata** | ![Globe](docs/media/globe.webp)<br>**8 Globe** | ![Reef](docs/media/reef.webp)<br>**9 Reef** |
 
-Screenshots and recordings are of Ghostty running `isotop --demo`, the synthetic
-workload, so they show no real machine.
+The video at the top is a live session on a real machine, touring the views. The
+other screenshots and recordings are of Ghostty running `isotop --demo`, the
+synthetic workload.
 
 ## Run
 
