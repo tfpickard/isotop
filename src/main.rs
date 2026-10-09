@@ -14,6 +14,7 @@ mod pack;
 mod places;
 mod reef;
 mod render;
+mod simulation;
 mod strata;
 mod terminal;
 
