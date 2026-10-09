@@ -36,6 +36,8 @@ use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View};
 use terminal::{Label, Popup, Terminal, Tone};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
+/// Terminal rows of the status panel under the scene.
+const PANEL_ROWS: u16 = 5;
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum Renderer {
@@ -147,14 +149,15 @@ struct Layout {
 }
 
 impl Layout {
-    fn measure(max_width: u32) -> io::Result<Self> {
+    /// Sizes the scene to the terminal, leaving `PANEL_ROWS` at the bottom when the panel shows.
+    fn measure(max_width: u32, panel: bool) -> io::Result<Self> {
         let (columns, rows) = crossterm::terminal::size()?;
         if columns < 40 || rows < 12 {
             return Err(io::Error::other(
                 "isotop needs at least 40 columns and 12 rows",
             ));
         }
-        let scene_rows = rows - 5;
+        let scene_rows = if panel { rows - PANEL_ROWS } else { rows };
         let cell = crossterm::terminal::window_size()
             .ok()
             .filter(|s| s.width > 0 && s.height > 0 && s.columns > 0 && s.rows > 0)
@@ -269,6 +272,8 @@ struct App {
     snap: bool,
     fit_zoom: f32,
     show_help: bool,
+    /// The status panel is wanted; `h` hides it so the scene fills the terminal.
+    panel: bool,
     labels: bool,
     hover: Option<Pointer>,
     hovered: Option<Identity>,
@@ -302,6 +307,7 @@ impl App {
             snap: true,
             fit_zoom: 5.0,
             show_help: false,
+            panel: true,
             labels: true,
             hover: None,
             hovered: None,
@@ -449,6 +455,11 @@ impl App {
     fn touch(&mut self) {
         self.last_input = Instant::now();
         self.tour = None;
+    }
+
+    /// Whether the status panel is drawn: when wanted, and always while typing a search.
+    fn panel_shown(&self) -> bool {
+        self.panel || self.search.is_some()
     }
 
     /// Notable processes to visit while idle: system stars, the busiest and the largest.
@@ -601,7 +612,7 @@ impl App {
         } else if self.show_help {
             lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | g tour | f focus | l labels | c links".into());
         } else {
-            lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | ? help | q quit".into());
+            lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
         }
         let [cpu, memory, io] = s.pressure;
         let links = match self.scene.links {
@@ -907,6 +918,7 @@ impl App {
                 };
             }
             KeyCode::Char('l') => self.labels = !self.labels,
+            KeyCode::Char('h') => self.panel = !self.panel,
             KeyCode::Char(digit @ '0'..='9') => {
                 self.view = View::ALL[(digit as usize + 10 - '1' as usize) % 10];
                 self.fit = true;
@@ -1216,7 +1228,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     }
     let mut terminal = Terminal::enter(options.force_graphics, options.direct)?;
     app.scene.intro = true;
-    let mut layout = Layout::measure(options.width)?;
+    let mut layout = Layout::measure(options.width, app.panel_shown())?;
     let tour_after = (options.tour > 0).then(|| Duration::from_secs(options.tour as u64));
     let origin = Instant::now();
     let mut last_sample = Instant::now();
@@ -1278,14 +1290,12 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         } else {
             format!("{:.1} KiB/frame inline", wire as f32 / 1024.0)
         };
-        wire = terminal.present(
-            &frame,
-            layout.columns,
-            layout.rows,
-            &labels,
-            &panels,
-            &app.text(render_ms, &transport, options.fps, limit),
-        )?;
+        let text = if app.panel_shown() {
+            app.text(render_ms, &transport, options.fps, limit)
+        } else {
+            Vec::new()
+        };
+        wire = terminal.present(&frame, layout.columns, layout.rows, &labels, &panels, &text)?;
         frames += 1;
         total_wire += wire as u64;
         let deadline = frame_start + frame_interval;
@@ -1296,10 +1306,15 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
+                    let shown = app.panel_shown();
                     quit = app.key(key.code, key.modifiers, layout.width as f32 * 0.04);
+                    if app.panel_shown() != shown {
+                        layout = Layout::measure(options.width, app.panel_shown())?;
+                        terminal.clear()?;
+                    }
                 }
                 Event::Resize(_, _) => {
-                    layout = Layout::measure(options.width)?;
+                    layout = Layout::measure(options.width, app.panel_shown())?;
                     terminal.clear()?;
                 }
                 Event::Mouse(mouse) => {
@@ -1412,6 +1427,23 @@ mod tests {
         };
         assert!(app.popup(&frame, &layout).is_none());
         assert_eq!(app.selected, Some(selected), "kept for the process views");
+    }
+
+    #[test]
+    fn h_hides_the_panel_except_while_typing_a_search() {
+        let mut app = App::new(View::City, model::demo(1.0, 16));
+        let press = |app: &mut App, c: char| app.key(KeyCode::Char(c), KeyModifiers::NONE, 10.0);
+        assert!(app.panel_shown());
+        press(&mut app, 'h');
+        assert!(!app.panel_shown());
+        press(&mut app, '/');
+        assert!(app.panel_shown(), "the search line stays visible");
+        press(&mut app, 'h');
+        assert_eq!(app.search.as_deref(), Some("h"), "h is typed, not a toggle");
+        app.key(KeyCode::Esc, KeyModifiers::NONE, 10.0);
+        assert!(!app.panel_shown(), "hidden again after the search");
+        press(&mut app, 'h');
+        assert!(app.panel_shown());
     }
 
     #[test]
