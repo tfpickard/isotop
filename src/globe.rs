@@ -368,9 +368,39 @@ fn coastline() -> Vec<Vec<[f32; 2]>> {
     lines
 }
 
+/// The status legend, saying what the snapshot's platform leaves out.
+pub fn legend(snapshot: &Snapshot) -> String {
+    if snapshot.missing.contains(&"socket traffic") {
+        format!(
+            " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
+            snapshot.geo
+        )
+    } else {
+        format!(
+            " Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}",
+            snapshot.geo
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legend_drops_rates_when_the_platform_has_no_socket_traffic() {
+        let mut snapshot = Snapshot {
+            geo: "demo locations".into(),
+            ..Default::default()
+        };
+        let full = legend(&snapshot);
+        assert!(full.contains("brighter with traffic | cyan = mostly download"));
+        assert!(full.ends_with("| demo locations"));
+        snapshot.missing = vec!["socket traffic"];
+        let text = legend(&snapshot);
+        assert!(text.contains("no per-connection rates or RTT on macOS"));
+        assert!(!text.contains("cyan") && text.ends_with("| demo locations"));
+    }
 
     #[test]
     fn coastline_decodes_and_arcs_stay_on_the_sphere() {

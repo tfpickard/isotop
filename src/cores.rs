@@ -99,9 +99,12 @@ impl Track {
                 NONE,
             );
         }
+        // Without a last CPU per process a marble cannot be placed on a lane, and the running and
+        // idle counts would all fall on one of them, so neither is drawn.
+        let placed = !snapshot.missing.contains(&"last cpu");
         let mut racing: HashMap<u32, usize> = HashMap::new();
         let mut parked: HashMap<u32, usize> = HashMap::new();
-        for process in processes {
+        for process in processes.iter().filter(|_| placed) {
             let core = if lanes.contains_key(&process.core) {
                 process.core
             } else {
@@ -172,14 +175,21 @@ impl Track {
             } else {
                 String::new()
             };
+            let occupants = if placed {
+                format!(
+                    " | {} running, {} idle",
+                    racing.get(&cpu.id).copied().unwrap_or(0),
+                    parked.get(&cpu.id).copied().unwrap_or(0)
+                )
+            } else {
+                String::new()
+            };
             stage.places.push((
                 ring(-0.05, r, 0.0),
                 format!(
-                    "cpu{}{kind}{clock} {:.0}% | {} running, {} idle",
+                    "cpu{}{kind}{clock} {:.0}%{occupants}",
                     cpu.id,
-                    cpu.busy * 100.0,
-                    racing.get(&cpu.id).copied().unwrap_or(0),
-                    parked.get(&cpu.id).copied().unwrap_or(0)
+                    cpu.busy * 100.0
                 ),
             ));
         }
@@ -214,10 +224,10 @@ impl Track {
             .map(|(i, p)| (p.id, i))
             .collect();
         self.marbles
-            .retain(|id, _| alive.get(id).is_some_and(|&i| active(processes[i])));
+            .retain(|id, _| placed && alive.get(id).is_some_and(|&i| active(processes[i])));
         let mut shown = 0;
         for (index, process) in processes.iter().enumerate() {
-            if !active(process) {
+            if !placed || !active(process) {
                 continue;
             }
             let core = if lanes.contains_key(&process.core) {
@@ -317,7 +327,77 @@ impl Track {
     }
 }
 
+/// The status legend, saying what the snapshot's platform leaves out.
+pub fn legend(snapshot: &Snapshot) -> String {
+    let lacks = |name| snapshot.missing.contains(&name);
+    let mut line = " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned();
+    line.push_str(if lacks("cpu clock") {
+        " | no clock readings"
+    } else {
+        " | chevrons = clock"
+    });
+    line.push_str(if lacks("run queue") {
+        " | no run queue readings"
+    } else {
+        " | red queue = waiting tasks"
+    });
+    line.push_str(if lacks("last cpu") {
+        " | lanes = load; macOS reports no last CPU per process, so no marbles"
+    } else {
+        " | marble = running process, one lap per 10 s of CPU, hops = migrations"
+    });
+    line
+}
+
 /// Processes on the track; the rest only count towards their lane's idle total.
 fn active(process: &Process) -> bool {
     process.cpu >= 1.0 || process.state == 'R'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::demo;
+    use crate::render::{Camera, Scene, View};
+
+    /// How many processes the Cores view draws as marbles over the demo workload.
+    fn marbles(missing: &[&'static str]) -> usize {
+        let mut snapshot = demo(12.0, 64);
+        snapshot.missing = missing.to_vec();
+        let mut scene = Scene::new();
+        scene.render(
+            &snapshot,
+            View::Cores,
+            &Camera::default(),
+            320,
+            180,
+            None,
+            12.0,
+            512,
+            None,
+        );
+        scene.positions.len()
+    }
+
+    #[test]
+    fn marbles_are_not_drawn_without_a_last_cpu_per_process() {
+        assert!(marbles(&[]) > 0, "the demo has running processes");
+        assert_eq!(marbles(&["last cpu"]), 0);
+        assert!(
+            marbles(&["cpu clock", "run queue"]) > 0,
+            "other gaps keep the marbles"
+        );
+    }
+
+    #[test]
+    fn legend_names_each_missing_source() {
+        let mut snapshot = demo(1.0, 8);
+        let full = legend(&snapshot);
+        assert!(full.contains("chevrons = clock | red queue = waiting tasks | marble ="));
+        snapshot.missing = vec!["last cpu"];
+        assert!(legend(&snapshot).contains("lanes = load; macOS reports no last CPU per process"));
+        snapshot.missing = vec!["cpu clock"];
+        let clockless = legend(&snapshot);
+        assert!(clockless.contains("no clock readings") && !clockless.contains("chevrons"));
+    }
 }

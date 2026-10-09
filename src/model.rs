@@ -136,9 +136,12 @@ pub struct Snapshot {
     pub home: Option<Place>,
     /// Where remote locations come from, for the status line.
     pub geo: String,
-    /// System-wide sources that could not be read this sample, such as "pressure". The set of
-    /// names grows as platform ports add sources of their own (the macOS port will add more).
+    /// System-wide sources that could not be read this sample or that the platform never has:
+    /// "cpu pressure", "memory pressure" and "io pressure" when pressure stall information is
+    /// unreadable, then the platform's permanent gaps (`Sampler::missing`).
     pub missing: Vec<&'static str>,
+    /// Processes the platform could see but not measure because they belong to another user.
+    pub unreadable: usize,
 }
 
 struct Counters {
@@ -382,11 +385,7 @@ impl Collector {
             cores: std::thread::available_parallelism().map_or(1, usize::from),
             elapsed: now.duration_since(self.origin).as_secs_f64(),
             pressure,
-            missing: if pressure_readable {
-                Vec::new()
-            } else {
-                vec!["pressure"]
-            },
+            missing: missing(pressure_readable, self.sampler.missing()),
             cpus: self.sampler.cpus(dt),
             home: self.home.clone(),
             ..Default::default()
@@ -424,6 +423,7 @@ impl Collector {
             );
             snapshot.processes.push(process);
         }
+        snapshot.unreadable = self.sampler.unreadable();
         snapshot.processes.sort_by_key(|p| p.id);
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = snapshot
@@ -478,6 +478,22 @@ impl Collector {
         self.last = now;
         Ok(snapshot)
     }
+}
+
+/// The names for `Snapshot::missing`: the three pressure sources when pressure could not be read
+/// at all, then the platform's permanent gaps, each name once.
+fn missing(pressure_readable: bool, permanent: Vec<&'static str>) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = if pressure_readable {
+        Vec::new()
+    } else {
+        vec!["cpu pressure", "memory pressure", "io pressure"]
+    };
+    for name in permanent {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 pub fn bounded(value: f32, knee: f32) -> f32 {
@@ -700,6 +716,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         units,
         remotes,
         missing: Vec::new(),
+        unreadable: 0,
         home: Some(Place {
             latitude: 52.37,
             longitude: 4.9,
@@ -979,11 +996,42 @@ mod tests {
     }
 
     #[test]
+    fn missing_names_the_pressures_then_the_platform_gaps_once_each() {
+        assert!(missing(true, Vec::new()).is_empty());
+        assert_eq!(
+            missing(true, vec!["last cpu", "cgroups"]),
+            ["last cpu", "cgroups"]
+        );
+        assert_eq!(
+            missing(false, Vec::new()),
+            ["cpu pressure", "memory pressure", "io pressure"]
+        );
+        assert_eq!(
+            missing(false, vec!["cpu pressure", "io pressure", "last cpu"]),
+            ["cpu pressure", "memory pressure", "io pressure", "last cpu"],
+            "a name the platform repeats is listed once"
+        );
+    }
+
+    #[test]
+    fn this_platform_reports_its_gaps_in_the_first_sample() {
+        let mut collector = Collector::new(None, None);
+        let Ok(snapshot) = collector.sample() else {
+            return; // live mode is unavailable here (the macOS stub refuses)
+        };
+        let gaps = platform::Sampler::new().missing();
+        assert!(gaps.iter().all(|name| snapshot.missing.contains(name)));
+        if cfg!(target_os = "linux") {
+            assert!(gaps.is_empty() && snapshot.unreadable == 0);
+        }
+    }
+
+    #[test]
     fn demo_scheduling_classes_states_and_traffic_cover_the_coop_cases() {
         let mut stalled = false;
         for step in 0..200 {
             let snapshot = demo(step as f64 * 1.3, 128);
-            assert!(snapshot.missing.is_empty());
+            assert!(snapshot.missing.is_empty() && snapshot.unreadable == 0);
             for (i, p) in snapshot.processes.iter().enumerate() {
                 assert_eq!(p.state == 'Z', i % 41 == 0);
                 assert_eq!(p.state == 'T', i == 9);

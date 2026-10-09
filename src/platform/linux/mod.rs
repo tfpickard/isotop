@@ -114,6 +114,16 @@ impl Sampler {
     pub fn cpus(&mut self, dt: f32) -> Vec<Cpu> {
         cpus(&mut self.cpu_previous, &self.core_kinds, dt)
     }
+
+    /// Linux measures everything isotop shows.
+    pub fn missing(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// Always 0: a process that vanishes between readdir and the read is a race, not a gap.
+    pub fn unreadable(&self) -> usize {
+        0
+    }
 }
 
 /// Socket links between processes.

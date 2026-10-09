@@ -403,3 +403,30 @@ fn describe(cell: &Cell, unit: &Unit, nucleus: bool) -> Vec<String> {
 fn mix(a: Color, b: Color, t: f32) -> Color {
     [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t) as u8)
 }
+
+/// The status legend, saying what the snapshot's platform leaves out.
+pub fn legend(snapshot: &Snapshot) -> String {
+    if snapshot.missing.contains(&"cgroups") {
+        " Cell = app or user group, size = memory | groups by app and user; macOS has no cgroups, so no limits, quotas or pressure | organelles = processes".into()
+    } else {
+        " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::demo;
+
+    #[test]
+    fn legend_drops_limits_quotas_and_pressure_without_cgroups() {
+        let mut snapshot = demo(1.0, 8);
+        assert!(legend(&snapshot).contains("dashed ring = memory limit | arc = CPU vs quota"));
+        snapshot.missing = vec!["cgroups"];
+        let text = legend(&snapshot);
+        assert!(text.contains(
+            "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
+        ));
+        assert!(!text.contains("dashed ring") && !text.contains("throttled"));
+    }
+}

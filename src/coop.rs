@@ -616,6 +616,9 @@ struct Feeder {
     busy: f32,
     center: [f32; 2],
     slots: usize,
+    /// The one trough every running chicken shares when the OS cannot say which CPU a process
+    /// last ran on. Its `cpu` is meaningless and its `busy` is the mean over the CPUs.
+    shared: bool,
 }
 
 impl Feeder {
@@ -677,6 +680,8 @@ pub struct Coop {
     accumulator: f32,
     phi: Option<f32>,
     pressure_missing: bool,
+    /// The OS reports no last CPU, so running chickens queue at one shared trough.
+    trough_shared: bool,
     unreadable: usize,
 }
 
@@ -797,10 +802,17 @@ fn kind_name(kind: CoreKind) -> &'static str {
     }
 }
 
-/// Feeders in rows along the south edge, sorted by kind then id, and the depth of their band.
 /// Feeders in rows below the houses, between `left` and `right`, the first row's troughs just
-/// south of `top`. Returns the feeders and the depth of the band they fill.
-fn place_feeders(snapshot: &Snapshot, left: f32, right: f32, top: f32) -> (Vec<Feeder>, f32) {
+/// south of `top`, sorted by kind then id. With `shared`, one more trough follows in a row of its
+/// own, centred in the yard and as wide as the CPUs are many (3 to 8 slots). Returns the feeders
+/// and the depth of the band they fill.
+fn place_feeders(
+    snapshot: &Snapshot,
+    left: f32,
+    right: f32,
+    top: f32,
+    shared: bool,
+) -> (Vec<Feeder>, f32) {
     let mut cpus: Vec<Cpu> = snapshot.cpus.clone();
     if cpus.is_empty() {
         cpus = (0..snapshot.cores.max(1) as u32)
@@ -833,8 +845,21 @@ fn place_feeders(snapshot: &Snapshot, left: f32, right: f32, top: f32) -> (Vec<F
             busy: cpu.busy.clamp(0.0, 1.0),
             center: [cursor + length * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
             slots,
+            shared: false,
         });
         cursor += length + 1.2;
+    }
+    if shared {
+        row += 1;
+        let slots = cpus.len().clamp(3, 8);
+        feeders.push(Feeder {
+            cpu: u32::MAX,
+            kind: CoreKind::Unknown,
+            busy: cpus.iter().map(|cpu| cpu.busy.clamp(0.0, 1.0)).sum::<f32>() / cpus.len() as f32,
+            center: [(left + right) * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
+            slots,
+            shared: true,
+        });
     }
     (feeders, (row + 1) as f32 * FEEDER_ROW)
 }
@@ -1022,9 +1047,17 @@ impl Coop {
         let phi = self
             .phi
             .map_or_else(|| "- (none foraging)".to_owned(), |phi| format!("{phi:.2}"));
+        let feeder = if self.trough_shared {
+            "feeders = CPU busy"
+        } else {
+            "feeder = CPU it ran on"
+        };
         let mut line = format!(
-            " Chicken = process, size = memory | flock = cgroup | foraging speed = CPU, roost = idle | feeder = CPU it ran on, pecking order = priority | chicks = threads | eggs = MiB written | dust = reads | fox = OOM kill, eyes = memory pressure | phi {phi}"
+            " Chicken = process, size = memory | flock = cgroup | foraging speed = CPU, roost = idle | {feeder}, pecking order = priority | chicks = threads | eggs = MiB written | dust = reads | fox = OOM kill, eyes = memory pressure | phi {phi}"
         );
+        if self.trough_shared {
+            line.push_str(" | no last CPU: running chickens share one trough");
+        }
         if self.pressure_missing {
             line.push_str(" | no CPU pressure: noise from CPU variation only");
         }
@@ -1209,7 +1242,8 @@ impl Coop {
             low[axis] -= spare;
             high[axis] += spare;
         }
-        let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1]);
+        self.trough_shared = snapshot.missing.contains(&"last cpu");
+        let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1], self.trough_shared);
         self.feeders = feeders;
         self.band_top = low[1];
         self.band = self.band.max(band);
@@ -1282,7 +1316,7 @@ impl Coop {
         }
 
         let psi = snapshot.pressure[0];
-        self.pressure_missing = snapshot.missing.contains(&"pressure");
+        self.pressure_missing = snapshot.missing.contains(&"cpu pressure");
         for (k, &i) in order.iter().enumerate() {
             let process = measured(i);
             let chicken = &mut chickens[k];
@@ -1405,7 +1439,11 @@ impl Coop {
                     chicken.perch = height;
                 }
                 Role::Feeding => {
-                    let feeder = feeder_of.get(&process.core).copied().unwrap_or(0);
+                    let feeder = if self.trough_shared {
+                        self.feeders.len() - 1
+                    } else {
+                        feeder_of.get(&process.core).copied().unwrap_or(0)
+                    };
                     eating[feeder].push((process.priority, process.id, k));
                 }
                 _ => {}
@@ -1459,17 +1497,20 @@ impl Coop {
                 } else {
                     format!("priority {priority} (real-time)")
                 };
+                let place = if feeder.shared {
+                    "the shared trough (no last CPU on this OS)".to_owned()
+                } else {
+                    format!("cpu{} ({})", feeder.cpu, kind_name(feeder.kind))
+                };
                 let mut note = format!(
-                    "feeding at cpu{} ({}), pecking rank {} of {} by {standing}",
-                    feeder.cpu,
-                    kind_name(feeder.kind),
+                    "feeding at {place}, pecking rank {} of {} by {standing}",
                     rank + 1,
                     line.len()
                 );
                 if rank >= feeder.slots {
                     note.push_str(", waiting in line");
                 }
-                if feeder.cpu != process.core {
+                if !feeder.shared && feeder.cpu != process.core {
                     note.push_str(&format!(
                         " (ran on cpu{}, which has no feeder)",
                         process.core
@@ -3204,6 +3245,97 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn running_chickens_share_one_trough_when_the_os_reports_no_last_cpu() {
+        let path = "/system.slice/busy.service";
+        let processes = (1..=16)
+            .map(|pid| {
+                let mut p = process(pid, path);
+                p.state = 'R';
+                p.cpu = 90.0;
+                p.memory = 20 << 20;
+                p.core = u32::from(pid > 9);
+                p
+            })
+            .collect();
+        let mut sample = snapshot(processes, 1.0);
+        sample.cpus = [1.0, 0.0]
+            .into_iter()
+            .enumerate()
+            .map(|(id, busy)| Cpu {
+                id: id as u32,
+                kind: CoreKind::Unknown,
+                busy,
+                mhz: 0.0,
+                wait: 0.0,
+            })
+            .collect();
+        sample.missing = vec!["cpu pressure", "last cpu"];
+        let mut scene = Scene::new();
+        render(&mut scene, &sample, 1.0);
+        let coop = &scene.coop;
+        assert_eq!(
+            coop.feeders.len(),
+            3,
+            "two per-CPU feeders and the shared one"
+        );
+        let shared = &coop.feeders[2];
+        assert!(shared.shared && !coop.feeders[0].shared && !coop.feeders[1].shared);
+        assert_eq!(
+            coop.feeders[0].busy, 1.0,
+            "per-CPU feeders keep their busy level"
+        );
+        assert_eq!(shared.busy, 0.5, "the shared trough shows the mean");
+        let lowest = coop.feeders[..2]
+            .iter()
+            .map(|feeder| feeder.center[1])
+            .fold(f32::MAX, f32::min);
+        assert!(shared.center[1] < lowest, "its own row below the others");
+        assert!(
+            coop.yard.low[1] < shared.center[1] - TROUGH_DEPTH,
+            "inside the fence"
+        );
+        for chicken in &coop.yard.chickens {
+            assert!(
+                (chicken.target[0] - shared.center[0]).abs() <= SLOT + 0.01
+                    && chicken.target[1] <= shared.eating_line() + 0.01,
+                "pid {} is not at the shared trough: {:?}",
+                chicken.id.pid,
+                chicken.target
+            );
+            assert!(
+                scene.notes[&chicken.id][1].contains("the shared trough"),
+                "{}",
+                scene.notes[&chicken.id][1]
+            );
+            assert!(!scene.notes[&chicken.id][1].contains("ran on cpu"));
+        }
+        let at_slots = coop
+            .yard
+            .chickens
+            .iter()
+            .filter(|chicken| chicken.target[1] == shared.eating_line())
+            .count();
+        assert_eq!(at_slots, shared.slots, "the rest wait in line");
+        let legend = coop.legend();
+        assert!(legend.contains("no last CPU: running chickens share one trough"));
+        assert!(legend.contains("no CPU pressure"));
+    }
+
+    #[test]
+    fn coop_keeps_per_cpu_feeders_when_only_cpu_pressure_is_missing() {
+        let mut sample = snapshot(vec![process(1, "/system.slice/a.service")], 1.0);
+        sample.cores = 2;
+        sample.missing = vec!["cpu pressure"];
+        let mut scene = Scene::new();
+        render(&mut scene, &sample, 1.0);
+        assert_eq!(scene.coop.feeders.len(), 2);
+        assert!(scene.coop.feeders.iter().all(|feeder| !feeder.shared));
+        let legend = scene.coop.legend();
+        assert!(!legend.contains("share one trough"));
+        assert!(legend.contains("no CPU pressure"));
     }
 
     #[test]

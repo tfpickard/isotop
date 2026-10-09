@@ -8,9 +8,19 @@
 //!     live mode cannot run at all;
 //!   - `memory(&self) -> (u64, u64)`: total and available bytes;
 //!   - `pressure(&self) -> ([f32; 3], bool)`: CPU, memory and I/O stall percentages, and
-//!     whether the source could be read at all;
+//!     whether the source could be read at all (when not, the collector reports all three
+//!     pressures as missing);
 //!   - `cpus(&mut self, dt: f32) -> Vec<Cpu>`: per-CPU use over the last `dt` seconds, sorted
-//!     by id.
+//!     by id;
+//!   - `missing(&self) -> Vec<&'static str>`: what this platform can never measure, named as
+//!     `Snapshot::missing` names it and appended to it every sample. The names views react to
+//!     are "cpu pressure", "memory pressure", "io pressure", "last cpu" (`Process::core` is
+//!     meaningless), "cpu clock" (`Cpu::mhz` is 0), "run queue" (`Cpu::wait` is 0), "cgroups"
+//!     (no accounting units, so no limits, quotas or pressure) and "socket traffic" (no
+//!     per-connection rates or round-trip times). Linux returns none;
+//!   - `unreadable(&self) -> usize`: how many processes the last `processes()` call could see
+//!     but not measure because they belong to another user, and so left out. Races with exiting
+//!     processes are not permission gaps and do not count; Linux returns 0.
 //! - Slow sources, read on the background thread every two seconds:
 //!   - `network() -> Network`;
 //!   - `account(paths, state) -> HashMap<String, Unit>`: resource accounting of the named

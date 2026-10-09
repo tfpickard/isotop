@@ -43,6 +43,23 @@ impl Sampler {
     pub fn cpus(&mut self, _dt: f32) -> Vec<Cpu> {
         Vec::new()
     }
+
+    /// What macOS never reports.
+    pub fn missing(&self) -> Vec<&'static str> {
+        vec![
+            "cpu pressure",
+            "io pressure",
+            "last cpu",
+            "cpu clock",
+            "run queue",
+            "cgroups",
+            "socket traffic",
+        ]
+    }
+
+    pub fn unreadable(&self) -> usize {
+        0
+    }
 }
 
 /// Socket links between processes; none yet.

@@ -592,10 +592,10 @@ impl App {
                 View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
                 View::Flow => " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure".into(),
-                View::Cores => " Lane = CPU (gold performance, teal efficiency) | brightness = busy | chevrons = clock | red queue = waiting tasks | marble = running process, one lap per 10 s of CPU, hops = migrations".into(),
-                View::Cells => " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into(),
+                View::Cores => cores::legend(s),
+                View::Cells => cells::legend(s),
                 View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
-                View::Globe => format!(" Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}", s.geo),
+                View::Globe => globe::legend(s),
                 View::Reef => " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into(),
                 View::Coop => self.scene.coop.legend(),
                 View::Matrix => format!(
@@ -617,7 +617,6 @@ impl App {
         } else {
             lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
         }
-        let [cpu, memory, io] = s.pressure;
         let links = match self.scene.links {
             Links::All => "",
             Links::Focused => " | links: focused",
@@ -625,8 +624,8 @@ impl App {
         };
         lines.push(if self.show_help {
             " Scroll pan | Ctrl-scroll zoom | Alt-scroll or right-drag rotate/tilt | n next match | [/] rewind | r reset | Ctrl-C quit".into()
-        } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | pressure cpu {cpu:.0}% mem {memory:.0}% io {io:.0}%{links}{}",
-            self.renderer, self.history.len(), s.elapsed,
+        } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | {}{links}{}",
+            self.renderer, self.history.len(), s.elapsed, pressure_text(s),
             if self.focus.is_some() { " | SUBTREE FOCUS" } else { "" }) });
         lines
     }
@@ -1112,6 +1111,36 @@ fn place_panel(
 }
 
 /// Leader line from a callout to its target, with an arrowhead and a ring around the target.
+/// The pressure readings for the status line, `n/a` for each one the platform cannot measure,
+/// then how many processes belonged to other users and could not be measured at all.
+fn pressure_text(snapshot: &Snapshot) -> String {
+    let [cpu, memory, io] = snapshot.pressure;
+    let reading = |name: &str, value: f32| {
+        if snapshot
+            .missing
+            .contains(&format!("{name} pressure").as_str())
+        {
+            "n/a".to_owned()
+        } else {
+            format!("{value:.0}%")
+        }
+    };
+    let mut text = format!(
+        "pressure cpu {} mem {} io {}",
+        reading("cpu", cpu),
+        reading("memory", memory),
+        reading("io", io)
+    );
+    match snapshot.unreadable {
+        0 => {}
+        1 => text.push_str(" | 1 process unreadable (other users; run with sudo)"),
+        count => text.push_str(&format!(
+            " | {count} processes unreadable (other users; run with sudo)"
+        )),
+    }
+    text
+}
+
 fn pointer(frame: &mut Frame, from: [f32; 2], to: [f32; 2]) {
     const COLOR: [u8; 3] = [255, 214, 150];
     let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
@@ -1471,5 +1500,114 @@ mod tests {
             app.framed && app.view == View::Globe,
             "switching view frames it again"
         );
+    }
+
+    /// The macOS gaps, as the collector reports them.
+    const MACOS: [&str; 7] = [
+        "cpu pressure",
+        "io pressure",
+        "last cpu",
+        "cpu clock",
+        "run queue",
+        "cgroups",
+        "socket traffic",
+    ];
+
+    /// The status text of `view` over the demo workload with the given gaps, after one frame so
+    /// views that learn the gaps while drawing have seen them.
+    fn lines_with(view: View, missing: &[&'static str], unreadable: usize) -> Vec<String> {
+        let mut snapshot = model::demo(1.0, 16);
+        snapshot.missing = missing.to_vec();
+        snapshot.unreadable = unreadable;
+        let mut app = App::new(view, snapshot);
+        app.render(320, 180, 512);
+        app.text(0.0, "test", 20, 512)
+    }
+
+    #[test]
+    fn status_line_shows_n_a_for_each_missing_pressure() {
+        let [cpu, memory, io] = model::demo(1.0, 16)
+            .pressure
+            .map(|value| format!("{value:.0}%"));
+        let full = lines_with(View::City, &[], 0);
+        assert!(
+            full[4].contains(&format!("pressure cpu {cpu} mem {memory} io {io}")),
+            "{}",
+            full[4]
+        );
+        let mac = lines_with(View::City, &MACOS, 0);
+        assert!(
+            mac[4].contains(&format!("pressure cpu n/a mem {memory} io n/a")),
+            "{}",
+            mac[4]
+        );
+        let none = lines_with(
+            View::City,
+            &["cpu pressure", "memory pressure", "io pressure"],
+            0,
+        );
+        assert!(
+            none[4].contains("pressure cpu n/a mem n/a io n/a"),
+            "{}",
+            none[4]
+        );
+    }
+
+    #[test]
+    fn status_line_counts_unreadable_processes_only_when_there_are_some() {
+        assert!(!lines_with(View::City, &[], 0)[4].contains("unreadable"));
+        let one = lines_with(View::City, &[], 1);
+        assert!(
+            one[4].contains(" | 1 process unreadable (other users; run with sudo)"),
+            "{}",
+            one[4]
+        );
+        let many = lines_with(View::City, &MACOS, 37);
+        assert!(
+            many[4].contains(" | 37 processes unreadable (other users; run with sudo)"),
+            "{}",
+            many[4]
+        );
+        assert!(many[4].contains("io n/a | 37 processes"), "{}", many[4]);
+    }
+
+    #[test]
+    fn legends_name_what_the_platform_cannot_measure() {
+        let cores = lines_with(View::Cores, &MACOS, 0)[2].clone();
+        assert!(
+            cores.contains("lanes = load; macOS reports no last CPU per process, so no marbles"),
+            "{cores}"
+        );
+        assert!(cores.contains("no clock readings"), "{cores}");
+        assert!(!cores.contains("marble ="), "{cores}");
+        let cells = lines_with(View::Cells, &MACOS, 0)[2].clone();
+        assert!(
+            cells.contains(
+                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
+            ),
+            "{cells}"
+        );
+        let globe = lines_with(View::Globe, &MACOS, 0)[2].clone();
+        assert!(
+            globe.contains("no per-connection rates or RTT on macOS"),
+            "{globe}"
+        );
+        let coop = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        assert!(
+            coop.contains("no last CPU: running chickens share one trough"),
+            "{coop}"
+        );
+        assert!(coop.contains("no CPU pressure"), "{coop}");
+    }
+
+    #[test]
+    fn legends_keep_their_full_text_when_nothing_is_missing() {
+        let text = |view| lines_with(view, &[], 0)[2].clone();
+        assert!(
+            text(View::Cores).contains("chevrons = clock | red queue = waiting tasks | marble =")
+        );
+        assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
+        assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
+        assert!(!text(View::Coop).contains("share one trough"));
     }
 }
