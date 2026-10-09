@@ -77,6 +77,10 @@ const FEEDER_ROW: f32 = 6.0;
 const TROUGH_DEPTH: f32 = 0.7;
 /// Distance of the hedge outside the fence.
 const HEDGE: f32 = 2.2;
+/// Grass kept between the houses' reserved discs and the fence.
+const YARD_MARGIN: f32 = 2.5;
+/// The narrowest yard, wide enough for a row of feeders.
+const MIN_YARD: f32 = 24.0;
 
 const PERFORMANCE: Color = [236, 178, 92];
 const EFFICIENCY: Color = [72, 183, 199];
@@ -608,6 +612,8 @@ pub struct Coop {
     discs: Discs,
     flocks: Vec<Flock>,
     feeders: Vec<Feeder>,
+    /// The northern edge of the feeder band, just south of the houses.
+    band_top: f32,
     yard: Yard,
     /// The sample the roles were last decided for, and the processes they were decided over.
     decided: Option<f64>,
@@ -638,8 +644,10 @@ fn flock_label(process: &Process) -> String {
     }
 }
 
+/// Body radius from memory: volume proportional to memory, from 0.3 at 27 MiB and below to 1.2 at
+/// 1000 MiB and above, so small processes stay visible and large ones keep their spread.
 fn body_radius(memory: f32) -> f32 {
-    (0.18 * (memory / 1_048_576.0).max(0.0).cbrt()).clamp(0.22, 1.2)
+    (0.12 * (memory / 1_048_576.0).max(0.0).cbrt()).clamp(0.3, 1.2)
 }
 
 /// Ladder centres around a house in the order they fill, nearest first and the house's front
@@ -734,7 +742,9 @@ fn kind_name(kind: CoreKind) -> &'static str {
 }
 
 /// Feeders in rows along the south edge, sorted by kind then id, and the depth of their band.
-fn place_feeders(snapshot: &Snapshot, half: f32) -> (Vec<Feeder>, f32) {
+/// Feeders in rows below the houses, between `left` and `right`, the first row's troughs just
+/// south of `top`. Returns the feeders and the depth of the band they fill.
+fn place_feeders(snapshot: &Snapshot, left: f32, right: f32, top: f32) -> (Vec<Feeder>, f32) {
     let mut cpus: Vec<Cpu> = snapshot.cpus.clone();
     if cpus.is_empty() {
         cpus = (0..snapshot.cores.max(1) as u32)
@@ -749,7 +759,7 @@ fn place_feeders(snapshot: &Snapshot, half: f32) -> (Vec<Feeder>, f32) {
     }
     cpus.sort_by_key(|cpu| (cpu.kind, cpu.id));
     let mut feeders = Vec::with_capacity(cpus.len());
-    let (mut cursor, mut row) = (-half + 1.0, 0);
+    let (mut cursor, mut row) = (left + 1.0, 0);
     for cpu in &cpus {
         let slots = if cpu.kind == CoreKind::Performance {
             3
@@ -757,15 +767,15 @@ fn place_feeders(snapshot: &Snapshot, half: f32) -> (Vec<Feeder>, f32) {
             2
         };
         let length = slots as f32 * SLOT + 0.4;
-        if cursor + length > half - 1.0 && cursor > -half + 1.0 {
-            cursor = -half + 1.0;
+        if cursor + length > right - 1.0 && cursor > left + 1.0 {
+            cursor = left + 1.0;
             row += 1;
         }
         feeders.push(Feeder {
             cpu: cpu.id,
             kind: cpu.kind,
             busy: cpu.busy.clamp(0.0, 1.0),
-            center: [cursor + length * 0.5, -half - 1.2 - row as f32 * FEEDER_ROW],
+            center: [cursor + length * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
             slots,
         });
         cursor += length + 1.2;
@@ -1077,11 +1087,29 @@ impl Coop {
             .map(|key| (key.clone(), house_radius(self.seats.span(key))))
             .collect();
         let centers = self.discs.arrange(&needs);
-        let half = ((self.discs.reach() + 4.0) / 4.0).ceil() * 4.0;
-        let (feeders, band) = place_feeders(snapshot, half);
+        // The fence hugs the houses' reserved discs, which move only when one is re-placed, so
+        // the yard is as stable as the houses; it is at least MIN_YARD wide for the feeders.
+        let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for (key, center) in &centers {
+            let reserved = self.discs.reserved(key);
+            for axis in 0..2 {
+                low[axis] = low[axis].min(center[axis] - reserved - YARD_MARGIN);
+                high[axis] = high[axis].max(center[axis] + reserved + YARD_MARGIN);
+            }
+        }
+        if centers.is_empty() {
+            (low, high) = ([-MIN_YARD * 0.5; 2], [MIN_YARD * 0.5; 2]);
+        }
+        for axis in 0..2 {
+            let spare = (MIN_YARD - (high[axis] - low[axis])).max(0.0) * 0.5;
+            low[axis] -= spare;
+            high[axis] += spare;
+        }
+        let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1]);
         self.feeders = feeders;
-        self.yard.low = [-half, -half - band];
-        self.yard.high = [half, half];
+        self.band_top = low[1];
+        self.yard.low = [low[0], low[1] - band];
+        self.yard.high = high;
         self.flocks = groups
             .iter()
             .map(|(key, (label, ids))| {
@@ -1452,8 +1480,7 @@ impl Coop {
             .collect();
         let frame = &mut *stage.frame;
         let (low, high) = (self.yard.low, self.yard.high);
-        let half = high[1];
-        draw_ground(frame, camera, low, high, half);
+        draw_ground(frame, camera, low, high, self.band_top);
         draw_hedge(frame, camera, low, high);
         let psi_memory = snapshot.pressure[1];
         for (k, eye) in self.yard.eyes.iter().enumerate() {
@@ -1650,7 +1677,7 @@ fn cuboid(frame: &mut Frame, camera: &Camera, low: Point, high: Point, color: Co
 }
 
 /// Grass inside and around the fence, with packed earth under the feeders. Decorative.
-fn draw_ground(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2], half: f32) {
+fn draw_ground(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2], band_top: f32) {
     let margin = HEDGE + 2.5;
     let (x0, x1) = (low[0] - margin, high[0] + margin);
     let (y0, y1) = (low[1] - margin, high[1] + margin);
@@ -1678,7 +1705,7 @@ fn draw_ground(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2]
             );
         }
     }
-    let (top, bottom) = (-half + 0.3, low[1]);
+    let (top, bottom) = (band_top + 0.3, low[1]);
     let depth = top - bottom;
     if depth > 0.0 {
         let rows = (depth / 1.5).ceil().clamp(1.0, 24.0) as usize;

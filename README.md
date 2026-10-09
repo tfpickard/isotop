@@ -235,7 +235,7 @@ A fenced chicken yard in which every process is a chicken in a Vicsek flock: eac
 | Visual element | Measured source | Transform |
 | --- | --- | --- |
 | Chicken | Process | One per drawn process; picking and the inspector use the process |
-| Body radius | RSS | (0.18 × ∛MiB) clamped to 0.22 to 1.2, scaled by 0.3 + 0.7 × growth while it hatches |
+| Body radius | RSS | (0.12 × ∛MiB) clamped to 0.3 to 1.2 (volume follows memory; 27 MiB and below share the smallest size, 1000 MiB and above the largest), scaled by 0.3 + 0.7 × growth while it hatches |
 | Plumage | Kind and state | The same colours as the other views; zombies pink, stopped orange, uninterruptible sleep red |
 | Flock and henhouse | cgroup (the process group if there is none; kernel threads share one "kernel" flock) | One flock and one henhouse per group, labelled with the group name |
 | Perch seat | Seat number in the flock | Fixed ladder grid around the henhouse, nearest seats first |
