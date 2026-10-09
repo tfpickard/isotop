@@ -54,6 +54,12 @@ const TRAIL: usize = 120;
 const TRAIL_EVERY: u64 = 2;
 const FOX_SECONDS: f32 = 3.0;
 const MAX_FOXES: u64 = 3;
+/// Fox calls held for a view that is not shown; older ones are dropped as stale.
+const MAX_PENDING_CALLS: usize = 2 * MAX_FOXES as usize;
+/// How long a member that left its cgroup stays a suspect for an OOM kill the counter reports
+/// late: the units are read every 2 s on a background thread, so the count can lag the process
+/// list by a couple of samples.
+const DEPARTED_SECONDS: f64 = 4.0;
 const MAX_EYES: usize = 6;
 /// Perches: bars of six seats, four bars to a ladder, stepping up and back.
 const SEAT: f32 = 1.2;
@@ -217,6 +223,21 @@ impl Default for Yard {
     fn default() -> Self {
         Self::new([-10.0, -10.0], [10.0, 10.0])
     }
+}
+
+/// Where a chicken's centre may be along one axis of the fence: its radius in from each edge, or
+/// the middle of a fence narrower than the chicken.
+fn centre_range(low: f32, high: f32, radius: f32) -> (f32, f32) {
+    let margin = radius.min((high - low) * 0.5);
+    (low + margin, high - margin)
+}
+
+/// The point nearest `point` where a chicken of `radius` is inside the fence.
+fn keep_inside(point: [f32; 2], radius: f32, low: [f32; 2], high: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|axis| {
+        let (lo, hi) = centre_range(low[axis], high[axis], radius);
+        point[axis].clamp(lo, hi)
+    })
 }
 
 fn unit(v: [f32; 2]) -> [f32; 2] {
@@ -470,8 +491,7 @@ impl Yard {
                 }
             }
             for axis in 0..2 {
-                let margin = chicken.radius.min((high[axis] - low[axis]) * 0.5);
-                let (lo, hi) = (low[axis] + margin, high[axis] - margin);
+                let (lo, hi) = centre_range(low[axis], high[axis], chicken.radius);
                 let value = &mut chicken.position[axis];
                 let mut reflected = false;
                 if *value < lo {
@@ -499,12 +519,24 @@ impl Yard {
         order_of(self.chickens.iter().filter(|c| c.role == Role::Foraging))
     }
 
-    fn flock_order(&self, flock: usize) -> Option<f32> {
-        order_of(
-            self.chickens
-                .iter()
-                .filter(|c| c.role == Role::Foraging && c.flock == flock),
-        )
+    /// The order parameter and forager count of each of `flocks` flocks, in one pass; `None` for
+    /// a flock with no foragers.
+    fn flock_orders(&self, flocks: usize) -> Vec<Option<(f32, usize)>> {
+        let mut totals = vec![([0.0_f32; 2], 0.0_f32, 0_usize); flocks];
+        for chicken in self.chickens.iter().filter(|c| c.role == Role::Foraging) {
+            let v = chicken.velocity();
+            let (sum, speeds, count) = &mut totals[chicken.flock];
+            sum[0] += v[0];
+            sum[1] += v[1];
+            *speeds += chicken.speed;
+            *count += 1;
+        }
+        totals
+            .into_iter()
+            .map(|(sum, speeds, count)| {
+                (speeds > 0.0).then(|| (sum[0].hypot(sum[1]) / speeds, count))
+            })
+            .collect()
     }
 
     fn find(&self, id: Identity) -> Option<&Chicken> {
@@ -547,10 +579,23 @@ struct Nest {
 /// An OOM kill recorded but not yet sent into the yard.
 struct Call {
     flock: String,
+    /// The sample time of the kill, so a call outlived by its fox is dropped.
+    at: f64,
     victim: Option<Identity>,
     /// Where the victim was last drawn and its radius, once the yard has been checked.
     seen: Option<([f32; 2], f32)>,
     delay: f32,
+}
+
+/// A member that has left its cgroup, kept briefly so a late OOM-kill count can name it.
+struct Departed {
+    cgroup: String,
+    id: Identity,
+    memory: u64,
+    /// The sample it was first missing from.
+    gone: f64,
+    /// Where it was last drawn and its radius, once the yard has been checked.
+    seen: Option<([f32; 2], f32)>,
 }
 
 struct Fox {
@@ -606,6 +651,7 @@ pub struct Coop {
     kills: HashMap<String, u64>,
     /// Members of each cgroup in the last recorded sample with their memory, for fox victims.
     members: HashMap<String, Vec<(Identity, u64)>>,
+    departed: Vec<Departed>,
     calls: Vec<Call>,
     foxes: Vec<Fox>,
     seats: Seats,
@@ -614,6 +660,10 @@ pub struct Coop {
     feeders: Vec<Feeder>,
     /// The northern edge of the feeder band, just south of the houses.
     band_top: f32,
+    /// The bounds of every reserved house disc seen so far, and the deepest feeder band. The
+    /// fence is derived from them and so only ever moves outward.
+    extent: Option<([f32; 2], [f32; 2])>,
+    band: f32,
     yard: Yard,
     /// The sample the roles were last decided for, and the processes they were decided over.
     decided: Option<f64>,
@@ -644,8 +694,8 @@ fn flock_label(process: &Process) -> String {
     }
 }
 
-/// Body radius from memory: volume proportional to memory, from 0.3 at 27 MiB and below to 1.2 at
-/// 1000 MiB and above, so small processes stay visible and large ones keep their spread.
+/// Body radius from memory: volume proportional to memory, from 0.3 at about 16 MiB and below
+/// (0.3 / 0.12 = 2.5, and 2.5 cubed is 15.6) to 1.2 at 1000 MiB and above, so small processes stay visible and large ones keep their spread.
 fn body_radius(memory: f32) -> f32 {
     (0.12 * (memory / 1_048_576.0).max(0.0).cbrt()).clamp(0.3, 1.2)
 }
@@ -885,32 +935,56 @@ impl Coop {
             }
         }
         self.nests.retain(|_, nest| !nest.eggs.is_empty());
+        // Members that left since the last sample stay suspects for a few seconds, because the
+        // kill count comes from the slower background sampler and can rise after they are gone.
+        let mut left: Vec<Departed> = self
+            .members
+            .iter()
+            .flat_map(|(cgroup, members)| {
+                members
+                    .iter()
+                    .filter(|(id, _)| !present.contains(id))
+                    .map(|&(id, memory)| Departed {
+                        cgroup: cgroup.clone(),
+                        id,
+                        memory,
+                        gone: snapshot.elapsed,
+                        seen: None,
+                    })
+            })
+            .collect();
+        left.sort_by_key(|gone| gone.id);
+        self.departed.extend(left);
+        self.departed
+            .retain(|gone| snapshot.elapsed - gone.gone <= DEPARTED_SECONDS);
         let mut paths: Vec<&String> = snapshot.units.keys().collect();
         paths.sort();
         for path in paths {
             let kills = snapshot.units[path].oom_kills;
             let seen = *self.kills.entry(path.clone()).or_insert(kills);
             if kills > seen {
-                let mut gone: Vec<(u64, Identity)> = self
-                    .members
-                    .get(path)
-                    .into_iter()
-                    .flatten()
-                    .filter(|(id, _)| !present.contains(id))
-                    .map(|&(id, memory)| (memory, id))
-                    .collect();
-                gone.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
                 for k in 0..(kills - seen).min(MAX_FOXES) as usize {
+                    // The largest departed member that no earlier kill has claimed.
+                    let victim = self
+                        .departed
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, gone)| gone.cgroup == *path)
+                        .max_by(|(_, a), (_, b)| a.memory.cmp(&b.memory).then(b.id.cmp(&a.id)))
+                        .map(|(index, _)| index)
+                        .map(|index| self.departed.remove(index));
                     self.calls.push(Call {
                         flock: path.clone(),
-                        victim: gone.get(k).map(|&(_, id)| id),
-                        seen: None,
+                        at: snapshot.elapsed,
+                        victim: victim.as_ref().map(|gone| gone.id),
+                        seen: victim.and_then(|gone| gone.seen),
                         delay: k as f32 * 0.8,
                     });
                 }
             }
             self.kills.insert(path.clone(), kills);
         }
+        self.expire_calls(snapshot.elapsed);
         self.kills
             .retain(|path, _| snapshot.units.contains_key(path));
         self.members.clear();
@@ -920,6 +994,15 @@ impl Coop {
                 .or_default()
                 .push((process.id, process.memory));
         }
+    }
+
+    /// Drops fox calls whose fox would already have left, and the oldest beyond the cap, so calls
+    /// recorded while another view is shown do not replay on switching to this one.
+    fn expire_calls(&mut self, sample: f64) {
+        self.calls
+            .retain(|call| sample - call.at <= FOX_SECONDS as f64);
+        let excess = self.calls.len().saturating_sub(MAX_PENDING_CALLS);
+        self.calls.drain(..excess);
     }
 
     /// The status legend, with the yard's order parameter and what could not be measured.
@@ -956,13 +1039,18 @@ impl Coop {
                 call.seen = Some((chicken.position, chicken.radius));
             }
         }
+        for gone in &mut self.departed {
+            if let Some(chicken) = self.yard.find(gone.id) {
+                gone.seen = Some((chicken.position, chicken.radius));
+            }
+        }
         let fresh = self.decided != Some(snapshot.elapsed);
         if fresh || ids != self.drawn {
             self.decide(processes, &order, snapshot, fresh);
             self.decided = Some(snapshot.elapsed);
             self.drawn = ids;
         }
-        self.summon(stage.time);
+        self.summon(stage.time, snapshot.elapsed);
         let alpha = self.advance(stage.time);
         self.phi = self.yard.order();
         self.paint(stage, processes, &order, snapshot, alpha)
@@ -988,7 +1076,8 @@ impl Coop {
 
     /// Turns recorded OOM kills into fox runs: to where the victim was last drawn, or to its
     /// flock's house when it was not drawn.
-    fn summon(&mut self, time: f32) {
+    fn summon(&mut self, time: f32, sample: f64) {
+        self.expire_calls(sample);
         for call in std::mem::take(&mut self.calls) {
             let home = self
                 .flocks
@@ -1087,9 +1176,10 @@ impl Coop {
             .map(|key| (key.clone(), house_radius(self.seats.span(key))))
             .collect();
         let centers = self.discs.arrange(&needs);
-        // The fence hugs the houses' reserved discs, which move only when one is re-placed, so
-        // the yard is as stable as the houses; it is at least MIN_YARD wide for the feeders.
-        let (mut low, mut high) = ([f32::MAX; 2], [f32::MIN; 2]);
+        // The fence hugs the houses' reserved discs, and only grows: a flock at the edge arriving
+        // or leaving must not move the fence, the feeders along it or the fox eyes around it.
+        // It is at least MIN_YARD wide for the feeders.
+        let (mut low, mut high) = self.extent.unwrap_or(([f32::MAX; 2], [f32::MIN; 2]));
         for (key, center) in &centers {
             let reserved = self.discs.reserved(key);
             for axis in 0..2 {
@@ -1097,8 +1187,10 @@ impl Coop {
                 high[axis] = high[axis].max(center[axis] + reserved + YARD_MARGIN);
             }
         }
-        if centers.is_empty() {
+        if low[0] > high[0] {
             (low, high) = ([-MIN_YARD * 0.5; 2], [MIN_YARD * 0.5; 2]);
+        } else {
+            self.extent = Some((low, high));
         }
         for axis in 0..2 {
             let spare = (MIN_YARD - (high[axis] - low[axis])).max(0.0) * 0.5;
@@ -1108,7 +1200,8 @@ impl Coop {
         let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1]);
         self.feeders = feeders;
         self.band_top = low[1];
-        self.yard.low = [low[0], low[1] - band];
+        self.band = self.band.max(band);
+        self.yard.low = [low[0], low[1] - self.band];
         self.yard.high = high;
         self.flocks = groups
             .iter()
@@ -1309,18 +1402,29 @@ impl Coop {
         for (index, line) in eating.iter_mut().enumerate() {
             line.sort();
             let feeder = &self.feeders[index];
-            let mut cursor = feeder.eating_line() - 1.3;
+            let queue_start = feeder.eating_line() - 1.3;
+            // The queue runs south behind the eating line and, rather than leave the feeder's
+            // row, wraps into further columns beside it, alternately right and left.
+            let (mut cursor, mut column) = (queue_start, 0_usize);
             for (rank, &(priority, _, k)) in line.iter().enumerate() {
                 let process = measured(order[k]);
                 let chicken = &mut chickens[k];
                 let target = if rank < feeder.slots {
                     feeder.slot(rank)
                 } else {
+                    let floor = (feeder.center[1] - (FEEDER_ROW - 1.2)).max(self.yard.low[1]);
+                    if cursor - 2.0 * chicken.radius < floor && cursor < queue_start {
+                        column += 1;
+                        cursor = queue_start;
+                    }
+                    let side = if column % 2 == 1 { 1.0 } else { -1.0 };
+                    let across = column.div_ceil(2) as f32 * SLOT * side;
                     cursor -= chicken.radius;
-                    let spot = [feeder.center[0], cursor];
+                    let spot = [feeder.center[0] + across, cursor];
                     cursor -= chicken.radius + 0.25;
                     spot
                 };
+                let target = keep_inside(target, chicken.radius, self.yard.low, self.yard.high);
                 if target != chicken.target {
                     chicken.arrived = false;
                 }
@@ -1370,8 +1474,13 @@ impl Coop {
             // The first population starts where it belongs rather than walking in from home.
             for chicken in &mut chickens {
                 if chicken.walking() {
-                    chicken.position = chicken.target;
-                    chicken.previous = chicken.target;
+                    chicken.position = keep_inside(
+                        chicken.target,
+                        chicken.radius,
+                        self.yard.low,
+                        self.yard.high,
+                    );
+                    chicken.previous = chicken.position;
                     chicken.arrived = true;
                     chicken.theta = FRAC_PI_2;
                 }
@@ -1545,6 +1654,7 @@ impl Coop {
             }
         }
 
+        let orders = self.yard.flock_orders(self.flocks.len());
         let mut shown = 0;
         for (k, &index) in order.iter().enumerate() {
             let process = processes[index];
@@ -1586,16 +1696,8 @@ impl Coop {
             draw_chicks(frame, camera, chicken, ground, body, r, time);
             stage.positions.insert(process.id, body);
             let flock = &self.flocks[chicken.flock];
-            let phi = match self.yard.flock_order(chicken.flock) {
-                Some(phi) => {
-                    let foraging = self
-                        .yard
-                        .chickens
-                        .iter()
-                        .filter(|c| c.flock == chicken.flock && c.role == Role::Foraging)
-                        .count();
-                    format!("phi {phi:.2} ({foraging} foraging)")
-                }
+            let phi = match orders[chicken.flock] {
+                Some((phi, foraging)) => format!("phi {phi:.2} ({foraging} foraging)"),
                 None => "(none foraging)".into(),
             };
             let mut notes = vec![format!("flock {}: {phi}", flock.label)];
@@ -2749,8 +2851,9 @@ mod tests {
         for _ in 0..100 {
             yard.step(H);
         }
-        assert!(yard.flock_order(0).unwrap() > 0.98);
-        assert!(yard.flock_order(1).unwrap() > 0.98);
+        let orders = yard.flock_orders(2);
+        assert!(orders[0].unwrap().0 > 0.98);
+        assert!(orders[1].unwrap().0 > 0.98);
         assert!(
             yard.order().unwrap() < 0.2,
             "the flocks keep their own ways"
@@ -2899,6 +3002,286 @@ mod tests {
             scene.coop.foxes.iter().any(|fox| fox.ghost.is_none()),
             "a kill with nobody gone sends a fox that leaves with nothing"
         );
+    }
+
+    fn units(path: &str, kills: u64) -> HashMap<String, Unit> {
+        HashMap::from([(
+            path.to_string(),
+            Unit {
+                oom_kills: kills,
+                ..Unit::default()
+            },
+        )])
+    }
+
+    /// Three members of one cgroup rendered at samples 1 and 1.5, ready to lose the large one.
+    fn greedy_flock(scene: &mut Scene, path: &str) -> ([f32; 2], Vec<Process>) {
+        let mut small = process(1, path);
+        small.memory = 50 << 20;
+        let mut large = process(2, path);
+        large.memory = 900 << 20;
+        let mut bystander = process(3, path);
+        bystander.memory = 100 << 20;
+        let mut before = snapshot(vec![small.clone(), large, bystander.clone()], 1.0);
+        before.units = units(path, 2);
+        render(scene, &before, 1.0);
+        render(scene, &before, 1.5);
+        let victim = scene.coop.yard.find(identity(2)).unwrap().position;
+        (victim, vec![small, bystander])
+    }
+
+    #[test]
+    fn a_kill_counted_one_sample_after_the_member_vanished_still_names_it() {
+        let path = "/system.slice/greedy.service";
+        let mut scene = Scene::new();
+        let (victim, survivors) = greedy_flock(&mut scene, path);
+        let mut gone = snapshot(survivors.clone(), 2.0);
+        gone.units = units(path, 2);
+        render(&mut scene, &gone, 2.0);
+        assert!(scene.coop.foxes.is_empty(), "the counter has not moved yet");
+        let mut counted = snapshot(survivors, 3.0);
+        counted.units = units(path, 3);
+        render(&mut scene, &counted, 3.0);
+        assert_eq!(scene.coop.foxes.len(), 1);
+        let fox = &scene.coop.foxes[0];
+        assert_eq!(fox.prey, victim);
+        assert!(
+            fox.ghost
+                .is_some_and(|r| (r - body_radius((900 << 20) as f32)).abs() < 1e-5)
+        );
+    }
+
+    #[test]
+    fn a_kill_counted_two_samples_after_the_member_vanished_still_names_it() {
+        let path = "/system.slice/greedy.service";
+        let mut scene = Scene::new();
+        let (victim, survivors) = greedy_flock(&mut scene, path);
+        for elapsed in [2.0, 3.0] {
+            let mut gone = snapshot(survivors.clone(), elapsed);
+            gone.units = units(path, 2);
+            render(&mut scene, &gone, elapsed as f32);
+        }
+        let mut counted = snapshot(survivors.clone(), 4.0);
+        counted.units = units(path, 3);
+        render(&mut scene, &counted, 4.0);
+        assert_eq!(scene.coop.foxes.len(), 1);
+        assert_eq!(scene.coop.foxes[0].prey, victim);
+        assert!(scene.coop.foxes[0].ghost.is_some());
+        // The victim is claimed once: a second kill finds nobody left to take.
+        let mut again = snapshot(survivors, 5.0);
+        again.units = units(path, 4);
+        render(&mut scene, &again, 5.0);
+        assert!(scene.coop.foxes.iter().any(|fox| fox.ghost.is_none()));
+    }
+
+    #[test]
+    fn a_member_that_left_long_before_the_kill_is_not_blamed_for_it() {
+        let path = "/system.slice/greedy.service";
+        let mut scene = Scene::new();
+        let (_, survivors) = greedy_flock(&mut scene, path);
+        for elapsed in [2.0, 4.0, 6.0] {
+            let mut gone = snapshot(survivors.clone(), elapsed);
+            gone.units = units(path, 2);
+            render(&mut scene, &gone, elapsed as f32);
+        }
+        let mut counted = snapshot(survivors, 7.0);
+        counted.units = units(path, 3);
+        render(&mut scene, &counted, 7.0);
+        assert_eq!(scene.coop.foxes.len(), 1);
+        assert!(scene.coop.foxes[0].ghost.is_none());
+    }
+
+    #[test]
+    fn kills_recorded_while_another_view_is_shown_do_not_replay_on_switching_to_coop() {
+        let path = "/system.slice/greedy.service";
+        let mut scene = Scene::new();
+        let processes = vec![process(1, path), process(2, path)];
+        for k in 0..40 {
+            let mut sample = snapshot(processes.clone(), 60.0 * k as f64);
+            sample.units = units(path, k);
+            scene.record(&sample, 60.0 * k as f32);
+        }
+        assert!(
+            scene.coop.calls.len() <= 1,
+            "an hour of kills leaves only the newest pending, not {}",
+            scene.coop.calls.len()
+        );
+        let mut now = snapshot(processes, 60.0 * 40.0);
+        now.units = units(path, 39);
+        render(&mut scene, &now, 2400.0);
+        assert!(scene.coop.foxes.is_empty());
+        assert!(scene.coop.calls.is_empty());
+    }
+
+    #[test]
+    fn pending_fox_calls_are_capped() {
+        let mut coop = Coop::default();
+        let paths: Vec<String> = (0..10)
+            .map(|k| format!("/system.slice/unit{k}.service"))
+            .collect();
+        let at = |kills| {
+            let mut sample = snapshot(Vec::new(), 1.0 + kills as f64 * 0.1);
+            for path in &paths {
+                sample.units.insert(
+                    path.clone(),
+                    Unit {
+                        oom_kills: kills,
+                        ..Unit::default()
+                    },
+                );
+            }
+            sample
+        };
+        coop.record(&at(0));
+        coop.record(&at(5));
+        assert_eq!(coop.calls.len(), MAX_PENDING_CALLS);
+    }
+
+    #[test]
+    fn queued_feeders_wrap_into_columns_and_every_target_stays_inside_the_fence() {
+        let path = "/system.slice/busy.service";
+        let inside = |scene: &Scene| {
+            let yard = &scene.coop.yard;
+            for c in &yard.chickens {
+                for point in [c.position, c.target] {
+                    assert_eq!(
+                        keep_inside(point, c.radius, yard.low, yard.high),
+                        point,
+                        "pid {} at {point:?} is outside {:?} to {:?}",
+                        c.id.pid,
+                        yard.low,
+                        yard.high
+                    );
+                }
+            }
+        };
+        let running = |state: char, elapsed: f64| {
+            let processes = (1..=12)
+                .map(|pid| {
+                    let mut p = process(pid, path);
+                    p.state = state;
+                    p.cpu = 90.0;
+                    p
+                })
+                .collect();
+            let mut sample = snapshot(processes, elapsed);
+            sample.cores = 1;
+            sample
+        };
+        // The first population is placed straight at its targets, which must not be in the hedge.
+        let mut scene = Scene::new();
+        render(&mut scene, &running('R', 1.0), 1.0);
+        assert_eq!(scene.coop.feeders.len(), 1);
+        inside(&scene);
+        // A population that starts walking must be able to arrive, one chicken to a spot.
+        let mut scene = Scene::new();
+        render(&mut scene, &running('S', 1.0), 1.0);
+        let sample = running('R', 2.0);
+        for frame in 0..400 {
+            render(&mut scene, &sample, 2.0 + frame as f32 * 0.05);
+        }
+        inside(&scene);
+        let chickens = &scene.coop.yard.chickens;
+        assert!(
+            chickens
+                .iter()
+                .all(|c| c.role == Role::Feeding && c.arrived)
+        );
+        for (a, b) in chickens
+            .iter()
+            .flat_map(|a| chickens.iter().map(move |b| (a, b)))
+        {
+            if a.id < b.id {
+                let apart = (a.target[0] - b.target[0]).hypot(a.target[1] - b.target[1]);
+                assert!(
+                    apart > 0.2,
+                    "pids {} and {} share a spot",
+                    a.id.pid,
+                    b.id.pid
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_yard_and_feeders_stay_put_when_the_outermost_flock_leaves() {
+        let cgroups: Vec<String> = (0..6)
+            .map(|k| format!("/system.slice/f{k}.service"))
+            .collect();
+        let sample = |count: usize, elapsed: f64| {
+            let processes = cgroups[..count]
+                .iter()
+                .enumerate()
+                .flat_map(|(k, cgroup)| {
+                    (0..30).map(move |n| process(1000 * (k as u32 + 1) + n, cgroup))
+                })
+                .collect();
+            snapshot(processes, elapsed)
+        };
+        let mut scene = Scene::new();
+        render(&mut scene, &sample(6, 1.0), 1.0);
+        let layout = |scene: &Scene| {
+            (
+                scene.coop.yard.low,
+                scene.coop.yard.high,
+                scene.coop.band_top,
+                scene
+                    .coop
+                    .feeders
+                    .iter()
+                    .map(|f| f.center)
+                    .collect::<Vec<_>>(),
+                scene.coop.yard.eyes.clone(),
+            )
+        };
+        let before = layout(&scene);
+        // Drop whichever flock stands furthest south, the one that sets the yard's southern edge.
+        let outermost = scene
+            .coop
+            .flocks
+            .iter()
+            .min_by(|a, b| a.center[1].total_cmp(&b.center[1]))
+            .map(|flock| flock.key.clone())
+            .unwrap();
+        let mut smaller = sample(6, 2.0);
+        smaller.processes.retain(|p| p.cgroup != outermost);
+        render(&mut scene, &smaller, 2.0);
+        assert_eq!(scene.coop.flocks.len(), 5);
+        assert_eq!(layout(&scene), before);
+        // A flock arriving beyond the fence grows it, and the fence does not shrink back.
+        let mut scene = Scene::new();
+        render(&mut scene, &sample(2, 1.0), 1.0);
+        let small = layout(&scene);
+        render(&mut scene, &sample(6, 2.0), 2.0);
+        let grown = layout(&scene);
+        assert!(grown.0[0] <= small.0[0] && grown.0[1] <= small.0[1]);
+        assert!(grown.1[0] >= small.1[0] && grown.1[1] >= small.1[1]);
+        assert!(grown.0 != small.0 || grown.1 != small.1);
+        render(&mut scene, &sample(2, 3.0), 3.0);
+        assert_eq!(layout(&scene), grown);
+    }
+
+    #[test]
+    fn flock_orders_count_foragers_and_match_the_order_of_each_flock() {
+        let mut yard = Yard::new([-30.0, -30.0], [30.0, 30.0]);
+        yard.chickens = scatter(30, 100, 0, [0.0, 0.0], 12.0, 1.2);
+        yard.chickens
+            .extend(scatter(10, 300, 2, [2.0, 1.0], 10.0, 0.8));
+        yard.chickens[4].role = Role::Roosting;
+        yard.chickens.sort_by_key(|c| c.id);
+        let orders = yard.flock_orders(3);
+        assert_eq!(orders.len(), 3);
+        assert_eq!(orders[1], None, "a flock with nobody has no order");
+        for flock in [0, 2] {
+            let foragers = yard
+                .chickens
+                .iter()
+                .filter(|c| c.role == Role::Foraging && c.flock == flock);
+            let (phi, count) = orders[flock].unwrap();
+            assert_eq!(Some(phi), order_of(foragers.clone()));
+            assert_eq!(count, foragers.count());
+        }
+        assert_eq!(orders[0].unwrap().1, 29);
     }
 
     #[test]

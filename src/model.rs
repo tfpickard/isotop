@@ -125,7 +125,7 @@ pub struct Snapshot {
     pub links: Vec<(Identity, Identity, u32)>,
     /// Bytes per second over loopback TCP between the two processes of a pair, both directions
     /// together. Keys are ordered as in `links`; pairs with a measured connection but no traffic
-    /// since the previous reading are present with 0.
+    /// since the previous reading are present with 0, and pairs not yet measured are absent.
     pub link_traffic: HashMap<(Identity, Identity), f32>,
     /// TCP connections leaving the machine, per process.
     pub outside: HashMap<Identity, u32>,
@@ -243,7 +243,7 @@ fn background(
             let mut geo = geo::Geo::open(geoip.as_deref());
             let mut units = HashMap::new();
             let mut sockets = HashMap::new();
-            let mut loopback = HashMap::new();
+            let mut loopback = LoopbackScan::default();
             let mut retained = HashSet::new();
             while Arc::strong_count(&writer) > 1 {
                 let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
@@ -320,29 +320,44 @@ fn accounted(wanted: HashSet<String>, previous: &mut HashSet<String>) -> HashSet
     paths
 }
 
+/// What the previous loopback scan saw: when it ran, and each socket's received counter.
+#[derive(Default)]
+struct LoopbackScan {
+    at: Option<Instant>,
+    received: HashMap<u64, u64>,
+}
+
 /// Bytes per second between pid pairs (smaller pid first) from the change in each loopback
 /// socket's received counter since the previous scan. Each end counts what it received, which
 /// is what the other end sent, so both directions together count every byte once.
+///
+/// A socket not in the previous scan was opened inside the interval, so all of its received
+/// bytes fall in it. On the very first scan nothing is known about the interval, and the pairs
+/// stay absent rather than reading as measured and idle.
 fn traffic(
     sockets: &[net::Loopback],
-    previous: &mut HashMap<u64, (Instant, u64)>,
+    previous: &mut LoopbackScan,
     now: Instant,
 ) -> HashMap<(u32, u32), f32> {
+    let interval = previous
+        .at
+        .map(|then| now.duration_since(then).as_secs_f32().max(0.1));
     let mut next = HashMap::new();
     let mut rates: HashMap<(u32, u32), f32> = HashMap::new();
     for socket in sockets {
-        let rate = previous
-            .get(&socket.inode)
-            .map_or(0.0, |&(then, received)| {
-                let dt = now.duration_since(then).as_secs_f32().max(0.1);
-                socket.received.saturating_sub(received) as f32 / dt
-            });
-        next.insert(socket.inode, (now, socket.received));
+        next.insert(socket.inode, socket.received);
+        let Some(interval) = interval else {
+            continue;
+        };
+        let before = previous.received.get(&socket.inode).copied().unwrap_or(0);
         *rates
             .entry((socket.pid.min(socket.peer), socket.pid.max(socket.peer)))
-            .or_default() += rate;
+            .or_default() += socket.received.saturating_sub(before) as f32 / interval;
     }
-    *previous = next;
+    *previous = LoopbackScan {
+        at: Some(now),
+        received: next,
+    };
     rates
 }
 
@@ -1272,31 +1287,52 @@ mod tests {
         assert_eq!(before.rates(after, 2.0), [0.0, 0.0, 0.0]);
     }
 
-    #[test]
-    fn loopback_traffic_becomes_a_rate_from_counter_deltas_and_counts_each_byte_once() {
-        let socket = |inode, pid, peer, received| net::Loopback {
+    fn loopback(inode: u64, pid: u32, peer: u32, received: u64) -> net::Loopback {
+        net::Loopback {
             inode,
             pid,
             peer,
             received,
-        };
+        }
+    }
+
+    #[test]
+    fn loopback_traffic_becomes_a_rate_from_counter_deltas_and_counts_each_byte_once() {
         let start = Instant::now();
-        let mut previous = HashMap::new();
-        let first = [socket(1, 30, 20, 1000), socket(2, 20, 30, 500)];
-        let rates = traffic(&first, &mut previous, start);
-        assert_eq!(rates, HashMap::from([((20, 30), 0.0)]));
+        let mut previous = LoopbackScan::default();
+        // Nothing is known about the first interval, so the pair stays unmeasured.
+        let first = [loopback(1, 30, 20, 1000), loopback(2, 20, 30, 500)];
+        assert!(traffic(&first, &mut previous, start).is_empty());
         // 30 received 4000 bytes and 20 received 1000 more; 5000 bytes crossed in 2 seconds.
-        let second = [socket(1, 30, 20, 5000), socket(2, 20, 30, 1500)];
+        let second = [loopback(1, 30, 20, 5000), loopback(2, 20, 30, 1500)];
         let rates = traffic(&second, &mut previous, start + Duration::from_secs(2));
         assert_eq!(rates, HashMap::from([((20, 30), 2500.0)]));
-        // The interval is floored at 0.1 s, and a new socket on a known pair starts from zero.
+        // The interval is floored at 0.1 s, and a new socket on a known pair counts all it has
+        // received, because it was opened inside the interval.
         let third = [
-            socket(1, 30, 20, 5100),
-            socket(2, 20, 30, 1500),
-            socket(3, 20, 30, 777),
+            loopback(1, 30, 20, 5100),
+            loopback(2, 20, 30, 1500),
+            loopback(3, 20, 30, 777),
         ];
         let rates = traffic(&third, &mut previous, start + Duration::from_millis(2010));
-        assert_eq!(rates, HashMap::from([((20, 30), 1000.0)]));
+        assert_eq!(rates, HashMap::from([((20, 30), 1000.0 + 7770.0)]));
+    }
+
+    #[test]
+    fn a_loopback_connection_seen_once_counts_its_bytes_over_the_scan_interval() {
+        let start = Instant::now();
+        let mut previous = LoopbackScan::default();
+        assert!(traffic(&[], &mut previous, start).is_empty());
+        // A connection opened and closed between scans is seen once, with 5 MB received.
+        let seen = [
+            loopback(7, 40, 41, 5_000_000),
+            loopback(8, 41, 40, 1_000_000),
+        ];
+        let rates = traffic(&seen, &mut previous, start + Duration::from_secs(2));
+        assert_eq!(rates, HashMap::from([((40, 41), 3_000_000.0)]));
+        // It is gone at the next scan, so the pair is absent again rather than idle.
+        let rates = traffic(&[], &mut previous, start + Duration::from_secs(4));
+        assert!(rates.is_empty());
     }
 
     #[test]
