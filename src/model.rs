@@ -320,12 +320,18 @@ fn accounted(wanted: HashSet<String>, previous: &mut HashSet<String>) -> HashSet
     paths
 }
 
-/// What the previous loopback scan saw: when it ran, and each socket's received counter.
+/// What the previous loopback scan saw: when it ran, and each socket's received counter with
+/// the number of scans since it was last seen.
 #[derive(Default)]
 struct LoopbackScan {
     at: Option<Instant>,
-    received: HashMap<u64, u64>,
+    received: HashMap<u64, (u64, u32)>,
 }
+
+/// Scans a socket's last counter is kept after it drops out, so a socket that one scan missed
+/// (an owner's fd table briefly unreadable) is measured from its old counter when it returns
+/// instead of looking new. Socket inode numbers are not reused within that time.
+const LOOPBACK_MISSES: u32 = 3;
 
 /// Bytes per second between pid pairs (smaller pid first) from the change in each loopback
 /// socket's received counter since the previous scan. Each end counts what it received, which
@@ -345,14 +351,22 @@ fn traffic(
     let mut next = HashMap::new();
     let mut rates: HashMap<(u32, u32), f32> = HashMap::new();
     for socket in sockets {
-        next.insert(socket.inode, socket.received);
+        next.insert(socket.inode, (socket.received, 0));
         let Some(interval) = interval else {
             continue;
         };
-        let before = previous.received.get(&socket.inode).copied().unwrap_or(0);
+        let before = previous
+            .received
+            .get(&socket.inode)
+            .map_or(0, |&(received, _)| received);
         *rates
             .entry((socket.pid.min(socket.peer), socket.pid.max(socket.peer)))
             .or_default() += socket.received.saturating_sub(before) as f32 / interval;
+    }
+    for (&inode, &(received, misses)) in &previous.received {
+        if misses < LOOPBACK_MISSES {
+            next.entry(inode).or_insert((received, misses + 1));
+        }
     }
     *previous = LoopbackScan {
         at: Some(now),
@@ -1333,6 +1347,19 @@ mod tests {
         // It is gone at the next scan, so the pair is absent again rather than idle.
         let rates = traffic(&[], &mut previous, start + Duration::from_secs(4));
         assert!(rates.is_empty());
+    }
+
+    #[test]
+    fn a_loopback_socket_missed_by_one_scan_is_measured_from_its_old_counter() {
+        let start = Instant::now();
+        let mut previous = LoopbackScan::default();
+        let at = |seconds| start + Duration::from_secs(seconds);
+        traffic(&[loopback(7, 40, 41, 0)], &mut previous, at(0));
+        traffic(&[loopback(7, 40, 41, 900_000_000)], &mut previous, at(2));
+        // One scan cannot see the socket, then it is back with 2 MB more.
+        assert!(traffic(&[], &mut previous, at(4)).is_empty());
+        let rates = traffic(&[loopback(7, 40, 41, 902_000_000)], &mut previous, at(6));
+        assert_eq!(rates, HashMap::from([((40, 41), 1_000_000.0)]));
     }
 
     #[test]

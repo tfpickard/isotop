@@ -241,12 +241,12 @@ A fenced chicken yard in which every process is a chicken in a Vicsek flock: eac
 | Perch seat | Seat number in the flock | Fixed ladder grid around the henhouse, nearest seats first |
 | Roosting on a perch | CPU below 0.3 % | Roosts under 0.3 %, leaves above 0.8 %, a newcomer roosts under 0.5 % |
 | Foraging speed | CPU | 0.6 + 3.4 × cpu / (cpu + 25) units per second |
-| Heading noise | CPU variation over 30 samples, CPU pressure | 0.5 + 0.5 × min(CV, 2) + 5.5 × psi / (psi + 15) radians, at most a full turn; fixed when pressure is missing |
+| Heading noise | CPU variation over 30 samples, CPU pressure | 0.5 + 0.5 × min(CV, 2) + 5.5 × psi / (psi + 15) radians, at most a full turn; without pressure readings the pressure term is dropped and the CPU-variation term still applies |
 | Pull towards a socket peer, measured | Loopback TCP bytes per second | w = min(log2(1 + B/s ÷ 1024) / 10, 1.5); an idle connection gives 0; a connection first seen since the previous 2 s scan counts all the bytes it has received over that interval, and on the very first scan nothing is measured yet |
 | Pull towards a socket peer, unmeasured | CPU of both ends | w = 0.8 × min(cpu_i, cpu_k) / (min + 25) |
 | Feeders | Per-core CPU list (the core count if there is none) | Sorted by kind and id; performance cores get 3 slots and a gold trough, efficiency cores 2 and teal, unknown kinds 2 and neutral |
 | Grain brightness | Core busy fraction | Tint 0.25 + 0.85 × busy |
-| Feeding at a feeder | Running state, last core | A queue per feeder ordered by priority, then identity; an unknown core goes to the first feeder. A long queue wraps into extra columns beside the feeder, alternately right and left, so it stays inside the fence |
+| Feeding at a feeder | Running state, last core | A queue per feeder ordered by priority, then identity; an unknown core goes to the first feeder. A long queue wraps into at most three columns in the feeder's own lane (straight back, then right, then left) and packs tighter if it still does not fit, so it stays inside the fence and apart from the next feeder's queue |
 | Pecking rank | Priority and nice | Shown in the inspector |
 | Frozen, crouched | Stopped or traced state | Held in place without noise |
 | Mud puddle | Uninterruptible sleep | Does not move |
@@ -254,7 +254,7 @@ A fenced chicken yard in which every process is a chicken in a Vicsek flock: eac
 | Eggs | Bytes written | ⌊(written − first sight) / 1 MiB⌋ in a nest by the henhouse, up to 24 shown, each kept 60 s |
 | Dust puffs | Read rate | min(5, 1 + ⌊log2(rate / 64 KiB)⌋) puffs above 64 KiB/s |
 | Chicks | Threads | min(threads − 1, 12), following the hen along her trail |
-| Fox | Rise in a unit's OOM kill count | One to three foxes run for 3 s at the largest member that vanished in the last 4 s |
+| Fox | Rise in a unit's OOM kill count | One to three foxes run for 3 s at the largest member that vanished in the last 4 s (or two and a half sampling intervals, if longer) |
 | Fox eyes | Memory pressure | min(6, 1 + ⌊psi / 10⌋) pairs above 0.5 %, 3 × (1 − psi / (psi + 20)) + 0.4 units outside the fence |
 | phi in the legend | Foragers | \|Σv\| / Σ\|v\| |
 | Inspector notes | Write rate, read rate, nice | Shown on the eggs, dust and feeding lines |
@@ -269,7 +269,7 @@ Decorative: the grass grid and the dirt band under the feeders, the hedge, the f
 
 **Eggs.** The count is exact: one egg for each MiB a process has written since isotop first saw it, kept in an integer ledger rather than estimated from the rate.
 
-**The fox.** When a unit's `oom_kills` count rises, a fox runs to the largest member (by memory) that vanished in the last 4 seconds and takes it. The window exists because cgroup counters are read every 2 s on a background thread, so the count can rise a sample or two after the process disappears from the list; each victim is claimed by one kill only. If no member vanished, the fox leaves empty-mouthed. Kills recorded while another view is shown are dropped once they are older than a fox's run, so switching to the coop does not replay them. Memory pressure puts fox eyes in the hedge: more pairs and nearer the fence as pressure grows, and foragers near them flee.
+**The fox.** When a unit's `oom_kills` count rises, a fox runs to the largest member (by memory) that vanished in the last 4 seconds, or two and a half sampling intervals when `--sample-ms` is longer, and takes it. The window exists because cgroup counters are read every 2 s on a background thread, so the count can rise a sample or two after the process disappears from the list; each victim is claimed by one kill only. If no member vanished, the fox leaves empty-mouthed. Kills recorded while another view is shown are dropped once they are older than a fox's run, so switching to the coop does not replay them. Memory pressure puts fox eyes in the hedge: more pairs and nearer the fence as pressure grows, and foragers near them flee.
 
 **What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the pressure term of the noise is fixed; the CPU-variation term still applies. I/O counters of other users' processes are unreadable without privileges, so those chickens lay no eggs and raise no dust, and the legend counts them.
 

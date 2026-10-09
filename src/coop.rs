@@ -79,6 +79,9 @@ const WALL: f32 = 1.9;
 const RIDGE: f32 = 3.1;
 /// Feeders: slot width, depth of one row of troughs with room for a queue, and the trough.
 const SLOT: f32 = 1.6;
+/// Queue columns per feeder: straight back, one slot to the right and one to the left, which
+/// keeps a queue inside its feeder's lane (feeders are at least 3.6 long with 1.2 between).
+const QUEUE_COLUMNS: usize = 3;
 const FEEDER_ROW: f32 = 6.0;
 const TROUGH_DEPTH: f32 = 0.7;
 /// Distance of the hedge outside the fence.
@@ -645,6 +648,8 @@ struct Flock {
 #[derive(Default)]
 pub struct Coop {
     recorded: Option<f64>,
+    /// Seconds between the last two recorded samples.
+    interval: f64,
     history: HashMap<Identity, VecDeque<f32>>,
     ledgers: HashMap<Identity, Ledger>,
     nests: HashMap<String, Nest>,
@@ -695,7 +700,8 @@ fn flock_label(process: &Process) -> String {
 }
 
 /// Body radius from memory: volume proportional to memory, from 0.3 at about 16 MiB and below
-/// (0.3 / 0.12 = 2.5, and 2.5 cubed is 15.6) to 1.2 at 1000 MiB and above, so small processes stay visible and large ones keep their spread.
+/// (0.3 / 0.12 = 2.5, and 2.5 cubed is 15.6) to 1.2 at 1000 MiB and above, so small processes
+/// stay visible and large ones keep their spread.
 fn body_radius(memory: f32) -> f32 {
     (0.12 * (memory / 1_048_576.0).max(0.0).cbrt()).clamp(0.3, 1.2)
 }
@@ -889,6 +895,9 @@ impl Coop {
         {
             return;
         }
+        if let Some(previous) = self.recorded {
+            self.interval = snapshot.elapsed - previous;
+        }
         self.recorded = Some(snapshot.elapsed);
         let present: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
         self.history.retain(|id, _| present.contains(id));
@@ -955,8 +964,11 @@ impl Coop {
             .collect();
         left.sort_by_key(|gone| gone.id);
         self.departed.extend(left);
+        // Two and a half sampling intervals cover a kill counted up to two samples late when
+        // --sample-ms is longer than the default.
+        let window = DEPARTED_SECONDS.max(2.5 * self.interval);
         self.departed
-            .retain(|gone| snapshot.elapsed - gone.gone <= DEPARTED_SECONDS);
+            .retain(|gone| snapshot.elapsed - gone.gone <= window);
         let mut paths: Vec<&String> = snapshot.units.keys().collect();
         paths.sort();
         for path in paths {
@@ -1014,7 +1026,7 @@ impl Coop {
             " Chicken = process, size = memory | flock = cgroup | foraging speed = CPU, roost = idle | feeder = CPU it ran on, pecking order = priority | chicks = threads | eggs = MiB written | dust = reads | fox = OOM kill, eyes = memory pressure | phi {phi}"
         );
         if self.pressure_missing {
-            line.push_str(" | no CPU pressure: yard noise fixed");
+            line.push_str(" | no CPU pressure: noise from CPU variation only");
         }
         if self.unreadable > 0 {
             line.push_str(&format!(" | I/O unreadable for {}", self.unreadable));
@@ -1403,8 +1415,17 @@ impl Coop {
             line.sort();
             let feeder = &self.feeders[index];
             let queue_start = feeder.eating_line() - 1.3;
-            // The queue runs south behind the eating line and, rather than leave the feeder's
-            // row, wraps into further columns beside it, alternately right and left.
+            let floor = (feeder.center[1] - (FEEDER_ROW - 1.2)).max(self.yard.low[1]);
+            // The queue runs south behind the eating line and wraps into at most QUEUE_COLUMNS
+            // columns within the feeder's own lane (straight back, then right, then left), so
+            // neighbouring feeders' queues never meet. A queue too long for them packs tighter.
+            let needed: f32 = line
+                .iter()
+                .skip(feeder.slots)
+                .map(|&(_, _, k)| 2.0 * chickens[k].radius + 0.25)
+                .sum();
+            let room = QUEUE_COLUMNS as f32 * (queue_start - floor).max(0.1);
+            let packing = if needed > room { room / needed } else { 1.0 };
             let (mut cursor, mut column) = (queue_start, 0_usize);
             for (rank, &(priority, _, k)) in line.iter().enumerate() {
                 let process = measured(order[k]);
@@ -1412,16 +1433,19 @@ impl Coop {
                 let target = if rank < feeder.slots {
                     feeder.slot(rank)
                 } else {
-                    let floor = (feeder.center[1] - (FEEDER_ROW - 1.2)).max(self.yard.low[1]);
-                    if cursor - 2.0 * chicken.radius < floor && cursor < queue_start {
+                    let step = (2.0 * chicken.radius + 0.25) * packing;
+                    if cursor - step < floor - 0.01
+                        && cursor < queue_start
+                        && column + 1 < QUEUE_COLUMNS
+                    {
                         column += 1;
                         cursor = queue_start;
                     }
                     let side = if column % 2 == 1 { 1.0 } else { -1.0 };
                     let across = column.div_ceil(2) as f32 * SLOT * side;
-                    cursor -= chicken.radius;
+                    cursor -= step * 0.5;
                     let spot = [feeder.center[0] + across, cursor];
-                    cursor -= chicken.radius + 0.25;
+                    cursor -= step * 0.5;
                     spot
                 };
                 let target = keep_inside(target, chicken.radius, self.yard.low, self.yard.high);
@@ -3135,6 +3159,51 @@ mod tests {
         coop.record(&at(0));
         coop.record(&at(5));
         assert_eq!(coop.calls.len(), MAX_PENDING_CALLS);
+    }
+
+    #[test]
+    fn neighbouring_feeders_keep_their_queues_in_their_own_lanes() {
+        let path = "/system.slice/busy.service";
+        let processes = (1..=16)
+            .map(|pid| {
+                let mut p = process(pid, path);
+                p.state = 'R';
+                p.cpu = 90.0;
+                p.memory = 20 << 20;
+                p.core = u32::from(pid > 9);
+                p
+            })
+            .collect();
+        let mut sample = snapshot(processes, 1.0);
+        sample.cores = 2;
+        let mut scene = Scene::new();
+        render(&mut scene, &sample, 1.0);
+        let coop = &scene.coop;
+        assert_eq!(coop.feeders.len(), 2);
+        let chickens = &coop.yard.chickens;
+        for chicken in chickens {
+            let feeder = &coop.feeders[usize::from(chicken.id.pid > 9)];
+            assert!(
+                (chicken.target[0] - feeder.center[0]).abs() <= SLOT + 0.01,
+                "pid {} queues outside cpu{}'s lane",
+                chicken.id.pid,
+                feeder.cpu
+            );
+        }
+        for (a, b) in chickens
+            .iter()
+            .flat_map(|a| chickens.iter().map(move |b| (a, b)))
+        {
+            if a.id < b.id {
+                let apart = (a.target[0] - b.target[0]).hypot(a.target[1] - b.target[1]);
+                assert!(
+                    apart > 0.2,
+                    "pids {} and {} share a spot",
+                    a.id.pid,
+                    b.id.pid
+                );
+            }
+        }
     }
 
     #[test]
