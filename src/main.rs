@@ -1,4 +1,5 @@
 mod cells;
+mod coop;
 mod cores;
 mod geo;
 mod globe;
@@ -538,6 +539,7 @@ impl App {
             View::Globe => "GLOBE",
             View::Reef => "REEF",
             View::Matrix => "MATRIX",
+            View::Coop => "COOP",
         };
         let mode = match (self.paused, &self.tour) {
             (true, _) => "PAUSED",
@@ -596,6 +598,7 @@ impl App {
                 View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
                 View::Globe => format!(" Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}", s.geo),
                 View::Reef => " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into(),
+                View::Coop => self.scene.coop.legend(),
                 View::Matrix => format!(
                     " Journal lines decode as the rain passes | red = error, amber = warning, green = info, teal = debug | {} queued{}",
                     self.scene.matrix.pending(),
@@ -1170,9 +1173,19 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             app.history = VecDeque::from([model::demo(options.time, options.processes as usize)]);
         }
+        // The coop's CPU history, eggs and fox baselines come from the samples before the frame.
+        if options.view == View::Coop && options.demo && options.output.is_some() {
+            for back in (1..=30).rev() {
+                let at = options.time - back as f64;
+                if at >= 0.0 {
+                    let snapshot = model::demo(at, options.processes as usize);
+                    app.scene.record(&snapshot, at as f32);
+                }
+            }
+        }
         if matches!(
             options.view,
-            View::Ripple | View::Flow | View::Reef | View::Cores
+            View::Ripple | View::Flow | View::Reef | View::Cores | View::Coop
         ) && options.output.is_some()
         {
             for step in 0..80 {
@@ -1401,7 +1414,7 @@ mod tests {
     fn shift_tab_steps_back_through_the_views_and_wraps() {
         let mut app = App::new(View::City, model::demo(1.0, 16));
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT, 10.0);
-        assert_eq!(app.view, View::Matrix);
+        assert_eq!(app.view, *View::ALL.last().unwrap());
         app.key(KeyCode::Tab, KeyModifiers::NONE, 10.0);
         assert_eq!(app.view, View::City);
     }
