@@ -12,7 +12,7 @@ import os
 import sys
 import time
 
-PROTO = "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/proto"
+PROTO = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROTO)
 
 import numpy as np

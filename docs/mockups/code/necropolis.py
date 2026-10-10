@@ -3,10 +3,11 @@
 Run: python3 -I necropolis.py [still|anim|both] [--fast]
 """
 import math
+import os
 import sys
 from datetime import datetime, timezone
 
-PROTO = "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/proto"
+PROTO = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROTO)
 
 import numpy as np

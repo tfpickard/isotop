@@ -1,7 +1,7 @@
 """Shared look for isotop view mockups, so every reference image reads as the same app.
 
 Import from a mockup script with:
-    import sys; sys.path.insert(0, "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/proto")
+    import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import isostyle as S
 
 Conventions (match isotop's real screenshots):
@@ -18,7 +18,10 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/out"
+# Rendered stills, frames and GIFs go to $ISOTOP_MOCKUP_OUT, or docs/mockups/out by default.
+OUT = os.environ.get("ISOTOP_MOCKUP_OUT",
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "out"))
+os.makedirs(OUT, exist_ok=True)
 
 KIND = {
     "kernel": (124, 138, 165),     # slate

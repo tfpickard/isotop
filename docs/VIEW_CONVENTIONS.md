@@ -67,7 +67,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 ## Module shape
 
 - Keep state that spans samples in the view's struct, keyed by `Identity` (pid plus start), never by pid alone. Prune identities that are no longer alive.
-- History that must already exist when the view is first opened is recorded on every sample in every view, through the record hook. Use [B1 (#28)](https://github.com/tfpickard/isotop/issues/28)'s `History` for per-process CPU and memory rather than a ring of your own.
+- History that must already exist when the view is first opened is recorded on every sample in every view, through the record hook. Use [B1 (#28)](https://github.com/tfpickard/isotop/issues/28)'s `History` for per-process CPU and memory rather than a ring of your own. The exception is a view that needs data `History` does not hold (another cadence, a longer window, or cumulative CPU seconds rather than CPU percent); its issue says so and names what it records. Example: [tesseract (#57)](https://github.com/tfpickard/isotop/issues/57) records cumulative CPU seconds every 0.25 s for 180 s.
 - Deduplicate records on `snapshot.elapsed > last`. Draw the window that ends at `snapshot.elapsed`, so pause and rewind (`[` `]`) work.
 - Express time windows in seconds of `snapshot.elapsed`, not as sample counts. `--sample-ms` ranges from 100 to 10000.
 - Recompute expensive derived data (fits, routes, ownership grids, shadows) once per new sample, or spread it over several frames. Nothing O(n²) in processes runs per frame.

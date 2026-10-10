@@ -70,7 +70,7 @@ Depth is the length of the longest dependency chain ending at the item. Items of
 | B10 | [#37](https://github.com/tfpickard/isotop/issues/37) | Add a Hershey stroke font for text drawn in the scene | S3 | `feat/stroke-font` | S | available | 2 |
 | B11 | [#38](https://github.com/tfpickard/isotop/issues/38) | Add persistent view state: versioned files under the user data directory with atomic replace | — | `feat/view-state-store` | M | available | 1 |
 | B12 | [#39](https://github.com/tfpickard/isotop/issues/39) | Add thermal sensors, CPU topology, throttle counts and RAPL package power | S6 | `feat/thermal-topology` | M | degraded | 3 |
-| ptolemy | [#40](https://github.com/tfpickard/isotop/issues/40) | a geocentric cosmos with Fourier epicycles | P1, P2, S1, B1, S4, S5 | `feat/view-ptolemy` | L | available | 3 |
+| ptolemy | [#40](https://github.com/tfpickard/isotop/issues/40) | a geocentric cosmos with Fourier epicycles | P1, P2, S1, P4, B1, S4, S5 | `feat/view-ptolemy` | L | available | 3 |
 | mold | [#41](https://github.com/tfpickard/isotop/issues/41) | a Physarum slime mold wiring the busy processes in a Petri dish | P1, P2, P3, B2, S1, S2, S6 | `feat/view-mold` | L | degraded | 3 |
 | chamber | [#42](https://github.com/tfpickard/isotop/issues/42) | a bubble chamber event display of busy processes, forks and exits | P1, P2, S1, P3, P5, B3, B4, S2, S4, S6 | `feat/view-chamber` | L | degraded | 4 |
 | horizon | [#43](https://github.com/tfpickard/isotop/issues/43) | the OOM killer as a Schwarzschild black hole | P1, P2, S1, B4, B5, B6, S4, S6 | `feat/view-horizon` | L | degraded | 4 |
@@ -159,6 +159,7 @@ graph LR
   P1 --> B9
   S3 --> B10
   S6 --> B12
+  P4 --> ptolemy
   B1 --> ptolemy
   S4 --> ptolemy
   S5 --> ptolemy

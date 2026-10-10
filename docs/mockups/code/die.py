@@ -12,7 +12,7 @@ import math
 import os
 import sys
 
-sys.path.insert(0, "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/proto")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import isostyle as S  # noqa: E402
 
 import cv2  # noqa: E402

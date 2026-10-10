@@ -3,7 +3,10 @@ transparent pixels wherever a frame repeats the previous one (ffmpeg's transdiff
 import os
 import subprocess
 
-OUT = "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/out"
+# Rendered stills, frames and GIFs go to $ISOTOP_MOCKUP_OUT, or docs/mockups/out by default.
+OUT = os.environ.get("ISOTOP_MOCKUP_OUT",
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "out"))
+os.makedirs(OUT, exist_ok=True)
 
 
 def pack(name, fps=12, width=720, colors=128, dither="none", stats="full"):

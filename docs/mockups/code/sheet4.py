@@ -1,6 +1,9 @@
 import sys, os
 from PIL import Image
-OUT = "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/out"
+# Rendered stills, frames and GIFs go to $ISOTOP_MOCKUP_OUT, or docs/mockups/out by default.
+OUT = os.environ.get("ISOTOP_MOCKUP_OUT",
+                     os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "out"))
+os.makedirs(OUT, exist_ok=True)
 name = sys.argv[1]
 d = os.path.join(OUT, f"{name}-frames")
 fs = sorted(os.listdir(d))

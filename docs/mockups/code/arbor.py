@@ -6,9 +6,10 @@ coloured by CPU, blossoms on new processes, kthreadd's kernel threads as the roo
 Run: python3 -I arbor.py [still|anim|both] [--frames a,b,c,d]
 """
 import math
+import os
 import sys
 
-PROTO = "/tmp/claude-0/-home-claude/5721c45e-59eb-54a5-91b7-cfe434980b29/scratchpad/proto"
+PROTO = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, PROTO)
 
 import numpy as np
