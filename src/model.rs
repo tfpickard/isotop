@@ -156,6 +156,10 @@ pub struct Snapshot {
     /// together. Keys are ordered as in `links`; pairs with a measured connection but no traffic
     /// since the previous reading are present with 0, and pairs not yet measured are absent.
     pub link_traffic: HashMap<(Identity, Identity), f32>,
+    /// The pairs in `links` connected by at least one Unix socket, keyed as in `links`. A pair
+    /// can have Unix and TCP sockets both. Empty when the platform does not tell the protocols
+    /// apart.
+    pub unix_links: HashSet<(Identity, Identity)>,
     /// TCP connections leaving the machine, per process.
     pub outside: HashMap<Identity, u32>,
     pub cpus: Vec<Cpu>,
@@ -531,6 +535,12 @@ impl Collector {
                 .iter()
                 .filter_map(|(&(a, b), &rate)| Some(((*ids.get(&a)?, *ids.get(&b)?), rate)))
                 .collect();
+            snapshot.unix_links = extras
+                .network
+                .unix
+                .iter()
+                .filter_map(|&(a, b)| Some((*ids.get(&a)?, *ids.get(&b)?)))
+                .collect();
             snapshot.units = extras.units.clone();
             snapshot.remotes = extras
                 .remotes
@@ -731,6 +741,11 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             ((id(i), id(i * 7 + 16)), rate)
         })
         .collect();
+    // Links of four sockets have a Unix socket among them, including some silent TCP ones.
+    let unix_links = (1..count)
+        .filter(|i| i % 3 == 0 && i % 4 == 3)
+        .map(|i| (id(i), id(i * 7 + 16)))
+        .collect();
     let outside = (0..count)
         .filter(|i| i % 11 == 0)
         .map(|i| (id(i), 1 + (i % 3) as u32))
@@ -810,6 +825,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
         links,
         link_traffic,
+        unix_links,
         outside,
         cpus,
         units,
@@ -1137,6 +1153,20 @@ mod tests {
         assert!(rates.iter().any(|&rate| rate > 0.0 && rate < 100_000.0));
         assert!(rates.iter().any(|&rate| rate >= 1.0e6));
         assert_eq!(demo(30.0, 128).link_traffic, snapshot.link_traffic);
+        // Unix links are links with room for a second socket, one of them over a silent TCP link.
+        let links: HashMap<(Identity, Identity), u32> = snapshot
+            .links
+            .iter()
+            .map(|&(a, b, count)| ((a, b), count))
+            .collect();
+        assert!(!snapshot.unix_links.is_empty());
+        assert!(snapshot.unix_links.iter().all(|pair| links[pair] >= 2));
+        assert!(
+            snapshot
+                .unix_links
+                .iter()
+                .any(|pair| snapshot.link_traffic[pair] == 0.0)
+        );
     }
 
     #[test]

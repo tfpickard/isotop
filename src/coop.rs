@@ -1734,7 +1734,24 @@ impl Coop {
                 .get(&(a, b))
                 .or_else(|| snapshot.link_traffic.get(&(b, a)))
                 .copied();
-            let weight = peer_weight(traffic, measured(order[i]).cpu, measured(order[j]).cpu);
+            let unix =
+                snapshot.unix_links.contains(&(a, b)) || snapshot.unix_links.contains(&(b, a));
+            // A pair can talk over TCP and Unix sockets at once, and measured TCP traffic says
+            // nothing about the Unix sockets, so the stronger of the two pulls. A pair known by
+            // neither (TCP not measured yet, or a platform that does not tell the protocols
+            // apart) falls back to co-activity.
+            let together = peer_weight(None, measured(order[i]).cpu, measured(order[j]).cpu);
+            let (weight, traffic) = match traffic {
+                Some(rate) => {
+                    let tcp = peer_weight(Some(rate), 0.0, 0.0);
+                    if unix && together > tcp {
+                        (together, None)
+                    } else {
+                        (tcp, Some(rate))
+                    }
+                }
+                None => (together, None),
+            };
             if weight <= 0.0 {
                 continue;
             }
@@ -3291,6 +3308,46 @@ mod tests {
             peer_weight(None, 50.0, 0.0) == 0.0,
             "co-activity needs both busy"
         );
+    }
+
+    #[test]
+    fn a_busy_unix_link_still_pulls_when_the_same_pair_has_an_idle_tcp_link() {
+        let pull = |traffic: f32, unix: bool| {
+            let processes: Vec<Process> = (1..=2)
+                .map(|pid| {
+                    let mut p = process(pid, "/system.slice/a.service");
+                    p.cpu = 50.0;
+                    p
+                })
+                .collect();
+            let mut sample = snapshot(processes, 1.0);
+            let pair = (identity(1), identity(2));
+            sample.links = vec![(pair.0, pair.1, 2)];
+            sample.link_traffic.insert(pair, traffic);
+            if unix {
+                sample.unix_links.insert(pair);
+            }
+            let mut scene = Scene::new();
+            render(&mut scene, &sample, 1.0);
+            let chicken = scene.coop.yard.find(identity(1)).unwrap();
+            assert_eq!(chicken.role, Role::Foraging);
+            let walks = notes(&scene, 1)
+                .into_iter()
+                .find(|note| note.starts_with("walks with"));
+            (chicken.peers.first().map(|&(_, weight)| weight), walks)
+        };
+        let busy = peer_weight(None, 50.0, 50.0);
+        assert!(busy > 0.0);
+        assert_eq!(pull(0.0, false), (None, None), "an idle TCP link alone");
+        assert_eq!(
+            pull(0.0, true),
+            (Some(busy), Some("walks with hen-2 (both busy)".into()))
+        );
+        // Busy TCP outweighs co-activity, and the note names the term that won.
+        let (weight, walks) = pull(1.0e6, true);
+        assert_eq!(weight, Some(peer_weight(Some(1.0e6), 0.0, 0.0)));
+        assert!(weight.unwrap() > busy);
+        assert!(walks.unwrap().ends_with("/s over TCP)"));
     }
 
     #[test]

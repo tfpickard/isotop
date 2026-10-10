@@ -1,7 +1,7 @@
 //! Socket links between processes: loopback TCP pairs, Unix-socket peers, and TCP connections
 //! that leave the machine. Only sockets of processes whose file descriptors we may read are seen.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -46,11 +46,15 @@ pub fn sample() -> Network {
             None => *network.outside.entry(pid).or_default() += 1,
         }
     }
+    let mut unix = HashSet::new();
     for (inode, peer) in unix_peers().unwrap_or_default() {
         if inode < peer
             && let (Some(&a), Some(&b)) = (owners.get(&inode), owners.get(&peer))
         {
             link(a, b);
+            if a != b {
+                unix.insert((a.min(b), a.max(b)));
+            }
         }
     }
     for family in [libc::AF_INET, libc::AF_INET6] {
@@ -73,6 +77,7 @@ pub fn sample() -> Network {
             }
         }
     }
+    network.unix = unix;
     network
 }
 
