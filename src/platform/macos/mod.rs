@@ -1472,9 +1472,15 @@ mod tests {
         let mut byte = [0];
         output.read_exact(&mut byte).unwrap();
         let group = child.id() as libc::pid_t;
+        // SAFETY: signal 0 is not sent; killpg only says whether the group has a member.
+        assert_eq!(
+            unsafe { libc::killpg(group, 0) },
+            0,
+            "the follower leads a group"
+        );
         stop_journal(&mut child);
         let deadline = Instant::now() + Duration::from_secs(5);
-        // SAFETY: signal 0 is not sent; killpg only says whether the group has a member.
+        // SAFETY: as above.
         while unsafe { libc::killpg(group, 0) } == 0 {
             assert!(
                 Instant::now() < deadline,
@@ -1482,7 +1488,14 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        // xnu answers ESRCH once the group is gone, and EPERM while it still holds members but
+        // none it may signal (killpg1 in bsd/kern/kern_sig.c). Zombies don't count, and every
+        // member runs as this user, so EPERM means the only members left are unreaped zombies.
+        let error = io::Error::last_os_error().raw_os_error();
+        assert!(
+            matches!(error, Some(libc::ESRCH | libc::EPERM)),
+            "{error:?}"
+        );
         drop(output);
     }
 
