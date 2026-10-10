@@ -18,8 +18,8 @@ use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Process, Unit};
-use crate::platform::{Network, RawProcess};
+use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
+use crate::platform::{Files, Locks, Network, RawProcess};
 
 pub use journal::{JOURNAL, journal};
 
@@ -243,6 +243,9 @@ impl Sampler {
             cpu_time: 0.0,
             performance_share: None,
             waiting: None,
+            files: Measured::Pending,
+            locks_held: Measured::Pending,
+            blocked_on: None,
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -915,6 +918,24 @@ pub fn account(
     _previous: &mut HashMap<String, (Instant, u64, u64)>,
 ) -> HashMap<String, Unit> {
     HashMap::new()
+}
+
+/// Open files per process; not read on macOS yet, so every process stays not read.
+pub struct FileScan;
+
+impl FileScan {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn sample(&mut self) -> HashMap<u32, Option<Files>> {
+        HashMap::new()
+    }
+}
+
+/// File locks; not read on macOS yet.
+pub fn locks() -> Option<Locks> {
+    None
 }
 
 /// GPU memory per process. Apple GPUs share memory with the CPU and report no per-process

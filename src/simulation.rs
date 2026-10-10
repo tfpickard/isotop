@@ -95,8 +95,10 @@ impl SpatialHash {
         let high_x = self.coordinate(point[0] + radius);
         let low_y = self.coordinate(point[1] - radius);
         let high_y = self.coordinate(point[1] + radius);
-        let cells =
-            (i64::from(high_x) - i64::from(low_x) + 1) * (i64::from(high_y) - i64::from(low_y) + 1);
+        // Each span fits in an i64, but their product overflows for a radius near the edge of
+        // the i32 cell range; saturating keeps such a query on the point scan.
+        let cells = (i64::from(high_x) - i64::from(low_x) + 1)
+            .saturating_mul(i64::from(high_y) - i64::from(low_y) + 1);
         if cells > self.points.len() as i64 {
             out.extend((0..self.points.len()).filter(|&index| within(index)));
             return;
@@ -211,6 +213,17 @@ mod tests {
         assert_eq!(found, vec![0, 1, 2, 3]);
         hash.neighbours([4.0, 4.0], 0.0, &mut found);
         assert!(found.is_empty());
+    }
+
+    #[test]
+    fn a_radius_beyond_the_cell_range_scans_every_point_without_overflowing() {
+        let mut hash = SpatialHash::new(1.0e-3);
+        let mut found = Vec::new();
+        hash.rebuild(&[[0.0, 0.0], [1.0e6, -1.0e6], [-3.0, 7.0]]);
+        hash.neighbours([0.0, 0.0], 1.0e7, &mut found);
+        assert_eq!(found, vec![0, 1, 2]);
+        hash.neighbours([0.0, 0.0], f32::INFINITY, &mut found);
+        assert_eq!(found, vec![0, 1, 2]);
     }
 
     #[test]

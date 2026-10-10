@@ -9,10 +9,10 @@ The README covers usage. This file covers how to work on the code.
 
 1. **Sample** (`model.rs`, `platform/`). `Collector::sample` reads the operating system through
    `platform::Sampler` (on Linux, `/proc`) once per `--sample-ms`, smooths CPU use and returns a
-   `Snapshot`. Slow sources (sockets in `platform/linux/net.rs`, cgroup accounting, NVIDIA
-   memory in `platform/linux/nvml.rs`) run on a background thread every 2 s and are merged in,
-   so the frame loop never waits on them. `main.rs` keeps a history ring of snapshots for pause
-   and rewind.
+   `Snapshot`. Slow sources (sockets in `platform/linux/net.rs`, open files and file locks in
+   `platform/linux/files.rs`, cgroup accounting, NVIDIA memory in `platform/linux/nvml.rs`) run
+   on a background thread every 2 s and are merged in, so the frame loop never waits on them.
+   `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
    The `Scene` persists between frames to hold layout, smoothing, births and deaths, and the
@@ -27,14 +27,15 @@ The README covers usage. This file covers how to work on the code.
 |---|---|
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark |
 | `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
-| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `Gpu`, `journal`) and the platform-neutral `Network`; selects the implementation by `target_os` |
+| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`) and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
+| `platform/linux/files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
-| `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, feeders, eggs, chicks, dust and foxes, stepped at a fixed 20 Hz |
+| `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries and the seeded `Rng` |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |

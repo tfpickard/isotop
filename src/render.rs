@@ -2949,6 +2949,9 @@ mod tests {
             cgroup: "/system.slice/g.service".into(),
             performance_share: None,
             waiting: None,
+            files: crate::model::Measured::Pending,
+            locks_held: crate::model::Measured::Pending,
+            blocked_on: None,
         }
     }
 

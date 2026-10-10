@@ -596,6 +596,9 @@ mod tests {
             cgroup: cgroup.into(),
             performance_share: None,
             waiting: None,
+            files: crate::model::Measured::Pending,
+            locks_held: crate::model::Measured::Pending,
+            blocked_on: None,
         };
         let system = unit(Kind::System, "/system.slice/dbus.service");
         let session = unit(

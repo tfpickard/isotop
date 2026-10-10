@@ -1224,7 +1224,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
             app.history = VecDeque::from([model::demo(options.time, options.processes as usize)]);
         }
-        // The coop's CPU history, eggs and fox baselines come from the samples before the frame.
+        // The coop's CPU history and fox baselines come from the samples before the frame.
         if options.view == View::Coop && options.demo && options.output.is_some() {
             for back in (1..=30).rev() {
                 let at = options.time - back as f64;
