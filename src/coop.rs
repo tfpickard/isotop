@@ -975,7 +975,11 @@ impl Coop {
             let kills = snapshot.units[path].oom_kills;
             let seen = *self.kills.entry(path.clone()).or_insert(kills);
             if kills > seen {
-                for k in 0..(kills - seen).min(MAX_FOXES) as usize {
+                // Every kill claims a suspect, but only the first MAX_FOXES send a fox. The loop
+                // stops once the suspects run out, since the count can be very large.
+                let suspects = self.departed.iter().filter(|g| g.cgroup == *path).count();
+                let claims = (kills - seen).min(MAX_FOXES.max(suspects as u64));
+                for k in 0..claims as usize {
                     // The largest departed member that no earlier kill has claimed.
                     let victim = self
                         .departed
@@ -985,6 +989,9 @@ impl Coop {
                         .max_by(|(_, a), (_, b)| a.memory.cmp(&b.memory).then(b.id.cmp(&a.id)))
                         .map(|(index, _)| index)
                         .map(|index| self.departed.remove(index));
+                    if k as u64 >= MAX_FOXES {
+                        continue;
+                    }
                     self.calls.push(Call {
                         flock: path.clone(),
                         at: snapshot.elapsed,
@@ -3135,6 +3142,40 @@ mod tests {
         render(&mut scene, &now, 2400.0);
         assert!(scene.coop.foxes.is_empty());
         assert!(scene.coop.calls.is_empty());
+    }
+
+    #[test]
+    fn kills_beyond_the_fox_cap_still_claim_their_victims() {
+        let path = "/system.slice/greedy.service";
+        let mut coop = Coop::default();
+        let members: Vec<Process> = (1..=6)
+            .map(|pid| {
+                let mut member = process(pid, path);
+                member.memory = (pid as u64 * 100) << 20;
+                member
+            })
+            .collect();
+        let mut before = snapshot(members.clone(), 1.0);
+        before.units = units(path, 0);
+        coop.record(&before);
+        let mut burst = snapshot(members[..1].to_vec(), 2.0);
+        burst.units = units(path, 5);
+        coop.record(&burst);
+        let named: Vec<Option<u32>> = coop
+            .calls
+            .iter()
+            .map(|call| call.victim.map(|id| id.pid))
+            .collect();
+        assert_eq!(named, vec![Some(6), Some(5), Some(4)]);
+        coop.calls.clear();
+        let mut later = snapshot(members[..1].to_vec(), 3.0);
+        later.units = units(path, 6);
+        coop.record(&later);
+        assert_eq!(coop.calls.len(), 1);
+        assert_eq!(
+            coop.calls[0].victim, None,
+            "the five killed together are all accounted for by the burst"
+        );
     }
 
     #[test]
