@@ -594,6 +594,8 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: cgroup.into(),
+            performance_share: None,
+            waiting: None,
         };
         let system = unit(Kind::System, "/system.slice/dbus.service");
         let session = unit(

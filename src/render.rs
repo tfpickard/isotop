@@ -2947,6 +2947,8 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: "/system.slice/g.service".into(),
+            performance_share: None,
+            waiting: None,
         }
     }
 

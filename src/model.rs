@@ -55,6 +55,14 @@ pub struct Process {
     pub cpu_time: f32,
     /// Full cgroup v2 path, such as /system.slice/cron.service.
     pub cgroup: String,
+    /// Share of its CPU time since the previous sample that ran on performance cores, 0 to 1.
+    /// None where the platform does not split CPU time by core kind (Linux), on the first
+    /// sample, and when the process used no CPU time in the interval.
+    pub performance_share: Option<f32>,
+    /// Average number of its threads that were runnable but waiting for a CPU since the
+    /// previous sample. None where the platform does not measure it (Linux) and on the first
+    /// sample.
+    pub waiting: Option<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,12 +150,21 @@ pub struct Snapshot {
     pub missing: Vec<&'static str>,
     /// Processes the platform could see but not measure because they belong to another user.
     pub unreadable: usize,
+    /// Sources the platform measures per CPU cluster rather than per CPU (`Sampler::per_cluster`):
+    /// "cpu clock" when every CPU's `mhz` is the average clock of the cluster of its kind.
+    pub per_cluster: Vec<&'static str>,
 }
 
+/// What the collector keeps of a process between samples.
 struct Counters {
     ticks: u64,
     io: Option<IoBytes>,
     cpu: f32,
+    performance_ticks: Option<u64>,
+    /// The highest runnable-but-not-running total seen so far, in ticks: runnable ticks minus
+    /// CPU ticks, which dips while threads run because the kernel may update the runnable total
+    /// only when a thread is switched onto a CPU or blocks (see `RawProcess::runnable_ticks`).
+    waited: Option<i128>,
 }
 
 /// Cumulative bytes a process has read from and written to storage.
@@ -385,44 +402,23 @@ impl Collector {
             cores: std::thread::available_parallelism().map_or(1, usize::from),
             elapsed: now.duration_since(self.origin).as_secs_f64(),
             pressure,
-            missing: missing(pressure_readable, self.sampler.missing()),
-            cpus: self.sampler.cpus(dt),
             home: self.home.clone(),
             ..Default::default()
         };
         (snapshot.memory_total, snapshot.memory_available) = self.sampler.memory();
         let hz = self.sampler.hz();
         let mut next = HashMap::new();
-        for RawProcess {
-            mut process,
-            ticks,
-            io,
-        } in self.sampler.processes()?
-        {
-            process.cpu_time = ticks as f32 / hz;
-            if let Some(previous) = self.previous.get(&process.id) {
-                let raw = ticks.saturating_sub(previous.ticks) as f32 / hz / dt * 100.0;
-                let alpha = 1.0 - (-dt / 1.5).exp();
-                process.cpu = previous.cpu + alpha * (raw - previous.cpu);
-                if let Some([total, read, write]) = io
-                    .zip(previous.io)
-                    .map(|(current, before)| current.rates(before, dt))
-                {
-                    process.io_rate = Some(total);
-                    process.read_rate = Some(read);
-                    process.write_rate = Some(write);
-                }
-            }
-            next.insert(
-                process.id,
-                Counters {
-                    ticks,
-                    io,
-                    cpu: process.cpu,
-                },
-            );
+        for raw in self.sampler.processes()? {
+            let previous = self.previous.get(&raw.process.id);
+            let (process, counters) = measure(raw, previous, hz, dt);
+            next.insert(process.id, counters);
             snapshot.processes.push(process);
         }
+        // After the processes, which a platform may derive CPU readings from (the macOS
+        // cluster clocks come from the processes' cycle counters).
+        snapshot.cpus = self.sampler.cpus(dt);
+        snapshot.missing = missing(pressure_readable, self.sampler.missing());
+        snapshot.per_cluster = self.sampler.per_cluster();
         snapshot.unreadable = self.sampler.unreadable();
         snapshot.processes.sort_by_key(|p| p.id);
         if let Ok(mut wanted) = self.wanted.lock() {
@@ -478,6 +474,58 @@ impl Collector {
         self.last = now;
         Ok(snapshot)
     }
+}
+
+/// A process with its rates filled in from the change in its counters since `previous`, `dt`
+/// seconds ago (CPU ticks count `hz` per second), and the counters to keep for the next sample.
+fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (Process, Counters) {
+    let RawProcess {
+        mut process,
+        ticks,
+        io,
+        performance_ticks,
+        runnable_ticks,
+    } = raw;
+    process.cpu_time = ticks as f32 / hz;
+    // Runnable time counts running time too, so what remains after the CPU time is waiting.
+    let waited = runnable_ticks.map(|runnable| i128::from(runnable) - i128::from(ticks));
+    if let Some(previous) = previous {
+        let raw = ticks.saturating_sub(previous.ticks) as f32 / hz / dt * 100.0;
+        let alpha = 1.0 - (-dt / 1.5).exp();
+        process.cpu = previous.cpu + alpha * (raw - previous.cpu);
+        if let Some([total, read, write]) = io
+            .zip(previous.io)
+            .map(|(current, before)| current.rates(before, dt))
+        {
+            process.io_rate = Some(total);
+            process.read_rate = Some(read);
+            process.write_rate = Some(write);
+        }
+        // A counter that went backwards (a reused pid) gives no reading rather than a wrong one.
+        process.performance_share = performance_ticks
+            .zip(previous.performance_ticks)
+            .and_then(|(now, before)| now.checked_sub(before))
+            .zip(ticks.checked_sub(previous.ticks))
+            .filter(|&(_, interval)| interval > 0)
+            .map(|(performance, interval)| (performance as f32 / interval as f32).min(1.0));
+        // Only growth beyond the highest total seen counts, so a dip while threads ran and its
+        // recovery once they are switched out again are not mistaken for waiting.
+        process.waiting = waited
+            .zip(previous.waited)
+            .map(|(now, highest)| (now - highest).max(0) as f32 / hz / dt);
+    }
+    let highest = match (waited, previous.and_then(|previous| previous.waited)) {
+        (Some(now), Some(highest)) => Some(now.max(highest)),
+        (now, _) => now,
+    };
+    let counters = Counters {
+        ticks,
+        io,
+        cpu: process.cpu,
+        performance_ticks,
+        waited: highest,
+    };
+    (process, counters)
 }
 
 /// The names for `Snapshot::missing`: the three pressure sources when pressure could not be read
@@ -568,6 +616,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             (20, 0)
         };
         let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
+        let core = ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32;
         processes.push(Process {
             id: Identity {
                 pid: 1000 + i as u32,
@@ -610,8 +659,15 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             } else {
                 0
             },
-            core: ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32,
+            core,
             cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
+            // Mostly on the kind of core it last ran on (0 to 7 are performance cores), with
+            // some of its time on the other cluster; no share when it used no CPU.
+            performance_share: (cpu > 0.0).then(|| {
+                let mixing = 0.15 * (0.5 + 0.5 * (phase * 0.37).sin());
+                if core < 8 { 1.0 - mixing } else { mixing }
+            }),
+            waiting: Some(1.5 * bounded(cpu, 80.0) * (0.6 + 0.4 * (phase * 0.8).cos())),
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -717,6 +773,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         remotes,
         missing: Vec::new(),
         unreadable: 0,
+        per_cluster: Vec::new(),
         home: Some(Place {
             latitude: 52.37,
             longitude: 4.9,
@@ -1019,11 +1076,84 @@ mod tests {
         let Ok(snapshot) = collector.sample() else {
             return; // live mode is unavailable here (the macOS stub refuses)
         };
-        let gaps = platform::Sampler::new().missing();
+        // A sampler that has read the processes once, as the collector's had: on macOS whether
+        // the clock is missing depends on whether they carried cycle counts.
+        let mut sampler = platform::Sampler::new();
+        let _ = sampler.processes();
+        let gaps = sampler.missing();
         assert!(gaps.iter().all(|name| snapshot.missing.contains(name)));
+        assert_eq!(snapshot.per_cluster, sampler.per_cluster());
         if cfg!(target_os = "linux") {
             assert!(gaps.is_empty() && snapshot.unreadable == 0);
+            assert!(snapshot.per_cluster.is_empty());
         }
+    }
+
+    /// A raw reading of the demo's first process with the given counters, in nanosecond ticks,
+    /// with the derived fields unset as a platform leaves them.
+    fn reading(ticks: u64, performance: Option<u64>, runnable: Option<u64>) -> RawProcess {
+        RawProcess {
+            process: Process {
+                performance_share: None,
+                waiting: None,
+                ..demo(0.0, 1).processes[0].clone()
+            },
+            ticks,
+            io: None,
+            performance_ticks: performance,
+            runnable_ticks: runnable,
+        }
+    }
+
+    const SECOND: u64 = 1_000_000_000;
+
+    #[test]
+    fn performance_share_is_the_share_of_the_intervals_cpu_time_on_performance_cores() {
+        let (_, first) = measure(reading(SECOND, Some(SECOND / 2), None), None, 1e9, 1.0);
+        let (process, second) = measure(
+            reading(3 * SECOND, Some(2 * SECOND), None),
+            Some(&first),
+            1e9,
+            1.0,
+        );
+        // 1.5 s of the 2 s since the first reading ran on performance cores.
+        assert_eq!(process.performance_share, Some(0.75));
+        let (idle, third) = measure(
+            reading(3 * SECOND, Some(2 * SECOND), None),
+            Some(&second),
+            1e9,
+            1.0,
+        );
+        assert_eq!(idle.performance_share, None, "no CPU time, no share");
+        let (reset, _) = measure(reading(4 * SECOND, Some(0), None), Some(&third), 1e9, 1.0);
+        assert_eq!(reset.performance_share, None, "a counter that went back");
+        let (linux, _) = measure(reading(4 * SECOND, None, None), Some(&third), 1e9, 1.0);
+        assert_eq!((linux.performance_share, linux.waiting), (None, None));
+    }
+
+    #[test]
+    fn performance_share_and_waiting_need_a_previous_reading() {
+        let (process, _) = measure(reading(SECOND, Some(SECOND), Some(SECOND)), None, 1e9, 1.0);
+        assert_eq!((process.performance_share, process.waiting), (None, None));
+    }
+
+    #[test]
+    fn waiting_counts_runnable_time_beyond_cpu_time_per_second_of_wall_time() {
+        let at = |ticks, runnable, previous: Option<&Counters>| {
+            measure(reading(ticks, None, Some(runnable)), previous, 1e9, 2.0)
+        };
+        let (_, first) = at(SECOND, 2 * SECOND, None);
+        // Over 2 s the threads ran 1 s and were runnable 4 s, so waited 3 s: 1.5 on average.
+        let (process, second) = at(2 * SECOND, 6 * SECOND, Some(&first));
+        assert_eq!(process.waiting, Some(1.5));
+        // A thread ran 2 s without being switched out, so the runnable total has not caught up
+        // yet: nothing waited.
+        let (running, third) = at(4 * SECOND, 6 * SECOND, Some(&second));
+        assert_eq!(running.waiting, Some(0.0));
+        // It is switched out and the runnable total catches up with the 2 s it ran plus 0.5 s
+        // of waiting; only the waiting counts.
+        let (caught_up, _) = at(4 * SECOND, 8_500_000_000, Some(&third));
+        assert_eq!(caught_up.waiting, Some(0.25));
     }
 
     #[test]

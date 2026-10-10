@@ -1,8 +1,11 @@
 //! macOS: processes from libproc and `KERN_PROCARGS2`, CPU time in Mach absolute time, CPUs and
 //! memory from Mach host statistics, P/E cores from the IORegistry, the memory pressure level,
 //! sockets from `proc_pidfdinfo`, and the unified log. Other users' processes are counted but
-//! not measured unless isotop runs as root. macOS has no stall accounting, last CPU, clock
-//! readings, run queues, cgroups or per-socket byte counters; `Sampler::missing` names them.
+//! not measured unless isotop runs as root. macOS has no stall accounting, last CPU, per-CPU
+//! clock readings, run queues, cgroups or per-socket byte counters; `Sampler::missing` names
+//! them. What it has instead is per process and per cluster: `proc_pid_rusage` splits CPU time
+//! and cycles between the performance and efficiency cores and counts runnable time, which give
+//! each process's share of performance-core time, its waiting threads and each cluster's clock.
 
 mod ffi;
 mod journal;
@@ -35,6 +38,17 @@ pub struct Sampler {
     responsible: Option<ffi::Responsible>,
     core_kinds: HashMap<u32, CoreKind>,
     cpu_previous: Vec<[u32; 4]>,
+    /// The newest `proc_pid_rusage` flavor this kernel accepts.
+    rusage_version: c_int,
+    /// Whether CPU time can be split by cluster: the kernel gives V6 and the IORegistry named
+    /// both performance and efficiency cores.
+    clusters: bool,
+    /// Each process's cluster counters at the previous `processes` call.
+    counters: HashMap<Identity, logic::Counters>,
+    /// The cluster clocks over the last interval in MHz, as [performance, efficiency].
+    clocks: [f32; 2],
+    /// Whether the last `processes` call read any cycles; virtual machines count none.
+    cycles: bool,
     /// Buffers reused by every `processes` call.
     pids: Vec<c_int>,
     arguments: Vec<u8>,
@@ -76,6 +90,12 @@ impl Sampler {
             .and_then(|text| text.parse().ok())
             .filter(|_| uid == 0)
             .unwrap_or(uid);
+        let core_kinds = core_kinds();
+        let rusage_version = rusage_version();
+        let clusters = rusage_version >= ffi::RUSAGE_INFO_V6
+            && [CoreKind::Performance, CoreKind::Efficiency]
+                .iter()
+                .all(|kind| core_kinds.values().any(|found| found == kind));
         let argmax = sysctl::<c_int>(c"kern.argmax")
             .and_then(|value| usize::try_from(value).ok())
             .filter(|&value| value > 0)
@@ -89,8 +109,13 @@ impl Sampler {
             memory_total: sysctl::<u64>(c"hw.memsize").unwrap_or(0),
             my_uid,
             responsible: ffi::responsible(),
-            core_kinds: core_kinds(),
+            core_kinds,
             cpu_previous: Vec::new(),
+            rusage_version,
+            clusters,
+            counters: HashMap::new(),
+            clocks: [0.0; 2],
+            cycles: false,
             pids: Vec::new(),
             arguments: vec![0; argmax],
             path: vec![0; libc::PROC_PIDPATHINFO_MAXSIZE as usize],
@@ -110,6 +135,8 @@ impl Sampler {
         list_pids(&mut self.pids)?;
         self.unreadable = 0;
         let mut previous = std::mem::take(&mut self.described);
+        let counted = std::mem::take(&mut self.counters);
+        self.cycles = false;
         let mut found = Vec::with_capacity(self.pids.len());
         let mut lineages = Vec::with_capacity(self.pids.len());
         for index in 0..self.pids.len() {
@@ -122,6 +149,11 @@ impl Sampler {
                 Err(Absent::Gone) => {}
             }
         }
+        self.clocks = logic::cluster_clocks(
+            self.counters
+                .iter()
+                .filter_map(|(id, after)| counted.get(id).map(|before| (*before, *after))),
+        );
         for (raw, parent) in found.iter_mut().zip(logic::parents(&lineages)) {
             raw.process.parent = parent;
         }
@@ -152,7 +184,7 @@ impl Sampler {
             Some(description) => description,
             None => self.describe(pid, name),
         };
-        let usage = rusage(pid);
+        let usage = rusage(pid, self.rusage_version);
         let memory = usage.map_or(task.pti_resident_size, |usage| usage.ri_phys_footprint);
         let io = usage.map(|usage| IoBytes {
             read: usage.ri_diskio_bytesread,
@@ -191,6 +223,8 @@ impl Sampler {
             gpu_memory: 0,
             core: 0,
             cpu_time: 0.0,
+            performance_share: None,
+            waiting: None,
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -198,13 +232,43 @@ impl Sampler {
             u32::try_from(app).ok()
         });
         self.described.insert(id, description);
-        let ticks = logic::nanoseconds(
+        let timebase = self.timebase;
+        let nanoseconds = |mach: u64| logic::nanoseconds(mach, timebase.numer, timebase.denom);
+        // CPU time from the rusage reading when there is one, so that the performance-core and
+        // runnable totals below are of the same moment. PROC_PIDTASKINFO reads the same kernel
+        // totals (recount_task_times in xnu's fill_taskprocinfo), in the same Mach units.
+        let ticks = nanoseconds(usage.map_or(
             task.pti_total_user.saturating_add(task.pti_total_system),
-            self.timebase.numer,
-            self.timebase.denom,
-        );
+            |usage| usage.ri_user_time.saturating_add(usage.ri_system_time),
+        ));
+        let mut performance_ticks = None;
+        let mut runnable_ticks = None;
+        if let Some(usage) = usage.filter(|_| self.rusage_version >= libc::RUSAGE_INFO_V4) {
+            runnable_ticks = Some(nanoseconds(usage.ri_runnable_time));
+            self.cycles |= usage.ri_cycles > 0;
+            if self.clusters {
+                let performance =
+                    nanoseconds(usage.ri_user_ptime.saturating_add(usage.ri_system_ptime));
+                performance_ticks = Some(performance);
+                self.counters.insert(
+                    id,
+                    logic::Counters {
+                        time: ticks,
+                        performance_time: performance,
+                        cycles: usage.ri_cycles,
+                        performance_cycles: usage.ri_pcycles,
+                    },
+                );
+            }
+        }
         Ok((
-            RawProcess { process, ticks, io },
+            RawProcess {
+                process,
+                ticks,
+                io,
+                performance_ticks,
+                runnable_ticks,
+            },
             logic::Lineage {
                 pid: id.pid,
                 ppid: bsd.pbi_ppid,
@@ -297,7 +361,8 @@ impl Sampler {
         }
     }
 
-    /// Per-CPU use since the previous call. macOS reports no clock or run queue per CPU.
+    /// Per-CPU use since the previous call, and each CPU's cluster clock over the interval of
+    /// the last `processes` call. macOS reports no clock or run queue per CPU.
     pub fn cpus(&mut self, _dt: f32) -> Vec<Cpu> {
         let ticks = cpu_ticks(self.host);
         let cpus = ticks
@@ -305,18 +370,23 @@ impl Sampler {
             .enumerate()
             .map(|(index, &now)| {
                 let id = index as u32;
+                let kind = self
+                    .core_kinds
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(CoreKind::Unknown);
                 Cpu {
                     id,
-                    kind: self
-                        .core_kinds
-                        .get(&id)
-                        .copied()
-                        .unwrap_or(CoreKind::Unknown),
+                    kind,
                     busy: self
                         .cpu_previous
                         .get(index)
                         .map_or(0.0, |&before| logic::busy(before, now)),
-                    mhz: 0.0,
+                    mhz: match kind {
+                        CoreKind::Performance => self.clocks[0],
+                        CoreKind::Efficiency => self.clocks[1],
+                        CoreKind::Unknown => 0.0,
+                    },
                     wait: 0.0,
                 }
             })
@@ -325,9 +395,10 @@ impl Sampler {
         cpus
     }
 
-    /// Sources macOS does not have at all, by the names `Snapshot::missing` uses.
+    /// Sources macOS does not have at all, by the names `Snapshot::missing` uses. The clock is
+    /// missing only when it cannot be measured per cluster either.
     pub fn missing(&self) -> Vec<&'static str> {
-        vec![
+        let mut missing = vec![
             "cpu pressure",
             "io pressure",
             "last cpu",
@@ -335,7 +406,26 @@ impl Sampler {
             "run queue",
             "cgroups",
             "socket traffic",
-        ]
+        ];
+        if self.clocked() {
+            missing.retain(|&name| name != "cpu clock");
+        }
+        missing
+    }
+
+    /// Sources measured per cluster, by the names `Snapshot::per_cluster` uses.
+    pub fn per_cluster(&self) -> Vec<&'static str> {
+        if self.clocked() {
+            vec!["cpu clock"]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Whether the cluster clocks are measured: CPU time splits by cluster and the last
+    /// `processes` call counted cycles.
+    fn clocked(&self) -> bool {
+        self.clusters && self.cycles
     }
 
     /// Processes the last `processes` call listed but could not measure, because they belong
@@ -387,20 +477,37 @@ fn pid_info<T: Copy>(pid: c_int, flavor: c_int) -> Result<T, Absent> {
     }
 }
 
-/// Resource usage with the physical footprint and disk I/O; None when refused.
-fn rusage(pid: c_int) -> Option<libc::rusage_info_v2> {
-    let mut usage = MaybeUninit::<libc::rusage_info_v2>::zeroed();
-    // SAFETY: for RUSAGE_INFO_V2 the kernel writes one rusage_info_v2 to the buffer; the
-    // parameter is declared as rusage_info_t * but takes the struct's address.
+/// Resource usage of a process in the given flavor, V2 or later; the fields that flavor lacks
+/// read 0. None when refused: another user's process, or one that has exited.
+fn rusage(pid: c_int, version: c_int) -> Option<ffi::RusageInfoV6> {
+    let mut usage = MaybeUninit::<ffi::RusageInfoV6>::zeroed();
+    // SAFETY: the kernel copies out the struct of the requested flavor, which is at most
+    // rusage_info_v6, and every older flavor is a prefix of RusageInfoV6 (asserted in ffi.rs),
+    // so the buffer is large enough. The parameter is declared as rusage_info_t * but takes the
+    // struct's address.
     let status = unsafe {
         libc::proc_pid_rusage(
             pid,
-            libc::RUSAGE_INFO_V2,
+            version,
             usage.as_mut_ptr().cast::<libc::rusage_info_t>(),
         )
     };
     // SAFETY: the struct holds only integers, so the zeroed or filled bytes are valid.
     (status == 0).then(|| unsafe { usage.assume_init() })
+}
+
+/// The newest `proc_pid_rusage` flavor this kernel accepts, of V6 (performance-core time and
+/// cycles), V4 (cycles and runnable time) and V2. It asks about this process, which always
+/// exists and may always read itself, so a refusal can only be about the flavor: xnu checks
+/// the pid (ESRCH) and the permission (EPERM) before the flavor (EINVAL). Asking once here
+/// means a per-process refusal later is never taken for an unsupported flavor.
+fn rusage_version() -> c_int {
+    // SAFETY: getpid cannot fail and has no preconditions.
+    let me = unsafe { libc::getpid() };
+    [ffi::RUSAGE_INFO_V6, libc::RUSAGE_INFO_V4]
+        .into_iter()
+        .find(|&version| rusage(me, version).is_some())
+        .unwrap_or(libc::RUSAGE_INFO_V2)
 }
 
 /// A sysctl value of exactly the size of T; macOS refuses a buffer of the wrong size.
@@ -860,8 +967,53 @@ mod tests {
                 .iter()
                 .all(|raw| raw.process.id.pid != 0 || raw.process.kind == Kind::Kernel)
         );
-        assert_eq!(sampler.missing().len(), 7);
+        let missing = sampler.missing();
+        assert!(
+            ["last cpu", "run queue", "cgroups"]
+                .iter()
+                .all(|name| missing.contains(name))
+        );
+        assert_eq!(
+            missing.contains(&"cpu clock"),
+            !sampler.per_cluster().contains(&"cpu clock")
+        );
         assert!(processes.len() + sampler.unreadable() <= sampler.pids.len());
+    }
+
+    #[test]
+    fn this_process_ran_no_longer_on_performance_cores_than_in_all() {
+        let mut sampler = Sampler::new();
+        let deadline = Instant::now() + Duration::from_millis(200);
+        let mut spin = 0_u64;
+        while Instant::now() < deadline {
+            spin = std::hint::black_box(spin.wrapping_mul(31).wrapping_add(7));
+        }
+        let me = std::process::id();
+        let processes = sampler.processes().unwrap();
+        let raw = processes
+            .iter()
+            .find(|raw| raw.process.id.pid == me)
+            .expect("this process is listed");
+        assert!(sampler.rusage_version >= libc::RUSAGE_INFO_V4);
+        let runnable = raw
+            .runnable_ticks
+            .expect("V4 and later count runnable time");
+        assert!(runnable > 0, "runnable {runnable}");
+        if sampler.clusters {
+            let performance = raw
+                .performance_ticks
+                .expect("V6 splits CPU time by cluster");
+            assert!(
+                performance <= raw.ticks,
+                "{performance} ns on performance cores of {} ns",
+                raw.ticks
+            );
+        } else {
+            assert_eq!(raw.performance_ticks, None);
+        }
+        let cpus = sampler.cpus(0.2);
+        assert!(cpus.iter().all(|cpu| cpu.mhz >= 0.0 && cpu.mhz < 10_000.0));
+        assert_eq!(sampler.per_cluster().is_empty(), !sampler.clocked());
     }
 
     #[test]

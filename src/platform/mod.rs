@@ -11,13 +11,17 @@
 //!     whether the source could be read at all (when not, the collector reports all three
 //!     pressures as missing);
 //!   - `cpus(&mut self, dt: f32) -> Vec<Cpu>`: per-CPU use over the last `dt` seconds, sorted
-//!     by id;
+//!     by id. It is called after `processes` in every sample, so a platform may derive CPU
+//!     readings from the processes it has just read;
 //!   - `missing(&self) -> Vec<&'static str>`: what this platform can never measure, named as
 //!     `Snapshot::missing` names it and appended to it every sample. The names views react to
 //!     are "cpu pressure", "memory pressure", "io pressure", "last cpu" (`Process::core` is
 //!     meaningless), "cpu clock" (`Cpu::mhz` is 0), "run queue" (`Cpu::wait` is 0), "cgroups"
 //!     (no accounting units, so no limits, quotas or pressure) and "socket traffic" (no
 //!     per-connection rates or round-trip times). Linux returns none;
+//!   - `per_cluster(&self) -> Vec<&'static str>`: sources measured per CPU cluster rather than
+//!     per CPU, named as `Snapshot::per_cluster` names them: "cpu clock" when every CPU's
+//!     `Cpu::mhz` is the average clock of the cluster of its kind. Linux returns none;
 //!   - `unreadable(&self) -> usize`: how many processes the last `processes()` call could see
 //!     but not measure because they belong to another user, and so left out. Races with exiting
 //!     processes are not permission gaps and do not count; Linux returns 0.
@@ -74,6 +78,15 @@ pub struct RawProcess {
     pub ticks: u64,
     /// Cumulative storage I/O counters, or None when unreadable.
     pub io: Option<IoBytes>,
+    /// Cumulative CPU time on performance cores, in ticks, from the same reading as `ticks`;
+    /// None where the platform does not split CPU time by core kind.
+    pub performance_ticks: Option<u64>,
+    /// Cumulative time its threads were runnable, running or waiting for a CPU, in ticks, from
+    /// the same reading as `ticks`; None when unmeasured. A kernel may bring it up to date only
+    /// when a thread is switched onto a CPU or blocks (macOS does), so it can trail `ticks`
+    /// while threads run and catch up later; the collector counts as waiting only the growth of
+    /// `runnable_ticks - ticks` beyond its highest earlier value.
+    pub runnable_ticks: Option<u64>,
 }
 
 /// Reads one journal entry from the follower's output; `Ok(None)` at the end of the stream.

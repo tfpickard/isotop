@@ -81,6 +81,90 @@ const _: () = assert!(offset_of!(VmStatistics64, decompressions) == 96);
 const _: () = assert!(offset_of!(VmStatistics64, compressor_page_count) == 128);
 const _: () = assert!(offset_of!(VmStatistics64, swapped_count) == 152);
 
+/// `RUSAGE_INFO_V6` flavor for `proc_pid_rusage` (bsd/sys/resource.h); libc stops at V4.
+pub const RUSAGE_INFO_V6: c_int = 6;
+
+/// `struct rusage_info_v6` exactly as xnu bsd/sys/resource.h defines it: the 16-byte uuid, 47
+/// named uint64_t fields and `ri_reserved[9]`, so 16 + 56 * 8 = 464 bytes. Each earlier
+/// version is a prefix of it (v2 ends before `ri_cpu_time_qos_default`, v4 before `ri_flags`),
+/// so a zeroed v6 buffer can receive any older flavor and its later fields stay zero.
+///
+/// Units, from xnu: times (`ri_user_time`, `ri_system_time`, `ri_user_ptime`,
+/// `ri_system_ptime`, `ri_runnable_time`) are Mach absolute time, which `mach_timebase_info`
+/// converts to nanoseconds; `ri_cycles` and `ri_pcycles` are CPU cycles. `ri_runnable_time`
+/// counts the whole time threads were runnable, running included (osfmk/kern/sched_prim.c
+/// starts the timer when a thread is made runnable and stops it only when the thread blocks),
+/// and `ri_*ptime`/`ri_p*` cover only time on performance cores.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct RusageInfoV6 {
+    pub ri_uuid: [u8; 16],
+    pub ri_user_time: u64,
+    pub ri_system_time: u64,
+    pub ri_pkg_idle_wkups: u64,
+    pub ri_interrupt_wkups: u64,
+    pub ri_pageins: u64,
+    pub ri_wired_size: u64,
+    pub ri_resident_size: u64,
+    pub ri_phys_footprint: u64,
+    pub ri_proc_start_abstime: u64,
+    pub ri_proc_exit_abstime: u64,
+    pub ri_child_user_time: u64,
+    pub ri_child_system_time: u64,
+    pub ri_child_pkg_idle_wkups: u64,
+    pub ri_child_interrupt_wkups: u64,
+    pub ri_child_pageins: u64,
+    pub ri_child_elapsed_abstime: u64,
+    pub ri_diskio_bytesread: u64,
+    pub ri_diskio_byteswritten: u64,
+    pub ri_cpu_time_qos_default: u64,
+    pub ri_cpu_time_qos_maintenance: u64,
+    pub ri_cpu_time_qos_background: u64,
+    pub ri_cpu_time_qos_utility: u64,
+    pub ri_cpu_time_qos_legacy: u64,
+    pub ri_cpu_time_qos_user_initiated: u64,
+    pub ri_cpu_time_qos_user_interactive: u64,
+    pub ri_billed_system_time: u64,
+    pub ri_serviced_system_time: u64,
+    pub ri_logical_writes: u64,
+    pub ri_lifetime_max_phys_footprint: u64,
+    pub ri_instructions: u64,
+    pub ri_cycles: u64,
+    pub ri_billed_energy: u64,
+    pub ri_serviced_energy: u64,
+    pub ri_interval_max_phys_footprint: u64,
+    pub ri_runnable_time: u64,
+    pub ri_flags: u64,
+    pub ri_user_ptime: u64,
+    pub ri_system_ptime: u64,
+    pub ri_pinstructions: u64,
+    pub ri_pcycles: u64,
+    pub ri_energy_nj: u64,
+    pub ri_penergy_nj: u64,
+    pub ri_secure_time_in_system: u64,
+    pub ri_secure_ptime_in_system: u64,
+    pub ri_neural_footprint: u64,
+    pub ri_lifetime_max_neural_footprint: u64,
+    pub ri_interval_max_neural_footprint: u64,
+    pub ri_reserved: [u64; 9],
+}
+
+const _: () = assert!(size_of::<RusageInfoV6>() == 16 + (47 + 9) * 8);
+const _: () = assert!(size_of::<RusageInfoV6>() == 464);
+const _: () = assert!(align_of::<RusageInfoV6>() == 8);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_user_time) == 16);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_phys_footprint) == 72);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_diskio_bytesread) == 144);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_cycles) == 256);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_runnable_time) == 288);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_user_ptime) == 304);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_pcycles) == 328);
+const _: () = assert!(offset_of!(RusageInfoV6, ri_reserved) == 392);
+// The older flavors are prefixes: libc's v2 and v4 end where the fields they lack begin.
+const _: () =
+    assert!(size_of::<libc::rusage_info_v2>() == offset_of!(RusageInfoV6, ri_cpu_time_qos_default));
+const _: () = assert!(size_of::<libc::rusage_info_v4>() == offset_of!(RusageInfoV6, ri_flags));
+
 // The responsibility SPI: `pid_t responsibility_get_pid_responsible_for_pid(pid_t)`, as
 // Chromium declares it. It is private, so it is looked up at run time and never linked.
 
@@ -519,3 +603,18 @@ assert_offset!(socket_info, rfu_1, 236);
 assert_offset!(socket_info, soi_proto, 240);
 
 assert_offset!(socket_fdinfo, psi, 24);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rusage_info_v6_has_the_size_of_the_xnu_header() {
+        // 16 bytes of uuid, 47 named counters and 9 reserved ones.
+        assert_eq!(size_of::<RusageInfoV6>(), 464);
+        assert_eq!(
+            offset_of!(RusageInfoV6, ri_user_ptime),
+            size_of::<libc::rusage_info_v4>() + 8
+        );
+    }
+}

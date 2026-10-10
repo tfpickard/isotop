@@ -187,6 +187,66 @@ pub fn little_endian(bytes: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(value))
 }
 
+/// One process's cumulative CPU counters from `proc_pid_rusage` (`RUSAGE_INFO_V6`): CPU time in
+/// nanoseconds and cycles, in total and on performance cores only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counters {
+    pub time: u64,
+    pub performance_time: u64,
+    pub cycles: u64,
+    pub performance_cycles: u64,
+}
+
+/// CPU seconds a cluster must run in an interval before its clock is reported: below that the
+/// few cycles counted say little about the clock.
+pub const CLOCK_FLOOR: f64 = 0.05;
+
+/// The average clock of the performance and efficiency clusters in MHz over one interval, as
+/// `[performance, efficiency]`, from each process's counters at the start and end of it: the
+/// cycles each cluster ran divided by the CPU time it ran them in, summed over the processes.
+/// A cluster with less than `CLOCK_FLOOR` seconds of CPU time reads 0 (no reading). A process
+/// whose counters went backwards (a reused pid) or disagree with each other is skipped.
+pub fn cluster_clocks(intervals: impl IntoIterator<Item = (Counters, Counters)>) -> [f32; 2] {
+    // Cycles and nanoseconds per cluster, as [performance, efficiency].
+    let mut cycles = [0_u64; 2];
+    let mut time = [0_u64; 2];
+    for (before, after) in intervals {
+        let delta = |field: fn(&Counters) -> u64| field(&after).checked_sub(field(&before));
+        let (Some(all_time), Some(performance_time), Some(all_cycles), Some(performance_cycles)) = (
+            delta(|c| c.time),
+            delta(|c| c.performance_time),
+            delta(|c| c.cycles),
+            delta(|c| c.performance_cycles),
+        ) else {
+            continue;
+        };
+        let (Some(efficiency_time), Some(efficiency_cycles)) = (
+            all_time.checked_sub(performance_time),
+            all_cycles.checked_sub(performance_cycles),
+        ) else {
+            continue;
+        };
+        for (cluster, (spent, counted)) in [
+            (performance_time, performance_cycles),
+            (efficiency_time, efficiency_cycles),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            time[cluster] = time[cluster].saturating_add(spent);
+            cycles[cluster] = cycles[cluster].saturating_add(counted);
+        }
+    }
+    [0, 1].map(|cluster| {
+        let seconds = time[cluster] as f64 / 1e9;
+        if seconds < CLOCK_FLOOR {
+            0.0
+        } else {
+            (cycles[cluster] as f64 / seconds / 1e6) as f32
+        }
+    })
+}
+
 /// Who a process descends from, as macOS reports it.
 #[derive(Clone, Copy, Debug)]
 pub struct Lineage {
@@ -379,6 +439,80 @@ pub fn port(raw: i32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn counters(
+        time: u64,
+        performance_time: u64,
+        cycles: u64,
+        performance_cycles: u64,
+    ) -> Counters {
+        Counters {
+            time,
+            performance_time,
+            cycles,
+            performance_cycles,
+        }
+    }
+
+    #[test]
+    fn cluster_clocks_divide_each_clusters_cycles_by_its_cpu_time() {
+        const MS: u64 = 1_000_000;
+        // One process ran 300 ms on P at 3.2 GHz and 100 ms on E at 2.0 GHz; another ran 100
+        // ms on P at 4.0 GHz. P: (960 + 400) M cycles in 0.4 s = 3400 MHz; E: 200 M in 0.1 s.
+        let first = (
+            counters(1_000 * MS, 600 * MS, 5_000_000_000, 4_000_000_000),
+            counters(1_400 * MS, 900 * MS, 6_160_000_000, 4_960_000_000),
+        );
+        let second = (
+            counters(0, 0, 0, 0),
+            counters(100 * MS, 100 * MS, 400_000_000, 400_000_000),
+        );
+        assert_eq!(cluster_clocks([first, second]), [3400.0, 2000.0]);
+    }
+
+    #[test]
+    fn a_cluster_with_too_little_cpu_time_has_no_clock_reading() {
+        const MS: u64 = 1_000_000;
+        // E ran 40 ms, under the 50 ms floor; P ran exactly 50 ms.
+        let interval = (
+            counters(0, 0, 0, 0),
+            counters(90 * MS, 50 * MS, 230_000_000, 150_000_000),
+        );
+        assert_eq!(cluster_clocks([interval]), [3000.0, 0.0]);
+        assert_eq!(cluster_clocks([]), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn cluster_clocks_read_zero_without_cycle_counters() {
+        // Virtual machines count CPU time but no cycles.
+        let interval = (
+            counters(0, 0, 0, 0),
+            counters(2_000_000_000, 1_000_000_000, 0, 0),
+        );
+        assert_eq!(cluster_clocks([interval]), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn cluster_clocks_skip_processes_whose_counters_went_backwards_or_disagree() {
+        const MS: u64 = 1_000_000;
+        let good = (
+            counters(0, 0, 0, 0),
+            counters(200 * MS, 100 * MS, 500_000_000, 300_000_000),
+        );
+        let reused = (
+            counters(900 * MS, 400 * MS, 9_000_000_000, 5_000_000_000),
+            counters(100 * MS, 50 * MS, 100_000_000, 60_000_000),
+        );
+        let impossible = (
+            counters(0, 0, 0, 0),
+            counters(100 * MS, 200 * MS, 900_000_000, 800_000_000),
+        );
+        assert_eq!(
+            cluster_clocks([good, reused, impossible]),
+            cluster_clocks([good])
+        );
+        assert_eq!(cluster_clocks([good]), [3000.0, 2000.0]);
+    }
 
     #[test]
     fn processes_are_classified_by_pid_helper_owner_and_path() {
