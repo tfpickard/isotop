@@ -60,8 +60,8 @@ pub struct Process {
     /// sample, and when the process used no CPU time in the interval.
     pub performance_share: Option<f32>,
     /// Average number of its threads that were runnable but waiting for a CPU since the
-    /// previous sample. None where the platform does not measure it (Linux) and on the first
-    /// sample.
+    /// previous sample, at most its thread count. None where the platform does not measure it
+    /// (Linux), on the first sample, and when its counters went back (exec on macOS).
     pub waiting: Option<f32>,
 }
 
@@ -165,6 +165,8 @@ struct Counters {
     /// CPU ticks, which dips while threads run because the kernel may update the runnable total
     /// only when a thread is switched onto a CPU or blocks (see `RawProcess::runnable_ticks`).
     waited: Option<i128>,
+    runnable_ticks: Option<u64>,
+    threads: u32,
 }
 
 /// Cumulative bytes a process has read from and written to storage.
@@ -509,13 +511,19 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
             .filter(|&(_, interval)| interval > 0)
             .map(|(performance, interval)| (performance as f32 / interval as f32).min(1.0));
         // Only growth beyond the highest total seen counts, so a dip while threads ran and its
-        // recovery once they are switched out again are not mistaken for waiting.
+        // recovery once they are switched out again are not mistaken for waiting. The first
+        // reading may itself be dipped by however long a thread has run without a switch, so
+        // the result is held to the threads there were: no more of them can have waited.
+        let threads = process.threads.max(previous.threads) as f32;
         process.waiting = waited
             .zip(previous.waited)
-            .map(|(now, highest)| (now - highest).max(0) as f32 / hz / dt);
+            .filter(|_| !restarted(ticks, runnable_ticks, previous))
+            .map(|(now, highest)| ((now - highest).max(0) as f32 / hz / dt).min(threads));
     }
-    let highest = match (waited, previous.and_then(|previous| previous.waited)) {
-        (Some(now), Some(highest)) => Some(now.max(highest)),
+    let highest = match (waited, previous) {
+        (Some(now), Some(previous)) if !restarted(ticks, runnable_ticks, previous) => {
+            Some(previous.waited.map_or(now, |highest| now.max(highest)))
+        }
         (now, _) => now,
     };
     let counters = Counters {
@@ -524,8 +532,20 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         cpu: process.cpu,
         performance_ticks,
         waited: highest,
+        runnable_ticks,
+        threads: process.threads,
     };
     (process, counters)
+}
+
+/// Whether a process's CPU or runnable total went backwards since the previous reading. On
+/// macOS exec gives the process a new task that keeps only the exec'ing thread's counters, so
+/// the old high-water mark of its waiting no longer applies.
+fn restarted(ticks: u64, runnable_ticks: Option<u64>, previous: &Counters) -> bool {
+    ticks < previous.ticks
+        || runnable_ticks
+            .zip(previous.runnable_ticks)
+            .is_some_and(|(now, before)| now < before)
 }
 
 /// The names for `Snapshot::missing`: the three pressure sources when pressure could not be read
@@ -1154,6 +1174,34 @@ mod tests {
         // of waiting; only the waiting counts.
         let (caught_up, _) = at(4 * SECOND, 8_500_000_000, Some(&third));
         assert_eq!(caught_up.waiting, Some(0.25));
+    }
+
+    #[test]
+    fn waiting_starts_over_when_exec_resets_the_counters() {
+        let at = |ticks, runnable, previous: Option<&Counters>| {
+            measure(reading(ticks, None, Some(runnable)), previous, 1e9, 2.0)
+        };
+        let (_, first) = at(10 * SECOND, 20 * SECOND, None);
+        // Exec kept only one thread's counters, so both totals went back.
+        let (exec, second) = at(2 * SECOND, 3 * SECOND, Some(&first));
+        assert_eq!(exec.waiting, None);
+        // The new image waits 2 s over 2 s, measured from its own totals.
+        let (after, _) = at(3 * SECOND, 6 * SECOND, Some(&second));
+        assert_eq!(after.waiting, Some(1.0));
+    }
+
+    #[test]
+    fn waiting_never_exceeds_the_threads_there_were() {
+        let at = |ticks, runnable, previous: Option<&Counters>| {
+            let mut raw = reading(ticks, None, Some(runnable));
+            raw.process.threads = 1;
+            measure(raw, previous, 1e9, 1.0)
+        };
+        // First seen while its one thread had run 60 s without a switch, so the runnable total
+        // lags by that much; when the thread is switched out it catches up all at once.
+        let (_, first) = at(60 * SECOND, SECOND, None);
+        let (process, _) = at(61 * SECOND, 62 * SECOND, Some(&first));
+        assert_eq!(process.waiting, Some(1.0));
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! by that share instead, trailed by beads for its threads waiting to run.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::f32::consts::{PI, TAU};
 
 use crate::model::{CoreKind, Cpu, Identity, Process, Snapshot, bounded};
@@ -255,18 +256,23 @@ impl Track {
                 let target = process
                     .performance_share
                     .map(|share| efficiency + (performance - efficiency) * share);
-                let marble = self.marbles.entry(process.id).or_insert_with(|| Marble {
-                    angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
-                    core: process.core,
-                    hop: None,
-                    hops: 0,
-                    radius: target.unwrap_or((performance + efficiency) * 0.5),
-                });
+                // A process gets a marble once a share places it: one just seen, or one whose
+                // counters cannot be read, has no measurement to put it anywhere.
+                let marble = match (self.marbles.entry(process.id), target) {
+                    (Entry::Occupied(entry), _) => entry.into_mut(),
+                    (Entry::Vacant(entry), Some(radius)) => entry.insert(Marble {
+                        angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
+                        core: process.core,
+                        hop: None,
+                        hops: 0,
+                        radius,
+                    }),
+                    (Entry::Vacant(_), None) => continue,
+                };
                 marble.angle =
                     (marble.angle + TAU / LAP * process.cpu / 100.0 * dt).rem_euclid(TAU);
                 // A process with no CPU time in the last interval has no share, which says
-                // nothing about where it runs, so its marble stays where it was (between the
-                // bands if it was never measured).
+                // nothing about where it runs, so its marble stays where it was.
                 if let Some(target) = target {
                     marble.radius += (target - marble.radius) * (1.0 - (-dt / DRIFT_SECONDS).exp());
                 }
@@ -318,7 +324,7 @@ impl Track {
                         "ran {:.0}% of its CPU time on performance cores",
                         share * 100.0
                     ),
-                    None => "used no CPU time in the last sample".to_owned(),
+                    None => "no CPU time measured in the last sample".to_owned(),
                 };
                 if let Some(waiting) = process.waiting {
                     note.push_str(&format!(" | {waiting:.1} threads waiting on average"));
@@ -614,8 +620,31 @@ mod tests {
         assert!((radius(&scene, idle) - kept).abs() < 1e-3);
         assert_eq!(
             scene.notes[&idle][0].split(" | ").next(),
-            Some("used no CPU time in the last sample")
+            Some("no CPU time measured in the last sample")
         );
+    }
+
+    #[test]
+    fn a_process_gets_a_cluster_marble_only_once_a_share_places_it() {
+        let mut snapshot = by_cluster();
+        let [unmeasured, ..] = three_shares(&mut snapshot);
+        let process = snapshot
+            .processes
+            .iter_mut()
+            .find(|process| process.id == unmeasured)
+            .expect("the process is in the snapshot");
+        process.performance_share = None;
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, 12.0);
+        assert!(!scene.positions.contains_key(&unmeasured));
+        assert!(!scene.notes.contains_key(&unmeasured));
+        for process in &mut snapshot.processes {
+            if process.id == unmeasured {
+                process.performance_share = Some(1.0);
+            }
+        }
+        render(&mut scene, &snapshot, 12.3);
+        assert!(scene.positions.contains_key(&unmeasured));
     }
 
     #[test]
