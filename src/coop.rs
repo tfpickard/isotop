@@ -2630,6 +2630,11 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: cgroup.into(),
+            open_files: Some(0),
+            deleted_files: Some(0),
+            deleted_bytes: Some(0),
+            locks_held: Some(0),
+            blocked_on: None,
         }
     }
 

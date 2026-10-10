@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::places::COUNTRIES;
-use crate::{geo, net, nvml};
+use crate::{files, geo, net, nvml};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -55,6 +55,18 @@ pub struct Process {
     pub cpu_time: f32,
     /// Full cgroup v2 path, such as /system.slice/cron.service.
     pub cgroup: String,
+    /// Regular files held open (descriptors naming a path to a regular file; memfds excluded).
+    /// None when the descriptor table is unreadable: other users' processes without privileges.
+    pub open_files: Option<u32>,
+    /// Of those, files deleted while still open, whose disk space is not returned until they are
+    /// closed, and their total size in bytes. None when unreadable, like `open_files`.
+    pub deleted_files: Option<u32>,
+    pub deleted_bytes: Option<u64>,
+    /// File locks and leases held. OFD locks name no process and are not counted. None when the
+    /// lock table is unreadable.
+    pub locks_held: Option<u32>,
+    /// The pid holding the file lock this process is waiting for.
+    pub blocked_on: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,6 +148,9 @@ pub struct Snapshot {
     pub home: Option<Place>,
     /// Where remote locations come from, for the status line.
     pub geo: String,
+    /// File locks no process can be named for: OFD locks, which belong to an open file and report
+    /// pid -1.
+    pub unattributed_locks: u32,
     /// System-wide sources that could not be read this sample, such as "pressure". The set of
     /// names grows as platform ports add sources of their own (the macOS port will add more).
     pub missing: Vec<&'static str>,
@@ -198,6 +213,10 @@ struct Extras {
     remotes: Vec<Remote>,
     /// Loopback traffic in bytes per second between pid pairs (smaller pid first).
     traffic: HashMap<(u32, u32), f32>,
+    /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
+    files: HashMap<u32, Option<files::Files>>,
+    /// None when /proc/locks cannot be read.
+    locks: Option<files::Locks>,
     geo: String,
 }
 
@@ -227,8 +246,8 @@ pub struct Collector {
     started: bool,
 }
 
-/// Samples sockets, GPU usage, cgroups and remote locations every two seconds on a background
-/// thread; the thread stops once the collector is gone. Returns None when no thread can be spawned.
+/// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every two
+/// seconds on a background thread; the thread stops once the collector is gone. Returns None when no thread can be spawned.
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
@@ -245,6 +264,7 @@ fn background(
             let mut sockets = HashMap::new();
             let mut loopback = LoopbackScan::default();
             let mut retained = HashSet::new();
+            let mut scan = files::FileScan::default();
             while Arc::strong_count(&writer) > 1 {
                 let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
                 let paths = accounted(wanted_now, &mut retained);
@@ -258,6 +278,8 @@ fn background(
                     units: account(&paths, &mut units),
                     remotes,
                     traffic,
+                    files: scan.sample(),
+                    locks: files::locks(),
                     geo: geo.source.clone(),
                 };
                 match writer.lock() {
@@ -690,8 +712,21 @@ impl Collector {
                 .map(|p| (p.id.pid, p.id))
                 .collect();
             for process in &mut snapshot.processes {
-                process.gpu_memory = extras.gpu.get(&process.id.pid).copied().unwrap_or(0);
+                let pid = process.id.pid;
+                process.gpu_memory = extras.gpu.get(&pid).copied().unwrap_or(0);
+                if process.kind != Kind::Kernel
+                    && let Some(found) = extras.files.get(&pid).copied().flatten()
+                {
+                    process.open_files = Some(found.open);
+                    process.deleted_files = Some(found.deleted);
+                    process.deleted_bytes = Some(found.deleted_bytes);
+                }
+                if let Some(locks) = &extras.locks {
+                    process.locks_held = Some(locks.held.get(&pid).copied().unwrap_or(0));
+                    process.blocked_on = locks.blocked.get(&pid).copied();
+                }
             }
+            snapshot.unattributed_locks = extras.locks.as_ref().map_or(0, |l| l.unattributed);
             snapshot.links = extras
                 .network
                 .links
@@ -786,6 +821,10 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
     let signed = |index: usize| fields.get(index)?.parse::<i32>().ok();
     let name = text.get(open + 1..close)?.to_owned();
     let rss = fields.get(21)?.parse::<i64>().ok()?.max(0) as u64;
+    let kernel = number(6)? & PF_KTHREAD != 0;
+    // Kernel threads hold no descriptors of their own (their tables read empty even as root), so
+    // they are known to have no files; other processes wait for the background scan.
+    let kernel_files = kernel.then_some(0);
     Some((
         Process {
             id: Identity {
@@ -796,11 +835,7 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             command: name.clone(),
             name,
             group: String::new(),
-            kind: if number(6)? & PF_KTHREAD != 0 {
-                Kind::Kernel
-            } else {
-                Kind::System
-            },
+            kind: if kernel { Kind::Kernel } else { Kind::System },
             state: fields.first()?.chars().next()?,
             cpu: 0.0,
             memory: rss.saturating_mul(page_size),
@@ -817,6 +852,11 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             core: number(36).unwrap_or(0) as u32,
             cpu_time: 0.0,
             cgroup: String::new(),
+            open_files: kernel_files,
+            deleted_files: kernel_files,
+            deleted_bytes: kernel_files.map(u64::from),
+            locks_held: None,
+            blocked_on: None,
         },
         number(11)?.saturating_add(number(12)?),
     ))
@@ -848,6 +888,35 @@ fn demo_cpu_integral(time: f64, index: usize) -> f64 {
 /// The share of a demo process's I/O that is writes.
 fn demo_write_share(index: usize) -> f32 {
     (1 + index % 3) as f32 / 4.0
+}
+
+/// Demo open files, deleted-but-open files and file locks of process `index`, fixed for the whole
+/// run so the clutches hold still: open files spread log-uniformly from 3 to about 380, a database
+/// holding a rotated 1.2 GiB log and a browser two cache files after deleting them, four lock
+/// holders, and two waiters in other flocks than their holders. Returns open files, deleted files,
+/// deleted bytes, locks held and the index of the holder it waits for.
+fn demo_files(index: usize, kind: Kind) -> (u32, u32, u64, u32, Option<usize>) {
+    if kind == Kind::Kernel {
+        return (0, 0, 0, 0, None);
+    }
+    let spread = (index * 37 + 11) % 97;
+    let open = (3.0 * (7.0 * spread as f32 / 96.0).exp2()).round() as u32;
+    let (deleted, deleted_bytes) = match index {
+        69 => (1, 1_288_490_189),
+        83 => (2, 48 << 20),
+        _ => (0, 0),
+    };
+    let held = match index {
+        5 => 2,
+        21 | 34 | 101 => 1,
+        _ => 0,
+    };
+    let waiting = match index {
+        40 => Some(5),
+        70 => Some(21),
+        _ => None,
+    };
+    (open.max(deleted), deleted, deleted_bytes, held, waiting)
 }
 
 pub fn demo(time: f64, count: usize) -> Snapshot {
@@ -894,6 +963,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             (20, 0)
         };
         let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
+        let (open_files, deleted_files, deleted_bytes, locks_held, waiting) = demo_files(i, kind);
         processes.push(Process {
             id: Identity {
                 pid: 1000 + i as u32,
@@ -938,6 +1008,12 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             },
             core: ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32,
             cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
+            open_files: Some(open_files),
+            deleted_files: Some(deleted_files),
+            deleted_bytes: Some(deleted_bytes),
+            locks_held: Some(locks_held),
+            // Holders come before their waiters, so a waiter's holder always exists.
+            blocked_on: waiting.map(|holder| 1000 + holder as u32),
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -1041,6 +1117,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         cpus,
         units,
         remotes,
+        unattributed_locks: 1,
         missing: Vec::new(),
         home: Some(Place {
             latitude: 52.37,
@@ -1467,5 +1544,65 @@ mod tests {
         assert!(rates.iter().any(|&rate| rate > 0.0 && rate < 100_000.0));
         assert!(rates.iter().any(|&rate| rate >= 1.0e6));
         assert_eq!(demo(30.0, 128).link_traffic, snapshot.link_traffic);
+    }
+
+    #[test]
+    fn demo_files_and_locks_hold_still_and_cover_the_coop_cases() {
+        let files = |snapshot: &Snapshot| {
+            snapshot
+                .processes
+                .iter()
+                .map(|p| {
+                    (
+                        p.open_files,
+                        p.deleted_files,
+                        p.deleted_bytes,
+                        p.locks_held,
+                        p.blocked_on,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let snapshot = demo(30.0, 192);
+        assert_eq!(files(&demo(3.0, 192)), files(&snapshot));
+        let processes = &snapshot.processes;
+        let open: Vec<u32> = processes
+            .iter()
+            .filter(|p| p.kind != Kind::Kernel)
+            .map(|p| p.open_files.unwrap())
+            .collect();
+        assert!(open.iter().all(|&n| (3..=400).contains(&n)));
+        assert!(open.iter().any(|&n| n < 8) && open.iter().any(|&n| n > 200));
+        assert!(
+            processes
+                .iter()
+                .filter(|p| p.kind == Kind::Kernel)
+                .all(|p| p.open_files == Some(0) && p.locks_held == Some(0))
+        );
+        let deleted: u32 = processes.iter().map(|p| p.deleted_files.unwrap()).sum();
+        assert_eq!(deleted, 3);
+        assert!(
+            processes
+                .iter()
+                .any(|p| p.deleted_files == Some(1) && p.deleted_bytes == Some(1_288_490_189))
+        );
+        let holders = processes
+            .iter()
+            .filter(|p| p.locks_held.unwrap() > 0)
+            .count();
+        assert_eq!(holders, 4);
+        let waiters: Vec<&Process> = processes
+            .iter()
+            .filter(|p| p.blocked_on.is_some())
+            .collect();
+        assert_eq!(waiters.len(), 2);
+        for waiter in waiters {
+            let holder = processes
+                .iter()
+                .find(|p| Some(p.id.pid) == waiter.blocked_on)
+                .unwrap();
+            assert!(holder.locks_held.unwrap() > 0);
+            assert_ne!(holder.cgroup, waiter.cgroup, "waits in another flock");
+        }
     }
 }

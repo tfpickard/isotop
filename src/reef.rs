@@ -594,6 +594,11 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: cgroup.into(),
+            open_files: None,
+            deleted_files: None,
+            deleted_bytes: None,
+            locks_held: None,
+            blocked_on: None,
         };
         let system = unit(Kind::System, "/system.slice/dbus.service");
         let session = unit(

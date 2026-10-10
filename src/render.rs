@@ -2920,6 +2920,11 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: "/system.slice/g.service".into(),
+            open_files: None,
+            deleted_files: None,
+            deleted_bytes: None,
+            locks_held: None,
+            blocked_on: None,
         }
     }
 
