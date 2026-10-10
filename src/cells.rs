@@ -10,7 +10,8 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use crate::model::{Kind, Process, Snapshot, Unit, bounded, bytes};
 use crate::pack::{Discs, Seats};
 use crate::render::{
-    Color, GOLDEN_ANGLE, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, spin, tint,
+    Color, GOLDEN_ANGLE, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, spin,
+    tint, without_apple_prefix,
 };
 
 const DISHES: [(Kind, &str, Color); 3] = [
@@ -328,7 +329,7 @@ impl Dishes {
             stage.positions.insert(process.id, position);
             stage
                 .notes
-                .insert(process.id, describe(cell, &unit, index == nucleus));
+                .insert(process.id, describe(cell, processes, index == nucleus));
             drawn += 1;
         }
         if cell.named {
@@ -354,7 +355,7 @@ fn cell_name(process: &Process) -> &str {
 /// for a label.
 fn short(name: &str) -> String {
     let leaf = name.rsplit('/').next().unwrap_or(name);
-    let leaf = leaf
+    let leaf = without_apple_prefix(leaf)
         .trim_end_matches(".service")
         .trim_end_matches(".scope")
         .replace("\\x2d", "-")
@@ -366,12 +367,23 @@ fn short(name: &str) -> String {
     }
 }
 
-fn describe(cell: &Cell, unit: &Unit, nucleus: bool) -> Vec<String> {
+/// The popup for one organelle. Without cgroup accounting there is no limit, quota or pressure
+/// to report, so the cell is described by its members' own summed memory and CPU.
+fn describe(cell: &Cell, processes: &[&Process], nucleus: bool) -> Vec<String> {
     let mut lines = vec![format!(
         "{} of cell {}",
         if nucleus { "nucleus" } else { "organelle" },
         cell.name
     )];
+    let Some(unit) = cell.unit else {
+        let cpu: f32 = cell.members.iter().map(|&i| processes[i].cpu).sum();
+        lines.push(format!(
+            "cell memory {} | CPU {cpu:.0}% | {} tasks",
+            bytes(cell.memory),
+            cell.members.len()
+        ));
+        return lines;
+    };
     let limit = unit
         .memory_max
         .map_or_else(|| "no limit".into(), |max| format!("limit {}", bytes(max)));
@@ -402,4 +414,86 @@ fn describe(cell: &Cell, unit: &Unit, nucleus: bool) -> Vec<String> {
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
     [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t) as u8)
+}
+
+/// The status legend, saying what the snapshot's platform leaves out.
+pub fn legend(snapshot: &Snapshot) -> String {
+    if snapshot.missing.contains(&"cgroups") {
+        " Cell = app or user group, size = memory | groups by app and user; macOS has no cgroups, so no limits, quotas or pressure | organelles = processes".into()
+    } else {
+        " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::demo;
+
+    #[test]
+    fn legend_drops_limits_quotas_and_pressure_without_cgroups() {
+        let mut snapshot = demo(1.0, 8);
+        assert!(legend(&snapshot).contains("dashed ring = memory limit | arc = CPU vs quota"));
+        snapshot.missing = vec!["cgroups"];
+        let text = legend(&snapshot);
+        assert!(text.contains(
+            "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
+        ));
+        assert!(!text.contains("dashed ring") && !text.contains("throttled"));
+    }
+
+    #[test]
+    fn popups_hold_only_measured_numbers_without_cgroup_accounting() {
+        use crate::render::{Camera, Scene, View};
+        let mut snapshot = demo(10.0, 64);
+        let render = |snapshot: &Snapshot| {
+            let mut scene = Scene::new();
+            scene.render(
+                snapshot,
+                View::Cells,
+                &Camera::default(),
+                320,
+                180,
+                None,
+                10.0,
+                512,
+                None,
+            );
+            scene.notes
+        };
+        let with_units = render(&snapshot);
+        assert!(
+            with_units
+                .values()
+                .any(|lines| lines.iter().any(|l| l.starts_with("pressure cpu")))
+        );
+        snapshot.missing = vec!["cgroups"];
+        snapshot.units.clear();
+        for process in &mut snapshot.processes {
+            process.cgroup.clear();
+            process.group = "Safari".into();
+            process.cpu = 10.0;
+        }
+        let notes = render(&snapshot);
+        assert!(!notes.is_empty());
+        for lines in notes.values() {
+            let text = lines.join("\n");
+            assert!(
+                !text.contains("pressure") && !text.contains("no limit"),
+                "{text}"
+            );
+            assert_eq!(lines.len(), 2, "{text}");
+            // Every process reads 10% CPU, so the cell's CPU is ten times its task count.
+            let tasks: f32 = lines[1]
+                .split(" | ")
+                .nth(2)
+                .and_then(|part| part.strip_suffix(" tasks"))
+                .and_then(|count| count.parse().ok())
+                .unwrap_or_else(|| panic!("{text}"));
+            assert!(
+                lines[1].contains(&format!("CPU {:.0}%", 10.0 * tasks)),
+                "{text}"
+            );
+        }
+    }
 }

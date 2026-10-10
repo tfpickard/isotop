@@ -3,10 +3,10 @@
 A living picture of your machine inside the terminal, in eleven views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, a chicken yard, and the systemd
-journal as Matrix rain. Linux-first, written
-in Rust, with real process data and pixel graphics through the Kitty graphics
-protocol. Ghostty is the primary target.
+history, a globe of network connections, a coral reef, a chicken yard, and the system
+log (the systemd journal, or the unified log on macOS) as Matrix rain. Written in
+Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
+graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
 https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 
@@ -59,9 +59,105 @@ traffic. Over SSH, or with `--direct`, frames are zlib-compressed inline instead
 The image sits below cells with a background colour, so popups and labels are
 ordinary terminal text drawn over the scene.
 
-isotop only runs on Linux today: process data comes from `/proc`. The renderer
-itself is portable through wgpu's Metal backend, but a macOS port also needs a
-process collector.
+isotop runs on Linux and on macOS on Apple Silicon. Process data comes from `/proc`
+on Linux and from libproc and Mach on macOS. The renderer is the same on both. On
+macOS some readings do not exist, and each view says what it lacks; see
+[macOS](#macos).
+
+## macOS
+
+Build and run it the same way as on Linux:
+
+```sh
+cargo build --release
+./target/release/isotop --demo
+./target/release/isotop
+```
+
+Use Ghostty. Kitty works too. The GPU rasterizer draws through Metal. Frames go
+through POSIX shared memory when the terminal can read it, which it can when it
+runs on the same machine, and the startup probe falls back to inline frames when
+it cannot (over SSH, for example).
+
+**Privileges.** Without root, isotop can measure only your own processes. It still
+lists the others, but macOS refuses to give their CPU or memory, and isotop never
+guesses them; they are left out of the scene and counted beside the process count on the
+first status line, for example `212 processes (+57 unreadable: run with sudo)`.
+Run `sudo ./target/release/isotop` to see the whole machine. Under sudo, the
+processes of the user who ran sudo (`SUDO_UID`) still count as your session. Sockets
+follow the same rule: only processes isotop may read contribute links. Anyone may
+read another process's pid, parent and name (`PROC_PIDT_SHORTBSDINFO`), so in Orbit
+and Flow the processes directly under a parent isotop cannot read, such as launchd
+without sudo, circle one hollow star named after it, labelled `launchd (unreadable)`
+with their count, instead of each standing alone.
+
+**Measured differently.** Memory is the physical footprint, the figure Activity
+Monitor shows. Available memory is free plus inactive pages. CPU time comes from
+Mach absolute time converted to nanoseconds. I/O is the disk bytes each process has
+read and written. Priority is `51 - Mach priority`, so an ordinary application (31)
+reads as 20 and a lower number runs first, as on Linux. Process state is R when a
+thread is running, S otherwise, T for stopped and Z for zombies. The performance and
+efficiency cores come from the IORegistry (`cluster-type`); if that cannot be read,
+the lanes have no kind and are not guessed.
+
+**Open files.** The coop's eggs are measured on macOS too. Each process's
+descriptors come from `proc_pidinfo` (`PROC_PIDLISTFDS`), and each vnode among them
+from `proc_pidfdinfo` (`PROC_PIDFDVNODEINFO`), which stats the file through the
+descriptor. A regular file counts once by device and inode, and one whose link count
+is 0 was deleted while still open: a rotten egg, with its size. The scan has the
+same bounds as on Linux (4096 vnodes examined and 16 384 descriptors listed per
+process, 65 536 per scan, resuming where it stopped), but only vnodes are examined,
+since the listing already says which descriptors are sockets, pipes or kqueues, and
+past 4096 the open count is estimated in proportion among the vnodes alone. A vnode
+that is still open but cannot be read (a revoked device, a network server that fails
+the stat) is estimated the same way and marks the count partial. A zombie holds no
+files. Other users' tables need root, as their CPU and memory do, and
+`kernel_task` is read like any process when isotop runs as root. macOS cannot ask a
+filesystem for cached attributes only, as Linux does, so a network mount that stops
+answering can hold up the background thread (sockets, files) while its attribute
+cache is stale.
+
+### What macOS does not report and how each view shows it
+
+| Missing on macOS | How it shows |
+|---|---|
+| CPU and I/O pressure | The status line prints `n/a` for each: `pressure cpu n/a mem 0% io n/a`. The coop's heading noise comes from CPU variation only, and its legend says so |
+| Memory pressure as a stall percentage | The kernel's pressure level stands in for it: normal reads 0, warning 25, critical 75. The sky's memory tint and the coop's fox eyes show that level, not a stall percentage |
+| Last CPU of each process | macOS says only how each process's CPU time divided between the performance and the efficiency cores (`proc_pid_rusage`, `RUSAGE_INFO_V6`). Cores draws every running process as a marble on one of two bands, like an electron on an energy level, once it has a share since the last sample (a process seen for the first time, or one whose counters macOS will not give out, has no marble): the middle of the gold lanes or the middle of the teal lanes, starting on the gold band when at least half of its CPU time was on performance cores. It hops to the gold band when a sample's share reaches 60% and back to the teal band when it falls to 40% or below, along the same arc as a migration between lanes; in between it stays where it is, so an even split does not make it hop every sample, and a process that used no CPU time keeps its band. The inspector gives the share and counts the cluster hops, and the lane labels leave out the running and idle counts, which belong to a core. Where the split is not reported (a kernel without V6, or cores with no kind), Cores draws the lanes with their load and no marbles, and its legend says so. In the coop, running chickens share one trough instead of walking to the feeder of the core they ran on; the feeders are still drawn, brightened by how busy each core is |
+| CPU clock | There is no clock per core. Each cluster's average clock is the cycles its cores ran divided by the CPU time they ran them in, summed over every process isotop can read between two samples, and every lane of that kind shows it, so a cluster's chevrons move together and the legend says "cluster clock". A cluster with less than 0.05 s of CPU time in the interval has no reading, and its chevrons pause. Virtual machines count no cycles; there the legend says "no clock readings" and the chevrons stay still. Without sudo the clocks come from your own processes only |
+| Run queue | There is no run queue per CPU, so no red marbles at the start line. Each process's waiting threads come instead from its runnable time, which counts running as well, minus its CPU time: red beads trail its marble, one per thread waiting on average, with a faint red glow when any wait. The kernel brings runnable time up to date only when a thread is switched onto a core or blocks, so isotop counts only growth beyond the highest value it has seen; waiting can show a sample late. A process first seen while a thread had run for a long time without a switch can show that run as waiting once, so each reading is held to the process's thread count. After exec, whose new task keeps only one thread's counters, waiting starts over |
+| cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group, and no fox comes for an OOM kill; its legend says so |
+| Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
+| Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
+| File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
+| GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos |
+| The systemd journal | Matrix follows the unified log instead; see below |
+
+**Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
+(pid 0) is the kernel. A process is a container if its executable is a
+virtualization helper: Virtualization.framework (`com.apple.Virtualization.VirtualMachine`),
+OrbStack, Docker, Lima (`limactl`), UTM and other QEMU (`qemu-system-*`) processes,
+`vfkit` and `krunkit`. Otherwise it is a system process if its uid is below 500 or its
+executable is under `/System`, `/usr` (except `/usr/local`), `/bin`, `/sbin` or
+`/Library/Apple`. Otherwise it belongs to your session if it runs under your uid, and
+to the system if it does not.
+
+**Groups and parents.** A process's group is the outermost `.app` bundle in its
+path, so the helpers inside `Safari.app` all group with Safari; without a bundle it
+is the executable's name. Cells and the coop use the group, with the kind, in place
+of a cgroup. A process's parent is the app responsible for it, as macOS reports it
+through a private function isotop looks up at run time, so helpers that launchd
+started sit under their app rather than under launchd. A process whose real parent
+already descends from that app keeps its real parent, so a command in a terminal stays
+under its shell. If the function is missing or would create a loop, the real parent
+is used.
+
+**The unified log.** Matrix runs `log show --last 2m` and then `log stream` (both as
+JSON) on a background thread, so the rain starts full as it does on Linux. Lines read
+`process[pid]: message`. Severity comes from the message type: Fault is critical and
+Error is an error (both red), Default is a notice and Info is information (both
+green), Debug is debug (teal), and anything else counts as a notice. The unified log
+has no warning level, so nothing is amber.
 
 ## Worlds
 
@@ -166,6 +262,10 @@ Intel CPUs), banked like a velodrome.
   the scheduler moves a process to another CPU, its marble hops across lanes;
   the inspector counts the hops.
 - Idle processes stay off the track and only count towards their lane's label.
+- On macOS, which reports no last CPU, marbles ride the middle of the performance
+  or the efficiency lanes, whichever they mostly ran on, and hop between the two when
+  that changes; chevrons run at each cluster's clock, and red beads trail a marble
+  for its waiting threads; see [macOS](#macos).
 
 ### Cells
 
@@ -237,7 +337,7 @@ A fenced chicken yard in which every process is a chicken in a Vicsek flock: eac
 | Visual element | Measured source | Transform |
 | --- | --- | --- |
 | Chicken | Process | One per drawn process; picking and the inspector use the process |
-| Body radius | RSS | (0.12 × ∛MiB) clamped to 0.3 to 1.2 (volume follows memory; about 16 MiB and below share the smallest size (0.3 / 0.12 = 2.5, and 2.5³ = 15.6), 1000 MiB and above the largest), scaled by 0.3 + 0.7 × growth while it hatches |
+| Body radius | Memory (RSS; the physical footprint on macOS) | (0.12 × ∛MiB) clamped to 0.3 to 1.2 (volume follows memory; about 16 MiB and below share the smallest size (0.3 / 0.12 = 2.5, and 2.5³ = 15.6), 1000 MiB and above the largest), scaled by 0.3 + 0.7 × growth while it hatches |
 | Plumage | Kind and state | The same colours as the other views; zombies pink, stopped orange, uninterruptible sleep red |
 | Flock and henhouse | cgroup (the process group if there is none; kernel threads share one "kernel" flock) | One flock and one henhouse per group, labelled with the group name |
 | Perch seat | Seat number in the flock | Fixed ladder grid around the henhouse, nearest seats first |
@@ -253,9 +353,9 @@ A fenced chicken yard in which every process is a chicken in a Vicsek flock: eac
 | Frozen, crouched | Stopped or traced state | Held in place without noise |
 | Mud puddle | Uninterruptible sleep | Does not move |
 | Feet up | Zombie | Does not move |
-| Clutch of eggs in the nest box | Open regular files of the flock's members (`/proc/<pid>/fd`) | round(log2(1 + Σ open files)) eggs, at most 16: 1 file lays 1 egg, 7 lay 3, 140 lay 7, and 46 340 or more fill the clutch. Each member counts a file once however many of its descriptors refer to it. A state, not events: the clutch shrinks when files close. Members whose descriptor tables are unreadable or not read yet add nothing, and the nest's inspector line says how many |
+| Clutch of eggs in the nest box | Open regular files of the flock's members (`/proc/<pid>/fd`; `proc_pidfdinfo` on macOS) | round(log2(1 + Σ open files)) eggs, at most 16: 1 file lays 1 egg, 7 lay 3, 140 lay 7, and 46 340 or more fill the clutch. Each member counts a file once however many of its descriptors refer to it. A state, not events: the clutch shrinks when files close. Members whose descriptor tables are unreadable or not read yet add nothing, and the nest's inspector line says how many |
 | Rotten eggs, cracked and olive | Files deleted while still open (link count 0) | One per deleted file (by device and inode, so a rotated log that several members hold open is one egg), at most 8 shown in front of the clutch; the inspector gives the count and the bytes held |
-| Brooding by the nest | Holding a file lock or lease (`/proc/locks`) | A holder that is not running sits on a straw pad beside her own house's nest box, clear of its eggs |
+| Brooding by the nest | Holding a file lock or lease (`/proc/locks`; macOS has no lock table, so none brood there) | A holder that is not running sits on a straw pad beside her own house's nest box, clear of its eggs |
 | Queueing at a nest | Blocked on a file lock (a `->` line in `/proc/locks`) | Walks to the nest of the house of the process holding the lock, whatever its own flock, and queues beside it after the brooders, with a faint line to the holder |
 | Dust puffs | Read rate | min(5, 1 + ⌊log2(rate / 64 KiB)⌋) puffs above 64 KiB/s |
 | Chicks | Threads | min(threads − 1, 12), following the hen along her trail |
@@ -280,7 +380,7 @@ Decorative: the grass grid and the dirt band under the feeders, the hedge, the f
 
 **The fox.** When a unit's `oom_kills` count rises, a fox runs to the largest member (by memory) that vanished in the last 4 seconds, or two and a half sampling intervals when `--sample-ms` is longer, and takes it. The window exists because cgroup counters are read every 2 s on a background thread, so the count can rise a sample or two after the process disappears from the list; each victim is claimed by one kill only. If no member vanished, the fox leaves empty-mouthed. Kills recorded while another view is shown are dropped once they are older than a fox's run, so switching to the coop does not replay them. Memory pressure puts fox eyes in the hedge: more pairs and nearer the fence as pressure grows, and foragers near them flee.
 
-**What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the pressure term of the noise is fixed; the CPU-variation term still applies. I/O counters of other users' processes are unreadable without privileges, so those chickens raise no dust, and the legend counts them ("I/O unreadable for N"). The same goes for their descriptor tables: their open files add nothing to the clutch, and the legend says "no files for N (permissions)". A process the file scan has not reached yet (just started, or past a scan's budget) is not counted there; its inspector says "open files not read yet". Kernel threads hold no descriptors and count as having no files. Open file description (OFD) locks belong to an open file, not a process, and `/proc/locks` reports them with pid -1: no hen broods for them, a request blocked on one has no holder to walk to and queues at its own nest, and the legend counts them.
+**What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the pressure term of the noise is fixed; the CPU-variation term still applies. I/O counters of other users' processes are unreadable without privileges, so those chickens raise no dust, and the legend counts them ("I/O unreadable for N"). The same goes for their descriptor tables: their open files add nothing to the clutch, and the legend says "no files for N (permissions)". A process the file scan has not reached yet (just started, or past a scan's budget) is not counted there; its inspector says "open files not read yet". Kernel threads hold no descriptors and count as having no files. Open file description (OFD) locks belong to an open file, not a process, and `/proc/locks` reports them with pid -1: no hen broods for them, a request blocked on one has no holder to walk to and queues at its own nest, and the legend counts them. macOS has no lock table at all, so there no hen broods or queues, and the legend says so in place of the brooding and queueing entries.
 
 **Fixed time step.** The yard advances in whole 20 Hz steps of wall-clock time, so the frame rate does not change how a flock moves; a gap longer than half a second, such as a pause, is capped at half a second.
 
@@ -290,7 +390,8 @@ The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) 
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
 
-The systemd journal decoded out of digital rain. `journalctl -f` runs on a
+The systemd journal decoded out of digital rain (on macOS, the unified log; see
+[macOS](#macos)). `journalctl -f` runs on a
 background thread from the moment the view is first shown, starting with the
 last 200 entries. The screen is a log of `source[pid]: message` lines written
 horizontally, newest at the bottom, coloured by severity: red for errors and
@@ -330,11 +431,17 @@ processes leave a brief flash and an expanding ring.
 ### Labels, hover, and the tour
 
 System names (`init`, `systemd --user`, `kthreadd`, ...) and the busiest
-processes are labelled; `l` toggles labels. Hovering a body or building shows its
-name and a short description of what it is. After 20 seconds without input
+processes are labelled; `l` toggles labels. Labels are at most 15 cells wide, so
+a longer name (macOS allows 31 characters) is cut after 13 characters and ends in
+`..`, and Apple's own `com.apple.` prefix is dropped. Two labels on the same row
+always have a blank column between them; one that would touch another is left
+out. Hovering a body or building shows its full name and a short description of
+what it is. After 20 seconds without input
 (`--tour`, `0` disables), a guided tour eases the camera between notable
 processes: system stars, the busiest, and the largest. Each gets a callout with
-a pointer. `g` starts the tour at any time, even with the idle tour disabled.
+a pointer. On the globe, the tour and search also turn the camera so the process
+faces you, because the world's spin carries home to the far side for half of
+every turn. `g` starts the tour at any time, even with the idle tour disabled.
 Any key or mouse movement ends the tour.
 
 ## Controls
@@ -422,8 +529,11 @@ reads frames both inline and through shared memory, and exercises interactive
 controls and restoration. Visual quality, flicker, and display latency should
 also be checked in Ghostty.
 
+CI builds and tests on Linux and on macOS (`macos-15`, Apple Silicon). The macOS
+code can be type-checked from Linux with
+`cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings`.
+
 ## Next milestones
 
-- A macOS process collector, so the Metal path can run on Apple GPUs.
 - Zoom-dependent aggregation for very dense systems.
 - Optional GUI presentation using the same monitoring and scene model.

@@ -1,7 +1,7 @@
 # isotop: agent guide
 
-isotop is a Linux process visualizer for the terminal, written in Rust (edition 2024). It
-samples `/proc`, builds a 3D scene, rasterizes it on the GPU (wgpu) or the CPU, and shows the
+isotop is a process visualizer for the terminal on Linux and macOS, written in Rust (edition
+2024). It samples the operating system (`/proc` on Linux, libproc and Mach on macOS), builds a 3D scene, rasterizes it on the GPU (wgpu) or the CPU, and shows the
 frames through the Kitty graphics protocol. The primary terminal is Ghostty; Kitty also works.
 The README covers usage. This file covers how to work on the code.
 
@@ -10,8 +10,9 @@ The README covers usage. This file covers how to work on the code.
 1. **Sample** (`model.rs`, `platform/`). `Collector::sample` reads the operating system through
    `platform::Sampler` (on Linux, `/proc`) once per `--sample-ms`, smooths CPU use and returns a
    `Snapshot`. Slow sources (sockets in `platform/linux/net.rs`, open files and file locks in
-   `platform/linux/files.rs`, cgroup accounting, NVIDIA memory in `platform/linux/nvml.rs`) run
-   on a background thread every 2 s and are merged in, so the frame loop never waits on them.
+   `platform/linux/files.rs`, cgroup accounting, NVIDIA memory in `platform/linux/nvml.rs`;
+   on macOS sockets and open files only, as it has no lock table) run on a background thread
+   every 2 s and are merged in, so the frame loop never waits on them.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
@@ -26,14 +27,13 @@ The README covers usage. This file covers how to work on the code.
 | File | Owns |
 |---|---|
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, background thread, merge), demo workload, `describe` |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`) and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `platform/linux/files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
-| `platform/macos/` | Compiling stub: live mode returns an error, background sources are empty |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
 | `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
@@ -41,6 +41,10 @@ The README covers usage. This file covers how to work on the code.
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
+| `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, the bounded open-file scan (`FileScan`, one `proc_pidfdinfo` per vnode), and what it reports through `missing`, `per_cluster` and `unreadable` |
+| `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
+| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
+| `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
 
 ## Invariants
 
@@ -80,6 +84,12 @@ cargo build --release
 python3 scripts/smoke_terminal.py
 ```
 
+macOS code cannot run on Linux. Type-check it locally with
+`cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings` (give it its own
+`CARGO_TARGET_DIR`); CI runs the gates and the live renders on `macos-15`. The pure logic in
+`platform/macos/logic.rs` and `platform/macos/journal.rs` is also compiled into Linux test
+builds, so `cargo test` covers it here. Keep FFI out of those two files so that stays true.
+
 The smoke test drives the release binary through a pseudo-terminal. It runs once in demo mode
 over shared memory and once in live mode inline, and exercises view switching, search, focus,
 pause, quit and terminal restoration.
@@ -117,7 +127,8 @@ match your own shell.
   behaviour (`city_does_not_relocate_when_resources_or_population_change`). Rendering tests use
   `model::demo` or the `process(pid, parent)` helper in `render.rs`.
 - When you add a field to `Process` or `Snapshot`, update `parse_stat` (in
-  `platform/linux/mod.rs`), `model::demo` and the `render.rs` test helper.
+  `platform/linux/mod.rs`), `Sampler::process` (in `platform/macos/mod.rs`), `model::demo`
+  and the `render.rs` test helper.
 - A new view needs: a `View` variant, a `next()` entry, the status-line name and legend in
   `App::text`, and a draw function called from `Scene::render`.
 - Prefer the standard library. Add a dependency only when it replaces substantial,

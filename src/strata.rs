@@ -5,7 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::render::{Point, Stage, kind_color, tint};
+use crate::render::{Point, Stage, kind_color, label_name, tint};
 
 const WINDOW: f64 = 60.0;
 const SAMPLES: usize = 240;
@@ -193,7 +193,7 @@ impl Strata {
             stage.positions.insert(*id, front);
             stage.places.push((
                 [1.5, y, 0.0],
-                format!("{} {:.0}%", process.name, process.cpu),
+                format!("{} {:.0}%", label_name(&process.name), process.cpu),
             ));
             stage.notes.insert(
                 *id,

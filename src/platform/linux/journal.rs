@@ -7,6 +7,9 @@ use std::process::{Child, Command, Stdio};
 use crate::journal::Line;
 use crate::platform::JournalParser;
 
+/// Name of the log follower, for error messages.
+pub const JOURNAL: &str = "journalctl";
+
 /// Bytes kept of any one field; journal messages can be megabytes long.
 const FIELD: usize = 4096;
 /// syslog severity: 0 emergency to 3 error, 4 warning, 5 notice, 6 info, 7 debug.
@@ -14,7 +17,7 @@ const INFO: u8 = 6;
 
 /// Follows the journal, starting with its most recent entries so the rain begins full.
 pub fn journal() -> io::Result<(Child, JournalParser)> {
-    let child = Command::new("journalctl")
+    let child = Command::new(JOURNAL)
         .args([
             "--follow",
             "--lines=200",
@@ -26,6 +29,13 @@ pub fn journal() -> io::Result<(Child, JournalParser)> {
         .stderr(Stdio::piped())
         .spawn()?;
     Ok((child, parse))
+}
+
+/// Ends the follower and reaps it. `journalctl` starts nothing of its own, so killing it is
+/// enough.
+pub fn stop_journal(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// `read_entry` over a type-erased reader, as `JournalParser` needs.

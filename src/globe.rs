@@ -4,13 +4,14 @@
 //! a local GeoIP database; addresses it cannot place circle the north pole.
 
 use std::collections::HashMap;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
 use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
 use crate::pack::Seats;
 use crate::render::{
-    Color, GOLDEN_ANGLE, NONE, Point, SCALE, Stage, dot, kind_color, mass_radius, normalize, tint,
+    Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
+    mass_radius, normalize, tint,
 };
 
 const RADIUS: f32 = 20.0;
@@ -23,6 +24,8 @@ const COAST: Color = [140, 196, 166];
 const GRATICULE: Color = [34, 66, 96];
 const DOWN: Color = [110, 220, 255];
 const UP: Color = [255, 140, 210];
+/// Arc colour when the platform reports no per-connection rates, so no direction is implied.
+const NEUTRAL: Color = [170, 190, 215];
 const HOME: Color = [255, 214, 150];
 
 #[derive(Default)]
@@ -139,6 +142,7 @@ impl Globe {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
+        let has_rates = !snapshot.missing.contains(&"socket traffic");
         let mut endpoints: HashMap<Spot, Endpoint> = HashMap::new();
         let mut per_process: HashMap<Identity, Vec<&Remote>> = HashMap::new();
         for remote in snapshot
@@ -190,7 +194,9 @@ impl Globe {
             };
             let height = if endpoint.place.is_some() { 1.01 } else { 1.25 };
             let traffic = endpoint.up + endpoint.down;
-            let color = if endpoint.down >= endpoint.up {
+            let color = if !has_rates {
+                NEUTRAL
+            } else if endpoint.down >= endpoint.up {
                 DOWN
             } else {
                 UP
@@ -281,14 +287,18 @@ impl Globe {
                 .take(4)
                 .map(|r| {
                     let place = r.place.as_ref().map_or("unlocated", |p| p.name.as_str());
-                    format!(
-                        "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
-                        r.address,
-                        r.port,
-                        r.rtt,
-                        bytes(r.up as u64),
-                        bytes(r.down as u64)
-                    )
+                    if has_rates {
+                        format!(
+                            "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
+                            r.address,
+                            r.port,
+                            r.rtt,
+                            bytes(r.up as u64),
+                            bytes(r.down as u64)
+                        )
+                    } else {
+                        format!("{}:{} {place}", r.address, r.port)
+                    }
                 })
                 .collect();
             if per_process[id].len() > 4 {
@@ -323,6 +333,32 @@ fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
         (t * angle).sin() / angle.sin(),
     );
     normalize([0, 1, 2].map(|k| a[k] * wa + b[k] * wb))
+}
+
+/// The camera rotation and pitch that put `point` on the near side of the globe. The rotation
+/// turns the viewer to the point's bearing from the globe's centre; the camera's pitch is kept
+/// unless the point would still sit near or behind the limb, as it can below the equator,
+/// because the camera only looks from above. At the lowest pitch the camera allows, about 20
+/// degrees, nothing more than about 70 degrees south of the equator can be brought into view.
+pub fn face(point: Point, camera: &Camera) -> (f32, f32) {
+    let offset = [point[0], point[1], point[2] - RADIUS];
+    let across = offset[0].hypot(offset[1]);
+    // Camera::viewer points along (sin(r + pi/4), cos(r + pi/4)) on the ground.
+    let rotation = if across > 1e-4 {
+        offset[0].atan2(offset[1]) - FRAC_PI_4
+    } else {
+        camera.rotation
+    };
+    let length = across.hypot(offset[2]);
+    let (sin, cos) = camera.pitch.sin_cos();
+    // With the bearing matched, how far the point leans towards the viewer is
+    // across * cos(pitch) + z * sin(pitch); a quarter of its distance keeps it clear of the limb.
+    let pitch = if across * cos + offset[2] * sin >= 0.25 * length {
+        camera.pitch
+    } else {
+        offset[2].atan2(across).clamp(LOWEST_PITCH, FRAC_PI_2)
+    };
+    (rotation, pitch)
 }
 
 /// East and north unit vectors on the surface at unit vector `up`.
@@ -368,9 +404,119 @@ fn coastline() -> Vec<Vec<[f32; 2]>> {
     lines
 }
 
+/// The status legend, saying what the snapshot's platform leaves out.
+pub fn legend(snapshot: &Snapshot) -> String {
+    if snapshot.missing.contains(&"socket traffic") {
+        format!(
+            " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
+            snapshot.geo
+        )
+    } else {
+        format!(
+            " Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}",
+            snapshot.geo
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facing_turns_the_viewer_towards_any_point_on_the_sphere() {
+        let center = [0.0, 0.0, RADIUS];
+        // As far south as people live; see face for the limit.
+        for latitude in [-55.0f32, -30.0, -10.0, 0.0, 30.0, 70.0] {
+            for longitude in (0..360).step_by(20) {
+                let (lat, lon) = (latitude.to_radians(), (longitude as f32).to_radians());
+                let direction = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+                let point = [0, 1, 2].map(|k| center[k] + direction[k] * (RADIUS + 2.5));
+                for rotation in [0.0, 2.0, -3.0] {
+                    let mut camera = Camera {
+                        rotation,
+                        ..Camera::default()
+                    };
+                    (camera.rotation, camera.pitch) = face(point, &camera);
+                    let towards = dot(camera.viewer(), direction);
+                    assert!(
+                        towards > 0.2,
+                        "{latitude} {longitude} from {rotation}: {towards}"
+                    );
+                }
+            }
+        }
+        let northern = [10.0, -5.0, RADIUS + 12.0];
+        let camera = Camera::default();
+        assert_eq!(
+            face(northern, &camera).1,
+            camera.pitch,
+            "a point already in view keeps the pitch"
+        );
+    }
+
+    #[test]
+    fn legend_drops_rates_when_the_platform_has_no_socket_traffic() {
+        let mut snapshot = Snapshot {
+            geo: "demo locations".into(),
+            ..Default::default()
+        };
+        let full = legend(&snapshot);
+        assert!(full.contains("brighter with traffic | cyan = mostly download"));
+        assert!(full.ends_with("| demo locations"));
+        snapshot.missing = vec!["socket traffic"];
+        let text = legend(&snapshot);
+        assert!(text.contains("no per-connection rates or RTT on macOS"));
+        assert!(!text.contains("cyan") && text.ends_with("| demo locations"));
+    }
+
+    #[test]
+    fn notes_and_arcs_carry_no_invented_rates_without_socket_traffic() {
+        use crate::model::demo;
+        use crate::render::{Camera, Item, Scene, View};
+        let mut snapshot = demo(10.0, 128);
+        for remote in &mut snapshot.remotes {
+            (remote.rtt, remote.up, remote.down) = (0.0, 0.0, 0.0);
+        }
+        let id = snapshot.remotes[0].id;
+        let render = |snapshot: &Snapshot| {
+            let mut scene = Scene::new();
+            let frame = scene.render(
+                snapshot,
+                View::Globe,
+                &Camera::default(),
+                320,
+                180,
+                None,
+                10.0,
+                512,
+                None,
+            );
+            (scene.notes, frame.items)
+        };
+        let (notes, _) = render(&snapshot);
+        assert!(notes[&id][0].contains(" ms | up "));
+        snapshot.missing = vec!["socket traffic"];
+        let (notes, items) = render(&snapshot);
+        let lines = &notes[&id];
+        assert!(!lines.is_empty());
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains(" ms") && !line.contains("/s")),
+            "{lines:?}"
+        );
+        assert!(lines[0].starts_with(&snapshot.remotes[0].address.to_string()));
+        let colors: Vec<Color> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Sphere { color, .. } => Some(*color),
+                _ => None,
+            })
+            .collect();
+        assert!(colors.contains(&NEUTRAL));
+        assert!(!colors.contains(&DOWN) && !colors.contains(&UP));
+    }
 
     #[test]
     fn coastline_decodes_and_arcs_stay_on_the_sphere() {

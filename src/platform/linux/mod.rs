@@ -14,11 +14,14 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Network, RawProcess};
+use crate::platform::{Files, Network, RawProcess, Shadow};
 
 pub use files::{FileScan, locks};
-pub use journal::journal;
+pub use journal::{JOURNAL, journal, stop_journal};
 pub use nvml::Nvml as Gpu;
+
+/// What `Process::memory` measures here: the resident set size.
+pub const MEMORY_LABEL: &str = "RSS";
 
 /// Reads processes, memory, pressure and CPUs, keeping the CPU counters between readings.
 pub struct Sampler {
@@ -81,7 +84,13 @@ impl Sampler {
                 process.kind = cgroup.as_deref().map_or(Kind::System, classify);
                 process.cgroup = cgroup.as_deref().and_then(cgroup_path).unwrap_or_default();
             }
-            processes.push(RawProcess { process, ticks, io });
+            processes.push(RawProcess {
+                process,
+                ticks,
+                io,
+                performance_ticks: None,
+                runnable_ticks: None,
+            });
         }
         Ok(processes)
     }
@@ -116,6 +125,26 @@ impl Sampler {
     /// Per-CPU use since the previous call, `dt` seconds ago.
     pub fn cpus(&mut self, dt: f32) -> Vec<Cpu> {
         cpus(&mut self.cpu_previous, &self.core_kinds, dt)
+    }
+
+    /// Linux measures everything isotop shows.
+    pub fn missing(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// Linux measures every CPU on its own.
+    pub fn per_cluster(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// Always 0: a process that vanishes between readdir and the read is a race, not a gap.
+    pub fn unreadable(&self) -> usize {
+        0
+    }
+
+    /// None: every process's stat is world-readable, so no process is left out.
+    pub fn shadows(&self) -> Vec<Shadow> {
+        Vec::new()
     }
 }
 
@@ -417,6 +446,8 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             core: number(36).unwrap_or(0) as u32,
             cpu_time: 0.0,
             cgroup: String::new(),
+            performance_share: None,
+            waiting: None,
             files,
             locks_held: Measured::Pending,
             blocked_on: None,

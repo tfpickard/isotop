@@ -30,6 +30,19 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # A crash in native code (a CoreFoundation trap, a bad FFI call) kills the test binary
+      # without a Rust message. Re-run it one test at a time under lldb so the log names the
+      # test and shows the native backtrace.
+      - name: Backtrace a crashed macOS test run
+        if: failure() && runner.os == 'macOS'
+        run: |
+          binary=$(cargo test --no-run --message-format=json 2>/dev/null \
+            | python3 -c 'import json,sys
+          for line in sys.stdin:
+              m = json.loads(line)
+              if m.get("profile", {}).get("test") and m.get("executable"):
+                  print(m["executable"])' | head -n 1)
+          lldb --batch -o run -k "thread backtrace all" -k quit -- "$binary" --test-threads=1
       - run: cargo build --release
 
       - name: Render coop and orbit headless
@@ -38,13 +51,31 @@ jobs:
             ./target/release/isotop --demo --view "$view" --renderer cpu \
               --width 960 --time 12 --output "$view-${{ runner.os }}.png"
           done
+
+      # Live mode reads the real operating system, so these catch what the demo cannot: layout
+      # and permission errors in the collector. Each takes two samples before drawing.
+      - name: Render the live machine headless
+        run: |
+          ./target/release/isotop --view orbit --width 960 --output "live-${{ runner.os }}.png"
+          ./target/release/isotop --view cells --width 960 --output "live-cells-${{ runner.os }}.png"
+
+      # Root can read every process, which takes a different path through the collector than an
+      # ordinary user. GitHub's macOS runners have passwordless sudo, but this is not guaranteed
+      # forever, and the step proves nothing about the user path, so it must not fail the job.
+      - name: Render the live machine headless as root
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          sudo ./target/release/isotop --view orbit --width 960 --output live-root-macOS.png
+          sudo chown "$(id -u)" live-root-macOS.png
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: renders-${{ runner.os }}
           path: "*-${{ runner.os }}.png"
 
       - name: Smoke test in a pseudo-terminal
-        if: runner.os == 'Linux'
         run: python3 scripts/smoke_terminal.py
 
       # Metal parity evidence; the runner may not expose a GPU, so never fail on it.

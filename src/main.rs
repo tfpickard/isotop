@@ -33,7 +33,7 @@ use crossterm::event::{
 
 use journal::Journal;
 use model::{Collector, Identity, Process, Snapshot, bytes, describe};
-use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View};
+use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
@@ -235,7 +235,23 @@ struct Pointer {
 struct Board(Vec<[u16; 4]>);
 
 impl Board {
+    /// Claims a label's cells if they are free and at least one column clear of every claimed
+    /// rectangle on the same rows, so neighbouring labels never run together.
     fn claim(&mut self, column: u16, row: u16, width: u16, height: u16) -> bool {
+        let rect = [column, row, column + width, row + height];
+        let free = self
+            .0
+            .iter()
+            .all(|r| rect[2] < r[0] || r[2] < rect[0] || rect[3] <= r[1] || r[3] <= rect[1]);
+        if free {
+            self.0.push(rect);
+        }
+        free
+    }
+
+    /// Claims a panel's cells if they are free. Panels may touch each other and labels, but a
+    /// label keeps its gap from them.
+    fn reserve(&mut self, column: u16, row: u16, width: u16, height: u16) -> bool {
         let rect = [column, row, column + width, row + height];
         let free = self
             .0
@@ -444,8 +460,9 @@ impl App {
     fn select_match(&mut self) {
         if let Some(&id) = self.matches.get(self.match_index) {
             self.selected = Some(id);
-            if let Some(p) = self.scene.positions.get(&id) {
+            if let Some(&p) = self.scene.positions.get(&id) {
                 self.goal.center = [p[0], p[1]];
+                self.face(p);
             } else {
                 self.focus = Some(id);
                 self.fit = true;
@@ -463,7 +480,8 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: system stars, the busiest and the largest.
+    /// Notable processes to visit while idle: system stars, the busiest and the largest. Hubs
+    /// are not processes, so they have no callout to show and are passed over.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
             .snapshot()
@@ -476,6 +494,7 @@ impl App {
         let mut largest = visible;
         largest.sort_by_key(|p| Reverse(p.memory));
         let mut stars = self.scene.stars.clone();
+        stars.retain(|(id, _, _)| !render::is_hub(id));
         stars.sort_by_key(|&(_, members, _)| Reverse(members));
         let mut targets = Vec::new();
         for i in 0..6 {
@@ -506,9 +525,20 @@ impl App {
             self.visit(self.tour.as_ref().map_or(0, |tour| tour.index + 1));
         }
         if let Some(tour) = &self.tour
-            && let Some(p) = self.scene.positions.get(&tour.target)
+            && let Some(&p) = self.scene.positions.get(&tour.target)
         {
             self.goal.center = [p[0], p[1]];
+            self.face(p);
+        }
+    }
+
+    /// On the globe, turns the camera so `point` is on the near side and centres the point
+    /// itself: the world spins, so a process above home is behind the earth for half of every
+    /// turn, and it floats far above the ground the camera otherwise centres on.
+    fn face(&mut self, point: [f32; 3]) {
+        if self.view == View::Globe {
+            (self.goal.rotation, self.goal.pitch) = globe::face(point, &self.goal);
+            self.goal.look_at(point);
         }
     }
 
@@ -546,8 +576,9 @@ impl App {
             (false, None) => "LIVE",
         };
         let mut lines = vec![format!(
-            " ISOTOP / {view} / {mode}   {} processes | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
+            " ISOTOP / {view} / {mode}   {} processes{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
             s.processes.len(),
+            unreadable_text(s),
             self.scene.visible,
             self.scene.collapsed,
             s.processes.iter().map(|p| p.cpu).sum::<f32>() / 100.0,
@@ -558,12 +589,13 @@ impl App {
         let inspector = if let Some(id) = self.inspected() {
             if let Some(p) = s.processes.iter().find(|p| p.id == id) {
                 format!(
-                    " {} [pid {} / parent {} / {}] CPU {:.1}%  RSS {}  IO {}  {}",
+                    " {} [pid {} / parent {} / {}] CPU {:.1}%  {} {}  IO {}  {}",
                     p.name,
                     id.pid,
                     p.parent,
                     p.state,
                     p.cpu,
+                    platform::MEMORY_LABEL,
                     bytes(p.memory),
                     p.io_rate.map_or_else(
                         || "unavailable".into(),
@@ -588,14 +620,14 @@ impl App {
         lines.push(inspector);
         lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
-                View::City => " Height = CPU | footprint = RSS | district = cgroup | amber lights = CPU | cyan pulses = IO".into(),
-                View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
+                View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
+                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(&self.scene)),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
-                View::Flow => " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure".into(),
-                View::Cores => " Lane = CPU (gold performance, teal efficiency) | brightness = busy | chevrons = clock | red queue = waiting tasks | marble = running process, one lap per 10 s of CPU, hops = migrations".into(),
-                View::Cells => " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into(),
+                View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(&self.scene)),
+                View::Cores => cores::legend(s),
+                View::Cells => cells::legend(s),
                 View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
-                View::Globe => format!(" Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}", s.geo),
+                View::Globe => globe::legend(s),
                 View::Reef => " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into(),
                 View::Coop => self.scene.coop.legend(),
                 View::Matrix => format!(
@@ -617,7 +649,6 @@ impl App {
         } else {
             lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
         }
-        let [cpu, memory, io] = s.pressure;
         let links = match self.scene.links {
             Links::All => "",
             Links::Focused => " | links: focused",
@@ -625,8 +656,8 @@ impl App {
         };
         lines.push(if self.show_help {
             " Scroll pan | Ctrl-scroll zoom | Alt-scroll or right-drag rotate/tilt | n next match | [/] rewind | r reset | Ctrl-C quit".into()
-        } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | pressure cpu {cpu:.0}% mem {memory:.0}% io {io:.0}%{links}{}",
-            self.renderer, self.history.len(), s.elapsed,
+        } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | {}{links}{}",
+            self.renderer, self.history.len(), s.elapsed, pressure_text(s),
             if self.focus.is_some() { " | SUBTREE FOCUS" } else { "" }) });
         lines
     }
@@ -659,8 +690,9 @@ impl App {
                         if p.threads == 1 { "" } else { "s" }
                     ),
                     format!(
-                        "CPU {:.1}% | RSS {} | IO {}",
+                        "CPU {:.1}% | {} {} | IO {}",
                         p.cpu,
+                        platform::MEMORY_LABEL,
                         bytes(p.memory),
                         p.io_rate.map_or_else(
                             || "unavailable".into(),
@@ -675,7 +707,8 @@ impl App {
                 }
                 if let Some(&(total, count)) = self.scene.mass.get(&id) {
                     lines.push(format!(
-                        "system RSS {} across {count} processes",
+                        "system {} {} across {count} processes",
+                        platform::MEMORY_LABEL,
                         bytes(total)
                     ));
                 }
@@ -714,6 +747,31 @@ impl App {
         )
     }
 
+    /// The label of an orbit system's star with `members` processes: its process's name, or
+    /// for a hub the name of the parent it stands for, which isotop could not read.
+    fn star_label(
+        &self,
+        lookup: &HashMap<Identity, &Process>,
+        id: Identity,
+        members: usize,
+    ) -> Option<String> {
+        if let Some(p) = lookup.get(&id) {
+            let name = match (p.name.as_str(), p.id.pid) {
+                ("systemd", 1) => "init",
+                ("systemd", _) => "systemd --user",
+                (name, _) => name,
+            };
+            let name = label_name(name);
+            return Some(if members > 1 {
+                format!("{name} ({members})")
+            } else {
+                name.into_owned()
+            });
+        }
+        let name = self.scene.hub_names.get(&id)?;
+        Some(format!("{} (unreadable) ({members})", label_name(name)))
+    }
+
     /// Text drawn over the scene, highest priority first: the inspector popup, the tour
     /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
     fn overlay(&self, frame: &mut Frame, layout: &Layout, radius: f32) -> (Vec<Label>, Vec<Popup>) {
@@ -724,7 +782,7 @@ impl App {
         let mut labels = Vec::new();
         let mut panels = Vec::new();
         if let Some(popup) = self.popup(frame, layout) {
-            board.claim(popup.column, popup.row, popup.width, popup.height());
+            board.reserve(popup.column, popup.row, popup.width, popup.height());
             panels.push(popup);
         }
         if let Some(tour) = &self.tour
@@ -735,8 +793,9 @@ impl App {
                 p.name.clone(),
                 describe(p),
                 format!(
-                    "CPU {:.1}% | RSS {} | pid {}",
+                    "CPU {:.1}% | {} {} | pid {}",
                     p.cpu,
+                    platform::MEMORY_LABEL,
                     bytes(p.memory),
                     p.id.pid
                 ),
@@ -753,7 +812,7 @@ impl App {
                     (panel.row + panel.height()) as f32 * h,
                 );
                 pointer(frame, [x, y], anchor);
-                board.claim(panel.column, panel.row, panel.width, panel.height());
+                board.reserve(panel.column, panel.row, panel.width, panel.height());
                 panels.push(panel);
             }
         }
@@ -764,7 +823,7 @@ impl App {
             && let Some(p) = lookup.get(&id)
         {
             let text = format!(" {} - {} ", p.name, describe(p));
-            let width = text.len() as u16;
+            let width = text.chars().count() as u16;
             let column = (hover.cell.0 + 2).min(layout.columns.saturating_sub(width));
             let row = hover.cell.1.saturating_sub(1);
             if board.claim(column, row, width, 1) {
@@ -795,20 +854,10 @@ impl App {
             }
         }
         for &(id, members, reach) in &self.scene.stars {
-            if let Some(p) = lookup.get(&id)
+            if let Some(text) = self.star_label(&lookup, id, members)
                 && let Some(at) = self.screen(frame, id)
             {
-                let name = match (p.name.as_str(), p.id.pid) {
-                    ("systemd", 1) => "init",
-                    ("systemd", _) => "systemd --user",
-                    (name, _) => name,
-                };
-                let text = if members > 1 {
-                    format!("{name} ({members})")
-                } else {
-                    name.into()
-                };
-                let width = text.len() as u16;
+                let width = text.chars().count() as u16;
                 // Small systems are labelled just below their outer edge, large ones at the star.
                 let star = self.scene.positions[&id];
                 let edge = frame
@@ -835,9 +884,9 @@ impl App {
         busy.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         for p in busy.into_iter().take(6) {
             if let Some(at) = self.screen(frame, p.id) {
-                let text = format!("{} {:.0}%", p.name, p.cpu);
+                let text = format!("{} {:.0}%", label_name(&p.name), p.cpu);
                 let (column, row) = layout.cell_of(at);
-                if board.claim(column + 2, row, text.len() as u16, 1) {
+                if board.claim(column + 2, row, text.chars().count() as u16, 1) {
                     labels.push(Label {
                         column: column + 2,
                         row,
@@ -1109,6 +1158,47 @@ fn place_panel(
         width,
         lines,
     })
+}
+
+/// The pressure readings for the status line, `n/a` for each one the platform cannot measure.
+fn pressure_text(snapshot: &Snapshot) -> String {
+    let [cpu, memory, io] = snapshot.pressure;
+    let reading = |name: &str, value: f32| {
+        if snapshot
+            .missing
+            .contains(&format!("{name} pressure").as_str())
+        {
+            "n/a".to_owned()
+        } else {
+            format!("{value:.0}%")
+        }
+    };
+    format!(
+        "pressure cpu {} mem {} io {}",
+        reading("cpu", cpu),
+        reading("memory", memory),
+        reading("io", io)
+    )
+}
+
+/// A short note beside the process count for processes of other users that could not be
+/// measured at all. It sits on the first status line, which is the one least likely to be
+/// clipped on a narrow terminal.
+fn unreadable_text(snapshot: &Snapshot) -> String {
+    match snapshot.unreadable {
+        0 => String::new(),
+        count => format!(" (+{count} unreadable: run with sudo)"),
+    }
+}
+
+/// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
+/// focused subtree or a platform that reads every process gets the legend it always had.
+fn hub_note(scene: &Scene) -> &'static str {
+    if scene.hub_names.is_empty() {
+        ""
+    } else {
+        " | hollow star = a parent isotop can't read (run with sudo)"
+    }
 }
 
 /// Leader line from a callout to its target, with an arrowhead and a ring around the target.
@@ -1389,6 +1479,167 @@ mod tests {
     use super::*;
 
     #[test]
+    fn labels_on_one_row_keep_a_free_column_between_them() {
+        let mut board = Board::default();
+        assert!(board.claim(10, 4, 5, 1));
+        assert!(!board.claim(15, 4, 5, 1), "touching on the right");
+        assert!(!board.claim(5, 4, 5, 1), "touching on the left");
+        assert!(board.claim(16, 4, 5, 1), "one free column is enough");
+        assert!(board.claim(4, 4, 5, 1), "one free column on the left");
+        assert!(board.claim(10, 5, 5, 1), "other rows are not neighbours");
+        assert!(!board.claim(12, 4, 2, 1), "overlap is still refused");
+    }
+
+    #[test]
+    fn labels_keep_a_free_column_from_panels_but_panels_may_touch() {
+        let mut board = Board::default();
+        assert!(board.reserve(20, 2, 10, 6));
+        assert!(board.reserve(30, 2, 5, 6), "panels keep their old rule");
+        assert!(!board.reserve(32, 2, 5, 6), "panels still never overlap");
+        assert!(!board.claim(35, 4, 6, 1), "label against a panel's edge");
+        assert!(!board.claim(14, 4, 6, 1), "label ending at a panel's edge");
+        assert!(board.claim(36, 4, 6, 1));
+        assert!(board.claim(13, 4, 6, 1));
+    }
+
+    #[test]
+    fn long_process_names_are_cut_in_labels_but_not_in_the_hover_tag() {
+        let mut snapshot = model::demo(1.0, 64);
+        for process in &mut snapshot.processes {
+            process.name = "com.google.BatteriesAvocadoWidgetExtension".into();
+            process.cpu = 30.0;
+        }
+        let hovered = snapshot.processes[0].id;
+        let mut app = App::new(View::Orbit, snapshot);
+        let mut frame = app.render(1600, 900, 512);
+        frame.rasterize();
+        let layout = Layout {
+            columns: 200,
+            rows: 56,
+            width: 1600,
+            height: 900,
+            cell: None,
+        };
+        let at = app
+            .screen(&frame, hovered)
+            .expect("the process is on screen");
+        app.hover = Some(Pointer {
+            frame: at,
+            cell: layout.cell_of(at),
+        });
+        let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+        let busy: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Quiet).collect();
+        assert!(!busy.is_empty());
+        for label in &busy {
+            assert!(label.text.starts_with("com.google.Ba.. "), "{}", label.text);
+            assert!(label.text.chars().count() <= 15 + 5, "{}", label.text);
+        }
+        let tags: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Tag).collect();
+        assert_eq!(tags.len(), 1, "the hovered process has a tag");
+        assert!(
+            tags[0].text.contains("WidgetExtension"),
+            "the tag keeps the full name"
+        );
+        for label in labels.iter().filter(|l| l.tone == Tone::Bright) {
+            assert!(!label.text.contains("WidgetExtension"), "{}", label.text);
+        }
+    }
+
+    #[test]
+    fn a_hub_is_labelled_as_unreadable_and_explained_only_while_one_is_drawn() {
+        let mut snapshot = model::demo(1.0, 20);
+        snapshot.links.clear();
+        for (index, process) in snapshot.processes.iter_mut().enumerate() {
+            process.id = Identity {
+                pid: 100 + index as u32,
+                start: 1,
+            };
+            process.parent = 1;
+        }
+        let plain = snapshot.clone();
+        snapshot.shadows = vec![platform::Shadow {
+            pid: 1,
+            parent: 0,
+            name: "launchd".into(),
+        }];
+        let layout = Layout {
+            columns: 200,
+            rows: 56,
+            width: 1600,
+            height: 900,
+            cell: None,
+        };
+        for view in [View::Orbit, View::Flow] {
+            let mut app = App::new(view, snapshot.clone());
+            let mut frame = app.render(1600, 900, 512);
+            frame.rasterize();
+            let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+            let stars: Vec<&str> = labels
+                .iter()
+                .filter(|label| label.tone == Tone::Bright)
+                .map(|label| label.text.as_str())
+                .collect();
+            assert_eq!(stars, ["launchd (unreadable) (20)"], "{view:?}");
+            let legend = &app.text(0.0, "test", 20, 512)[2];
+            assert!(
+                legend.ends_with(" | hollow star = a parent isotop can't read (run with sudo)"),
+                "{legend}"
+            );
+            app.focus = Some(snapshot.processes[0].id);
+            app.render(1600, 900, 512);
+            let legend = &app.text(0.0, "test", 20, 512)[2];
+            assert!(!legend.contains("hollow star"), "focused: {legend}");
+            let mut app = App::new(view, plain.clone());
+            app.render(1600, 900, 512);
+            let legend = &app.text(0.0, "test", 20, 512)[2];
+            assert!(!legend.contains("hollow star"), "{legend}");
+        }
+    }
+
+    #[test]
+    fn the_tour_passes_over_hubs_and_opens_on_a_process_with_a_callout() {
+        let mut snapshot = model::demo(1.0, 20);
+        snapshot.links.clear();
+        for (index, process) in snapshot.processes.iter_mut().enumerate() {
+            process.id = Identity {
+                pid: 100 + index as u32,
+                start: 1,
+            };
+            process.parent = 1;
+        }
+        snapshot.shadows = vec![platform::Shadow {
+            pid: 1,
+            parent: 0,
+            name: "launchd".into(),
+        }];
+        let layout = Layout {
+            columns: 200,
+            rows: 56,
+            width: 1600,
+            height: 900,
+            cell: None,
+        };
+        for view in [View::Orbit, View::Flow] {
+            let mut app = App::new(view, snapshot.clone());
+            app.render(1600, 900, 512);
+            assert!(!app.scene.hub_names.is_empty(), "{view:?} draws the hub");
+            let targets = app.tour_targets();
+            assert!(!targets.is_empty());
+            for target in &targets {
+                assert!(
+                    snapshot.processes.iter().any(|p| p.id == *target),
+                    "{view:?} visits {target:?}"
+                );
+            }
+            app.visit(0);
+            let mut frame = app.render(1600, 900, 512);
+            frame.rasterize();
+            let (_, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+            assert_eq!(panels.len(), 1, "{view:?} shows the first stop's callout");
+        }
+    }
+
+    #[test]
     fn tour_key_toggles_a_tour_that_runs_even_with_the_idle_tour_off() {
         let mut app = App::new(View::Orbit, model::demo(1.0, 64));
         app.render(320, 180, 512);
@@ -1407,6 +1658,33 @@ mod tests {
         press(&mut app, 'g');
         press(&mut app, '+');
         assert!(app.tour.is_none(), "any other key ends it");
+    }
+
+    #[test]
+    fn globe_tour_turns_the_earth_so_its_target_faces_the_viewer() {
+        // The world turns once in five minutes, so these times put home on every side of it.
+        for time in [0.0, 75.0, 150.0, 225.0] {
+            let mut app = App::new(View::Globe, model::demo(1.0, 64));
+            app.animation = time;
+            app.render(640, 360, 512);
+            app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+            let target = app
+                .tour
+                .as_ref()
+                .expect("the globe has processes to visit")
+                .target;
+            app.update_tour(None);
+            app.camera = app.goal.clone();
+            let frame = app.render(640, 360, 512);
+            let at = frame
+                .locate(&app.camera, app.scene.positions[&target])
+                .expect("the target is on screen");
+            assert_eq!(
+                frame.pick_near(at[0], at[1], 3.0),
+                Some(target),
+                "the target is in front of the earth at {time} s"
+            );
+        }
     }
 
     #[test]
@@ -1443,6 +1721,41 @@ mod tests {
     }
 
     #[test]
+    fn memory_is_labelled_with_what_the_platform_measures() {
+        let snapshot = model::demo(1.0, 16);
+        let selected = snapshot.processes[0].id;
+        let mut app = App::new(View::City, snapshot);
+        let label = platform::MEMORY_LABEL;
+        assert!(app.text(0.0, "test", 20, 512)[2].contains(&format!("footprint = {label} |")));
+        app.selected = Some(selected);
+        let text = app.text(0.0, "test", 20, 512);
+        assert!(text[1].contains(&format!("%  {label} ")), "{}", text[1]);
+        let frame = app.render(320, 180, 512);
+        let layout = Layout {
+            columns: 120,
+            rows: 40,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let popup = app
+            .popup(&frame, &layout)
+            .expect("a popup for the selection");
+        assert!(
+            popup
+                .lines
+                .iter()
+                .any(|line| line.contains(&format!("| {label} "))),
+            "{:?}",
+            popup.lines
+        );
+        // macOS reports the physical footprint, which is not a resident set size.
+        if cfg!(target_os = "macos") {
+            assert!(!text[1].contains("RSS") && popup.lines.iter().all(|l| !l.contains("RSS")));
+        }
+    }
+
+    #[test]
     fn h_hides_the_panel_except_while_typing_a_search() {
         let mut app = App::new(View::City, model::demo(1.0, 16));
         let press = |app: &mut App, c: char| app.key(KeyCode::Char(c), KeyModifiers::NONE, 10.0);
@@ -1471,5 +1784,187 @@ mod tests {
             app.framed && app.view == View::Globe,
             "switching view frames it again"
         );
+    }
+
+    /// The macOS gaps, as the collector reports them.
+    const MACOS: [&str; 8] = [
+        "cpu pressure",
+        "io pressure",
+        "last cpu",
+        "cpu clock",
+        "run queue",
+        "cgroups",
+        "socket traffic",
+        "file locks",
+    ];
+
+    /// The status text of `view` over the demo workload with the given gaps, after one frame so
+    /// views that learn the gaps while drawing have seen them.
+    fn lines_with(view: View, missing: &[&'static str], unreadable: usize) -> Vec<String> {
+        let mut snapshot = model::demo(1.0, 16);
+        snapshot.missing = missing.to_vec();
+        snapshot.unreadable = unreadable;
+        if missing.contains(&"last cpu") {
+            // A Mac without the rusage counters that place marbles by cluster: no share of
+            // performance-core time and no waiting threads.
+            for process in &mut snapshot.processes {
+                process.performance_share = None;
+                process.waiting = None;
+            }
+        }
+        if missing.contains(&"file locks") {
+            // No lock table: every process's locks are unreadable and none waits on one.
+            for process in &mut snapshot.processes {
+                process.locks_held = model::Measured::Unreadable;
+                process.blocked_on = None;
+            }
+            snapshot.unattributed_locks = 0;
+        }
+        let mut app = App::new(view, snapshot);
+        app.render(320, 180, 512);
+        app.text(0.0, "test", 20, 512)
+    }
+
+    #[test]
+    fn status_line_shows_n_a_for_each_missing_pressure() {
+        let [cpu, memory, io] = model::demo(1.0, 16)
+            .pressure
+            .map(|value| format!("{value:.0}%"));
+        let full = lines_with(View::City, &[], 0);
+        assert!(
+            full[4].contains(&format!("pressure cpu {cpu} mem {memory} io {io}")),
+            "{}",
+            full[4]
+        );
+        let mac = lines_with(View::City, &MACOS, 0);
+        assert!(
+            mac[4].contains(&format!("pressure cpu n/a mem {memory} io n/a")),
+            "{}",
+            mac[4]
+        );
+        let none = lines_with(
+            View::City,
+            &["cpu pressure", "memory pressure", "io pressure"],
+            0,
+        );
+        assert!(
+            none[4].contains("pressure cpu n/a mem n/a io n/a"),
+            "{}",
+            none[4]
+        );
+    }
+
+    #[test]
+    fn status_line_counts_unreadable_processes_only_when_there_are_some() {
+        let none = lines_with(View::City, &[], 0);
+        assert!(!none[0].contains("unreadable") && !none[4].contains("unreadable"));
+        let one = lines_with(View::City, &[], 1);
+        assert!(
+            one[0].contains(" processes (+1 unreadable: run with sudo) | "),
+            "{}",
+            one[0]
+        );
+        let many = lines_with(View::City, &MACOS, 37);
+        assert!(
+            many[0].contains(" processes (+37 unreadable: run with sudo) | "),
+            "{}",
+            many[0]
+        );
+        assert!(!many[4].contains("unreadable"), "{}", many[4]);
+    }
+
+    #[test]
+    fn unreadable_notice_survives_an_80_column_terminal() {
+        let first = &lines_with(View::City, &MACOS, 212)[0];
+        let visible: String = first.chars().take(80).collect();
+        assert!(
+            visible.contains("(+212 unreadable: run with sudo)"),
+            "{visible}"
+        );
+    }
+
+    #[test]
+    fn legends_name_what_the_platform_cannot_measure() {
+        let cores = lines_with(View::Cores, &MACOS, 0)[2].clone();
+        assert!(
+            cores.contains("lanes = load; macOS reports no last CPU per process, so no marbles"),
+            "{cores}"
+        );
+        assert!(cores.contains("no clock readings"), "{cores}");
+        assert!(!cores.contains("marble ="), "{cores}");
+        let cells = lines_with(View::Cells, &MACOS, 0)[2].clone();
+        assert!(
+            cells.contains(
+                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
+            ),
+            "{cells}"
+        );
+        let globe = lines_with(View::Globe, &MACOS, 0)[2].clone();
+        assert!(
+            globe.contains("no per-connection rates or RTT on macOS"),
+            "{globe}"
+        );
+        let coop = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        assert!(
+            coop.contains("no last CPU: running chickens share one trough"),
+            "{coop}"
+        );
+        assert!(coop.contains("no CPU pressure"), "{coop}");
+    }
+
+    #[test]
+    fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
+        let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        assert!(mac.contains("flock = app or user group"), "{mac}");
+        assert!(
+            mac.contains("dust = reads | eyes = memory pressure"),
+            "{mac}"
+        );
+        assert!(mac.contains("no cgroups: no OOM foxes"), "{mac}");
+        assert!(
+            !mac.contains("flock = cgroup") && !mac.contains("fox ="),
+            "{mac}"
+        );
+        let linux = lines_with(View::Coop, &[], 0)[2].clone();
+        assert!(
+            linux.contains("flock = cgroup | ") && linux.contains("fox = OOM kill, eyes = "),
+            "{linux}"
+        );
+        assert!(!linux.contains("no cgroups"), "{linux}");
+    }
+
+    #[test]
+    fn coop_legend_on_macos_counts_open_files_but_has_no_brooding() {
+        let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        assert!(
+            mac.contains("eggs = open files (log2), cracked = deleted but open | chicks = threads"),
+            "{mac}"
+        );
+        assert!(
+            mac.contains("no file lock table: no brooding or queueing"),
+            "{mac}"
+        );
+        assert!(
+            !mac.contains("brooding =") && !mac.contains("file locks unreadable"),
+            "{mac}"
+        );
+        assert!(!mac.contains("without a process (OFD)"), "{mac}");
+        let linux = lines_with(View::Coop, &[], 0)[2].clone();
+        assert!(
+            linux.contains("brooding = holds a file lock, queue at a nest = blocked on one"),
+            "{linux}"
+        );
+        assert!(!linux.contains("no file lock table"), "{linux}");
+    }
+
+    #[test]
+    fn legends_keep_their_full_text_when_nothing_is_missing() {
+        let text = |view| lines_with(view, &[], 0)[2].clone();
+        assert!(
+            text(View::Cores).contains("chevrons = clock | red queue = waiting tasks | marble =")
+        );
+        assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
+        assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
+        assert!(!text(View::Coop).contains("share one trough"));
     }
 }
