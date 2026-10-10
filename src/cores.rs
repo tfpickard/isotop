@@ -2,6 +2,10 @@
 //! cores outside. Lanes glow with how busy their CPU is and chevrons run at its clock speed;
 //! waiting tasks queue at the start line. Running processes are marbles that travel one lap per
 //! 10 s of CPU time and hop across lanes when the scheduler moves them.
+//!
+//! Where the platform reports no last CPU but does split each process's CPU time between the
+//! performance and efficiency clusters (macOS), a marble rides between the two groups of lanes
+//! by that share instead, trailed by beads for its threads waiting to run.
 
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -17,6 +21,8 @@ const GROUP_GAP: f32 = 1.2;
 /// Rise per unit of radius, banking the track like a velodrome so outer lanes stand higher.
 const BANK: f32 = 0.16;
 const HOP_SECONDS: f32 = 0.6;
+/// Time constant of a marble's drift towards the radius of its performance share.
+const DRIFT_SECONDS: f32 = 0.8;
 const SEGMENTS: usize = 120;
 const PERFORMANCE: Color = [236, 178, 92];
 const EFFICIENCY: Color = [72, 183, 199];
@@ -37,6 +43,8 @@ struct Marble {
     /// Lane the marble left and when, while it hops.
     hop: Option<(f32, f32)>,
     hops: u32,
+    /// Distance from the centre when placed by cluster rather than by lane.
+    radius: f32,
 }
 
 impl Track {
@@ -73,6 +81,18 @@ impl Track {
         }
         let outer = radius - LANE * 0.5;
         let lane_radius = |core: u32| lanes.get(&core).map_or(INNER, |&(_, r)| r);
+        // The middle of the performance lanes and of the efficiency lanes, when marbles ride
+        // between them by their share of performance-core time.
+        let bands = by_cluster(snapshot).then(|| {
+            [CoreKind::Performance, CoreKind::Efficiency].map(|kind| {
+                let radii: Vec<f32> = cpus
+                    .iter()
+                    .filter(|cpu| cpu.kind == kind)
+                    .map(|cpu| lane_radius(cpu.id))
+                    .collect();
+                radii.iter().sum::<f32>() / radii.len().max(1) as f32
+            })
+        });
         let frame = &mut *stage.frame;
         let camera = stage.camera;
         let ring = |angle: f32, r: f32, z: f32| -> Point {
@@ -223,11 +243,88 @@ impl Track {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
+        let racing = placed || bands.is_some();
         self.marbles
-            .retain(|id, _| placed && alive.get(id).is_some_and(|&i| active(processes[i])));
+            .retain(|id, _| racing && alive.get(id).is_some_and(|&i| active(processes[i])));
         let mut shown = 0;
         for (index, process) in processes.iter().enumerate() {
-            if !placed || !active(process) {
+            if !racing || !active(process) {
+                continue;
+            }
+            if let Some([performance, efficiency]) = bands {
+                let target = process
+                    .performance_share
+                    .map(|share| efficiency + (performance - efficiency) * share);
+                let marble = self.marbles.entry(process.id).or_insert_with(|| Marble {
+                    angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
+                    core: process.core,
+                    hop: None,
+                    hops: 0,
+                    radius: target.unwrap_or((performance + efficiency) * 0.5),
+                });
+                marble.angle =
+                    (marble.angle + TAU / LAP * process.cpu / 100.0 * dt).rem_euclid(TAU);
+                // A process with no CPU time in the last interval has no share, which says
+                // nothing about where it runs, so its marble stays where it was (between the
+                // bands if it was never measured).
+                if let Some(target) = target {
+                    marble.radius += (target - marble.radius) * (1.0 - (-dt / DRIFT_SECONDS).exp());
+                }
+                let r = marble.radius;
+                let size = (0.2 + 0.3 * mass_radius(process.memory as f32)).min(LANE * 0.4);
+                let position = ring(marble.angle, r, size);
+                let color = kind_color(process);
+                let trail = (0.05 + 0.5 * bounded(process.cpu, 60.0)) / r * 6.0;
+                let mut last = position;
+                for k in 1..=8 {
+                    let next = ring(marble.angle - trail * k as f32 / 8.0, r, size);
+                    frame.beam(camera, last, next, color, 0.5 * (1.0 - k as f32 / 9.0));
+                    last = next;
+                }
+                if process.cpu > 20.0 {
+                    frame.glow(
+                        camera,
+                        position,
+                        size * camera.zoom * (2.0 + 2.0 * bounded(process.cpu, 100.0)),
+                        WARM,
+                        0.25 + 0.5 * bounded(process.cpu, 100.0),
+                    );
+                }
+                let waiting = process.waiting.unwrap_or(0.0).min(6.0);
+                if waiting > 0.05 {
+                    frame.glow(
+                        camera,
+                        ring(marble.angle - (size + 0.6) / r, r, size),
+                        (0.5 + 0.4 * waiting) * camera.zoom,
+                        QUEUE,
+                        0.12 + 0.3 * bounded(waiting, 1.0),
+                    );
+                }
+                for j in 0..waiting.round() as usize {
+                    let angle = marble.angle - (size + 0.35 + j as f32 * 0.4) / r;
+                    frame.sphere(camera, ring(angle, r, 0.12), 0.12, QUEUE, NONE, false);
+                }
+                frame.sphere(
+                    camera,
+                    position,
+                    size,
+                    color,
+                    index as u32,
+                    stage.selected == Some(process.id),
+                );
+                stage.positions.insert(process.id, position);
+                let mut note = match process.performance_share {
+                    Some(share) => format!(
+                        "ran {:.0}% of its CPU time on performance cores",
+                        share * 100.0
+                    ),
+                    None => "used no CPU time in the last sample".to_owned(),
+                };
+                if let Some(waiting) = process.waiting {
+                    note.push_str(&format!(" | {waiting:.1} threads waiting on average"));
+                }
+                stage.notes.insert(process.id, vec![note]);
+                shown += 1;
                 continue;
             }
             let core = if lanes.contains_key(&process.core) {
@@ -240,6 +337,7 @@ impl Track {
                 core,
                 hop: None,
                 hops: 0,
+                radius: lane_radius(core),
             });
             marble.angle = (marble.angle + TAU / LAP * process.cpu / 100.0 * dt).rem_euclid(TAU);
             if marble.core != core {
@@ -327,26 +425,47 @@ impl Track {
     }
 }
 
-/// The status legend, saying what the snapshot's platform leaves out.
+/// The status legend, saying what the snapshot's platform leaves out or measures per cluster.
 pub fn legend(snapshot: &Snapshot) -> String {
     let lacks = |name| snapshot.missing.contains(&name);
+    let clustered = by_cluster(snapshot);
     let mut line = " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned();
-    line.push_str(if lacks("cpu clock") {
+    line.push_str(if snapshot.per_cluster.contains(&"cpu clock") {
+        " | chevrons = cluster clock (cycles per CPU second)"
+    } else if lacks("cpu clock") {
         " | no clock readings"
     } else {
         " | chevrons = clock"
     });
-    line.push_str(if lacks("run queue") {
-        " | no run queue readings"
-    } else {
+    line.push_str(if !lacks("run queue") {
         " | red queue = waiting tasks"
-    });
-    line.push_str(if lacks("last cpu") {
-        " | lanes = load; macOS reports no last CPU per process, so no marbles"
+    } else if clustered && snapshot.processes.iter().any(|p| p.waiting.is_some()) {
+        " | red beads = threads waiting to run"
     } else {
+        " | no run queue readings"
+    });
+    line.push_str(if !lacks("last cpu") {
         " | marble = running process, one lap per 10 s of CPU, hops = migrations"
+    } else if clustered {
+        " | marble = running process, one lap per 10 s of CPU; nearer the centre = more of it on \
+         performance cores (macOS reports the cluster, not the core)"
+    } else {
+        " | lanes = load; macOS reports no last CPU per process, so no marbles"
     });
     line
+}
+
+/// Whether marbles ride by cluster: the platform reports no last CPU per process but does
+/// split CPU time between performance and efficiency cores, and the track has lanes of both.
+fn by_cluster(snapshot: &Snapshot) -> bool {
+    snapshot.missing.contains(&"last cpu")
+        && snapshot
+            .processes
+            .iter()
+            .any(|process| process.performance_share.is_some())
+        && [CoreKind::Performance, CoreKind::Efficiency]
+            .iter()
+            .all(|kind| snapshot.cpus.iter().any(|cpu| cpu.kind == *kind))
 }
 
 /// Processes on the track; the rest only count towards their lane's idle total.
@@ -360,44 +479,197 @@ mod tests {
     use crate::model::demo;
     use crate::render::{Camera, Scene, View};
 
-    /// How many processes the Cores view draws as marbles over the demo workload.
-    fn marbles(missing: &[&'static str]) -> usize {
-        let mut snapshot = demo(12.0, 64);
-        snapshot.missing = missing.to_vec();
-        let mut scene = Scene::new();
+    fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
         scene.render(
-            &snapshot,
+            snapshot,
             View::Cores,
             &Camera::default(),
             320,
             180,
             None,
-            12.0,
+            time,
             512,
             None,
         );
+    }
+
+    /// How many processes the Cores view draws as marbles over the demo workload.
+    fn marbles(snapshot: &Snapshot) -> usize {
+        let mut scene = Scene::new();
+        render(&mut scene, snapshot, 12.0);
         scene.positions.len()
     }
 
+    fn demo_missing(missing: &[&'static str]) -> Snapshot {
+        let mut snapshot = demo(12.0, 64);
+        snapshot.missing = missing.to_vec();
+        snapshot
+    }
+
+    /// The demo as macOS reports it: no last CPU, but each process's share of performance-core
+    /// time, and the clock per cluster.
+    fn by_cluster() -> Snapshot {
+        let mut snapshot = demo_missing(&["last cpu", "run queue"]);
+        snapshot.per_cluster = vec!["cpu clock"];
+        for cpu in &mut snapshot.cpus {
+            cpu.wait = 0.0;
+        }
+        snapshot
+    }
+
+    /// Distance of a marble from the centre of the track.
+    fn radius(scene: &Scene, id: Identity) -> f32 {
+        let [x, y, _] = scene.positions[&id];
+        x.hypot(y)
+    }
+
+    /// The first three processes the track races, given shares of 1, 0 and 0.5.
+    fn three_shares(snapshot: &mut Snapshot) -> [Identity; 3] {
+        let mut racing = snapshot.processes.iter_mut().filter(|p| active(p));
+        [1.0, 0.0, 0.5].map(|share| {
+            let process = racing.next().expect("the demo races three processes");
+            process.performance_share = Some(share);
+            process.id
+        })
+    }
+
     #[test]
-    fn marbles_are_not_drawn_without_a_last_cpu_per_process() {
-        assert!(marbles(&[]) > 0, "the demo has running processes");
-        assert_eq!(marbles(&["last cpu"]), 0);
+    fn marbles_are_not_drawn_without_a_last_cpu_or_a_share_per_cluster() {
         assert!(
-            marbles(&["cpu clock", "run queue"]) > 0,
+            marbles(&demo_missing(&[])) > 0,
+            "the demo has running processes"
+        );
+        let mut snapshot = demo_missing(&["last cpu"]);
+        for process in &mut snapshot.processes {
+            process.performance_share = None;
+        }
+        assert_eq!(marbles(&snapshot), 0);
+        assert!(
+            marbles(&demo_missing(&["cpu clock", "run queue"])) > 0,
             "other gaps keep the marbles"
         );
+    }
+
+    #[test]
+    fn cluster_marbles_ride_the_band_of_the_cores_they_ran_on() {
+        let mut snapshot = by_cluster();
+        let [performance, efficiency, mixed] = three_shares(&mut snapshot);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, 12.0);
+        let racing = snapshot.processes.iter().filter(|p| active(p)).count();
+        assert_eq!(
+            scene.positions.len(),
+            racing,
+            "every running process is a marble"
+        );
+        // The demo has eight performance lanes inside eight efficiency lanes.
+        let inner_edge = INNER - LANE * 0.5;
+        let performance_edge = INNER + 7.0 * LANE + LANE * 0.5;
+        let efficiency_edge = performance_edge + GROUP_GAP;
+        let outer_edge = efficiency_edge + 8.0 * LANE;
+        let (p, e, m) = (
+            radius(&scene, performance),
+            radius(&scene, efficiency),
+            radius(&scene, mixed),
+        );
+        assert!(inner_edge < p && p < performance_edge, "fully on P at {p}");
+        assert!(efficiency_edge < e && e < outer_edge, "fully on E at {e}");
+        assert!(
+            performance_edge < m && m < efficiency_edge,
+            "half on P at {m}"
+        );
+        assert!(
+            (p - (INNER + 3.5 * LANE)).abs() < 1e-3,
+            "the middle of the P lanes"
+        );
+        let note = &scene.notes[&performance][0];
+        assert!(
+            note.starts_with("ran 100% of its CPU time on performance cores | ")
+                && note.ends_with(" threads waiting on average"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn cluster_marbles_drift_to_a_new_share_and_stay_put_without_one() {
+        let mut snapshot = by_cluster();
+        let [moving, idle, _] = three_shares(&mut snapshot);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, 12.0);
+        let (start, kept) = (radius(&scene, moving), radius(&scene, idle));
+        for process in &mut snapshot.processes {
+            if process.id == moving {
+                process.performance_share = Some(0.0);
+            } else if process.id == idle {
+                process.performance_share = None;
+            }
+        }
+        render(&mut scene, &snapshot, 12.3);
+        let after = radius(&scene, moving);
+        render(&mut scene, &snapshot, 12.6);
+        let later = radius(&scene, moving);
+        assert!(start < after && after < later, "{start} {after} {later}");
+        let target = INNER + 8.0 * LANE + GROUP_GAP + 3.5 * LANE;
+        assert!(later < target - 0.5, "eases rather than hops: {later}");
+        assert!((radius(&scene, idle) - kept).abs() < 1e-3);
+        assert_eq!(
+            scene.notes[&idle][0].split(" | ").next(),
+            Some("used no CPU time in the last sample")
+        );
+    }
+
+    #[test]
+    fn no_marbles_ride_by_cluster_when_the_core_kinds_are_unknown() {
+        let mut snapshot = by_cluster();
+        for cpu in &mut snapshot.cpus {
+            cpu.kind = CoreKind::Unknown;
+        }
+        assert_eq!(marbles(&snapshot), 0);
+        let mut snapshot = by_cluster();
+        snapshot
+            .cpus
+            .retain(|cpu| cpu.kind == CoreKind::Performance);
+        assert_eq!(marbles(&snapshot), 0, "one kind alone gives no bands");
     }
 
     #[test]
     fn legend_names_each_missing_source() {
         let mut snapshot = demo(1.0, 8);
         let full = legend(&snapshot);
-        assert!(full.contains("chevrons = clock | red queue = waiting tasks | marble ="));
+        assert_eq!(
+            full,
+            " Lane = CPU (gold performance, teal efficiency) | brightness = busy | chevrons = \
+             clock | red queue = waiting tasks | marble = running process, one lap per 10 s of \
+             CPU, hops = migrations"
+        );
         snapshot.missing = vec!["last cpu"];
+        for process in &mut snapshot.processes {
+            process.performance_share = None;
+        }
         assert!(legend(&snapshot).contains("lanes = load; macOS reports no last CPU per process"));
         snapshot.missing = vec!["cpu clock"];
         let clockless = legend(&snapshot);
         assert!(clockless.contains("no clock readings") && !clockless.contains("chevrons"));
+    }
+
+    #[test]
+    fn the_legend_explains_cluster_marbles_beads_and_clocks() {
+        let snapshot = by_cluster();
+        assert_eq!(
+            legend(&snapshot),
+            " Lane = CPU (gold performance, teal efficiency) | brightness = busy | chevrons = \
+             cluster clock (cycles per CPU second) | red beads = threads waiting to run | marble \
+             = running process, one lap per 10 s of CPU; nearer the centre = more of it on \
+             performance cores (macOS reports the cluster, not the core)"
+        );
+        let mut unclocked = by_cluster();
+        unclocked.per_cluster.clear();
+        unclocked.missing.push("cpu clock");
+        assert!(legend(&unclocked).contains("| no clock readings | red beads"));
+        let mut unmeasured = by_cluster();
+        for process in &mut unmeasured.processes {
+            process.waiting = None;
+        }
+        assert!(legend(&unmeasured).contains("| no run queue readings | marble = running"));
     }
 }

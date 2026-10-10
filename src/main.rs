@@ -1605,6 +1605,14 @@ mod tests {
         let mut snapshot = model::demo(1.0, 16);
         snapshot.missing = missing.to_vec();
         snapshot.unreadable = unreadable;
+        if missing.contains(&"last cpu") {
+            // A Mac without the rusage counters that place marbles by cluster: no share of
+            // performance-core time and no waiting threads.
+            for process in &mut snapshot.processes {
+                process.performance_share = None;
+                process.waiting = None;
+            }
+        }
         let mut app = App::new(view, snapshot);
         app.render(320, 180, 512);
         app.text(0.0, "test", 20, 512)
