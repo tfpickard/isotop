@@ -1,7 +1,7 @@
 # isotop: agent guide
 
-isotop is a Linux process visualizer for the terminal, written in Rust (edition 2024). It
-samples `/proc`, builds a 3D scene, rasterizes it on the GPU (wgpu) or the CPU, and shows the
+isotop is a process visualizer for the terminal on Linux and macOS, written in Rust (edition
+2024). It samples the operating system (`/proc` on Linux, libproc and Mach on macOS), builds a 3D scene, rasterizes it on the GPU (wgpu) or the CPU, and shows the
 frames through the Kitty graphics protocol. The primary terminal is Ghostty; Kitty also works.
 The README covers usage. This file covers how to work on the code.
 
@@ -32,7 +32,6 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
-| `platform/macos/` | Compiling stub: live mode returns an error, background sources are empty |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
 | `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, feeders, eggs, chicks, dust and foxes, stepped at a fixed 20 Hz |
@@ -40,7 +39,6 @@ The README covers usage. This file covers how to work on the code.
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
-| `platform/mod.rs` | The contract between the program and the OS (`Sampler`, `network`, `account`, `Gpu`, `journal`), with `linux` and `macos` providing it |
 | `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry), the socket scan, and the permanent gaps it reports through `missing` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
 | `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, socket pairing |
