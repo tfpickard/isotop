@@ -1489,11 +1489,7 @@ mod tests {
         let busy: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Quiet).collect();
         assert!(!busy.is_empty());
         for label in &busy {
-            assert!(
-                label.text.starts_with("com.google.Bat\u{2026} "),
-                "{}",
-                label.text
-            );
+            assert!(label.text.starts_with("com.google.Ba.. "), "{}", label.text);
             assert!(label.text.chars().count() <= 15 + 5, "{}", label.text);
         }
         let tags: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Tag).collect();

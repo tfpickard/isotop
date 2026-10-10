@@ -786,16 +786,16 @@ pub fn without_apple_prefix(name: &str) -> &str {
 }
 
 /// A process name as a scene label: the Apple prefix dropped, then anything still longer than
-/// `LABEL_NAME_CELLS` keeps its first 14 characters and ends in an ellipsis, which takes one cell,
-/// so a label is never wider than 15 cells. Hover tags, the inspector and search keep the full
-/// name.
+/// `LABEL_NAME_CELLS` keeps its first 13 characters and ends in `..`, so a label is never wider
+/// than 15 cells. The ellipsis is ASCII because `terminal::clean_text` turns every other character
+/// into `?`. Hover tags, the inspector and search keep the full name.
 pub fn label_name(name: &str) -> Cow<'_, str> {
     let name = without_apple_prefix(name);
     if name.chars().count() <= LABEL_NAME_CELLS {
         return Cow::Borrowed(name);
     }
-    let mut cut: String = name.chars().take(LABEL_NAME_CELLS - 1).collect();
-    cut.push('\u{2026}');
+    let mut cut: String = name.chars().take(LABEL_NAME_CELLS - 2).collect();
+    cut.push_str("..");
     Cow::Owned(cut)
 }
 
@@ -3591,11 +3591,11 @@ mod tests {
     }
 
     #[test]
-    fn long_names_are_cut_to_fifteen_cells_with_an_ellipsis() {
+    fn long_names_are_cut_to_fifteen_cells_with_an_ascii_ellipsis() {
         let cut = label_name("BatteriesAvocadoWidgetExtension");
-        assert_eq!(cut, "BatteriesAvoca\u{2026}");
+        assert_eq!(cut, "BatteriesAvoc..");
         assert_eq!(cut.chars().count(), 15);
-        assert_eq!(label_name("fifteen_chars_ok"), "fifteen_chars_\u{2026}");
+        assert_eq!(label_name("fifteen_chars_ok"), "fifteen_chars..");
         assert_eq!(label_name("exactly15chars!"), "exactly15chars!");
         assert_eq!(label_name("kworker/u16:2-e"), "kworker/u16:2-e");
         assert_eq!(label_name("systemd"), "systemd");
@@ -3607,7 +3607,7 @@ mod tests {
         let name = "\u{00e9}".repeat(16);
         let cut = label_name(&name);
         assert_eq!(cut.chars().count(), 15);
-        assert!(cut.ends_with('\u{2026}'));
+        assert!(cut.ends_with(".."));
         assert_eq!(label_name(&"\u{00e9}".repeat(15)).chars().count(), 15);
     }
 
@@ -3616,11 +3616,11 @@ mod tests {
         assert_eq!(label_name("com.apple.dock"), "dock");
         assert_eq!(
             label_name("com.apple.accessibility.mediaac"),
-            "accessibility.\u{2026}"
+            "accessibility.."
         );
         assert_eq!(
             label_name("com.apple.dock.external.extra.a"),
-            "dock.external.\u{2026}"
+            "dock.external.."
         );
         assert_eq!(label_name("com.apple."), "com.apple.");
         assert_eq!(
@@ -3636,9 +3636,25 @@ mod tests {
     #[test]
     fn other_vendors_reverse_dns_names_stay_whole_up_to_the_cut() {
         assert_eq!(label_name("org.mozilla.fx"), "org.mozilla.fx");
-        assert_eq!(
-            label_name("com.google.Chrome.helper"),
-            "com.google.Chr\u{2026}"
-        );
+        assert_eq!(label_name("com.google.Chrome.helper"), "com.google.Ch..");
+    }
+
+    #[test]
+    fn cut_labels_survive_terminal_text_cleaning_unchanged() {
+        for name in [
+            "BatteriesAvocadoWidgetExtension",
+            "com.apple.accessibility.mediaac",
+            "com.google.Chrome.helper",
+            "systemd",
+        ] {
+            let label = label_name(name);
+            let shown = crate::terminal::clean_text(&label, 64);
+            assert_eq!(
+                shown, label,
+                "{name} lost characters on the way to the terminal"
+            );
+            assert!(!shown.contains('?'), "{shown}");
+            assert!(shown.chars().count() <= LABEL_NAME_CELLS);
+        }
     }
 }

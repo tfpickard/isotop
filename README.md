@@ -399,8 +399,8 @@ processes leave a brief flash and an expanding ring.
 
 System names (`init`, `systemd --user`, `kthreadd`, ...) and the busiest
 processes are labelled; `l` toggles labels. Labels are at most 15 cells wide, so
-a longer name (macOS allows 31 characters) is cut after 14 characters and ends in
-`…`, and Apple's own `com.apple.` prefix is dropped. Two labels on the same row
+a longer name (macOS allows 31 characters) is cut after 13 characters and ends in
+`..`, and Apple's own `com.apple.` prefix is dropped. Two labels on the same row
 always have a blank column between them; one that would touch another is left
 out. Hovering a body or building shows its full name and a short description of
 what it is. After 20 seconds without input
