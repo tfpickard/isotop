@@ -1241,7 +1241,7 @@ impl Scene {
             View::Orbit => {
                 let hubs = self.hubs(&processes, snapshot, focus);
                 let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
-                self.draw_orbits(&mut frame, &processes, camera, selected, time)
+                self.draw_orbits(&mut frame, &processes, camera, selected, time, snapshot)
             }
             View::Ripple => {
                 let stir = bounded(cpu + io, 20.0);
@@ -1618,6 +1618,7 @@ impl Scene {
     fn layout<'a>(
         &mut self,
         processes: &'a [&'a Process],
+        snapshot: &Snapshot,
         time: f32,
         motion: f32,
     ) -> (Tree<'a>, Vec<Path>, Vec<Body>) {
@@ -1698,7 +1699,14 @@ impl Scene {
             reach,
             masses,
         };
-        let centers = self.place_systems(processes, &roots, &tree.extents, &tree.masses, motion);
+        let centers = self.place_systems(
+            processes,
+            snapshot,
+            &roots,
+            &tree.extents,
+            &tree.masses,
+            motion,
+        );
         let mut visited = HashSet::new();
         let mut paths = Vec::new();
         let mut bodies = Vec::new();
@@ -1739,8 +1747,9 @@ impl Scene {
         camera: &Camera,
         selected: Option<Identity>,
         time: f32,
+        snapshot: &Snapshot,
     ) {
-        let (tree, paths, bodies) = self.layout(processes, time, time);
+        let (tree, paths, bodies) = self.layout(processes, snapshot, time, time);
         let mut drawn = HashSet::new();
         for path in &paths {
             let highlighted = selected == Some(path.id);
@@ -2012,7 +2021,7 @@ impl Scene {
         snapshot: &Snapshot,
         stir: f32,
     ) {
-        let (tree, _, bodies) = self.layout(processes, time, 0.0);
+        let (tree, _, bodies) = self.layout(processes, snapshot, time, 0.0);
         let Some((grid, located)) = self.footprint(processes, &bodies, 140) else {
             return;
         };
@@ -2550,6 +2559,7 @@ impl Scene {
     fn place_systems(
         &mut self,
         processes: &[&Process],
+        snapshot: &Snapshot,
         roots: &[usize],
         extents: &[f32],
         masses: &[f32],
@@ -2559,9 +2569,22 @@ impl Scene {
             .iter()
             .map(|&root| (processes[root].id, extents[root] + SYSTEM_GAP))
             .collect();
+        // A system whose root is still sampled but not drawn, hidden by focus or the process
+        // limit (or a hub whose shadow remains), keeps its place and turns on with the others,
+        // so clearing the focus brings it back where it would be. One whose root is drawn but
+        // no longer a root, or left the snapshot, gives its place up.
+        let drawn: HashSet<Identity> = processes.iter().map(|p| p.id).collect();
+        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        let shadows: HashSet<u32> = snapshot.shadows.iter().map(|s| s.pid).collect();
+        let hidden = |id: &Identity| {
+            !drawn.contains(id) && (sampled.contains(id) || is_hub(id) && shadows.contains(&id.pid))
+        };
         let before = self.systems.len();
         self.systems
-            .retain(|id, (_, reserved)| needed.get(id).is_some_and(|&need| need <= *reserved));
+            .retain(|id, (_, reserved)| match needed.get(id) {
+                Some(&need) => need <= *reserved,
+                None => hidden(id),
+            });
         let mut pending: Vec<_> = needed
             .iter()
             .filter(|(id, _)| !self.systems.contains_key(id))
@@ -3485,6 +3508,50 @@ mod tests {
     #[test]
     fn processes_beyond_the_limit_keep_their_ripple_place() {
         hiding::limit_and_lift_by(View::Ripple, &demo(30.0, 160), hiding::ground);
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_orbit_system_in_place() {
+        hiding::focus_and_clear(View::Orbit, &demo(30.0, 160));
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_flow_system_in_place() {
+        hiding::focus_and_clear_by(View::Flow, &demo(30.0, 160), hiding::ground);
+    }
+
+    /// Cuts the population in half with the limit and lifts it again, comparing places by
+    /// `by`. A selection swapped in across the limit without its parent is drawn as a system
+    /// of its own, so it has no place to keep and is left out.
+    fn limit_and_lift_without_selection(view: View, by: fn(Point) -> Point) {
+        let sample = demo(30.0, 160);
+        let measure = |places: HashMap<Identity, Point>| -> HashMap<Identity, Point> {
+            places
+                .into_iter()
+                .map(|(id, point)| (id, by(point)))
+                .collect()
+        };
+        let (mut scene, time, before) = hiding::settled(view, &sample);
+        let before = measure(before);
+        let limited = measure(hiding::place(
+            &mut scene, &sample, view, time, 80, None, None,
+        ));
+        assert!(!limited.is_empty() && limited.len() < before.len());
+        hiding::in_place(&limited, &before);
+        let lifted = measure(hiding::place(
+            &mut scene, &sample, view, time, 4096, None, None,
+        ));
+        assert_eq!(lifted, before);
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_orbit_system_place() {
+        limit_and_lift_without_selection(View::Orbit, |point| point);
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_flow_system_place() {
+        limit_and_lift_without_selection(View::Flow, hiding::ground);
     }
 
     #[test]
