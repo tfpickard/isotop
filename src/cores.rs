@@ -296,8 +296,18 @@ impl Track {
             .map(|(i, p)| (p.id, i))
             .collect();
         let racing = placed || bands.is_some();
-        self.marbles
-            .retain(|id, _| racing && alive.get(id).is_some_and(|&i| active(processes[i])));
+        // A marble that is not drawn while its process is still sampled and busy, hidden by
+        // focus or the process limit, waits where it was and races on from there when it is
+        // drawn again; it is dropped when its process idles or leaves, as a drawn one is.
+        let sampled: HashMap<Identity, &Process> =
+            snapshot.processes.iter().map(|p| (p.id, p)).collect();
+        self.marbles.retain(|id, _| {
+            racing
+                && match alive.get(id) {
+                    Some(&i) => active(processes[i]),
+                    None => sampled.get(id).is_some_and(|p| active(p)),
+                }
+        });
         let mut shown = 0;
         for (index, process) in processes.iter().enumerate() {
             if !racing || !active(process) {
@@ -594,6 +604,16 @@ mod tests {
             process.performance_share = Some(share);
             process.id
         })
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_marble_where_it_raced() {
+        crate::render::hiding::focus_and_clear(View::Cores, &demo(30.0, 160));
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_marble() {
+        crate::render::hiding::limit_and_lift(View::Cores, &demo(30.0, 160));
     }
 
     #[test]
