@@ -55,18 +55,35 @@ pub struct Process {
     pub cpu_time: f32,
     /// Full cgroup v2 path, such as /system.slice/cron.service.
     pub cgroup: String,
-    /// Regular files held open (descriptors naming a path to a regular file; memfds excluded).
-    /// None when the descriptor table is unreadable: other users' processes without privileges.
-    pub open_files: Option<u32>,
-    /// Of those, files deleted while still open, whose disk space is not returned until they are
-    /// closed, and their total size in bytes. None when unreadable, like `open_files`.
-    pub deleted_files: Option<u32>,
-    pub deleted_bytes: Option<u64>,
-    /// File locks and leases held. OFD locks name no process and are not counted. None when the
-    /// lock table is unreadable.
-    pub locks_held: Option<u32>,
-    /// The pid holding the file lock this process is waiting for.
+    /// Regular files held open (memfds excluded), with those deleted while still open. Other
+    /// users' descriptor tables are unreadable without privileges.
+    pub files: Measured<files::Files>,
+    /// File locks and leases held. OFD locks name no process and are not counted.
+    pub locks_held: Measured<u32>,
+    /// The pid holding the file lock this process is waiting for, or `files::UNNAMED` when no
+    /// process can be named for it (an OFD lock, or a holder in another pid namespace).
     pub blocked_on: Option<u32>,
+}
+
+/// A measurement taken on the background thread, which may not have reached a process yet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Measured<T> {
+    /// Not measured yet: before the first background pass, a process born since the last one,
+    /// or one a budget-limited scan has not reached.
+    #[default]
+    Pending,
+    /// Could not be read, normally for lack of permission.
+    Unreadable,
+    Known(T),
+}
+
+impl<T> Measured<T> {
+    pub fn known(&self) -> Option<&T> {
+        match self {
+            Measured::Known(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -215,8 +232,7 @@ struct Extras {
     traffic: HashMap<(u32, u32), f32>,
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<files::Files>>,
-    /// None when /proc/locks cannot be read.
-    locks: Option<files::Locks>,
+    locks: Measured<files::Locks>,
     geo: String,
 }
 
@@ -247,7 +263,8 @@ pub struct Collector {
 }
 
 /// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every two
-/// seconds on a background thread; the thread stops once the collector is gone. Returns None when no thread can be spawned.
+/// seconds on a background thread; the thread stops once the collector is gone. Returns None
+/// when no thread can be spawned.
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
@@ -279,7 +296,7 @@ fn background(
                     remotes,
                     traffic,
                     files: scan.sample(),
-                    locks: files::locks(),
+                    locks: files::locks().map_or(Measured::Unreadable, Measured::Known),
                     geo: geo.source.clone(),
                 };
                 match writer.lock() {
@@ -291,6 +308,31 @@ fn background(
         })
         .ok()
         .map(|_| shared)
+}
+
+/// Sets a process's open files and locks from the background scans: absent from the file scan
+/// means not read yet, not unreadable. Kernel threads keep their empty table.
+fn merge_files(
+    process: &mut Process,
+    files: &HashMap<u32, Option<files::Files>>,
+    locks: &Measured<files::Locks>,
+) {
+    let pid = process.id.pid;
+    if process.kind != Kind::Kernel {
+        process.files = match files.get(&pid) {
+            Some(Some(found)) => Measured::Known(found.clone()),
+            Some(None) => Measured::Unreadable,
+            None => Measured::Pending,
+        };
+    }
+    (process.locks_held, process.blocked_on) = match locks {
+        Measured::Known(locks) => (
+            Measured::Known(locks.held.get(&pid).copied().unwrap_or(0)),
+            locks.blocked.get(&pid).copied(),
+        ),
+        Measured::Unreadable => (Measured::Unreadable, None),
+        Measured::Pending => (Measured::Pending, None),
+    };
 }
 
 /// Byte rates from the change in each socket's counters since the previous scan, and locations.
@@ -712,21 +754,11 @@ impl Collector {
                 .map(|p| (p.id.pid, p.id))
                 .collect();
             for process in &mut snapshot.processes {
-                let pid = process.id.pid;
-                process.gpu_memory = extras.gpu.get(&pid).copied().unwrap_or(0);
-                if process.kind != Kind::Kernel
-                    && let Some(found) = extras.files.get(&pid).copied().flatten()
-                {
-                    process.open_files = Some(found.open);
-                    process.deleted_files = Some(found.deleted);
-                    process.deleted_bytes = Some(found.deleted_bytes);
-                }
-                if let Some(locks) = &extras.locks {
-                    process.locks_held = Some(locks.held.get(&pid).copied().unwrap_or(0));
-                    process.blocked_on = locks.blocked.get(&pid).copied();
-                }
+                process.gpu_memory = extras.gpu.get(&process.id.pid).copied().unwrap_or(0);
+                merge_files(process, &extras.files, &extras.locks);
             }
-            snapshot.unattributed_locks = extras.locks.as_ref().map_or(0, |l| l.unattributed);
+            snapshot.unattributed_locks =
+                extras.locks.known().map_or(0, |locks| locks.unattributed);
             snapshot.links = extras
                 .network
                 .links
@@ -824,7 +856,11 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
     let kernel = number(6)? & PF_KTHREAD != 0;
     // Kernel threads hold no descriptors of their own (their tables read empty even as root), so
     // they are known to have no files; other processes wait for the background scan.
-    let kernel_files = kernel.then_some(0);
+    let files = if kernel {
+        Measured::Known(files::Files::default())
+    } else {
+        Measured::Pending
+    };
     Some((
         Process {
             id: Identity {
@@ -852,10 +888,8 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             core: number(36).unwrap_or(0) as u32,
             cpu_time: 0.0,
             cgroup: String::new(),
-            open_files: kernel_files,
-            deleted_files: kernel_files,
-            deleted_bytes: kernel_files.map(u64::from),
-            locks_held: None,
+            files,
+            locks_held: Measured::Pending,
             blocked_on: None,
         },
         number(11)?.saturating_add(number(12)?),
@@ -893,18 +927,23 @@ fn demo_write_share(index: usize) -> f32 {
 /// Demo open files, deleted-but-open files and file locks of process `index`, fixed for the whole
 /// run so the clutches hold still: open files spread log-uniformly from 3 to about 380, a database
 /// holding a rotated 1.2 GiB log and a browser two cache files after deleting them, four lock
-/// holders, and two waiters in other flocks than their holders. Returns open files, deleted files,
-/// deleted bytes, locks held and the index of the holder it waits for.
-fn demo_files(index: usize, kind: Kind) -> (u32, u32, u64, u32, Option<usize>) {
+/// holders, and two waiters in other flocks than their holders. Returns the open files, locks
+/// held and the index of the holder it waits for.
+fn demo_files(index: usize, kind: Kind) -> (files::Files, u32, Option<usize>) {
     if kind == Kind::Kernel {
-        return (0, 0, 0, 0, None);
+        return (files::Files::default(), 0, None);
     }
     let spread = (index * 37 + 11) % 97;
     let open = (3.0 * (7.0 * spread as f32 / 96.0).exp2()).round() as u32;
-    let (deleted, deleted_bytes) = match index {
-        69 => (1, 1_288_490_189),
-        83 => (2, 48 << 20),
-        _ => (0, 0),
+    let deleted = |inode: u64, size: u64| files::DeletedFile {
+        device: 2049,
+        inode,
+        size,
+    };
+    let deleted = match index {
+        69 => vec![deleted(6900, 1_288_490_189)],
+        83 => vec![deleted(8300, 32 << 20), deleted(8301, 16 << 20)],
+        _ => Vec::new(),
     };
     let held = match index {
         5 => 2,
@@ -916,7 +955,13 @@ fn demo_files(index: usize, kind: Kind) -> (u32, u32, u64, u32, Option<usize>) {
         70 => Some(21),
         _ => None,
     };
-    (open.max(deleted), deleted, deleted_bytes, held, waiting)
+    let open = open.max(deleted.len() as u32);
+    let files = files::Files {
+        open,
+        deleted,
+        partial: false,
+    };
+    (files, held, waiting)
 }
 
 pub fn demo(time: f64, count: usize) -> Snapshot {
@@ -963,7 +1008,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             (20, 0)
         };
         let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
-        let (open_files, deleted_files, deleted_bytes, locks_held, waiting) = demo_files(i, kind);
+        let (files, locks_held, waiting) = demo_files(i, kind);
         processes.push(Process {
             id: Identity {
                 pid: 1000 + i as u32,
@@ -1008,10 +1053,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             },
             core: ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32,
             cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
-            open_files: Some(open_files),
-            deleted_files: Some(deleted_files),
-            deleted_bytes: Some(deleted_bytes),
-            locks_held: Some(locks_held),
+            files: Measured::Known(files),
+            locks_held: Measured::Known(locks_held),
             // Holders come before their waiters, so a waiter's holder always exists.
             blocked_on: waiting.map(|holder| 1000 + holder as u32),
         });
@@ -1552,15 +1595,7 @@ mod tests {
             snapshot
                 .processes
                 .iter()
-                .map(|p| {
-                    (
-                        p.open_files,
-                        p.deleted_files,
-                        p.deleted_bytes,
-                        p.locks_held,
-                        p.blocked_on,
-                    )
-                })
+                .map(|p| (p.files.clone(), p.locks_held.clone(), p.blocked_on))
                 .collect::<Vec<_>>()
         };
         let snapshot = demo(30.0, 192);
@@ -1569,7 +1604,7 @@ mod tests {
         let open: Vec<u32> = processes
             .iter()
             .filter(|p| p.kind != Kind::Kernel)
-            .map(|p| p.open_files.unwrap())
+            .map(|p| p.files.known().unwrap().open)
             .collect();
         assert!(open.iter().all(|&n| (3..=400).contains(&n)));
         assert!(open.iter().any(|&n| n < 8) && open.iter().any(|&n| n > 200));
@@ -1577,18 +1612,21 @@ mod tests {
             processes
                 .iter()
                 .filter(|p| p.kind == Kind::Kernel)
-                .all(|p| p.open_files == Some(0) && p.locks_held == Some(0))
+                .all(|p| p.files == Measured::Known(files::Files::default())
+                    && p.locks_held == Measured::Known(0))
         );
-        let deleted: u32 = processes.iter().map(|p| p.deleted_files.unwrap()).sum();
+        let deleted: usize = processes
+            .iter()
+            .map(|p| p.files.known().unwrap().deleted.len())
+            .sum();
         assert_eq!(deleted, 3);
-        assert!(
-            processes
-                .iter()
-                .any(|p| p.deleted_files == Some(1) && p.deleted_bytes == Some(1_288_490_189))
-        );
+        assert!(processes.iter().any(|p| {
+            let files = p.files.known().unwrap();
+            files.deleted.len() == 1 && files.deleted_bytes() == 1_288_490_189
+        }));
         let holders = processes
             .iter()
-            .filter(|p| p.locks_held.unwrap() > 0)
+            .filter(|p| p.locks_held.known().is_some_and(|&held| held > 0))
             .count();
         assert_eq!(holders, 4);
         let waiters: Vec<&Process> = processes
@@ -1601,8 +1639,37 @@ mod tests {
                 .iter()
                 .find(|p| Some(p.id.pid) == waiter.blocked_on)
                 .unwrap();
-            assert!(holder.locks_held.unwrap() > 0);
+            assert!(holder.locks_held.known().is_some_and(|&held| held > 0));
             assert_ne!(holder.cgroup, waiter.cgroup, "waits in another flock");
         }
+    }
+
+    #[test]
+    fn a_process_the_file_scan_has_not_reached_is_pending_not_unreadable() {
+        let mut process = demo(0.0, 2).processes[1].clone();
+        let locks = Measured::Known(files::Locks {
+            held: HashMap::from([(1001, 2)]),
+            ..files::Locks::default()
+        });
+        let scanned = files::Files {
+            open: 4,
+            ..files::Files::default()
+        };
+        let mut found = HashMap::new();
+        merge_files(&mut process, &found, &Measured::Pending);
+        assert_eq!(process.files, Measured::Pending, "not reached");
+        assert_eq!(
+            process.locks_held,
+            Measured::Pending,
+            "before the first pass"
+        );
+        found.insert(1001, None);
+        merge_files(&mut process, &found, &Measured::Unreadable);
+        assert_eq!(process.files, Measured::Unreadable);
+        assert_eq!(process.locks_held, Measured::Unreadable);
+        found.insert(1001, Some(scanned.clone()));
+        merge_files(&mut process, &found, &locks);
+        assert_eq!(process.files, Measured::Known(scanned));
+        assert_eq!(process.locks_held, Measured::Known(2));
     }
 }

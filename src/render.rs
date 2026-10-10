@@ -2920,10 +2920,8 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: "/system.slice/g.service".into(),
-            open_files: None,
-            deleted_files: None,
-            deleted_bytes: None,
-            locks_held: None,
+            files: crate::model::Measured::Pending,
+            locks_held: crate::model::Measured::Pending,
             blocked_on: None,
         }
     }

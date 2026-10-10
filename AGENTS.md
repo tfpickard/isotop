@@ -9,7 +9,8 @@ The README covers usage. This file covers how to work on the code.
 
 1. **Sample** (`model.rs`). `Collector::sample` reads `/proc` once per `--sample-ms` and
    returns a `Snapshot`. Slow sources (sockets in `net.rs`, open files and file locks in
-   `files.rs`, NVIDIA memory in `nvml.rs`) run on a background thread every 2 s and are merged in, so the frame loop never waits on them.
+   `files.rs`, NVIDIA memory in `nvml.rs`) run on a background thread every 2 s and are
+   merged in, so the frame loop never waits on them.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
