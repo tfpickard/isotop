@@ -460,8 +460,9 @@ impl App {
     fn select_match(&mut self) {
         if let Some(&id) = self.matches.get(self.match_index) {
             self.selected = Some(id);
-            if let Some(p) = self.scene.positions.get(&id) {
+            if let Some(&p) = self.scene.positions.get(&id) {
                 self.goal.center = [p[0], p[1]];
+                self.face(p);
             } else {
                 self.focus = Some(id);
                 self.fit = true;
@@ -522,9 +523,20 @@ impl App {
             self.visit(self.tour.as_ref().map_or(0, |tour| tour.index + 1));
         }
         if let Some(tour) = &self.tour
-            && let Some(p) = self.scene.positions.get(&tour.target)
+            && let Some(&p) = self.scene.positions.get(&tour.target)
         {
             self.goal.center = [p[0], p[1]];
+            self.face(p);
+        }
+    }
+
+    /// On the globe, turns the camera so `point` is on the near side and centres the point
+    /// itself: the world spins, so a process above home is behind the earth for half of every
+    /// turn, and it floats far above the ground the camera otherwise centres on.
+    fn face(&mut self, point: [f32; 3]) {
+        if self.view == View::Globe {
+            (self.goal.rotation, self.goal.pitch) = globe::face(point, &self.goal);
+            self.goal.look_at(point);
         }
     }
 
@@ -1526,6 +1538,33 @@ mod tests {
         press(&mut app, 'g');
         press(&mut app, '+');
         assert!(app.tour.is_none(), "any other key ends it");
+    }
+
+    #[test]
+    fn globe_tour_turns_the_earth_so_its_target_faces_the_viewer() {
+        // The world turns once in five minutes, so these times put home on every side of it.
+        for time in [0.0, 75.0, 150.0, 225.0] {
+            let mut app = App::new(View::Globe, model::demo(1.0, 64));
+            app.animation = time;
+            app.render(640, 360, 512);
+            app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+            let target = app
+                .tour
+                .as_ref()
+                .expect("the globe has processes to visit")
+                .target;
+            app.update_tour(None);
+            app.camera = app.goal.clone();
+            let frame = app.render(640, 360, 512);
+            let at = frame
+                .locate(&app.camera, app.scene.positions[&target])
+                .expect("the target is on screen");
+            assert_eq!(
+                frame.pick_near(at[0], at[1], 3.0),
+                Some(target),
+                "the target is in front of the earth at {time} s"
+            );
+        }
     }
 
     #[test]

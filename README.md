@@ -435,7 +435,9 @@ out. Hovering a body or building shows its full name and a short description of
 what it is. After 20 seconds without input
 (`--tour`, `0` disables), a guided tour eases the camera between notable
 processes: system stars, the busiest, and the largest. Each gets a callout with
-a pointer. `g` starts the tour at any time, even with the idle tour disabled.
+a pointer. On the globe, the tour and search also turn the camera so the process
+faces you, because the world's spin carries home to the far side for half of
+every turn. `g` starts the tour at any time, even with the idle tour disabled.
 Any key or mouse movement ends the tour.
 
 ## Controls

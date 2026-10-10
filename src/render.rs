@@ -23,6 +23,8 @@ const PALETTE: [Color; 8] = [
 pub(crate) const SCALE: f32 = 1.224_745;
 /// Elevation of a true isometric view, asin(1/sqrt(3)).
 pub const ISOMETRIC: f32 = 0.615_480;
+/// The lowest camera elevation allowed: the camera never looks from below the ground.
+pub const LOWEST_PITCH: f32 = 0.35;
 /// The camera centre sits slightly below the middle to leave headroom for buildings.
 pub const ORIGIN_Y: f32 = 0.57;
 /// Depth assigned to background stars, below every scene object.
@@ -178,7 +180,7 @@ impl Camera {
     }
 
     pub fn tilt(&mut self, delta: f32) {
-        self.pitch = (self.pitch + delta).clamp(0.35, FRAC_PI_2);
+        self.pitch = (self.pitch + delta).clamp(LOWEST_PITCH, FRAC_PI_2);
     }
 
     /// Unit vector from the scene towards the viewer, for specular highlights.
@@ -186,6 +188,14 @@ impl Camera {
         let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
         let (ps, pc) = self.pitch.sin_cos();
         [s * pc, c * pc, ps]
+    }
+
+    /// Centres the view on `p` itself rather than the ground below it: a raised point appears
+    /// above its ground point by its height over tan(pitch) along the view direction.
+    pub fn look_at(&mut self, p: Point) {
+        let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
+        let along = p[2] / self.pitch.tan();
+        self.center = [p[0] - along * s, p[1] - along * c];
     }
 
     /// The ground point `distance` world units from `p` towards the viewer (lowest on screen).

@@ -4,13 +4,14 @@
 //! a local GeoIP database; addresses it cannot place circle the north pole.
 
 use std::collections::HashMap;
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
 use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
 use crate::pack::Seats;
 use crate::render::{
-    Color, GOLDEN_ANGLE, NONE, Point, SCALE, Stage, dot, kind_color, mass_radius, normalize, tint,
+    Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
+    mass_radius, normalize, tint,
 };
 
 const RADIUS: f32 = 20.0;
@@ -334,6 +335,32 @@ fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
     normalize([0, 1, 2].map(|k| a[k] * wa + b[k] * wb))
 }
 
+/// The camera rotation and pitch that put `point` on the near side of the globe. The rotation
+/// turns the viewer to the point's bearing from the globe's centre; the camera's pitch is kept
+/// unless the point would still sit near or behind the limb, as it can below the equator,
+/// because the camera only looks from above. At the lowest pitch the camera allows, about 20
+/// degrees, nothing more than about 70 degrees south of the equator can be brought into view.
+pub fn face(point: Point, camera: &Camera) -> (f32, f32) {
+    let offset = [point[0], point[1], point[2] - RADIUS];
+    let across = offset[0].hypot(offset[1]);
+    // Camera::viewer points along (sin(r + pi/4), cos(r + pi/4)) on the ground.
+    let rotation = if across > 1e-4 {
+        offset[0].atan2(offset[1]) - FRAC_PI_4
+    } else {
+        camera.rotation
+    };
+    let length = across.hypot(offset[2]);
+    let (sin, cos) = camera.pitch.sin_cos();
+    // With the bearing matched, how far the point leans towards the viewer is
+    // across * cos(pitch) + z * sin(pitch); a quarter of its distance keeps it clear of the limb.
+    let pitch = if across * cos + offset[2] * sin >= 0.25 * length {
+        camera.pitch
+    } else {
+        offset[2].atan2(across).clamp(LOWEST_PITCH, FRAC_PI_2)
+    };
+    (rotation, pitch)
+}
+
 /// East and north unit vectors on the surface at unit vector `up`.
 fn tangents(up: Point) -> (Point, Point) {
     // At a pole every horizontal direction is a tangent and "east" is undefined; pick one.
@@ -395,6 +422,38 @@ pub fn legend(snapshot: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facing_turns_the_viewer_towards_any_point_on_the_sphere() {
+        let center = [0.0, 0.0, RADIUS];
+        // As far south as people live; see face for the limit.
+        for latitude in [-55.0f32, -30.0, -10.0, 0.0, 30.0, 70.0] {
+            for longitude in (0..360).step_by(20) {
+                let (lat, lon) = (latitude.to_radians(), (longitude as f32).to_radians());
+                let direction = [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()];
+                let point = [0, 1, 2].map(|k| center[k] + direction[k] * (RADIUS + 2.5));
+                for rotation in [0.0, 2.0, -3.0] {
+                    let mut camera = Camera {
+                        rotation,
+                        ..Camera::default()
+                    };
+                    (camera.rotation, camera.pitch) = face(point, &camera);
+                    let towards = dot(camera.viewer(), direction);
+                    assert!(
+                        towards > 0.2,
+                        "{latitude} {longitude} from {rotation}: {towards}"
+                    );
+                }
+            }
+        }
+        let northern = [10.0, -5.0, RADIUS + 12.0];
+        let camera = Camera::default();
+        assert_eq!(
+            face(northern, &camera).1,
+            camera.pitch,
+            "a point already in view keeps the pitch"
+        );
+    }
 
     #[test]
     fn legend_drops_rates_when_the_platform_has_no_socket_traffic() {
