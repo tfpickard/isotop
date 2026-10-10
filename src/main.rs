@@ -619,9 +619,9 @@ impl App {
         lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
                 View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
-                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(s)),
+                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(&self.scene)),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
-                View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(s)),
+                View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(&self.scene)),
                 View::Cores => cores::legend(s),
                 View::Cells => cells::legend(s),
                 View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
@@ -1189,10 +1189,10 @@ fn unreadable_text(snapshot: &Snapshot) -> String {
     }
 }
 
-/// What the Orbit and Flow legends add when some parent could not be read and may be drawn as
-/// a hub; nothing otherwise, so the legends of a platform that reads every process never change.
-fn hub_note(snapshot: &Snapshot) -> &'static str {
-    if snapshot.shadows.is_empty() {
+/// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
+/// focused subtree or a platform that reads every process gets the legend it always had.
+fn hub_note(scene: &Scene) -> &'static str {
+    if scene.hub_names.is_empty() {
         ""
     } else {
         " | hollow star = a parent isotop can't read (run with sudo)"
@@ -1544,7 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hub_is_labelled_as_unreadable_and_explained_only_when_there_are_shadows() {
+    fn a_hub_is_labelled_as_unreadable_and_explained_only_while_one_is_drawn() {
         let mut snapshot = model::demo(1.0, 20);
         snapshot.links.clear();
         for (index, process) in snapshot.processes.iter_mut().enumerate() {
@@ -1583,6 +1583,10 @@ mod tests {
                 legend.ends_with(" | hollow star = a parent isotop can't read (run with sudo)"),
                 "{legend}"
             );
+            app.focus = Some(snapshot.processes[0].id);
+            app.render(1600, 900, 512);
+            let legend = &app.text(0.0, "test", 20, 512)[2];
+            assert!(!legend.contains("hollow star"), "focused: {legend}");
             let mut app = App::new(view, plain.clone());
             app.render(1600, 900, 512);
             let legend = &app.text(0.0, "test", 20, 512)[2];
