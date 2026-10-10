@@ -480,7 +480,8 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: system stars, the busiest and the largest.
+    /// Notable processes to visit while idle: system stars, the busiest and the largest. Hubs
+    /// are not processes, so they have no callout to show and are passed over.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
             .snapshot()
@@ -493,6 +494,7 @@ impl App {
         let mut largest = visible;
         largest.sort_by_key(|p| Reverse(p.memory));
         let mut stars = self.scene.stars.clone();
+        stars.retain(|(id, _, _)| !render::is_hub(id));
         stars.sort_by_key(|&(_, members, _)| Reverse(members));
         let mut targets = Vec::new();
         for i in 0..6 {
@@ -1591,6 +1593,49 @@ mod tests {
             app.render(1600, 900, 512);
             let legend = &app.text(0.0, "test", 20, 512)[2];
             assert!(!legend.contains("hollow star"), "{legend}");
+        }
+    }
+
+    #[test]
+    fn the_tour_passes_over_hubs_and_opens_on_a_process_with_a_callout() {
+        let mut snapshot = model::demo(1.0, 20);
+        snapshot.links.clear();
+        for (index, process) in snapshot.processes.iter_mut().enumerate() {
+            process.id = Identity {
+                pid: 100 + index as u32,
+                start: 1,
+            };
+            process.parent = 1;
+        }
+        snapshot.shadows = vec![platform::Shadow {
+            pid: 1,
+            parent: 0,
+            name: "launchd".into(),
+        }];
+        let layout = Layout {
+            columns: 200,
+            rows: 56,
+            width: 1600,
+            height: 900,
+            cell: None,
+        };
+        for view in [View::Orbit, View::Flow] {
+            let mut app = App::new(view, snapshot.clone());
+            app.render(1600, 900, 512);
+            assert!(!app.scene.hub_names.is_empty(), "{view:?} draws the hub");
+            let targets = app.tour_targets();
+            assert!(!targets.is_empty());
+            for target in &targets {
+                assert!(
+                    snapshot.processes.iter().any(|p| p.id == *target),
+                    "{view:?} visits {target:?}"
+                );
+            }
+            app.visit(0);
+            let mut frame = app.render(1600, 900, 512);
+            frame.rasterize();
+            let (_, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+            assert_eq!(panels.len(), 1, "{view:?} shows the first stop's callout");
         }
     }
 
