@@ -186,6 +186,7 @@ impl Chicken {
     }
 
     /// On the ground and immovable: separation pushes foragers off it but never moves it.
+    /// Walking chickens are obstacles in the same way while they walk.
     fn planted(&self) -> bool {
         match self.role {
             Role::Zombie | Role::Stuck => true,
@@ -395,12 +396,13 @@ impl Yard {
     }
 
     /// Jacobi separation: overlaps measured before any push, then every push applied at once.
-    /// Two foragers share an overlap; a forager against a planted chicken takes all of it.
+    /// Two foragers share an overlap; a forager against a planted or walking chicken takes all
+    /// of it, so walkers are never displaced and always reach their targets.
     fn separate(&mut self) {
         let members: Vec<usize> = (0..self.chickens.len())
             .filter(|&i| {
                 let chicken = &self.chickens[i];
-                chicken.role == Role::Foraging || chicken.planted()
+                chicken.role == Role::Foraging || chicken.planted() || chicken.walking()
             })
             .collect();
         if members.is_empty() {
@@ -2889,6 +2891,33 @@ mod tests {
             yard.order().unwrap() < 0.2,
             "the flocks keep their own ways"
         );
+    }
+
+    #[test]
+    fn foragers_step_aside_from_walking_chickens_that_keep_their_course() {
+        for role in [Role::Roosting, Role::Feeding] {
+            let mut yard = Yard::new([-100.0, -100.0], [100.0, 100.0]);
+            let mut walker = forager(2, 0, [0.2, 0.0], 0.0, 0.0);
+            walker.role = role;
+            walker.target = [5.0, 0.0];
+            yard.chickens = vec![forager(1, 0, [0.0, 0.0], 0.0, 0.0), walker];
+            yard.separate();
+            let [a, b] = [&yard.chickens[0], &yard.chickens[1]];
+            let distance = (a.position[0] - b.position[0]).hypot(a.position[1] - b.position[1]);
+            assert!(
+                distance >= a.radius + b.radius - 1e-5,
+                "{role:?} walker overlaps a forager at {distance}"
+            );
+            assert_eq!(b.position, [0.2, 0.0], "the walker is not pushed");
+            for _ in 0..200 {
+                yard.step(H);
+            }
+            assert!(
+                yard.chickens[1].arrived,
+                "{role:?} walker reaches its target"
+            );
+            assert_eq!(yard.chickens[1].position, [5.0, 0.0]);
+        }
     }
 
     #[test]
