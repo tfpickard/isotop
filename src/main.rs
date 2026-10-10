@@ -745,8 +745,6 @@ impl App {
         )
     }
 
-    /// Text drawn over the scene, highest priority first: the inspector popup, the tour
-    /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
     /// The label of an orbit system's star with `members` processes: its process's name, or
     /// for a hub the name of the parent it stands for, which isotop could not read.
     fn star_label(
@@ -772,6 +770,8 @@ impl App {
         Some(format!("{} (unreadable) ({members})", label_name(name)))
     }
 
+    /// Text drawn over the scene, highest priority first: the inspector popup, the tour
+    /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
     fn overlay(&self, frame: &mut Frame, layout: &Layout, radius: f32) -> (Vec<Label>, Vec<Popup>) {
         let snapshot = self.snapshot();
         let lookup: HashMap<Identity, &Process> =

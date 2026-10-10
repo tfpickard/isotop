@@ -2829,7 +2829,6 @@ pub(crate) fn mass_radius(bytes: f32) -> f32 {
     (0.24 * (bytes / 1048576.0).max(0.0).cbrt()).clamp(0.25, 4.5)
 }
 
-/// Thread rings: none below 4 threads, then one more ring per fourfold increase, up to four.
 /// Whether an identity is a hub's rather than a process's.
 pub fn is_hub(id: &Identity) -> bool {
     id.start == HUB_START
@@ -2869,6 +2868,7 @@ fn hub(shadow: &Shadow) -> Process {
     }
 }
 
+/// Thread rings: none below 4 threads, then one more ring per fourfold increase, up to four.
 fn rings(threads: u32) -> usize {
     match threads {
         0..=3 => 0,
