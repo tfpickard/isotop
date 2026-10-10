@@ -3088,14 +3088,20 @@ pub(crate) mod hiding {
         scene.positions.clone()
     }
 
-    /// `view` after five seconds of frames on one sample, so whatever moves has left the spot
-    /// it began at; returns the scene, the time of its last frame and where everyone stands.
+    /// `view` after five seconds of frames, so whatever moves has left the spot it began at;
+    /// returns the scene, the time of its last frame and where everyone stands. The first
+    /// frames see only the last three fifths of the sample and the rest all of it, so the
+    /// layout has a history, as a live one does: placing everything again at once, largest
+    /// first, would not land where it is.
     pub fn settled(view: View, sample: &Snapshot) -> (Scene, f32, HashMap<Identity, Point>) {
+        let mut early = sample.clone();
+        early.processes.drain(..sample.processes.len() * 2 / 5);
         let mut scene = Scene::new();
         let mut time = 30.0;
         let mut places = HashMap::new();
-        for _ in 0..50 {
-            places = place(&mut scene, sample, view, time, 4096, None, None);
+        for step in 0..50 {
+            let snapshot = if step < 25 { &early } else { sample };
+            places = place(&mut scene, snapshot, view, time, 4096, None, None);
             time += 0.1;
         }
         (scene, time - 0.1, places)
