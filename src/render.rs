@@ -1245,7 +1245,9 @@ impl Scene {
             }
             View::Ripple => {
                 let stir = bounded(cpu + io, 20.0);
-                self.draw_ripples(&mut frame, &processes, camera, selected, time, stir)
+                self.draw_ripples(
+                    &mut frame, &processes, camera, selected, time, snapshot, stir,
+                )
             }
             View::Flow => {
                 let stir = bounded(cpu + memory + io, 25.0);
@@ -1853,9 +1855,10 @@ impl Scene {
         camera: &Camera,
         selected: Option<Identity>,
         time: f32,
+        snapshot: &Snapshot,
         stir: f32,
     ) {
-        let radii = self.scatter(processes);
+        let radii = self.scatter(processes, snapshot);
         let bodies: Vec<Body> = processes
             .iter()
             .enumerate()
@@ -2394,18 +2397,33 @@ impl Scene {
     }
 
     /// Ripple layout: places every process as a pebble in its cgroup's cluster and records the
-    /// positions. A process keeps its slot while it lives; a cluster spreads out or moves only
-    /// when it outgrows the water reserved for it. Returns each process's pebble radius.
-    fn scatter(&mut self, processes: &[&Process]) -> Vec<f32> {
+    /// positions of the drawn ones. A process keeps its slot while it lives, drawn or not; a
+    /// cluster spreads out or moves only when it outgrows the water reserved for it. Returns
+    /// each drawn process's pebble radius.
+    fn scatter(&mut self, processes: &[&Process], snapshot: &Snapshot) -> Vec<f32> {
         let radii: Vec<f32> = processes
             .iter()
             .map(|p| mass_radius(p.memory as f32))
             .collect();
-        let members: HashMap<Identity, (&str, f32, u64)> = processes
+        // Slots and clusters are reserved for every sampled process, drawn or not, so focusing a
+        // subtree, or the process limit (and a selection swapped across it) hiding some, frees
+        // neither their slots nor their cluster's water: clearing it brings everyone back to
+        // where they were. Drawn processes are measured as drawn, hidden ones as sampled.
+        let mut members: HashMap<Identity, (&str, f32, u64)> = snapshot
+            .processes
             .iter()
-            .zip(&radii)
-            .map(|(p, &r)| (p.id, (p.group.as_str(), r, p.memory)))
+            .map(|p| {
+                let radius = mass_radius(p.memory as f32);
+                (p.id, (p.group.as_str(), radius, p.memory))
+            })
             .collect();
+        members.extend(
+            processes
+                .iter()
+                .zip(&radii)
+                .map(|(p, &r)| (p.id, (p.group.as_str(), r, p.memory))),
+        );
+        let drawn: HashSet<Identity> = processes.iter().map(|p| p.id).collect();
         self.pebbles.retain(|id, (group, slot)| {
             let stays = members.get(id).is_some_and(|m| m.0 == group);
             if !stays && let Some(cluster) = self.clusters.get_mut(group) {
@@ -2414,16 +2432,19 @@ impl Scene {
             stays
         });
         self.clusters.retain(|_, cluster| !cluster.slots.is_empty());
-        for process in processes {
-            if !self.pebbles.contains_key(&process.id) {
-                let cluster = self.clusters.entry(process.group.clone()).or_default();
-                let slot = (0..=cluster.slots.len())
-                    .find(|slot| !cluster.slots.contains_key(slot))
-                    .expect("one of len + 1 slots is free");
-                cluster.slots.insert(slot, process.id);
-                self.pebbles
-                    .insert(process.id, (process.group.clone(), slot));
-            }
+        let mut newcomers: Vec<(Identity, &str)> = members
+            .iter()
+            .filter(|(id, _)| !self.pebbles.contains_key(id))
+            .map(|(&id, &(group, _, _))| (id, group))
+            .collect();
+        newcomers.sort();
+        for (id, group) in newcomers {
+            let cluster = self.clusters.entry(group.to_owned()).or_default();
+            let slot = (0..=cluster.slots.len())
+                .find(|slot| !cluster.slots.contains_key(slot))
+                .expect("one of len + 1 slots is free");
+            cluster.slots.insert(slot, id);
+            self.pebbles.insert(id, (group.to_owned(), slot));
         }
         let mut pending = Vec::new();
         for (name, cluster) in &mut self.clusters {
@@ -2479,12 +2500,19 @@ impl Scene {
                 ],
             );
         }
+        // Only the drawn pebbles of a cluster make it a system to label and tour.
         for cluster in self.clusters.values() {
-            if let Some((_, &anchor)) = cluster.slots.iter().min_by_key(|(slot, _)| **slot)
-                && cluster.slots.len() > 1
+            let shown: Vec<(usize, Identity)> = cluster
+                .slots
+                .iter()
+                .filter(|(_, id)| drawn.contains(id))
+                .map(|(&slot, &id)| (slot, id))
+                .collect();
+            if let Some(&(_, anchor)) = shown.iter().min_by_key(|(slot, _)| *slot)
+                && shown.len() > 1
             {
-                let count = cluster.slots.len();
-                let memory = cluster.slots.values().map(|id| members[id].2).sum();
+                let count = shown.len();
+                let memory = shown.iter().map(|(_, id)| members[id].2).sum();
                 self.stars.push((anchor, count, cluster.extent));
                 self.mass.insert(anchor, (memory, count));
             }
@@ -3117,28 +3145,74 @@ pub(crate) mod hiding {
     /// Focuses one family of sixteen and clears the focus again, repeating the last frame's
     /// time so nothing steps and anything that moves was moved by the change of focus.
     pub fn focus_and_clear(view: View, sample: &Snapshot) {
+        focus_and_clear_by(view, sample, |point| point);
+    }
+
+    /// As `focus_and_clear`, comparing places by `by`: the part of a position that is layout,
+    /// for views whose medium also lifts what floats on it.
+    pub fn focus_and_clear_by(view: View, sample: &Snapshot, by: fn(Point) -> Point) {
+        let measure = |places: HashMap<Identity, Point>| -> HashMap<Identity, Point> {
+            places
+                .into_iter()
+                .map(|(id, point)| (id, by(point)))
+                .collect()
+        };
         let (mut scene, time, before) = settled(view, sample);
+        let before = measure(before);
         let root = sample.processes[16].id;
-        let focused = place(&mut scene, sample, view, time, 4096, None, Some(root));
+        let focused = measure(place(
+            &mut scene,
+            sample,
+            view,
+            time,
+            4096,
+            None,
+            Some(root),
+        ));
         assert!(!focused.is_empty() && focused.len() < before.len());
         in_place(&focused, &before);
-        let cleared = place(&mut scene, sample, view, time, 4096, None, None);
+        let cleared = measure(place(&mut scene, sample, view, time, 4096, None, None));
         assert_eq!(cleared, before);
     }
 
     /// Cuts the population in half with the limit, swaps a selection in across it, and lifts
     /// the limit again, at one time as above.
     pub fn limit_and_lift(view: View, sample: &Snapshot) {
+        limit_and_lift_by(view, sample, |point| point);
+    }
+
+    /// As `limit_and_lift`, comparing places by `by` as `focus_and_clear_by` does.
+    pub fn limit_and_lift_by(view: View, sample: &Snapshot, by: fn(Point) -> Point) {
+        let measure = |places: HashMap<Identity, Point>| -> HashMap<Identity, Point> {
+            places
+                .into_iter()
+                .map(|(id, point)| (id, by(point)))
+                .collect()
+        };
         let (mut scene, time, before) = settled(view, sample);
-        let limited = place(&mut scene, sample, view, time, 80, None, None);
+        let before = measure(before);
+        let limited = measure(place(&mut scene, sample, view, time, 80, None, None));
         assert!(!limited.is_empty() && limited.len() < before.len());
         in_place(&limited, &before);
         let selected = sample.processes[150].id;
-        let swapped = place(&mut scene, sample, view, time, 80, Some(selected), None);
+        let swapped = measure(place(
+            &mut scene,
+            sample,
+            view,
+            time,
+            80,
+            Some(selected),
+            None,
+        ));
         assert!(swapped.contains_key(&selected));
         in_place(&swapped, &before);
-        let lifted = place(&mut scene, sample, view, time, 4096, None, None);
+        let lifted = measure(place(&mut scene, sample, view, time, 4096, None, None));
         assert_eq!(lifted, before);
+    }
+
+    /// A position on the ground plane, without what a medium lifts it by.
+    pub fn ground([x, y, _]: Point) -> Point {
+        [x, y, 0.0]
     }
 }
 
@@ -3382,6 +3456,16 @@ mod tests {
             particles.iter().any(|p| !p.bright),
             "background reveals the field"
         );
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_ripple_cluster_in_place() {
+        hiding::focus_and_clear_by(View::Ripple, &demo(30.0, 160), hiding::ground);
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_ripple_place() {
+        hiding::limit_and_lift_by(View::Ripple, &demo(30.0, 160), hiding::ground);
     }
 
     #[test]
