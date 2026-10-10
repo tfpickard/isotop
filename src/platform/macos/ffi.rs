@@ -164,6 +164,41 @@ unsafe extern "C" {
     pub fn CFDataGetBytePtr(data: CFTypeRef) -> *const u8;
 }
 
+// proc_pidinfo flavor PROC_PIDT_BSDINFOWITHUNIQID, from xnu bsd/sys/proc_info.h: the BSD info
+// and the process's unique identifiers in one call, under the same permission check as
+// PROC_PIDTBSDINFO. Newer headers name the int32 after p_idversion p_orig_ppidversion and older
+// ones p_reserve2; the layout is the same, 56 bytes with p_idversion at offset 32.
+
+pub const PROC_PIDT_BSDINFOWITHUNIQID: c_int = 18;
+
+/// `struct proc_uniqidentifierinfo`. `p_idversion` is the pid version, which every exec
+/// changes while the pid and start time stay.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct proc_uniqidentifierinfo {
+    pub p_uuid: [u8; 16],
+    pub p_uniqueid: u64,
+    pub p_puniqueid: u64,
+    pub p_idversion: i32,
+    pub p_orig_ppidversion: i32,
+    pub p_reserve2: u64,
+    pub p_reserve3: u64,
+}
+
+/// `struct proc_bsdinfowithuniqid`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct proc_bsdinfowithuniqid {
+    pub pbsd: libc::proc_bsdinfo,
+    pub p_uniqidentifier: proc_uniqidentifierinfo,
+}
+
+const _: () = assert!(size_of::<proc_uniqidentifierinfo>() == 56);
+const _: () = assert!(offset_of!(proc_uniqidentifierinfo, p_idversion) == 32);
+const _: () = assert!(size_of::<libc::proc_bsdinfo>() == 136);
+const _: () = assert!(size_of::<proc_bsdinfowithuniqid>() == 192);
+const _: () = assert!(align_of::<proc_bsdinfowithuniqid>() == 8);
+
 // struct socket_fdinfo and its members, from xnu bsd/sys/proc_info.h. The text of these structs
 // is identical from xnu-7195 (macOS 11) to main. Every field is a fixed-width scalar and nothing
 // is packed, so repr(C) reproduces the C layout; the assertions below pin it.

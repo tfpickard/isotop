@@ -20,6 +20,10 @@ use crate::platform::{Network, RawProcess};
 
 pub use journal::{JOURNAL, journal};
 
+/// What `Process::memory` measures here: the physical footprint, which counts compressed and
+/// swapped dirty memory and leaves out clean shared pages, so it is not a resident size.
+pub const MEMORY_LABEL: &str = "memory footprint";
+
 /// `ARG_MAX` on macOS, used when `kern.argmax` cannot be read.
 const ARG_MAX: usize = 1 << 20;
 
@@ -46,7 +50,8 @@ pub struct Sampler {
 
 /// What a process runs, which stays the same until it calls exec.
 struct Description {
-    /// The name it was read under; a different name means the process has exec'd since.
+    /// The pid version it was read under; exec changes it, even when the name stays.
+    version: i32,
     name: String,
     path: String,
     command: String,
@@ -136,7 +141,9 @@ impl Sampler {
         previous: &mut HashMap<Identity, Description>,
     ) -> Result<(RawProcess, logic::Lineage), Absent> {
         // A nonzero argument makes xnu search the zombie list too, so a zombie is not lost.
-        let bsd: libc::proc_bsdinfo = pid_info(pid, libc::PROC_PIDTBSDINFO, 1)?;
+        let info: ffi::proc_bsdinfowithuniqid = pid_info(pid, ffi::PROC_PIDT_BSDINFOWITHUNIQID, 1)?;
+        let bsd = info.pbsd;
+        let version = info.p_uniqidentifier.p_idversion;
         let task: libc::proc_taskinfo = if logic::zombie(bsd.pbi_status) {
             // A zombie has no task left to report, so its memory, threads and CPU time read
             // as zero.
@@ -156,9 +163,12 @@ impl Sampler {
             name if name.is_empty() => c_text(&bsd.pbi_comm),
             name => name,
         };
-        let description = match previous.remove(&id).filter(|d| d.name == name) {
+        let description = match previous
+            .remove(&id)
+            .filter(|d| logic::same_program((d.version, &d.name), (version, &name)))
+        {
             Some(description) => description,
-            None => self.describe(pid, name),
+            None => self.describe(pid, version, name),
         };
         let usage = rusage(pid);
         let memory = usage.map_or(task.pti_resident_size, |usage| usage.ri_phys_footprint);
@@ -223,7 +233,7 @@ impl Sampler {
 
     /// The executable path and command line. Both can be unreadable, for example for
     /// processes that SIP protects; the command then falls back to the name.
-    fn describe(&mut self, pid: c_int, name: String) -> Description {
+    fn describe(&mut self, pid: c_int, version: i32, name: String) -> Description {
         // SAFETY: the buffer is valid for writes of its full length, which lies between
         // PROC_PIDPATHINFO_SIZE and PROC_PIDPATHINFO_MAXSIZE as proc_pidpath requires.
         let length = unsafe {
@@ -262,6 +272,7 @@ impl Sampler {
             command = name.clone();
         }
         Description {
+            version,
             name,
             path,
             command,
@@ -386,8 +397,8 @@ fn pid_info<T: Copy>(pid: c_int, flavor: c_int, argument: u64) -> Result<T, Abse
     let written =
         unsafe { libc::proc_pidinfo(pid, flavor, argument, value.as_mut_ptr().cast(), size) };
     if written == size {
-        // SAFETY: T is one of libc's plain-integer proc_info structs, which every bit pattern
-        // inhabits, and the kernel filled all of it.
+        // SAFETY: T is one of the plain-integer proc_info structs of libc or `ffi`, which every
+        // bit pattern inhabits, and the kernel filled all of it.
         Ok(unsafe { value.assume_init() })
     } else if written <= 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
         Err(Absent::Unreadable)

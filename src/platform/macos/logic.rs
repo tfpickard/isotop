@@ -130,6 +130,14 @@ pub fn zombie(status: u32) -> bool {
     status == 5
 }
 
+/// Whether a description read when the process had `before` (pid version, name) still holds
+/// `now`. exec keeps the pid and start time, which key the cache, and can keep the name (a
+/// shell that runs `exec zsh`, a self-restart), but the kernel gives every exec a new pid
+/// version.
+pub fn same_program(before: (i32, &str), now: (i32, &str)) -> bool {
+    before == now
+}
+
 /// The Linux-style state letter from `pbi_status` and the task's running thread count. macOS
 /// has no uninterruptible sleep, so never 'D'.
 pub fn state(status: u32, running: i32) -> char {
@@ -568,6 +576,13 @@ mod tests {
         assert!(!zombie(2) && !zombie(4));
         // The sampler zeroes the task info of a zombie, so no thread is running.
         assert_eq!(state(5, 0), 'Z');
+    }
+
+    #[test]
+    fn a_description_is_read_again_after_an_exec_that_keeps_the_name() {
+        assert!(same_program((7, "zsh"), (7, "zsh")));
+        assert!(!same_program((7, "zsh"), (8, "zsh")), "exec zsh from zsh");
+        assert!(!same_program((7, "-zsh"), (7, "zsh")), "a renamed process");
     }
 
     #[test]

@@ -17,6 +17,9 @@ use crate::platform::{Network, RawProcess};
 pub use journal::{JOURNAL, journal};
 pub use nvml::Nvml as Gpu;
 
+/// What `Process::memory` measures here: the resident set size.
+pub const MEMORY_LABEL: &str = "RSS";
+
 /// Reads processes, memory, pressure and CPUs, keeping the CPU counters between readings.
 pub struct Sampler {
     cpu_previous: HashMap<u32, Ticks>,

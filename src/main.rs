@@ -575,12 +575,13 @@ impl App {
         let inspector = if let Some(id) = self.inspected() {
             if let Some(p) = s.processes.iter().find(|p| p.id == id) {
                 format!(
-                    " {} [pid {} / parent {} / {}] CPU {:.1}%  RSS {}  IO {}  {}",
+                    " {} [pid {} / parent {} / {}] CPU {:.1}%  {} {}  IO {}  {}",
                     p.name,
                     id.pid,
                     p.parent,
                     p.state,
                     p.cpu,
+                    platform::MEMORY_LABEL,
                     bytes(p.memory),
                     p.io_rate.map_or_else(
                         || "unavailable".into(),
@@ -605,7 +606,7 @@ impl App {
         lines.push(inspector);
         lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
-                View::City => " Height = CPU | footprint = RSS | district = cgroup | amber lights = CPU | cyan pulses = IO".into(),
+                View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
                 View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
                 View::Flow => " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure".into(),
@@ -675,8 +676,9 @@ impl App {
                         if p.threads == 1 { "" } else { "s" }
                     ),
                     format!(
-                        "CPU {:.1}% | RSS {} | IO {}",
+                        "CPU {:.1}% | {} {} | IO {}",
                         p.cpu,
+                        platform::MEMORY_LABEL,
                         bytes(p.memory),
                         p.io_rate.map_or_else(
                             || "unavailable".into(),
@@ -691,7 +693,8 @@ impl App {
                 }
                 if let Some(&(total, count)) = self.scene.mass.get(&id) {
                     lines.push(format!(
-                        "system RSS {} across {count} processes",
+                        "system {} {} across {count} processes",
+                        platform::MEMORY_LABEL,
                         bytes(total)
                     ));
                 }
@@ -751,8 +754,9 @@ impl App {
                 p.name.clone(),
                 describe(p),
                 format!(
-                    "CPU {:.1}% | RSS {} | pid {}",
+                    "CPU {:.1}% | {} {} | pid {}",
                     p.cpu,
+                    platform::MEMORY_LABEL,
                     bytes(p.memory),
                     p.id.pid
                 ),
@@ -1555,6 +1559,41 @@ mod tests {
         };
         assert!(app.popup(&frame, &layout).is_none());
         assert_eq!(app.selected, Some(selected), "kept for the process views");
+    }
+
+    #[test]
+    fn memory_is_labelled_with_what_the_platform_measures() {
+        let snapshot = model::demo(1.0, 16);
+        let selected = snapshot.processes[0].id;
+        let mut app = App::new(View::City, snapshot);
+        let label = platform::MEMORY_LABEL;
+        assert!(app.text(0.0, "test", 20, 512)[2].contains(&format!("footprint = {label} |")));
+        app.selected = Some(selected);
+        let text = app.text(0.0, "test", 20, 512);
+        assert!(text[1].contains(&format!("%  {label} ")), "{}", text[1]);
+        let frame = app.render(320, 180, 512);
+        let layout = Layout {
+            columns: 120,
+            rows: 40,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let popup = app
+            .popup(&frame, &layout)
+            .expect("a popup for the selection");
+        assert!(
+            popup
+                .lines
+                .iter()
+                .any(|line| line.contains(&format!("| {label} "))),
+            "{:?}",
+            popup.lines
+        );
+        // macOS reports the physical footprint, which is not a resident set size.
+        if cfg!(target_os = "macos") {
+            assert!(!text[1].contains("RSS") && popup.lines.iter().all(|l| !l.contains("RSS")));
+        }
     }
 
     #[test]
