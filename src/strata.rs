@@ -87,23 +87,38 @@ impl Strata {
         };
         // Rows are given to every sampled process, drawn or not, so focusing a subtree, or the
         // process limit (and a selection swapped across it) hiding some, frees none of their
-        // rows: clearing it brings every ridge back to the row it had. Only drawn ridges are
+        // rows: clearing it brings every ridge back to the row it had. Drawn processes come
+        // first, though: they are offered rows before hidden ones, and when every row is taken
+        // a drawn one takes the row of the least busy hidden holder. Only drawn ridges are
         // drawn below.
         let mut kinds: HashMap<Identity, Kind> =
             snapshot.processes.iter().map(|p| (p.id, p.kind)).collect();
         kinds.extend(processes.iter().map(|p| (p.id, p.kind)));
         self.rows
             .retain(|id, _| kinds.contains_key(id) && peak(id) >= BUSY);
-        let mut candidates: Vec<(f32, Identity)> = kinds
+        let mut candidates: Vec<(bool, f32, Identity)> = kinds
             .keys()
             .filter(|id| !self.rows.contains_key(id))
-            .map(|&id| (peak(&id), id))
-            .filter(|&(value, _)| value >= BUSY)
+            .map(|&id| (!index.contains_key(&id), peak(&id), id))
+            .filter(|&(_, value, _)| value >= BUSY)
             .collect();
-        candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        for (_, id) in candidates {
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+        for (hidden, _, id) in candidates {
             if self.rows.len() >= ROWS {
-                break;
+                if hidden {
+                    break;
+                }
+                let Some(holder) = self
+                    .rows
+                    .keys()
+                    .filter(|held| !index.contains_key(held))
+                    .map(|&held| (peak(&held), held))
+                    .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                    .map(|(_, held)| held)
+                else {
+                    break;
+                };
+                self.rows.remove(&holder);
             }
             // Each kind owns a quarter of the floor, back to front; a newcomer takes the free row
             // nearest the middle of its kind's quarter, spilling into neighbours when it is full.
@@ -234,13 +249,16 @@ impl Strata {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::Snapshot;
-    use crate::model::demo;
-    use crate::render::{View, hiding};
+    use crate::model::{Identity, Snapshot, demo};
+    use crate::render::{Scene, View, hiding};
 
-    /// Few enough processes that every busy one gets one of the forty rows.
+    /// Few enough processes that every busy one gets one of the forty rows. With more, a drawn
+    /// process takes a hidden one's row, and the hidden one finds none free when it is back.
     fn sample() -> Snapshot {
-        demo(30.0, 64)
+        let sample = demo(30.0, 60);
+        let busy = sample.processes.iter().filter(|p| p.cpu >= super::BUSY);
+        assert!(busy.count() <= super::ROWS);
+        sample
     }
 
     #[test]
@@ -251,5 +269,35 @@ mod tests {
     #[test]
     fn processes_beyond_the_limit_keep_their_strata_row() {
         hiding::limit_and_lift(View::Strata, &sample());
+    }
+
+    /// With more busy processes than rows, the ones still drawn under a focus or a limit get
+    /// rows ahead of the hidden ones, so as many ridges show as on a fresh landscape.
+    #[test]
+    fn hidden_processes_do_not_keep_drawn_busy_ones_from_a_row() {
+        let sample = demo(30.0, 160);
+        let busy = sample
+            .processes
+            .iter()
+            .filter(|p| p.cpu >= super::BUSY)
+            .count();
+        assert!(busy > super::ROWS);
+        let (mut scene, time, _) = hiding::settled(View::Strata, &sample);
+        let drawn = |scene: &mut Scene, limit: usize, focus: Option<Identity>| {
+            hiding::place(scene, &sample, View::Strata, time, limit, None, focus).len()
+        };
+        let hides = sample
+            .processes
+            .iter()
+            .filter(|p| p.id.pid >= 1016 && p.id.pid % 16 == 0)
+            .map(|p| (4096, Some(p.id)))
+            .chain([(80, None)]);
+        let mut shown = 0;
+        for (limit, focus) in hides {
+            let fresh = drawn(&mut Scene::new(), limit, focus);
+            shown += fresh;
+            assert_eq!(drawn(&mut scene, limit, focus), fresh, "{limit} {focus:?}");
+        }
+        assert!(shown > super::ROWS);
     }
 }
