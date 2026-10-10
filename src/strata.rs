@@ -234,16 +234,22 @@ impl Strata {
 
 #[cfg(test)]
 mod tests {
+    use crate::model::Snapshot;
     use crate::model::demo;
     use crate::render::{View, hiding};
 
+    /// Few enough processes that every busy one gets one of the forty rows.
+    fn sample() -> Snapshot {
+        demo(30.0, 64)
+    }
+
     #[test]
     fn focusing_and_clearing_focus_keeps_every_ridge_in_its_row() {
-        hiding::focus_and_clear(View::Strata, &demo(30.0, 160));
+        hiding::focus_and_clear(View::Strata, &sample());
     }
 
     #[test]
     fn processes_beyond_the_limit_keep_their_strata_row() {
-        hiding::limit_and_lift(View::Strata, &demo(30.0, 160));
+        hiding::limit_and_lift(View::Strata, &sample());
     }
 }

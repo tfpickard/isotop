@@ -3117,19 +3117,30 @@ pub(crate) mod hiding {
     }
 
     /// `view` after five seconds of frames, so whatever moves has left the spot it began at;
-    /// returns the scene, the time of its last frame and where everyone stands. The first
-    /// frames see only the last three fifths of the sample and the rest all of it, so the
-    /// layout has a history, as a live one does: placing everything again at once, largest
-    /// first, would not land where it is.
+    /// returns the scene, the time of its last frame and where everyone stands. The families
+    /// of sixteen of `model::demo` arrive one by one, the last first, so the layout has a
+    /// history, as a live one does: placing everything again at once, largest first, would
+    /// not land where it is.
     pub fn settled(view: View, sample: &Snapshot) -> (Scene, f32, HashMap<Identity, Point>) {
-        let mut early = sample.clone();
-        early.processes.drain(..sample.processes.len() * 2 / 5);
+        let family = |process: &Process| process.id.pid.saturating_sub(1000) as usize / 16;
+        let families = sample
+            .processes
+            .iter()
+            .map(family)
+            .max()
+            .map_or(0, |f| f + 1);
         let mut scene = Scene::new();
         let mut time = 30.0;
         let mut places = HashMap::new();
         for step in 0..50 {
-            let snapshot = if step < 25 { &early } else { sample };
-            places = place(&mut scene, snapshot, view, time, 4096, None, None);
+            let arrived = (1 + step * families / 45).min(families);
+            let mut partial = sample.clone();
+            partial
+                .processes
+                .retain(|process| family(process) >= families - arrived);
+            // Each frame is a sample of its own, ending at the sample itself.
+            partial.elapsed = sample.elapsed - (49 - step) as f64 * 0.1;
+            places = place(&mut scene, &partial, view, time, 4096, None, None);
             time += 0.1;
         }
         (scene, time - 0.1, places)
@@ -3197,7 +3208,8 @@ pub(crate) mod hiding {
         };
         let (mut scene, time, before) = settled(view, sample);
         let before = measure(before);
-        let limited = measure(place(&mut scene, sample, view, time, 80, None, None));
+        let half = sample.processes.len() / 2;
+        let limited = measure(place(&mut scene, sample, view, time, half, None, None));
         assert!(!limited.is_empty() && limited.len() < before.len());
         in_place(&limited, &before);
         let selected = *before.keys().max().expect("something is drawn");
@@ -3207,7 +3219,7 @@ pub(crate) mod hiding {
             sample,
             view,
             time,
-            80,
+            half,
             Some(selected),
             None,
         ));
