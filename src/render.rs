@@ -3058,6 +3058,84 @@ pub fn descendants(snapshot: &Snapshot, root: Identity) -> HashSet<Identity> {
     result
 }
 
+/// Shared checks that a view keeps its layout while focus or the process limit hides processes.
+#[cfg(test)]
+pub(crate) mod hiding {
+    use super::*;
+
+    /// Records one small frame of `view` and returns where each drawn process stands.
+    pub fn place(
+        scene: &mut Scene,
+        snapshot: &Snapshot,
+        view: View,
+        time: f32,
+        limit: usize,
+        selected: Option<Identity>,
+        focus: Option<Identity>,
+    ) -> HashMap<Identity, Point> {
+        let frame = scene.render(
+            snapshot,
+            view,
+            &Camera::default(),
+            160,
+            90,
+            selected,
+            time,
+            limit,
+            focus,
+        );
+        scene.spare = frame.release();
+        scene.positions.clone()
+    }
+
+    /// `view` after five seconds of frames on one sample, so whatever moves has left the spot
+    /// it began at; returns the scene, the time of its last frame and where everyone stands.
+    pub fn settled(view: View, sample: &Snapshot) -> (Scene, f32, HashMap<Identity, Point>) {
+        let mut scene = Scene::new();
+        let mut time = 30.0;
+        let mut places = HashMap::new();
+        for _ in 0..50 {
+            places = place(&mut scene, sample, view, time, 4096, None, None);
+            time += 0.1;
+        }
+        (scene, time - 0.1, places)
+    }
+
+    /// Asserts that every process drawn now stands where it stood in `before`.
+    pub fn in_place(now: &HashMap<Identity, Point>, before: &HashMap<Identity, Point>) {
+        for (id, point) in now {
+            assert_eq!(before.get(id), Some(point), "{id:?}");
+        }
+    }
+
+    /// Focuses one family of sixteen and clears the focus again, repeating the last frame's
+    /// time so nothing steps and anything that moves was moved by the change of focus.
+    pub fn focus_and_clear(view: View, sample: &Snapshot) {
+        let (mut scene, time, before) = settled(view, sample);
+        let root = sample.processes[16].id;
+        let focused = place(&mut scene, sample, view, time, 4096, None, Some(root));
+        assert!(!focused.is_empty() && focused.len() < before.len());
+        in_place(&focused, &before);
+        let cleared = place(&mut scene, sample, view, time, 4096, None, None);
+        assert_eq!(cleared, before);
+    }
+
+    /// Cuts the population in half with the limit, swaps a selection in across it, and lifts
+    /// the limit again, at one time as above.
+    pub fn limit_and_lift(view: View, sample: &Snapshot) {
+        let (mut scene, time, before) = settled(view, sample);
+        let limited = place(&mut scene, sample, view, time, 80, None, None);
+        assert!(!limited.is_empty() && limited.len() < before.len());
+        in_place(&limited, &before);
+        let selected = sample.processes[150].id;
+        let swapped = place(&mut scene, sample, view, time, 80, Some(selected), None);
+        assert!(swapped.contains_key(&selected));
+        in_place(&swapped, &before);
+        let lifted = place(&mut scene, sample, view, time, 4096, None, None);
+        assert_eq!(lifted, before);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
