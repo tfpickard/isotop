@@ -124,14 +124,19 @@ pub fn nanoseconds(ticks: u64, numer: u32, denom: u32) -> u64 {
     u64::try_from(nanoseconds).unwrap_or(u64::MAX)
 }
 
+/// Whether `pbi_status` is SZOMB (5 in xnu bsd/sys/proc.h): the process has exited and has no
+/// task left to report on.
+pub fn zombie(status: u32) -> bool {
+    status == 5
+}
+
 /// The Linux-style state letter from `pbi_status` and the task's running thread count. macOS
 /// has no uninterruptible sleep, so never 'D'.
 pub fn state(status: u32, running: i32) -> char {
-    // SSTOP and SZOMB from xnu bsd/sys/proc.h.
+    // SSTOP from xnu bsd/sys/proc.h.
     const STOPPED: u32 = 4;
-    const ZOMBIE: u32 = 5;
     match status {
-        ZOMBIE => 'Z',
+        _ if zombie(status) => 'Z',
         STOPPED => 'T',
         _ if running > 0 => 'R',
         _ => 'S',
@@ -555,6 +560,14 @@ mod tests {
         assert_eq!(state(2, 1), 'R');
         assert_eq!(state(3, 0), 'S');
         assert_eq!(state(2, 0), 'S');
+    }
+
+    #[test]
+    fn a_zombie_needs_no_live_task_and_still_reads_as_z() {
+        assert!(zombie(5));
+        assert!(!zombie(2) && !zombie(4));
+        // The sampler zeroes the task info of a zombie, so no thread is running.
+        assert_eq!(state(5, 0), 'Z');
     }
 
     #[test]

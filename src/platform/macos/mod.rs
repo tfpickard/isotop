@@ -135,8 +135,16 @@ impl Sampler {
         pid: c_int,
         previous: &mut HashMap<Identity, Description>,
     ) -> Result<(RawProcess, logic::Lineage), Absent> {
-        let bsd: libc::proc_bsdinfo = pid_info(pid, libc::PROC_PIDTBSDINFO)?;
-        let task: libc::proc_taskinfo = pid_info(pid, libc::PROC_PIDTASKINFO)?;
+        // A nonzero argument makes xnu search the zombie list too, so a zombie is not lost.
+        let bsd: libc::proc_bsdinfo = pid_info(pid, libc::PROC_PIDTBSDINFO, 1)?;
+        let task: libc::proc_taskinfo = if logic::zombie(bsd.pbi_status) {
+            // A zombie has no task left to report, so its memory, threads and CPU time read
+            // as zero.
+            // SAFETY: proc_taskinfo holds only integers, for which all-zero bits are valid.
+            unsafe { std::mem::zeroed() }
+        } else {
+            pid_info(pid, libc::PROC_PIDTASKINFO, 0)?
+        };
         let id = Identity {
             pid: pid as u32,
             start: bsd
@@ -370,12 +378,13 @@ fn list_pids(pids: &mut Vec<c_int>) -> io::Result<()> {
     }
 }
 
-/// One `proc_pidinfo` flavor of a process.
-fn pid_info<T: Copy>(pid: c_int, flavor: c_int) -> Result<T, Absent> {
+/// One `proc_pidinfo` flavor of a process; `argument` is the flavor's own argument.
+fn pid_info<T: Copy>(pid: c_int, flavor: c_int, argument: u64) -> Result<T, Absent> {
     let mut value = MaybeUninit::<T>::zeroed();
     let size = size_of::<T>() as c_int;
     // SAFETY: the buffer is valid for writes of `size` bytes.
-    let written = unsafe { libc::proc_pidinfo(pid, flavor, 0, value.as_mut_ptr().cast(), size) };
+    let written =
+        unsafe { libc::proc_pidinfo(pid, flavor, argument, value.as_mut_ptr().cast(), size) };
     if written == size {
         // SAFETY: T is one of libc's plain-integer proc_info structs, which every bit pattern
         // inhabits, and the kernel filled all of it.
