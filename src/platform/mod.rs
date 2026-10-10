@@ -31,6 +31,8 @@
 //!   stdout and stderr, and the parser that reads one entry at a time from its stdout;
 //!   `JOURNAL: &str` names the follower (`journalctl` or `log`) in the messages isotop prints
 //!   when it cannot run or when it complains on stderr.
+//! - `MEMORY_LABEL: &str` names what `Process::memory` measures (RSS on Linux), as the
+//!   inspector and legends show it.
 
 use std::collections::HashMap;
 use std::io::{self, BufRead};

@@ -20,6 +20,10 @@ use crate::platform::{Network, RawProcess};
 
 pub use journal::{JOURNAL, journal};
 
+/// What `Process::memory` measures here: the physical footprint, which counts compressed and
+/// swapped dirty memory and leaves out clean shared pages, so it is not a resident size.
+pub const MEMORY_LABEL: &str = "memory footprint";
+
 /// `ARG_MAX` on macOS, used when `kern.argmax` cannot be read.
 const ARG_MAX: usize = 1 << 20;
 
