@@ -8,8 +8,8 @@ The README covers usage. This file covers how to work on the code.
 ## Pipeline
 
 1. **Sample** (`model.rs`). `Collector::sample` reads `/proc` once per `--sample-ms` and
-   returns a `Snapshot`. Slow sources (sockets in `net.rs`, NVIDIA memory in `nvml.rs`) run on a
-   background thread every 2 s and are merged in, so the frame loop never waits on them.
+   returns a `Snapshot`. Slow sources (sockets in `net.rs`, open files and file locks in
+   `files.rs`, NVIDIA memory in `nvml.rs`) run on a background thread every 2 s and are merged in, so the frame loop never waits on them.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
@@ -26,9 +26,10 @@ The README covers usage. This file covers how to work on the code.
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark |
 | `model.rs` | `Process`, `Snapshot`, `Collector`, background sampler, `/proc` parsing, demo workload, `describe` |
 | `net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
+| `files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
-| `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, feeders, eggs, chicks, dust and foxes, stepped at a fixed 20 Hz |
+| `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries and the seeded `Rng` |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |

@@ -1,7 +1,7 @@
 //! Coop: the machine as a fenced chicken yard. Every process is a chicken in a Vicsek flock, one
 //! flock per cgroup around its henhouse; idle processes roost, running ones peck at the feeder of
-//! the CPU they ran on, and eggs, chicks, dust and foxes stand for writes, threads, reads and OOM
-//! kills.
+//! the CPU they ran on, and lock holders brood on the nest. Eggs, rotten eggs, chicks, dust and
+//! foxes stand for open files, deleted files still open, threads, reads and OOM kills.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -41,10 +41,19 @@ const ROOST_LEAVE: f32 = 0.8;
 const ROOST_NEWCOMER: f32 = 0.5;
 /// Samples of CPU kept per process for the coefficient of variation.
 const HISTORY: usize = 30;
-/// Bytes written per egg, how long an egg stays in the nest, and eggs shown per nest.
-const EGG: u64 = 1 << 20;
-const EGG_SECONDS: f64 = 60.0;
-const NEST_EGGS: usize = 24;
+/// A full nest box: a clutch of round(log2(1 + open files)) eggs up to CLUTCH, then one rotten
+/// egg per file deleted while still open, up to ROTTEN. Together they fill its 4 by 6 grid.
+const CLUTCH: usize = 16;
+const ROTTEN: usize = 8;
+const EGG_SIZE: f32 = 0.15;
+const EGG_SPACING: f32 = 0.24;
+/// Brooding hens sit side by side along the nest box in columns of BROOD_COLUMN; those that do
+/// not fit on the box sit on straw pads PAD_HEIGHT high. Hens blocked on a lock queue beside the
+/// nest in rows of NEST_QUEUE_ROW.
+const BROOD_COLUMN: usize = 4;
+const PAD_HEIGHT: f32 = 0.12;
+const NEST_GAP: f32 = 0.1;
+const NEST_QUEUE_ROW: usize = 4;
 /// Reads faster than this raise dust, one puff per doubling, at most MAX_PUFFS.
 const DUST_RATE: f32 = 65536.0;
 const MAX_PUFFS: usize = 5;
@@ -105,6 +114,9 @@ const DOOR: Color = [56, 38, 30];
 const STRAW: Color = [224, 196, 118];
 const GRAIN: Color = [246, 214, 128];
 const EGGSHELL: Color = [248, 240, 222];
+const ROTTEN_SHELL: Color = [104, 122, 58];
+const CRACK: Color = [52, 44, 30];
+const LOCK_LINE: Color = [236, 214, 160];
 const COMB: Color = [216, 46, 46];
 const BEAK: Color = [244, 168, 48];
 const LEGS: Color = [232, 160, 64];
@@ -124,9 +136,28 @@ enum Role {
     Foraging,
     Roosting,
     Feeding,
+    /// Holding a file lock while not running: sitting on her own house's nest.
+    Brooding,
+    /// Blocked on a file lock: queueing beside the nest of the holder's house.
+    Waiting,
     Zombie,
     Frozen,
     Stuck,
+}
+
+impl Role {
+    /// Walks to a target rather than foraging or holding still.
+    fn walks(self) -> bool {
+        matches!(
+            self,
+            Role::Roosting | Role::Feeding | Role::Brooding | Role::Waiting
+        )
+    }
+
+    /// The heading on arriving: queueing hens face the nest to their west, the rest the yard.
+    fn resting_heading(self) -> f32 {
+        if self == Role::Waiting { PI } else { FRAC_PI_2 }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -139,11 +170,14 @@ struct Chicken {
     speed: f32,
     noise: f32,
     role: Role,
-    /// Where a roosting or feeding chicken walks, and whether it has got there.
+    /// Where a roosting, feeding, brooding or waiting chicken walks, and whether it has got there.
     target: [f32; 2],
     arrived: bool,
-    /// Height of the perch bar a roosting chicken sits on once it arrives.
+    /// Height of the perch bar a roosting chicken sits on once it arrives, or of the nest box
+    /// or straw pad a brooding one sits on.
     perch: f32,
+    /// The process holding the file lock a waiting chicken is blocked on, when it is sampled.
+    holder: Option<Identity>,
     rng: Rng,
     radius: f32,
     /// Socket peers as (chicken index, weight); only foraging pairs.
@@ -171,6 +205,7 @@ impl Chicken {
             target: position,
             arrived: false,
             perch: 0.0,
+            holder: None,
             rng,
             radius: 0.3,
             peers: Vec::new(),
@@ -182,7 +217,7 @@ impl Chicken {
     }
 
     fn walking(&self) -> bool {
-        matches!(self.role, Role::Roosting | Role::Feeding) && !self.arrived
+        self.role.walks() && !self.arrived
     }
 
     /// On the ground and immovable: separation pushes foragers off it but never moves it.
@@ -190,7 +225,7 @@ impl Chicken {
         match self.role {
             Role::Zombie | Role::Stuck => true,
             Role::Frozen => self.perch == 0.0,
-            Role::Feeding => self.arrived,
+            Role::Feeding | Role::Brooding | Role::Waiting => self.arrived,
             Role::Foraging | Role::Roosting => false,
         }
     }
@@ -361,7 +396,7 @@ impl Yard {
                     chicken.position[0] += chicken.speed * h * chicken.theta.cos();
                     chicken.position[1] += chicken.speed * h * chicken.theta.sin();
                 }
-                Role::Roosting | Role::Feeding if !chicken.arrived => {
+                role if role.walks() && !chicken.arrived => {
                     let away = [
                         chicken.target[0] - chicken.position[0],
                         chicken.target[1] - chicken.position[1],
@@ -370,7 +405,7 @@ impl Yard {
                     if distance <= WALK * h {
                         chicken.position = chicken.target;
                         chicken.arrived = true;
-                        chicken.theta = FRAC_PI_2;
+                        chicken.theta = role.resting_heading();
                     } else {
                         chicken.theta = away[1].atan2(away[0]);
                         chicken.position[0] += away[0] / distance * WALK * h;
@@ -562,23 +597,6 @@ fn order_of<'a>(chickens: impl Iterator<Item = &'a Chicken>) -> Option<f32> {
     (speeds > 0.0).then(|| sum[0].hypot(sum[1]) / speeds)
 }
 
-/// Bytes written since a process was first seen, and the eggs it has laid for them.
-struct Ledger {
-    first: u64,
-    laid: u64,
-}
-
-struct Egg {
-    laid: f64,
-    slot: usize,
-}
-
-#[derive(Default)]
-struct Nest {
-    eggs: VecDeque<Egg>,
-    count: usize,
-}
-
 /// An OOM kill recorded but not yet sent into the yard.
 struct Call {
     flock: String,
@@ -642,6 +660,30 @@ struct Flock {
     members: usize,
     center: [f32; 2],
     span: usize,
+    /// Open regular files of the members whose descriptor tables could be read, and the files
+    /// among them deleted while still open with their bytes.
+    files: u64,
+    deleted: u64,
+    deleted_bytes: u64,
+}
+
+impl Flock {
+    /// The middle of the nest box on the east side of the henhouse.
+    fn nest(&self) -> [f32; 2] {
+        [
+            self.center[0] + HOUSE_HALF[0] + NEST_HALF[0],
+            self.center[1] + HOUSE_Y,
+        ]
+    }
+}
+
+/// Eggs in a flock's clutch for its open files: round(log2(1 + files)), at most CLUTCH.
+fn clutch(files: u64) -> usize {
+    ((files as f64 + 1.0).log2().round() as usize).min(CLUTCH)
+}
+
+fn plural(count: u64, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 /// The persistent coop view.
@@ -651,8 +693,6 @@ pub struct Coop {
     /// Seconds between the last two recorded samples.
     interval: f64,
     history: HashMap<Identity, VecDeque<f32>>,
-    ledgers: HashMap<Identity, Ledger>,
-    nests: HashMap<String, Nest>,
     kills: HashMap<String, u64>,
     /// Members of each cgroup in the last recorded sample with their memory, for fox victims.
     members: HashMap<String, Vec<(Identity, u64)>>,
@@ -678,6 +718,11 @@ pub struct Coop {
     phi: Option<f32>,
     pressure_missing: bool,
     unreadable: usize,
+    /// Drawn processes whose descriptor tables or lock state could not be read, and locks that
+    /// name no process.
+    no_files: usize,
+    no_locks: usize,
+    unattributed_locks: u32,
 }
 
 /// The flock a process belongs to: its cgroup, or its group without one; kernel threads share one.
@@ -886,7 +931,7 @@ fn fraction(value: u32) -> f32 {
 }
 
 impl Coop {
-    /// Takes in a new sample: CPU history, eggs, OOM kills and cgroup membership. Older or
+    /// Takes in a new sample: CPU history, OOM kills and cgroup membership. Older or
     /// repeated samples are ignored, so the scene and the view may both call it.
     pub fn record(&mut self, snapshot: &Snapshot) {
         if self
@@ -901,49 +946,13 @@ impl Coop {
         self.recorded = Some(snapshot.elapsed);
         let present: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
         self.history.retain(|id, _| present.contains(id));
-        self.ledgers.retain(|id, _| present.contains(id));
         for process in &snapshot.processes {
             let samples = self.history.entry(process.id).or_default();
             samples.push_back(process.cpu);
             if samples.len() > HISTORY {
                 samples.pop_front();
             }
-            let Some(written) = process.written else {
-                continue;
-            };
-            let ledger = self.ledgers.entry(process.id).or_insert(Ledger {
-                first: written,
-                laid: 0,
-            });
-            let eggs = written.saturating_sub(ledger.first) / EGG;
-            if eggs > ledger.laid {
-                let fresh = eggs - ledger.laid;
-                ledger.laid = eggs;
-                let nest = self.nests.entry(flock_key(process)).or_default();
-                let shown = fresh.min(NEST_EGGS as u64) as usize;
-                nest.count += (fresh as usize).saturating_sub(shown);
-                for _ in 0..shown {
-                    if nest.eggs.len() == NEST_EGGS {
-                        nest.eggs.pop_front();
-                    }
-                    nest.eggs.push_back(Egg {
-                        laid: snapshot.elapsed,
-                        slot: nest.count % NEST_EGGS,
-                    });
-                    nest.count += 1;
-                }
-            }
         }
-        for nest in self.nests.values_mut() {
-            while nest
-                .eggs
-                .front()
-                .is_some_and(|egg| snapshot.elapsed - egg.laid >= EGG_SECONDS)
-            {
-                nest.eggs.pop_front();
-            }
-        }
-        self.nests.retain(|_, nest| !nest.eggs.is_empty());
         // Members that left since the last sample stay suspects for a few seconds, because the
         // kill count comes from the slower background sampler and can rise after they are gone.
         let mut left: Vec<Departed> = self
@@ -1023,13 +1032,25 @@ impl Coop {
             .phi
             .map_or_else(|| "- (none foraging)".to_owned(), |phi| format!("{phi:.2}"));
         let mut line = format!(
-            " Chicken = process, size = memory | flock = cgroup | foraging speed = CPU, roost = idle | feeder = CPU it ran on, pecking order = priority | chicks = threads | eggs = MiB written | dust = reads | fox = OOM kill, eyes = memory pressure | phi {phi}"
+            " Chicken = process, size = memory | flock = cgroup | foraging speed = CPU, roost = idle | feeder = CPU it ran on, pecking order = priority | eggs = open files (log2), cracked = deleted but open | brooding = holds a file lock, queue at a nest = blocked on one | chicks = threads | dust = reads | fox = OOM kill, eyes = memory pressure | phi {phi}"
         );
         if self.pressure_missing {
             line.push_str(" | no CPU pressure: noise from CPU variation only");
         }
         if self.unreadable > 0 {
             line.push_str(&format!(" | I/O unreadable for {}", self.unreadable));
+        }
+        if self.no_files > 0 {
+            line.push_str(&format!(" | no files for {} (permissions)", self.no_files));
+        }
+        if self.no_locks > 0 {
+            line.push_str(&format!(" | file locks unreadable for {}", self.no_locks));
+        }
+        if self.unattributed_locks > 0 {
+            line.push_str(&format!(
+                " | {} without a process (OFD)",
+                plural(self.unattributed_locks.into(), "file lock", "file locks")
+            ));
         }
         line
     }
@@ -1169,19 +1190,29 @@ impl Coop {
             snapshot.processes.iter().map(|p| (p.id, p)).collect();
         let measured =
             |i: usize| -> &Process { raw.get(&processes[i].id).copied().unwrap_or(processes[i]) };
-        let mut groups: BTreeMap<String, (String, Vec<Identity>)> = BTreeMap::new();
+        // Each flock's label, members, and open, deleted and deleted bytes of its readable members.
+        type Group = (String, Vec<Identity>, [u64; 3]);
+        let mut groups: BTreeMap<String, Group> = BTreeMap::new();
         for &i in order {
             let process = measured(i);
-            groups
+            let group = groups
                 .entry(flock_key(process))
-                .or_insert_with(|| (flock_label(process), Vec::new()))
-                .1
-                .push(process.id);
+                .or_insert_with(|| (flock_label(process), Vec::new(), [0; 3]));
+            group.1.push(process.id);
+            if let (Some(open), Some(deleted), Some(bytes)) = (
+                process.open_files,
+                process.deleted_files,
+                process.deleted_bytes,
+            ) {
+                group.2[0] += u64::from(open);
+                group.2[1] += u64::from(deleted);
+                group.2[2] = group.2[2].saturating_add(bytes);
+            }
         }
         self.seats.assign(
             groups
                 .iter()
-                .flat_map(|(key, (_, ids))| ids.iter().map(move |&id| (id, key.as_str()))),
+                .flat_map(|(key, (_, ids, _))| ids.iter().map(move |&id| (id, key.as_str()))),
         );
         let needs: Vec<(String, f32)> = groups
             .keys()
@@ -1217,7 +1248,7 @@ impl Coop {
         self.yard.high = high;
         self.flocks = groups
             .iter()
-            .map(|(key, (label, ids))| {
+            .map(|(key, (label, ids, [files, deleted, deleted_bytes]))| {
                 let span = self.seats.span(key);
                 Flock {
                     key: key.clone(),
@@ -1225,6 +1256,9 @@ impl Coop {
                     members: ids.len(),
                     center: centers.get(key).copied().unwrap_or([0.0, 0.0]),
                     span,
+                    files: *files,
+                    deleted: *deleted,
+                    deleted_bytes: *deleted_bytes,
                 }
             })
             .collect();
@@ -1283,6 +1317,13 @@ impl Coop {
 
         let psi = snapshot.pressure[0];
         self.pressure_missing = snapshot.missing.contains(&"pressure");
+        let by_pid: HashMap<u32, &Process> = snapshot
+            .processes
+            .iter()
+            .map(|process| (process.id.pid, process))
+            .collect();
+        // The flock whose nest each chicken goes to: the lock holder's for a waiting one.
+        let mut nest_of: Vec<usize> = Vec::with_capacity(order.len());
         for (k, &i) in order.iter().enumerate() {
             let process = measured(i);
             let chicken = &mut chickens[k];
@@ -1298,10 +1339,12 @@ impl Coop {
                     'Z' => Role::Zombie,
                     'T' | 't' => Role::Frozen,
                     'D' => Role::Stuck,
+                    _ if process.blocked_on.is_some() => Role::Waiting,
                     'R' => Role::Feeding,
                     // The feeding hold: a chicken leaves the feeder only after two samples in a
                     // row without running, so R/S flicker on 1 s samples does not shuttle it.
                     _ if previous == Some(Role::Feeding) && chicken.quiet < 2 => Role::Feeding,
+                    _ if process.locks_held.is_some_and(|held| held > 0) => Role::Brooding,
                     _ => {
                         let threshold = match previous {
                             None => ROOST_NEWCOMER,
@@ -1327,6 +1370,14 @@ impl Coop {
                 }
                 chicken.role = role;
             }
+            let holder = process.blocked_on.and_then(|pid| by_pid.get(&pid).copied());
+            chicken.holder = holder.map(|holder| holder.id);
+            nest_of.push(
+                holder
+                    .filter(|_| chicken.role == Role::Waiting)
+                    .and_then(|holder| flock_of.get(flock_key(holder).as_str()).copied())
+                    .unwrap_or(chicken.flock),
+            );
             chicken.radius = body_radius(process.memory as f32);
             chicken.speed = speed(process.cpu);
             chicken.chicks = process.threads.saturating_sub(1).min(MAX_CHICKS);
@@ -1344,22 +1395,42 @@ impl Coop {
                     format!("{psi:.0}%")
                 }
             ));
-            match (process.written, self.ledgers.get(&process.id)) {
-                (Some(written), Some(ledger)) => {
-                    // Tenths of a MiB rounded down, so the count never reads above the eggs.
-                    let tenths = written.saturating_sub(ledger.first) * 10 / EGG;
-                    let mut line = format!(
-                        "eggs {} ({}.{} MiB written)",
-                        ledger.laid,
-                        tenths / 10,
-                        tenths % 10
-                    );
+            match (
+                process.open_files,
+                process.deleted_files,
+                process.deleted_bytes,
+            ) {
+                (Some(open), Some(deleted), Some(held)) => {
+                    notes.push(format!(
+                        "{} (eggs in the {} nest)",
+                        plural(open.into(), "open file", "open files"),
+                        self.flocks[chicken.flock].label
+                    ));
+                    if deleted > 0 {
+                        notes.push(format!(
+                            "{} still open, {} held (rotten eggs)",
+                            plural(deleted.into(), "deleted file", "deleted files"),
+                            bytes(held)
+                        ));
+                    }
+                }
+                _ => notes.push("open files unreadable (permissions)".into()),
+            }
+            if let Some(held) = process.locks_held.filter(|&held| held > 0) {
+                notes.push(format!(
+                    "holds {}",
+                    plural(held.into(), "file lock", "file locks")
+                ));
+            }
+            match process.written {
+                Some(written) => {
+                    let mut line = format!("{} written since it started", bytes(written));
                     if let Some(rate) = process.write_rate.filter(|&r| r > 0.0) {
                         line.push_str(&format!(", writing {}/s", self::rate(rate)));
                     }
                     notes.push(line);
                 }
-                _ => notes.push("I/O unreadable".into()),
+                None => notes.push("I/O unreadable".into()),
             }
             if let Some(read) = process.read_rate.filter(|&r| r > DUST_RATE) {
                 notes.push(format!(
@@ -1481,17 +1552,44 @@ impl Coop {
                 chicken.notes[0] = note;
             }
         }
-        for chicken in &mut chickens {
-            if chicken.role == Role::Feeding {
-                continue;
-            }
+        self.seat_nests(&mut chickens, &nest_of);
+        for (k, chicken) in chickens.iter_mut().enumerate() {
+            let process = measured(order[k]);
             chicken.notes[0] = match chicken.role {
+                Role::Feeding => continue,
                 Role::Foraging => "foraging".into(),
                 Role::Roosting => "roosting".into(),
+                Role::Brooding => format!(
+                    "brooding on the nest: idle while holding {}",
+                    plural(
+                        process.locks_held.unwrap_or(0).into(),
+                        "file lock",
+                        "file locks"
+                    )
+                ),
+                Role::Waiting => {
+                    let pid = process.blocked_on.unwrap_or(0);
+                    match by_pid.get(&pid) {
+                        Some(holder) if flock_key(holder) == self.flocks[nest_of[k]].key => {
+                            format!(
+                                "waiting for a file lock held by {} (pid {pid})",
+                                holder.name
+                            )
+                        }
+                        Some(holder) => format!(
+                            "waiting for a file lock held by {} (pid {pid}), at its own nest \
+                             because the holder's flock is not drawn",
+                            holder.name
+                        ),
+                        None => format!(
+                            "waiting for a file lock held by pid {pid}, which was not sampled, \
+                             at its own nest"
+                        ),
+                    }
+                }
                 Role::Zombie => "feet up: zombie, waiting for its parent to reap it".into(),
                 Role::Frozen => "frozen: stopped (tonic immobility)".into(),
                 Role::Stuck => "stuck in the mud: uninterruptible sleep (D)".into(),
-                Role::Feeding => unreachable!(),
             };
         }
         if first {
@@ -1506,7 +1604,7 @@ impl Coop {
                     );
                     chicken.previous = chicken.position;
                     chicken.arrived = true;
-                    chicken.theta = FRAC_PI_2;
+                    chicken.theta = chicken.role.resting_heading();
                 }
             }
         }
@@ -1562,6 +1660,15 @@ impl Coop {
             .iter()
             .filter(|&&i| measured(i).written.is_none())
             .count();
+        self.no_files = order
+            .iter()
+            .filter(|&&i| measured(i).open_files.is_none())
+            .count();
+        self.no_locks = order
+            .iter()
+            .filter(|&&i| measured(i).locks_held.is_none())
+            .count();
+        self.unattributed_locks = snapshot.unattributed_locks;
         self.yard.chickens = chickens;
 
         let psi_memory = snapshot.pressure[1];
@@ -1573,6 +1680,80 @@ impl Coop {
                 self.yard
                     .eyes
                     .push(self.perimeter(fraction(k as u32 + 17), outside + 0.4));
+            }
+        }
+    }
+
+    /// Seats brooding chickens on their own nest and queues waiting ones beside the nest of
+    /// `nest_of`, each in identity order. Brooders sit side by side along the nest box in columns
+    /// of BROOD_COLUMN going east, on the box while they fit on it and on straw pads beyond; the
+    /// queue starts east of them, in rows of NEST_QUEUE_ROW.
+    fn seat_nests(&self, chickens: &mut [Chicken], nest_of: &[usize]) {
+        let mut brooding: Vec<Vec<usize>> = vec![Vec::new(); self.flocks.len()];
+        let mut waiting: Vec<Vec<usize>> = vec![Vec::new(); self.flocks.len()];
+        for (k, chicken) in chickens.iter().enumerate() {
+            match chicken.role {
+                Role::Brooding => brooding[chicken.flock].push(k),
+                Role::Waiting => waiting[nest_of[k]].push(k),
+                _ => {}
+            }
+        }
+        let (low, high) = (self.yard.low, self.yard.high);
+        let seat = |chicken: &mut Chicken, spot: [f32; 2], perch: f32| {
+            let target = keep_inside(spot, chicken.radius, low, high);
+            if target != chicken.target {
+                chicken.arrived = false;
+            }
+            chicken.target = target;
+            chicken.perch = perch;
+        };
+        for (flock, (brooders, waiters)) in brooding.iter().zip(&waiting).enumerate() {
+            let nest = self.flocks[flock].nest();
+            let mut edge = nest[0] + NEST_HALF[0];
+            for (column, members) in brooders.chunks(BROOD_COLUMN).enumerate() {
+                let widest = members
+                    .iter()
+                    .map(|&k| chickens[k].radius)
+                    .fold(0.0, f32::max);
+                let x = if column == 0 {
+                    nest[0]
+                } else {
+                    edge + NEST_GAP + widest
+                };
+                edge = edge.max(x + widest);
+                let length: f32 = members
+                    .iter()
+                    .map(|&k| 2.0 * chickens[k].radius + NEST_GAP)
+                    .sum::<f32>()
+                    - NEST_GAP;
+                let mut cursor = nest[1] - length * 0.5;
+                for &k in members {
+                    let radius = chickens[k].radius;
+                    let y = cursor + radius;
+                    cursor += 2.0 * radius + NEST_GAP;
+                    let on_box = column == 0 && (y - nest[1]).abs() <= NEST_HALF[1];
+                    seat(
+                        &mut chickens[k],
+                        [x, y],
+                        if on_box { NEST_HEIGHT } else { PAD_HEIGHT },
+                    );
+                }
+            }
+            let row_depth = waiters
+                .iter()
+                .map(|&k| 2.0 * chickens[k].radius + 0.25)
+                .fold(0.0, f32::max);
+            for (row, members) in waiters.chunks(NEST_QUEUE_ROW).enumerate() {
+                let mut cursor = edge + 0.3;
+                for &k in members {
+                    let radius = chickens[k].radius;
+                    seat(
+                        &mut chickens[k],
+                        [cursor + radius, nest[1] - row as f32 * row_depth],
+                        0.0,
+                    );
+                    cursor += 2.0 * radius + 0.25;
+                }
             }
         }
     }
@@ -1647,34 +1828,23 @@ impl Coop {
         for feeder in &self.feeders {
             draw_feeder(frame, camera, feeder);
         }
-        let now = snapshot.elapsed;
         for flock in &self.flocks {
             draw_house(frame, camera, flock);
-            if let Some(nest) = self.nests.get(&flock.key) {
-                let nest_center = [
-                    flock.center[0] + HOUSE_HALF[0] + NEST_HALF[0],
-                    flock.center[1] + HOUSE_Y,
-                ];
-                for egg in &nest.eggs {
-                    let age = (now - egg.laid) as f32;
-                    if !(0.0..EGG_SECONDS as f32).contains(&age) {
-                        continue;
-                    }
-                    let fade = age / EGG_SECONDS as f32;
-                    let (column, row) = (egg.slot % 4, egg.slot / 4);
-                    let size = 0.15 * (1.0 - 0.5 * fade);
-                    let color = mix(EGGSHELL, STRAW, fade);
-                    frame.world_sphere(
-                        camera,
-                        [
-                            nest_center[0] + (column as f32 - 1.5) * 0.24,
-                            nest_center[1] + (row as f32 - 2.5) * 0.24,
-                            NEST_HEIGHT + 0.02 + size,
-                        ],
-                        size / SCALE,
-                        color,
-                    );
-                }
+            draw_clutch(frame, camera, flock);
+        }
+        let nest_notes: Vec<String> = self.flocks.iter().map(nest_note).collect();
+        for chicken in &self.yard.chickens {
+            if chicken.role == Role::Brooding && chicken.perch == PAD_HEIGHT {
+                // A straw pad for a brooding hen beyond the nest box; decorative.
+                let [x, y] = chicken.target;
+                let half = chicken.radius * 0.9;
+                cuboid(
+                    frame,
+                    camera,
+                    [x - half, y - half, 0.0],
+                    [x + half, y + half, PAD_HEIGHT - 0.01],
+                    STRAW,
+                );
             }
         }
 
@@ -1726,8 +1896,23 @@ impl Coop {
             };
             let mut notes = vec![format!("flock {}: {phi}", flock.label)];
             notes.extend(chicken.notes.iter().cloned());
+            notes.push(nest_notes[chicken.flock].clone());
             stage.notes.insert(process.id, notes);
             shown += 1;
+        }
+        // A faint line from each hen queueing for a lock to the hen holding it.
+        for chicken in &self.yard.chickens {
+            if chicken.role != Role::Waiting {
+                continue;
+            }
+            if let Some(holder) = chicken.holder.filter(|&holder| holder != chicken.id)
+                && let (Some(&from), Some(&to)) = (
+                    stage.positions.get(&chicken.id),
+                    stage.positions.get(&holder),
+                )
+            {
+                frame.beam(camera, from, to, LOCK_LINE, 0.22);
+            }
         }
         for fox in &self.foxes {
             draw_fox(frame, camera, fox, time);
@@ -1759,10 +1944,6 @@ impl Coop {
 
 fn puffs(read: f32) -> usize {
     (1 + (read / DUST_RATE).log2().max(0.0) as usize).min(MAX_PUFFS)
-}
-
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t.clamp(0.0, 1.0)) as u8)
 }
 
 /// Shading of a vertical face by its outward direction, from a fixed light in the north west.
@@ -1957,6 +2138,65 @@ fn draw_feeder(frame: &mut Frame, camera: &Camera, feeder: &Feeder) {
     );
 }
 
+/// The inspector line about a flock's nest, with the exact counts behind the capped clutch.
+fn nest_note(flock: &Flock) -> String {
+    let mut line = format!(
+        "{} nest: {} for {}",
+        flock.label,
+        plural(clutch(flock.files) as u64, "egg", "eggs"),
+        plural(flock.files, "open file", "open files")
+    );
+    if flock.deleted > 0 {
+        line.push_str(&format!(
+            ", {} rotten for {} still open ({} held)",
+            flock.deleted.min(ROTTEN as u64),
+            plural(flock.deleted, "deleted file", "deleted files"),
+            bytes(flock.deleted_bytes)
+        ));
+    }
+    line
+}
+
+/// Where an egg lies in the nest box, a grid four across and six along: the clutch fills it from
+/// the back (south, away from the camera) and the rotten eggs from the front, where they show.
+/// CLUTCH and ROTTEN fill four and two rows, so the two never meet.
+fn egg_spot(nest: [f32; 2], index: usize, rotten: bool) -> [f32; 2] {
+    let (column, row) = (index % 4, index / 4);
+    let row = if rotten { 5 - row } else { row };
+    [
+        nest[0] + (column as f32 - 1.5) * EGG_SPACING,
+        nest[1] + (row as f32 - 2.5) * EGG_SPACING,
+    ]
+}
+
+/// The flock's eggs in its nest box: the clutch for its open files, then a cracked, discoloured
+/// egg for each file deleted while still open.
+fn draw_clutch(frame: &mut Frame, camera: &Camera, flock: &Flock) {
+    let nest = flock.nest();
+    let eggs = clutch(flock.files);
+    let rotten = flock.deleted.min(ROTTEN as u64) as usize;
+    for index in 0..eggs {
+        let [x, y] = egg_spot(nest, index, false);
+        let p = [x, y, NEST_HEIGHT + 0.02 + EGG_SIZE];
+        frame.world_sphere(camera, p, EGG_SIZE / SCALE, EGGSHELL);
+    }
+    for index in 0..rotten {
+        let [x, y] = egg_spot(nest, index, true);
+        let p = [x, y, NEST_HEIGHT + 0.02 + EGG_SIZE];
+        frame.world_sphere(camera, p, EGG_SIZE / SCALE, ROTTEN_SHELL);
+        let top = p[2] + EGG_SIZE * 0.75;
+        let crack = [
+            [x - 0.11, y - 0.02, top - 0.04],
+            [x - 0.04, y + 0.03, top],
+            [x + 0.02, y - 0.03, top],
+            [x + 0.11, y + 0.02, top - 0.04],
+        ];
+        for pair in crack.windows(2) {
+            frame.line(camera, pair[0], pair[1], CRACK);
+        }
+    }
+}
+
 /// The henhouse with a pitched roof and door, its nest box, and its perch ladders.
 fn draw_house(frame: &mut Frame, camera: &Camera, flock: &Flock) {
     let [cx, cy] = [flock.center[0], flock.center[1] + HOUSE_Y];
@@ -2005,7 +2245,7 @@ fn draw_house(frame: &mut Frame, camera: &Camera, flock: &Flock) {
         DOOR,
         NONE,
     );
-    let nest = [cx + hx + NEST_HALF[0], cy];
+    let nest = flock.nest();
     let [nx, ny] = NEST_HALF;
     cuboid(
         frame,
@@ -2141,6 +2381,8 @@ fn draw_chicken(
     let (height, head_forward, head_up, neck) = match chicken.role {
         Role::Zombie => (r * 0.8, 1.05, -0.3, false),
         Role::Frozen => (lift + r * 0.72, 0.85, 0.45, false),
+        // Brooding: settled low over the nest, feathers fluffed out.
+        Role::Brooding if perched => (lift + r * 0.4, 0.8, 0.4, false),
         _ if perched => (lift + r * 0.6, 0.7, 0.5, false),
         Role::Feeding if chicken.arrived => {
             // Pecking is decorative: the head bobs into the trough.
@@ -2956,33 +3198,168 @@ mod tests {
         assert!(displaced.target[1] < feeder.eating_line(), "now queueing");
     }
 
+    /// The notes of a drawn process, without the flock line and the nest line around them.
+    fn notes(scene: &Scene, pid: u32) -> Vec<String> {
+        let notes = &scene.notes[&identity(pid)];
+        notes[1..notes.len() - 1].to_vec()
+    }
+
+    fn nest_line(scene: &Scene, pid: u32) -> String {
+        scene.notes[&identity(pid)].last().unwrap().clone()
+    }
+
     #[test]
-    fn one_egg_is_laid_per_mebibyte_written() {
-        let mut coop = Coop::default();
-        let mib = 1u64 << 20;
-        let writes = [
-            1234,
-            1234 + mib - 1,
-            1234 + mib,
-            1234 + 3 * mib + 777,
-            1234 + 7 * mib + mib / 2,
-            1234 + 7 * mib + mib - 1,
-        ];
-        for (k, written) in writes.into_iter().enumerate() {
-            let mut p = process(10, "/system.slice/writer.service");
-            p.written = Some(written);
-            let mut quiet = process(11, "/system.slice/writer.service");
-            quiet.written = None;
-            coop.record(&snapshot(vec![p, quiet], k as f64));
-        }
-        assert_eq!(coop.ledgers[&identity(10)].laid, 7);
-        assert!(
-            !coop.ledgers.contains_key(&identity(11)),
-            "unreadable I/O lays nothing"
+    fn clutch_size_grows_with_open_files_and_is_capped() {
+        assert_eq!(
+            [0, 1, 2, 7, 140, 46_339, 46_341].map(clutch),
+            [0, 1, 2, 3, 7, 15, 16]
         );
-        let nest = &coop.nests["/system.slice/writer.service"];
-        assert_eq!(nest.eggs.len(), 7);
-        assert_eq!(nest.eggs.iter().filter(|e| e.laid == 3.0).count(), 2);
+        assert!((0..100_000).all(|files| clutch(files) <= clutch(files + 1)));
+        assert_eq!(clutch(u64::MAX), CLUTCH);
+        let path = "/system.slice/files.service";
+        let mut a = process(1, path);
+        a.open_files = Some(60);
+        let mut b = process(2, path);
+        b.open_files = Some(80);
+        let mut hidden = process(3, path);
+        hidden.open_files = None;
+        hidden.deleted_files = None;
+        hidden.deleted_bytes = None;
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot(vec![a, b, hidden], 1.0), 1.0);
+        assert_eq!(scene.coop.flocks[0].files, 140);
+        assert_eq!(clutch(scene.coop.flocks[0].files), 7);
+        assert!(nest_line(&scene, 1).ends_with("nest: 7 eggs for 140 open files"));
+        assert!(
+            notes(&scene, 1).contains(&"60 open files (eggs in the files.service nest)".into())
+        );
+        assert!(notes(&scene, 3).contains(&"open files unreadable (permissions)".into()));
+        assert!(scene.coop.legend().contains("no files for 1 (permissions)"));
+    }
+
+    #[test]
+    fn rotten_eggs_equal_the_deleted_count() {
+        let path = "/system.slice/logger.service";
+        let mut rotated = process(1, path);
+        rotated.open_files = Some(9);
+        rotated.deleted_files = Some(2);
+        rotated.deleted_bytes = Some(1_288_490_189);
+        let mut cache = process(2, path);
+        cache.open_files = Some(4);
+        cache.deleted_files = Some(1);
+        cache.deleted_bytes = Some(1 << 20);
+        let mut scene = Scene::new();
+        let mut sample = snapshot(vec![rotated, cache], 1.0);
+        render(&mut scene, &sample, 1.0);
+        assert_eq!(scene.coop.flocks[0].deleted, 3);
+        assert!(
+            notes(&scene, 1)
+                .contains(&"2 deleted files still open, 1.2 GiB held (rotten eggs)".into())
+        );
+        assert!(nest_line(&scene, 2).contains(", 3 rotten for 3 deleted files still open"));
+        // Beyond the cap the nest shows ROTTEN and the inspector keeps the exact count.
+        sample.processes[0].deleted_files = Some(11);
+        sample.elapsed = 2.0;
+        render(&mut scene, &sample, 2.0);
+        assert_eq!(scene.coop.flocks[0].deleted, 12);
+        assert!(nest_line(&scene, 2).contains(", 8 rotten for 12 deleted files still open"));
+    }
+
+    #[test]
+    fn an_idle_lock_holder_broods_at_her_own_nest() {
+        let path = "/system.slice/locks.service";
+        let holders: Vec<Process> = (1..=3)
+            .map(|pid| {
+                let mut p = process(pid, path);
+                p.cpu = 20.0;
+                p.locks_held = Some(pid);
+                p
+            })
+            .collect();
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot(holders, 1.0), 1.0);
+        let coop = &scene.coop;
+        let nest = coop.flocks[0].nest();
+        let brooders: Vec<&Chicken> = coop.yard.chickens.iter().collect();
+        for chicken in &brooders {
+            assert_eq!(chicken.role, Role::Brooding, "foraging CPU still broods");
+            assert!((chicken.target[0] - nest[0]).abs() < 1e-5);
+            assert!((chicken.target[1] - nest[1]).abs() <= NEST_HALF[1]);
+            assert_eq!(chicken.perch, NEST_HEIGHT);
+        }
+        for (a, b) in brooders
+            .iter()
+            .flat_map(|a| brooders.iter().map(move |b| (a, b)))
+            .filter(|(a, b)| a.id < b.id)
+        {
+            let apart = (a.target[0] - b.target[0]).hypot(a.target[1] - b.target[1]);
+            assert!(apart >= a.radius + b.radius, "brooders overlap");
+        }
+        assert_eq!(
+            notes(&scene, 2)[0],
+            "brooding on the nest: idle while holding 2 file locks"
+        );
+    }
+
+    #[test]
+    fn a_running_lock_holder_feeds_instead() {
+        let mut holder = process(1, "/system.slice/locks.service");
+        holder.state = 'R';
+        holder.cpu = 90.0;
+        holder.locks_held = Some(1);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot(vec![holder.clone()], 1.0), 1.0);
+        assert_eq!(scene.coop.yard.chickens[0].role, Role::Feeding);
+        assert!(notes(&scene, 1).contains(&"holds 1 file lock".into()));
+        // Once it stops running and the feeding hold has passed, it broods.
+        holder.state = 'S';
+        for elapsed in [2.0, 3.0] {
+            render(
+                &mut scene,
+                &snapshot(vec![holder.clone()], elapsed),
+                elapsed as f32,
+            );
+        }
+        assert_eq!(scene.coop.yard.chickens[0].role, Role::Brooding);
+    }
+
+    #[test]
+    fn a_blocked_waiter_walks_to_the_holders_nest_in_another_flock() {
+        let mut holder = process(1, "/system.slice/holder.service");
+        holder.locks_held = Some(1);
+        let mut waiter = process(2, "/system.slice/waiter.service");
+        waiter.state = 'R';
+        waiter.cpu = 50.0;
+        waiter.blocked_on = Some(1);
+        let mut scene = Scene::new();
+        let sample = snapshot(vec![holder, waiter], 1.0);
+        render(&mut scene, &sample, 1.0);
+        let coop = &scene.coop;
+        let home = coop
+            .flocks
+            .iter()
+            .find(|flock| flock.key == "/system.slice/holder.service")
+            .unwrap();
+        let nest = home.nest();
+        let chicken = coop.yard.find(identity(2)).unwrap();
+        assert_eq!(chicken.role, Role::Waiting, "blocked outranks running");
+        assert_ne!(coop.flocks[chicken.flock].key, home.key);
+        assert_eq!(chicken.holder, Some(identity(1)));
+        assert!(chicken.target[0] > nest[0] + NEST_HALF[0]);
+        assert!((chicken.target[0] - nest[0]).hypot(chicken.target[1] - nest[1]) < 3.0);
+        assert_eq!(
+            notes(&scene, 2)[0],
+            "waiting for a file lock held by hen-1 (pid 1)"
+        );
+        // A holder that is not sampled leaves it at its own nest.
+        let mut orphan = sample.processes[1].clone();
+        orphan.blocked_on = Some(77);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot(vec![orphan], 1.0), 1.0);
+        let chicken = &scene.coop.yard.chickens[0];
+        assert_eq!(chicken.role, Role::Waiting);
+        assert!(chicken.target[0] > scene.coop.flocks[0].nest()[0]);
+        assert!(notes(&scene, 2)[0].contains("pid 77, which was not sampled"));
     }
 
     #[test]
