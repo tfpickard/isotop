@@ -3,7 +3,7 @@
 //! travel the way the bytes flow. Processes with connections hover above home. Locations come from
 //! a local GeoIP database; addresses it cannot place circle the north pole.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
@@ -258,7 +258,18 @@ impl Globe {
         let (east, north) = tangents(up);
         let mut talkers: Vec<Identity> = per_process.keys().copied().collect();
         talkers.sort();
-        self.seats.assign(talkers.iter().map(|&id| (id, "home")));
+        // Seats are reserved for every sampled process with remote connections, drawn or not,
+        // so focusing a subtree, or the process limit (and a selection swapped across it)
+        // hiding some, frees none of their seats: clearing it brings every process back to
+        // its place in the cloud. Only the drawn ones are drawn below.
+        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        self.seats.assign(
+            snapshot
+                .remotes
+                .iter()
+                .filter(|r| sampled.contains(&r.id) || index.contains_key(&r.id))
+                .map(|r| (r.id, "home")),
+        );
         for id in &talkers {
             let process = processes[index[id]];
             let k = self.seats.seat(*id).unwrap_or(0);
@@ -422,6 +433,18 @@ pub fn legend(snapshot: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::demo;
+    use crate::render::{View, hiding};
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_process_in_its_place_above_home() {
+        hiding::focus_and_clear(View::Globe, &demo(30.0, 160));
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_globe_place() {
+        hiding::limit_and_lift(View::Globe, &demo(30.0, 160));
+    }
 
     #[test]
     fn facing_turns_the_viewer_towards_any_point_on_the_sphere() {

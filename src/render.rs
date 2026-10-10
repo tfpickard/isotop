@@ -3181,8 +3181,8 @@ pub(crate) mod hiding {
         assert_eq!(cleared, before);
     }
 
-    /// Cuts the population in half with the limit, swaps a selection in across it, and lifts
-    /// the limit again, at one time as above.
+    /// Cuts the population in half with the limit, swaps the last process drawn before it
+    /// in across it as a selection, and lifts the limit again, at one time as above.
     pub fn limit_and_lift(view: View, sample: &Snapshot) {
         limit_and_lift_by(view, sample, |point| point);
     }
@@ -3200,7 +3200,8 @@ pub(crate) mod hiding {
         let limited = measure(place(&mut scene, sample, view, time, 80, None, None));
         assert!(!limited.is_empty() && limited.len() < before.len());
         in_place(&limited, &before);
-        let selected = sample.processes[150].id;
+        let selected = *before.keys().max().expect("something is drawn");
+        assert!(!limited.contains_key(&selected));
         let swapped = measure(place(
             &mut scene,
             sample,
