@@ -1,7 +1,7 @@
 //! Declarations libc 0.2.190 lacks or marks deprecated: Mach time and ports, the
 //! `vm_statistics64` layout of the public xnu header, the responsibility SPI, IOKit and
-//! CoreFoundation for the CPU cluster types, and `socket_fdinfo` and `vnode_fdinfowithpath` from
-//! xnu `bsd/sys/proc_info.h`.
+//! CoreFoundation for the CPU cluster types, and `socket_fdinfo` and `vnode_fdinfo` from xnu
+//! `bsd/sys/proc_info.h`.
 //!
 //! The C structs keep their header names and every field, so the layouts can be checked against
 //! the header line by line; isotop reads only some of the fields.
@@ -544,16 +544,14 @@ pub struct socket_fdinfo {
     pub psi: socket_info,
 }
 
-// struct vnode_fdinfowithpath and its members, from the same header. libc 0.2.190 has
-// vnode_info and vnode_info_path but not the fdinfo wrapper or its flavor; these are declared
-// on this file's vinfo_stat and proc_fileinfo so one definition of each serves both flavors, and
-// the assertions below check them against libc's copies too.
+// struct vnode_fdinfo and its member, from the same header. libc 0.2.190 has vnode_info but not
+// the fdinfo wrapper or its flavor; vnode_info is declared on this file's vinfo_stat so one
+// definition serves both, and the assertions below check it against libc's copy too.
 
-/// `PROC_PIDFDVNODEPATHINFO` flavor for `proc_pidfdinfo`: the open file's `vnode_info` and path.
-pub const PROC_PIDFDVNODEPATHINFO: c_int = 2;
-
-/// `MAXPATHLEN` (bsd/sys/param.h).
-pub const MAXPATHLEN: usize = 1024;
+/// `PROC_PIDFDVNODEINFO` flavor for `proc_pidfdinfo`: the open file's `vnode_info`. Unlike
+/// `PROC_PIDFDVNODEPATHINFO` it builds no path and runs no `fsgetpath` MAC check, which could
+/// refuse a vnode isotop only needs the attributes of.
+pub const PROC_PIDFDVNODEINFO: c_int = 1;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -566,16 +564,9 @@ pub struct vnode_info {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct vnode_info_path {
-    pub vip_vi: vnode_info,
-    pub vip_path: [c_char; MAXPATHLEN],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct vnode_fdinfowithpath {
+pub struct vnode_fdinfo {
     pub pfi: proc_fileinfo,
-    pub pvip: vnode_info_path,
+    pub pvi: vnode_info,
 }
 
 macro_rules! assert_layout {
@@ -674,21 +665,17 @@ assert_offset!(socket_info, soi_proto, 240);
 
 assert_offset!(socket_fdinfo, psi, 24);
 
-// vinfo_stat is 136 bytes, vnode_info adds vi_type, vi_pad and an 8-byte fsid_t (152),
-// vnode_info_path a MAXPATHLEN path (1176), and the fdinfo wrapper the 24-byte proc_fileinfo
-// in front (1200), which is PROC_PIDFDVNODEPATHINFO_SIZE.
+// vinfo_stat is 136 bytes, vnode_info adds vi_type, vi_pad and an 8-byte fsid_t (152), and the
+// fdinfo wrapper the 24-byte proc_fileinfo in front (176), which is PROC_PIDFDVNODEINFO_SIZE.
 assert_layout!(vnode_info, 152, 8);
-assert_layout!(vnode_info_path, 1176, 8);
-assert_layout!(vnode_fdinfowithpath, 1200, 8);
+assert_layout!(vnode_fdinfo, 176, 8);
 assert_offset!(vnode_info, vi_type, 136);
 assert_offset!(vnode_info, vi_fsid, 144);
-assert_offset!(vnode_info_path, vip_path, 152);
-assert_offset!(vnode_fdinfowithpath, pvip, 24);
+assert_offset!(vnode_fdinfo, pvi, 24);
 assert_offset!(vinfo_stat, vst_mode, 4);
 assert_offset!(vinfo_stat, vst_nlink, 6);
 const _: () = assert!(size_of::<libc::vinfo_stat>() == size_of::<vinfo_stat>());
 const _: () = assert!(size_of::<libc::vnode_info>() == size_of::<vnode_info>());
-const _: () = assert!(size_of::<libc::vnode_info_path>() == size_of::<vnode_info_path>());
 
 #[cfg(test)]
 mod tests {

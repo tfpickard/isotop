@@ -98,14 +98,16 @@ the lanes have no kind and are not guessed.
 
 **Open files.** The coop's eggs are measured on macOS too. Each process's
 descriptors come from `proc_pidinfo` (`PROC_PIDLISTFDS`), and each vnode among them
-from `proc_pidfdinfo` (`PROC_PIDFDVNODEPATHINFO`), which stats the file through the
+from `proc_pidfdinfo` (`PROC_PIDFDVNODEINFO`), which stats the file through the
 descriptor. A regular file counts once by device and inode, and one whose link count
 is 0 was deleted while still open: a rotten egg, with its size. The scan has the
 same bounds as on Linux (4096 vnodes examined and 16 384 descriptors listed per
 process, 65 536 per scan, resuming where it stopped), but only vnodes are examined,
 since the listing already says which descriptors are sockets, pipes or kqueues, and
-past 4096 the open count is estimated in proportion among the vnodes alone. A zombie
-holds no files. Other users' tables need root, as their CPU and memory do, and
+past 4096 the open count is estimated in proportion among the vnodes alone. A vnode
+that is still open but cannot be read (a revoked device, a network server that fails
+the stat) is estimated the same way and marks the count partial. A zombie holds no
+files. Other users' tables need root, as their CPU and memory do, and
 `kernel_task` is read like any process when isotop runs as root. macOS cannot ask a
 filesystem for cached attributes only, as Linux does, so a network mount that stops
 answering can hold up the background thread (sockets, files) while its attribute

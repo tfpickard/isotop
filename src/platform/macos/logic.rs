@@ -529,6 +529,31 @@ pub fn estimate(files: u32, examined: usize, beyond: usize) -> u32 {
     files.saturating_add(u32::try_from(extra).unwrap_or(u32::MAX))
 }
 
+/// The open files of one table: `examined` holds what each examined vnode descriptor refers to,
+/// or None for one that could not be read, and `beyond` counts vnodes past the examined bound.
+/// A vnode that could not be read is treated as one that was not examined: the open count is
+/// estimated over it and the table is partial, rather than it reading as holding no file.
+pub fn table(
+    examined: impl IntoIterator<Item = Option<Descriptor>>,
+    beyond: usize,
+    truncated: bool,
+) -> Files {
+    let mut read = Vec::new();
+    let mut unread = 0;
+    for descriptor in examined {
+        match descriptor {
+            Some(descriptor) => read.push(descriptor),
+            None => unread += 1,
+        }
+    }
+    let count = read.len();
+    let beyond = beyond + unread;
+    let mut files = tally(read);
+    files.open = estimate(files.open, count, beyond);
+    files.partial = truncated || beyond > 0;
+    files
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,5 +1105,31 @@ mod tests {
         assert_eq!(estimate(7, 7, 0), 7);
         assert_eq!(estimate(0, 0, 100), 0);
         assert_eq!(estimate(u32::MAX, 1, 1), u32::MAX);
+    }
+
+    #[test]
+    fn a_vnode_that_could_not_be_read_is_estimated_and_marks_the_table_partial() {
+        let regular = 0o100600;
+        let file = |inode| Some(descriptor(stat(regular, 1, inode, 1)));
+        let complete = table([file(1), file(2), Some(Descriptor::Other)], 0, false);
+        assert_eq!((complete.open, complete.partial), (2, false));
+        // Two of four vnodes read and held files; the two unread are estimated alike.
+        let unread = table([file(1), None, file(2), None], 0, false);
+        assert_eq!((unread.open, unread.partial), (4, true));
+        let deleted = Some(descriptor(stat(regular, 0, 3, 4096)));
+        // One read vnode held a file; it stands for the unread one and the two past the bound.
+        let past_the_bound = table([deleted, None], 2, false);
+        assert_eq!(past_the_bound.open, 4);
+        assert_eq!(
+            past_the_bound.deleted_bytes(),
+            4096,
+            "deleted files are not estimated"
+        );
+        assert!(table([], 0, true).partial);
+        assert_eq!(
+            table([None], 0, false).open,
+            0,
+            "nothing read is no estimate"
+        );
     }
 }

@@ -1071,50 +1071,61 @@ fn open_files(
             beyond += 1;
         }
     }
-    let count = examined.len();
-    let mut files = logic::tally(examined);
-    files.open = logic::estimate(files.open, count, beyond);
-    files.partial = truncated || beyond > 0;
-    Ok((files, listed))
+    Ok((logic::table(examined, beyond, truncated), listed))
 }
 
-/// What vnode descriptor `fd` of `pid` holds; Other when it has closed since the listing or
-/// cannot be read.
-fn vnode_descriptor(pid: c_int, fd: i32) -> logic::Descriptor {
-    let Some(info) = vnode_info(pid, fd) else {
-        return logic::Descriptor::Other;
+/// What vnode descriptor `fd` of `pid` holds: Other when it has closed or been reused for
+/// something else since the listing, None when it is still open but could not be read.
+fn vnode_descriptor(pid: c_int, fd: i32) -> Option<logic::Descriptor> {
+    let info = match vnode_info(pid, fd) {
+        Ok(info) => info,
+        // xnu answers EBADF for a descriptor that is no longer open or no longer a vnode.
+        Err(error) if error.raw_os_error() == Some(libc::EBADF) => {
+            return Some(logic::Descriptor::Other);
+        }
+        // A forcibly unmounted or revoked vnode, a network filesystem whose server fails the
+        // stat, or a MAC policy: the descriptor may hold a file that cannot be seen.
+        Err(_) => return None,
     };
-    let stat = info.pvip.vip_vi.vi_stat;
-    logic::descriptor(logic::VnodeStat {
+    let stat = info.pvi.vi_stat;
+    Some(logic::descriptor(logic::VnodeStat {
         device: stat.vst_dev,
         mode: stat.vst_mode,
         links: stat.vst_nlink,
         inode: stat.vst_ino,
         size: stat.vst_size,
-    })
+    }))
 }
 
-/// An open vnode's `vnode_fdinfowithpath`, only when the kernel wrote exactly the size of ours,
-/// which proves the layouts agree. The kernel stats the vnode the descriptor holds, so a file
+/// An open vnode's `vnode_fdinfo`, only when the kernel wrote exactly the size of ours, which
+/// proves the layouts agree. The kernel stats the vnode the descriptor holds, so a file
 /// deleted while open is still found, with a link count of 0. macOS has no equivalent of
 /// Linux's AT_STATX_DONT_SYNC: the filesystem is asked for the attributes, which a network
 /// filesystem answers from its attribute cache while that is fresh.
-fn vnode_info(pid: c_int, fd: i32) -> Option<ffi::vnode_fdinfowithpath> {
-    let mut info = MaybeUninit::<ffi::vnode_fdinfowithpath>::zeroed();
-    let size = size_of::<ffi::vnode_fdinfowithpath>() as c_int;
+fn vnode_info(pid: c_int, fd: i32) -> io::Result<ffi::vnode_fdinfo> {
+    let mut info = MaybeUninit::<ffi::vnode_fdinfo>::zeroed();
+    let size = size_of::<ffi::vnode_fdinfo>() as c_int;
     // SAFETY: the buffer is valid for writes of `size` bytes.
     let written = unsafe {
         libc::proc_pidfdinfo(
             pid,
             fd,
-            ffi::PROC_PIDFDVNODEPATHINFO,
+            ffi::PROC_PIDFDVNODEINFO,
             info.as_mut_ptr().cast(),
             size,
         )
     };
-    // SAFETY: vnode_fdinfowithpath holds only integers and C chars, so the zeroed or filled
-    // bytes are valid.
-    (written == size).then(|| unsafe { info.assume_init() })
+    if written <= 0 {
+        // libproc returns 0 only when the call failed, which set errno.
+        return Err(io::Error::last_os_error());
+    }
+    if written != size {
+        return Err(io::Error::other(
+            "vnode_fdinfo size differs from the kernel's",
+        ));
+    }
+    // SAFETY: vnode_fdinfo holds only integers, and the kernel filled all of it.
+    Ok(unsafe { info.assume_init() })
 }
 
 /// File locks. macOS keeps no table of them that can be read: `fcntl(F_GETLK)` only tests a
@@ -1344,10 +1355,9 @@ mod tests {
         };
         assert_eq!(ours(&before), None);
 
-        // The kernel writes exactly the 1200 bytes of vnode_fdinfowithpath, or vnode_info
-        // would return None.
-        let info = vnode_info(me, file.as_raw_fd()).expect("PROC_PIDFDVNODEPATHINFO size differs");
-        let stat = info.pvip.vip_vi.vi_stat;
+        // The kernel writes exactly the 176 bytes of vnode_fdinfo, or vnode_info would fail.
+        let info = vnode_info(me, file.as_raw_fd()).expect("PROC_PIDFDVNODEINFO size differs");
+        let stat = info.pvi.vi_stat;
         assert_eq!(
             u32::from(stat.vst_mode) & u32::from(libc::S_IFMT),
             u32::from(libc::S_IFREG)
@@ -1370,6 +1380,23 @@ mod tests {
             panic!("this process can read its own table");
         };
         assert_eq!(ours(&closed), None, "closing the file frees it");
+    }
+
+    #[test]
+    fn a_descriptor_closed_or_reused_since_the_listing_is_no_file_rather_than_unread() {
+        use std::os::fd::AsRawFd;
+        let me = std::process::id() as c_int;
+        // No table has this many slots, so the descriptor is not open: EBADF.
+        assert_eq!(
+            vnode_descriptor(me, i32::MAX),
+            Some(logic::Descriptor::Other)
+        );
+        // A descriptor that is now a socket rather than a vnode also answers EBADF.
+        let socket = std::os::unix::net::UnixDatagram::unbound().unwrap();
+        assert_eq!(
+            vnode_descriptor(me, socket.as_raw_fd()),
+            Some(logic::Descriptor::Other)
+        );
     }
 
     #[test]
