@@ -20,7 +20,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Instant;
 
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Locks, Network, RawProcess};
+use crate::platform::{Files, Locks, Network, RawProcess, Shadow};
 
 pub use journal::{JOURNAL, journal};
 
@@ -61,6 +61,8 @@ pub struct Sampler {
     /// Path and command of each process seen in the previous call.
     described: HashMap<Identity, Description>,
     unreadable: usize,
+    /// What anyone may read of the processes counted in `unreadable`.
+    shadows: Vec<Shadow>,
 }
 
 /// What a process runs, which stays the same until it calls exec.
@@ -127,6 +129,7 @@ impl Sampler {
             path: vec![0; libc::PROC_PIDPATHINFO_MAXSIZE as usize],
             described: HashMap::new(),
             unreadable: 0,
+            shadows: Vec::new(),
         }
     }
 
@@ -136,10 +139,12 @@ impl Sampler {
     }
 
     /// Every process this user may measure (every process for root). Other users' processes
-    /// are counted in `unreadable` instead; their CPU and memory are never guessed.
+    /// are counted in `unreadable` instead and kept as shadows; their CPU and memory are never
+    /// guessed.
     pub fn processes(&mut self) -> io::Result<Vec<RawProcess>> {
         list_pids(&mut self.pids)?;
         self.unreadable = 0;
+        self.shadows.clear();
         let mut previous = std::mem::take(&mut self.described);
         let counted = std::mem::take(&mut self.counters);
         self.cycles = false;
@@ -151,7 +156,10 @@ impl Sampler {
                     found.push(raw);
                     lineages.push(lineage);
                 }
-                Err(Absent::Unreadable) => self.unreadable += 1,
+                Err(Absent::Unreadable) => {
+                    self.unreadable += 1;
+                    self.shadows.extend(shadow(self.pids[index]));
+                }
                 Err(Absent::Gone) => {}
             }
         }
@@ -458,6 +466,24 @@ impl Sampler {
     pub fn unreadable(&self) -> usize {
         self.unreadable
     }
+
+    /// The pid, parent and name of each process counted in `unreadable`, as far as the kernel
+    /// tells anyone.
+    pub fn shadows(&self) -> Vec<Shadow> {
+        self.shadows.clone()
+    }
+}
+
+/// What any user may read of another user's process: xnu answers PROC_PIDT_SHORTBSDINFO without
+/// the same-user check that the other flavors make (`proc_pidinfo` in bsd/kern/proc_info.c).
+/// None when it has exited meanwhile.
+fn shadow(pid: c_int) -> Option<Shadow> {
+    let info: libc::proc_bsdshortinfo = pid_info(pid, libc::PROC_PIDT_SHORTBSDINFO, 0).ok()?;
+    Some(Shadow {
+        pid: info.pbsi_pid,
+        parent: info.pbsi_ppid,
+        name: c_text(&info.pbsi_comm),
+    })
 }
 
 /// Fills `pids` with every pid on the system, kernel_task (0) included.
@@ -1420,6 +1446,33 @@ mod tests {
                 open_files(1, BOUNDS, &mut Vec::new()),
                 Err(Absent::Unreadable)
             ));
+        }
+    }
+
+    #[test]
+    fn other_users_processes_are_kept_as_shadows_with_their_names() {
+        let mut sampler = Sampler::new();
+        let processes = sampler.processes().unwrap();
+        let shadows = sampler.shadows();
+        // One that exits between the two readings is counted but has no shadow.
+        assert!(shadows.len() <= sampler.unreadable());
+        let me = std::process::id();
+        assert!(shadows.iter().all(|shadow| shadow.pid != me));
+        assert!(
+            shadows
+                .iter()
+                .all(|shadow| processes.iter().all(|raw| raw.process.id.pid != shadow.pid))
+        );
+        // SAFETY: geteuid cannot fail and has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            // launchd (pid 1) runs as root.
+            let launchd = shadows
+                .iter()
+                .find(|shadow| shadow.pid == 1)
+                .expect("launchd is a shadow without root");
+            assert_eq!(launchd.name, "launchd");
+        } else {
+            assert!(shadows.is_empty());
         }
     }
 

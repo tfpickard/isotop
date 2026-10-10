@@ -25,7 +25,10 @@
 //!     `Cpu::mhz` is the average clock of the cluster of its kind. Linux returns none;
 //!   - `unreadable(&self) -> usize`: how many processes the last `processes()` call could see
 //!     but not measure because they belong to another user, and so left out. Races with exiting
-//!     processes are not permission gaps and do not count; Linux returns 0.
+//!     processes are not permission gaps and do not count; Linux returns 0;
+//!   - `shadows(&self) -> Vec<Shadow>`: those unreadable processes again, as far as anyone may
+//!     read them (pid, parent and name), so that what descends from them can still be drawn
+//!     under them. Linux returns none, as every `/proc/<pid>/stat` is world-readable.
 //! - Slow sources, read on the background thread every two seconds:
 //!   - `network() -> Network`;
 //!   - `account(paths, state) -> HashMap<String, Unit>`: resource accounting of the named
@@ -97,6 +100,16 @@ pub struct RawProcess {
     /// while threads run and catch up later; the collector counts as waiting only the growth of
     /// `runnable_ticks - ticks` beyond its highest earlier value.
     pub runnable_ticks: Option<u64>,
+}
+
+/// A process the platform can see but not measure, because it belongs to another user: only
+/// what any user may read of it. Nothing about its CPU, memory or threads is known.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shadow {
+    pub pid: u32,
+    pub parent: u32,
+    /// Its short command name, unsanitized like every process name.
+    pub name: String,
 }
 
 /// Reads one journal entry from the follower's output; `Ok(None)` at the end of the stream.

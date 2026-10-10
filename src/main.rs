@@ -619,9 +619,9 @@ impl App {
         lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
                 View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
-                View::Orbit => " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside".into(),
+                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(s)),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
-                View::Flow => " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure".into(),
+                View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(s)),
                 View::Cores => cores::legend(s),
                 View::Cells => cells::legend(s),
                 View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
@@ -747,6 +747,31 @@ impl App {
 
     /// Text drawn over the scene, highest priority first: the inspector popup, the tour
     /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
+    /// The label of an orbit system's star with `members` processes: its process's name, or
+    /// for a hub the name of the parent it stands for, which isotop could not read.
+    fn star_label(
+        &self,
+        lookup: &HashMap<Identity, &Process>,
+        id: Identity,
+        members: usize,
+    ) -> Option<String> {
+        if let Some(p) = lookup.get(&id) {
+            let name = match (p.name.as_str(), p.id.pid) {
+                ("systemd", 1) => "init",
+                ("systemd", _) => "systemd --user",
+                (name, _) => name,
+            };
+            let name = label_name(name);
+            return Some(if members > 1 {
+                format!("{name} ({members})")
+            } else {
+                name.into_owned()
+            });
+        }
+        let name = self.scene.hub_names.get(&id)?;
+        Some(format!("{} (unreadable) ({members})", label_name(name)))
+    }
+
     fn overlay(&self, frame: &mut Frame, layout: &Layout, radius: f32) -> (Vec<Label>, Vec<Popup>) {
         let snapshot = self.snapshot();
         let lookup: HashMap<Identity, &Process> =
@@ -827,20 +852,9 @@ impl App {
             }
         }
         for &(id, members, reach) in &self.scene.stars {
-            if let Some(p) = lookup.get(&id)
+            if let Some(text) = self.star_label(&lookup, id, members)
                 && let Some(at) = self.screen(frame, id)
             {
-                let name = match (p.name.as_str(), p.id.pid) {
-                    ("systemd", 1) => "init",
-                    ("systemd", _) => "systemd --user",
-                    (name, _) => name,
-                };
-                let name = label_name(name);
-                let text = if members > 1 {
-                    format!("{name} ({members})")
-                } else {
-                    name.into_owned()
-                };
                 let width = text.chars().count() as u16;
                 // Small systems are labelled just below their outer edge, large ones at the star.
                 let star = self.scene.positions[&id];
@@ -1172,6 +1186,16 @@ fn unreadable_text(snapshot: &Snapshot) -> String {
     match snapshot.unreadable {
         0 => String::new(),
         count => format!(" (+{count} unreadable: run with sudo)"),
+    }
+}
+
+/// What the Orbit and Flow legends add when some parent could not be read and may be drawn as
+/// a hub; nothing otherwise, so the legends of a platform that reads every process never change.
+fn hub_note(snapshot: &Snapshot) -> &'static str {
+    if snapshot.shadows.is_empty() {
+        ""
+    } else {
+        " | hollow star = a parent isotop can't read (run with sudo)"
     }
 }
 
@@ -1516,6 +1540,53 @@ mod tests {
         );
         for label in labels.iter().filter(|l| l.tone == Tone::Bright) {
             assert!(!label.text.contains("WidgetExtension"), "{}", label.text);
+        }
+    }
+
+    #[test]
+    fn a_hub_is_labelled_as_unreadable_and_explained_only_when_there_are_shadows() {
+        let mut snapshot = model::demo(1.0, 20);
+        snapshot.links.clear();
+        for (index, process) in snapshot.processes.iter_mut().enumerate() {
+            process.id = Identity {
+                pid: 100 + index as u32,
+                start: 1,
+            };
+            process.parent = 1;
+        }
+        let plain = snapshot.clone();
+        snapshot.shadows = vec![platform::Shadow {
+            pid: 1,
+            parent: 0,
+            name: "launchd".into(),
+        }];
+        let layout = Layout {
+            columns: 200,
+            rows: 56,
+            width: 1600,
+            height: 900,
+            cell: None,
+        };
+        for view in [View::Orbit, View::Flow] {
+            let mut app = App::new(view, snapshot.clone());
+            let mut frame = app.render(1600, 900, 512);
+            frame.rasterize();
+            let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+            let stars: Vec<&str> = labels
+                .iter()
+                .filter(|label| label.tone == Tone::Bright)
+                .map(|label| label.text.as_str())
+                .collect();
+            assert_eq!(stars, ["launchd (unreadable) (20)"], "{view:?}");
+            let legend = &app.text(0.0, "test", 20, 512)[2];
+            assert!(
+                legend.ends_with(" | hollow star = a parent isotop can't read (run with sudo)"),
+                "{legend}"
+            );
+            let mut app = App::new(view, plain.clone());
+            app.render(1600, 900, 512);
+            let legend = &app.text(0.0, "test", 20, 512)[2];
+            assert!(!legend.contains("hollow star"), "{legend}");
         }
     }
 

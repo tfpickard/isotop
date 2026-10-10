@@ -3,7 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
-use crate::model::{Identity, Kind, Process, Snapshot, bounded};
+use crate::model::{Identity, Kind, Measured, Process, Snapshot, bounded};
+use crate::platform::Shadow;
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
 pub type Color = [u8; 3];
@@ -37,6 +38,11 @@ pub(crate) const NVIDIA: Color = [118, 214, 60];
 const LINK: Color = [80, 175, 235];
 const LINK_HOT: Color = [150, 232, 255];
 const OUTSIDE: Color = [255, 110, 200];
+/// The outline of a hub, a parent isotop cannot read.
+const HUB: Color = [168, 182, 210];
+/// `Identity::start` of a hub. No process starts at the end of time, so a hub's identity never
+/// equals a process's, even when it has the pid of the parent it stands for.
+pub const HUB_START: u64 = u64::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum View {
@@ -702,6 +708,28 @@ impl Frame {
         });
     }
 
+    /// The silhouette of a sphere `sphere` would draw, as a ring of lines facing the viewer with
+    /// a fainter ring inside it: a body drawn hollow. Lines draw alike in both rasterizers and,
+    /// like every line, leave nothing pickable.
+    pub(crate) fn outline(&mut self, camera: &Camera, position: Point, radius: f32, color: Color) {
+        let center = self.project(camera, position);
+        let outer = (radius * camera.zoom).max(MIN_BODY_PX);
+        for (scale, shade) in [(1.0, 1.0), (0.6, 0.45)] {
+            let point = |k: usize| {
+                let angle = k as f32 / 48.0 * TAU;
+                [
+                    center[0] + outer * scale * angle.cos(),
+                    center[1] + outer * scale * angle.sin(),
+                    center[2],
+                ]
+            };
+            for k in 0..48 {
+                self.items
+                    .push(Item::Line(point(k), point(k + 1), tint(color, shade)));
+            }
+        }
+    }
+
     /// A sphere at its exact projected size, for large bodies with geometry drawn on their
     /// surface. `sphere` draws bodies at `radius * zoom` pixels, about 18% smaller than their
     /// projection, which the other views' spacing was tuned with.
@@ -938,6 +966,8 @@ pub struct Scene {
     pub stars: Vec<(Identity, usize, f32)>,
     /// For orbit bodies with children: memory of the subtree they anchor and its process count.
     pub mass: HashMap<Identity, (u64, usize)>,
+    /// Names of the hubs drawn this frame: stand-ins for parents isotop cannot read (`hubs`).
+    pub hub_names: HashMap<Identity, String>,
     pub places: Vec<(Point, String)>,
     bounds: Vec<Point>,
     pub notes: HashMap<Identity, Vec<String>>,
@@ -986,6 +1016,7 @@ impl Scene {
             positions: HashMap::new(),
             stars: Vec::new(),
             mass: HashMap::new(),
+            hub_names: HashMap::new(),
             places: Vec::new(),
             bounds: Vec::new(),
             notes: HashMap::new(),
@@ -1195,6 +1226,7 @@ impl Scene {
         self.collapsed = 0;
         self.stars.clear();
         self.mass.clear();
+        self.hub_names.clear();
         self.places.clear();
         self.bounds.clear();
         self.notes.clear();
@@ -1206,13 +1238,19 @@ impl Scene {
                 self.city_positions(&processes, snapshot);
                 self.draw_city(&mut frame, &processes, camera, selected, time);
             }
-            View::Orbit => self.draw_orbits(&mut frame, &processes, camera, selected, time),
+            View::Orbit => {
+                let hubs = self.hubs(&processes, snapshot, focus);
+                let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
+                self.draw_orbits(&mut frame, &processes, camera, selected, time)
+            }
             View::Ripple => {
                 let stir = bounded(cpu + io, 20.0);
                 self.draw_ripples(&mut frame, &processes, camera, selected, time, stir)
             }
             View::Flow => {
                 let stir = bounded(cpu + memory + io, 25.0);
+                let hubs = self.hubs(&processes, snapshot, focus);
+                let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
                 self.draw_flow(
                     &mut frame, &processes, camera, selected, time, snapshot, stir,
                 )
@@ -1255,7 +1293,8 @@ impl Scene {
         let quiet = !matches!(view, View::City | View::Orbit | View::Ripple);
         self.draw_links(&mut frame, camera, snapshot, time, lift, quiet);
         for (id, &point) in &self.previous {
-            if !alive.contains(id) {
+            // A hub is no process, so it neither dies nor splashes when it is no longer drawn.
+            if !alive.contains(id) && !is_hub(id) {
                 self.deaths.push((point, time));
                 self.splashes.push(point);
             }
@@ -1531,6 +1570,47 @@ impl Scene {
         self.tallest = tallest;
     }
 
+    /// One hub per parent that isotop can see but not read (a shadow) with readable leaves
+    /// directly under it, so those leaves orbit one hollow star, as they would orbit the parent,
+    /// instead of each standing alone as a system of its own: without sudo on macOS, launchd is
+    /// such a parent to hundreds of daemons. A hub is a process of no CPU, memory or threads,
+    /// its own parent so it is always a root, in pid order. Branches under it become systems of
+    /// their own as under init, so a shadow with no leaves gets no hub, and neither does a
+    /// focused subtree, whose root stands alone by choice.
+    fn hubs(
+        &mut self,
+        processes: &[&Process],
+        snapshot: &Snapshot,
+        focus: Option<Identity>,
+    ) -> Vec<Process> {
+        if snapshot.shadows.is_empty() || focus.is_some() {
+            return Vec::new();
+        }
+        let present: HashSet<u32> = processes.iter().map(|p| p.id.pid).collect();
+        let parents: HashSet<u32> = processes
+            .iter()
+            .filter(|p| p.parent != p.id.pid)
+            .map(|p| p.parent)
+            .collect();
+        let orphaned: HashSet<u32> = processes
+            .iter()
+            .filter(|p| !present.contains(&p.parent) && !parents.contains(&p.id.pid))
+            .map(|p| p.parent)
+            .collect();
+        let mut hubs: Vec<Process> = snapshot
+            .shadows
+            .iter()
+            .filter(|shadow| orphaned.contains(&shadow.pid) && !present.contains(&shadow.pid))
+            .map(hub)
+            .collect();
+        hubs.sort_by_key(|hub| hub.id);
+        hubs.dedup_by_key(|hub| hub.id);
+        for hub in &hubs {
+            self.hub_names.insert(hub.id, hub.name.clone());
+        }
+        hubs
+    }
+
     /// Lays out the process tree as nested Keplerian systems. `time` drives spawn growth and
     /// `motion` the orbital phase, so other views can reuse the layout with bodies held still.
     fn layout<'a>(
@@ -1636,14 +1716,17 @@ impl Scene {
                 &mut paths,
                 &mut bodies,
             );
+            // A hub's members are the processes around it, not the hub itself.
+            let hub = usize::from(is_hub(&processes[root].id));
             self.stars.push((
                 processes[root].id,
-                visited.len() - before,
+                visited.len() - before - hub,
                 tree.extents[root],
             ));
         }
         self.collapsed = processes.len().saturating_sub(visited.len());
-        self.visible = visited.len();
+        let hubs = processes.iter().filter(|p| is_hub(&p.id)).count();
+        self.visible = visited.len().saturating_sub(hubs);
         (tree, paths, bodies)
     }
 
@@ -1703,10 +1786,15 @@ impl Scene {
         }
         for body in &bodies {
             let process = processes[body.index];
+            let radius = tree.radii[body.index] * body.grow;
+            if is_hub(&process.id) {
+                frame.outline(camera, body.position, radius, HUB);
+                continue;
+            }
             frame.sphere(
                 camera,
                 body.position,
-                tree.radii[body.index] * body.grow,
+                radius,
                 kind_color(process),
                 body.index as u32,
                 selected == Some(process.id),
@@ -2077,6 +2165,10 @@ impl Scene {
             let radius = tree.radii[body.index] * 0.7 * body.grow;
             let position = [at[0], at[1], flow.depth_at(at) + radius * 0.6];
             self.positions.insert(process.id, position);
+            if is_hub(&process.id) {
+                frame.outline(camera, position, radius, HUB);
+                continue;
+            }
             self.glows(frame, camera, process, position, radius);
             frame.sphere(
                 camera,
@@ -2738,6 +2830,45 @@ pub(crate) fn mass_radius(bytes: f32) -> f32 {
 }
 
 /// Thread rings: none below 4 threads, then one more ring per fourfold increase, up to four.
+/// Whether an identity is a hub's rather than a process's.
+pub fn is_hub(id: &Identity) -> bool {
+    id.start == HUB_START
+}
+
+/// The stand-in for a parent isotop cannot read, with nothing measured.
+fn hub(shadow: &Shadow) -> Process {
+    Process {
+        id: Identity {
+            pid: shadow.pid,
+            start: HUB_START,
+        },
+        parent: shadow.pid,
+        name: shadow.name.clone(),
+        command: String::new(),
+        group: String::new(),
+        kind: Kind::System,
+        state: 'S',
+        cpu: 0.0,
+        memory: 0,
+        io_rate: None,
+        read_rate: None,
+        write_rate: None,
+        written: None,
+        priority: 0,
+        nice: 0,
+        threads: 0,
+        gpu_memory: 0,
+        core: 0,
+        cpu_time: 0.0,
+        cgroup: String::new(),
+        performance_share: None,
+        waiting: None,
+        files: Measured::Unreadable,
+        locks_held: Measured::Unreadable,
+        blocked_on: None,
+    }
+}
+
 fn rings(threads: u32) -> usize {
     match threads {
         0..=3 => 0,
@@ -3427,6 +3558,77 @@ mod tests {
         assert_eq!(frame.pick_near(20.5, 20.5, 9.0), Some(near));
         assert_eq!(frame.pick_near(14.5, 20.5, 9.0), Some(far));
         assert_eq!(frame.pick_near(20.5, 5.5, 9.0), None);
+    }
+
+    #[test]
+    fn an_unreadable_parent_becomes_one_hollow_hub_instead_of_many_systems() {
+        let launchd = Shadow {
+            pid: 1,
+            parent: 0,
+            name: "launchd".into(),
+        };
+        let leaves = Snapshot {
+            processes: (10..30).map(|pid| process(pid, 1)).collect(),
+            cores: 4,
+            ..Default::default()
+        };
+        let mut scene = Scene::new();
+        render(&mut scene, &leaves, View::Orbit, 0.0);
+        assert_eq!(
+            scene.stars.len(),
+            20,
+            "without a shadow each leaf stands alone"
+        );
+        assert!(scene.hub_names.is_empty());
+        let shadowed = Snapshot {
+            shadows: vec![launchd],
+            ..leaves.clone()
+        };
+        for view in [View::Orbit, View::Flow] {
+            let mut scene = Scene::new();
+            render(&mut scene, &shadowed, view, 0.0);
+            let &[(star, members, _)] = scene.stars.as_slice() else {
+                panic!("{view:?}: {:?}", scene.stars);
+            };
+            assert_eq!(
+                (star.pid, star.start, members),
+                (1, u64::MAX, 20),
+                "{view:?}"
+            );
+            assert_eq!(scene.hub_names[&star], "launchd");
+            assert_eq!(scene.visible, 20, "{view:?}: the hub is not a process");
+            assert_eq!(scene.mass[&star], (20 << 20, 21), "{view:?}");
+            let mut camera = Camera::default();
+            scene.fit(&mut camera, 320, 180);
+            let mut frame = scene.render(&shadowed, view, &camera, 320, 180, None, 1.0, 512, None);
+            frame.rasterize();
+            assert_eq!(frame.identities.len(), 20);
+            assert!(
+                frame
+                    .picks
+                    .iter()
+                    .all(|&p| p == NONE || (p as usize) < frame.identities.len())
+            );
+            let [x, y] = frame
+                .locate(&camera, scene.positions[&star])
+                .expect("the hub is on screen");
+            let at = y as usize * 320 + x as usize;
+            assert_eq!(frame.picks[at], NONE, "{view:?}: the hub is hollow");
+            assert_eq!(frame.pick_near(x, y, 2.0), None, "{view:?}");
+        }
+        let mut focused = Scene::new();
+        focused.render(
+            &shadowed,
+            View::Orbit,
+            &Camera::default(),
+            320,
+            180,
+            None,
+            0.0,
+            512,
+            Some(shadowed.processes[0].id),
+        );
+        assert!(focused.hub_names.is_empty(), "a focused root stands alone");
     }
 
     #[test]

@@ -85,7 +85,11 @@ guesses them; they are left out of the scene and counted beside the process coun
 first status line, for example `212 processes (+57 unreadable: run with sudo)`.
 Run `sudo ./target/release/isotop` to see the whole machine. Under sudo, the
 processes of the user who ran sudo (`SUDO_UID`) still count as your session. Sockets
-follow the same rule: only processes isotop may read contribute links.
+follow the same rule: only processes isotop may read contribute links. Anyone may
+read another process's pid, parent and name (`PROC_PIDT_SHORTBSDINFO`), so in Orbit
+and Flow the processes directly under a parent isotop cannot read, such as launchd
+without sudo, circle one hollow star named after it, labelled `launchd (unreadable)`
+with their count, instead of each standing alone.
 
 **Measured differently.** Memory is the physical footprint, the figure Activity
 Monitor shows. Available memory is free plus inactive pages. CPU time comes from

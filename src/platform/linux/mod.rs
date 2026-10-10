@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Network, RawProcess};
+use crate::platform::{Files, Network, RawProcess, Shadow};
 
 pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal};
@@ -140,6 +140,11 @@ impl Sampler {
     /// Always 0: a process that vanishes between readdir and the read is a race, not a gap.
     pub fn unreadable(&self) -> usize {
         0
+    }
+
+    /// None: every process's stat is world-readable, so no process is left out.
+    pub fn shadows(&self) -> Vec<Shadow> {
+        Vec::new()
     }
 }
 

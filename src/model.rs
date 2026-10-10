@@ -185,6 +185,9 @@ pub struct Snapshot {
     /// Sources the platform measures per CPU cluster rather than per CPU (`Sampler::per_cluster`):
     /// "cpu clock" when every CPU's `mhz` is the average clock of the cluster of its kind.
     pub per_cluster: Vec<&'static str>,
+    /// The processes counted in `unreadable`, as far as anyone may read them (`Sampler::shadows`),
+    /// so that what they started can still be drawn under them.
+    pub shadows: Vec<platform::Shadow>,
 }
 
 /// What the collector keeps of a process between samples.
@@ -491,6 +494,7 @@ impl Collector {
         snapshot.missing = missing(pressure_readable, self.sampler.missing());
         snapshot.per_cluster = self.sampler.per_cluster();
         snapshot.unreadable = self.sampler.unreadable();
+        snapshot.shadows = self.sampler.shadows();
         snapshot.processes.sort_by_key(|p| p.id);
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = snapshot
@@ -912,6 +916,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         missing: Vec::new(),
         unreadable: 0,
         per_cluster: Vec::new(),
+        shadows: Vec::new(),
         home: Some(Place {
             latitude: 52.37,
             longitude: 4.9,
