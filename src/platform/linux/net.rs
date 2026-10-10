@@ -7,29 +7,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-#[derive(Clone, Debug, Default)]
-pub struct Network {
-    /// Unordered pid pairs (smaller first) with the number of sockets connecting them.
-    pub links: HashMap<(u32, u32), u32>,
-    /// Established TCP connections whose far end is not a local socket, per pid.
-    pub outside: HashMap<u32, u32>,
-    /// Those outside connections in detail, from the kernel's TCP statistics.
-    pub remotes: Vec<Remote>,
-}
-
-/// One established TCP connection to another machine.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Remote {
-    pub pid: u32,
-    pub inode: u64,
-    pub address: IpAddr,
-    pub port: u16,
-    /// Smoothed round-trip time in microseconds.
-    pub rtt: u32,
-    /// Bytes acknowledged by the peer and bytes received, since the connection opened.
-    pub sent: u64,
-    pub received: u64,
-}
+use crate::platform::{Loopback, Network, Remote};
 
 pub fn sample() -> Network {
     let owners = socket_owners();
@@ -49,7 +27,8 @@ pub fn sample() -> Network {
         .iter()
         .map(|c| ((c.local.as_str(), c.remote.as_str()), c.inode))
         .collect();
-    let mut local = HashSet::new();
+    // Inodes of local connections that have an owner, with the inode of the other end.
+    let mut local = HashMap::new();
     for connection in &tcp {
         let Some(&pid) = owners.get(&connection.inode) else {
             continue;
@@ -57,7 +36,7 @@ pub fn sample() -> Network {
         match endpoints.get(&(connection.remote.as_str(), connection.local.as_str())) {
             // Both directions of a local connection are listed; count the pair once.
             Some(peer) => {
-                local.insert(connection.inode);
+                local.insert(connection.inode, *peer);
                 if connection.local < connection.remote
                     && let Some(&other) = owners.get(peer)
                 {
@@ -67,16 +46,30 @@ pub fn sample() -> Network {
             None => *network.outside.entry(pid).or_default() += 1,
         }
     }
+    let mut unix = HashSet::new();
     for (inode, peer) in unix_peers().unwrap_or_default() {
         if inode < peer
             && let (Some(&a), Some(&b)) = (owners.get(&inode), owners.get(&peer))
         {
             link(a, b);
+            if a != b {
+                unix.insert((a.min(b), a.max(b)));
+            }
         }
     }
     for family in [libc::AF_INET, libc::AF_INET6] {
         for socket in tcp_sockets(family as u8).unwrap_or_default() {
-            if local.contains(&socket.inode) {
+            if let Some(peer) = local.get(&socket.inode) {
+                if let (Some(&pid), Some(&other)) = (owners.get(&socket.inode), owners.get(peer))
+                    && pid != other
+                {
+                    network.loopback.push(Loopback {
+                        inode: socket.inode,
+                        pid,
+                        peer: other,
+                        received: socket.received,
+                    });
+                }
                 continue;
             }
             if let Some(&pid) = owners.get(&socket.inode) {
@@ -84,6 +77,7 @@ pub fn sample() -> Network {
             }
         }
     }
+    network.unix = unix;
     network
 }
 

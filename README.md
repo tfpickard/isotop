@@ -1,10 +1,10 @@
 # isotop
 
-A living picture of your machine inside the terminal, in ten views: a process
+A living picture of your machine inside the terminal, in eleven views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, and the systemd journal
-as Matrix rain. Linux-first, written
+history, a globe of network connections, a coral reef, a chicken yard, and the systemd
+journal as Matrix rain. Linux-first, written
 in Rust, with real process data and pixel graphics through the Kitty graphics
 protocol. Ghostty is the primary target.
 
@@ -18,7 +18,7 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 
 The video at the top is a live session on a real machine, touring the views. The
 other screenshots and recordings are of Ghostty running `isotop --demo`, the
-synthetic workload.
+synthetic workload; the coop image is a crop of a headless `--demo --output` render.
 
 ## Run
 
@@ -26,7 +26,7 @@ synthetic workload.
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix
 ```
 
 Run directly in a graphics-capable terminal such as Ghostty or Kitty; tmux does
@@ -67,10 +67,10 @@ process collector.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the ten views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. Orbit
-and flow share one layout, so a process sits in the same place in each. Views
-that grow as data arrives (cores, cells, strata, globe, reef) keep the camera
+the eleven views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop is reached with Tab, Shift+Tab or `--view coop`.
+Orbit and flow share one layout, so a process sits in the same place in each. Views
+that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
 
 ### City
@@ -228,6 +228,64 @@ session's apps swim in schools whose speed follows their CPU; containers are
 crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
 memory everywhere, I/O rises as bubbles, and zombies float belly-up.
 
+### Coop
+
+![Coop: flocks foraging by their henhouses, roosting on perch ladders and queueing at the feeders](docs/media/coop.webp)
+
+A fenced chicken yard in which every process is a chicken in a Vicsek flock: each one steers by the average heading of its flock mates, plus noise.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Chicken | Process | One per drawn process; picking and the inspector use the process |
+| Body radius | RSS | (0.12 × ∛MiB) clamped to 0.3 to 1.2 (volume follows memory; about 16 MiB and below share the smallest size (0.3 / 0.12 = 2.5, and 2.5³ = 15.6), 1000 MiB and above the largest), scaled by 0.3 + 0.7 × growth while it hatches |
+| Plumage | Kind and state | The same colours as the other views; zombies pink, stopped orange, uninterruptible sleep red |
+| Flock and henhouse | cgroup (the process group if there is none; kernel threads share one "kernel" flock) | One flock and one henhouse per group, labelled with the group name |
+| Perch seat | Seat number in the flock | Fixed ladder grid around the henhouse, nearest seats first |
+| Roosting on a perch | CPU below 0.3 % | Roosts under 0.3 %, leaves above 0.8 %, a newcomer roosts under 0.5 % |
+| Foraging speed | CPU | 0.6 + 3.4 × cpu / (cpu + 25) units per second |
+| Heading noise | CPU variation over 30 samples, CPU pressure | 0.5 + 0.5 × min(CV, 2) + 5.5 × psi / (psi + 15) radians, at most a full turn; without pressure readings the pressure term is dropped and the CPU-variation term still applies |
+| Pull towards a socket peer, measured | Loopback TCP bytes per second | w = min(log2(1 + B/s ÷ 1024) / 10, 1.5); an idle connection gives 0; a connection first seen since the previous 2 s scan counts all the bytes it has received over that interval, and on the very first scan nothing is measured yet |
+| Pull towards a socket peer, Unix or unmeasured | CPU of both ends | w = 0.8 × min(cpu_i, cpu_k) / (min + 25); a pair joined by a Unix socket and a measured TCP connection both is pulled by the larger of the two weights, and the inspector says which one ("over TCP" or "both busy") |
+| Feeders | Per-core CPU list (the core count if there is none) | Sorted by kind and id; performance cores get 3 slots and a gold trough, efficiency cores 2 and teal, unknown kinds 2 and neutral |
+| Grain brightness | Core busy fraction | Tint 0.25 + 0.85 × busy |
+| Feeding at a feeder | Running state, last core | A queue per feeder ordered by priority, then identity; an unknown core goes to the first feeder. A long queue wraps into at most three columns in the feeder's own lane (straight back, then right, then left) and packs tighter if it still does not fit, so it stays inside the fence and apart from the next feeder's queue |
+| Pecking rank | Priority and nice | Shown in the inspector |
+| Frozen, crouched | Stopped or traced state | Held in place without noise |
+| Mud puddle | Uninterruptible sleep | Does not move |
+| Feet up | Zombie | Does not move |
+| Clutch of eggs in the nest box | Open regular files of the flock's members (`/proc/<pid>/fd`) | round(log2(1 + Σ open files)) eggs, at most 16: 1 file lays 1 egg, 7 lay 3, 140 lay 7, and 46 340 or more fill the clutch. Each member counts a file once however many of its descriptors refer to it. A state, not events: the clutch shrinks when files close. Members whose descriptor tables are unreadable or not read yet add nothing, and the nest's inspector line says how many |
+| Rotten eggs, cracked and olive | Files deleted while still open (link count 0) | One per deleted file (by device and inode, so a rotated log that several members hold open is one egg), at most 8 shown in front of the clutch; the inspector gives the count and the bytes held |
+| Brooding by the nest | Holding a file lock or lease (`/proc/locks`) | A holder that is not running sits on a straw pad beside her own house's nest box, clear of its eggs |
+| Queueing at a nest | Blocked on a file lock (a `->` line in `/proc/locks`) | Walks to the nest of the house of the process holding the lock, whatever its own flock, and queues beside it after the brooders, with a faint line to the holder |
+| Dust puffs | Read rate | min(5, 1 + ⌊log2(rate / 64 KiB)⌋) puffs above 64 KiB/s |
+| Chicks | Threads | min(threads − 1, 12), following the hen along her trail |
+| Fox | Rise in a unit's OOM kill count | One to three foxes run for 3 s at the largest member that vanished in the last 4 s (or two and a half sampling intervals, if longer) |
+| Fox eyes | Memory pressure | min(6, 1 + ⌊psi / 10⌋) pairs above 0.5 %, 3 × (1 − psi / (psi + 20)) + 0.4 units outside the fence |
+| phi in the legend | Foragers | \|Σv\| / Σ\|v\| |
+| Inspector notes | Open and deleted files, locks, bytes written, write and read rates, nice | Exact counts behind the capped clutch and rotten eggs, the lock holder a waiter waits for, and the dust and feeding lines |
+
+Decorative: the grass grid and the dirt band under the feeders, the hedge, the fence posts and rails, the henhouse roof and door, straw in the nests and the straw pads beside them, the cracks on rotten eggs, the brooding pose, ladder stringers, ground shadows, the walking stride, the pecking head bob, the chick hop, the swirl of the dust puffs, the blink of the fox's eyes, and the fox's gallop and shape.
+
+**The Vicsek rule.** The update is synchronous: every forager's new heading is computed from the old state of its flock mates within 4 units, and then all are applied together. Only chickens of the same flock count as neighbours, found through a spatial hash. Noise comes from the process's CPU variation over its last 30 samples and from system CPU pressure, so a steady machine holds its flocks together and a stalled one scatters them. The order parameter phi = |Σv| / Σ|v| is 1 when every forager heads the same way and near 0 when headings are random. It is shown in the legend for the whole yard and in the inspector per flock. The fence is a reflecting boundary, and a henhouse pulls foragers back when they stray more than its range. The fence hugs the henhouses' reserved discs but only ever moves outward during a session: a flock at the edge arriving or leaving does not move the fence, the feeders along it or the fox eyes around it. Processes hidden by focus (`f`) or by `--limit` keep their perch seats, their flock's place and their chickens where they stood, so clearing the focus puts every house and chicken back; the fence also takes in the places of hidden flocks, so a limit that hides many of them leaves room for houses that are not drawn.
+
+**Peers.** A chicken is pulled towards the processes it holds sockets with. Loopback TCP has per-link byte counters, so those links pull by measured bytes per second. The kernel keeps no per-link byte counters for Unix sockets, so they pull by co-activity instead: the smaller of the two CPUs, and only when both ends are busy. Two processes can hold both kinds of socket between them; then the larger of the two pulls, so an idle TCP connection does not cancel a busy Unix one.
+
+**Feeders and the pecking order.** Each CPU core is a feeder. A running chicken walks to the feeder of the core it last ran on and pecks while it is in state R, and leaves after two consecutive samples in which it was not running. When a feeder is full, the rest queue, and a lower priority number goes first, so real-time tasks eat before nice ones.
+
+**Roles.** Each chicken takes the first role that applies: zombie, frozen (stopped or traced), stuck (uninterruptible sleep), feeding (running), queueing for a lock, feeding (the two-sample hold), brooding (holding a lock), roosting, foraging. So a running lock holder still feeds, and an idle one broods instead of roosting. A request blocked on a lock sleeps, so a running process that the lock table (read up to 2 s earlier) still lists as blocked has been granted the lock, and feeds.
+
+**Seats by the nest.** Brooders, then the hens queueing there, take seats in a grid east of the nest box, a column at a time from the box's north end, with the first column against the box. The seats stay inside the flock's reserved disc and off its ladders, so a long queue never reaches another flock or the feeders: when more hens come than fit, the grid closes up and they crowd together.
+
+**Eggs and locks.** The nest box of each henhouse holds a clutch for the regular files its flock holds open, and a rotten egg for each of those files that was deleted while still open: its disk space is not returned until the file is closed, which is how a rotated log can keep gigabytes. Both are read every 2 s on the background thread. A descriptor counts as an open file when its link names a path (memfds excluded) and a stat through it finds a regular file; it is deleted when the link ends in ` (deleted)` and the stat finds no links left. Files are told apart by device and inode, so descriptors on one file count once. The stat takes the attributes the kernel already holds (`AT_STATX_DONT_SYNC`), so a hung network or FUSE mount cannot stall the background thread. The scan examines at most 4096 descriptors and lists at most 16 384 per process, and lists at most 65 536 per scan: past that a process's open files are estimated in the proportion found among the examined ones, and its deleted files are counted only among the examined ones, so they are never invented. The inspector then says "about" the open files and "at least" the deleted ones. A process is only scanned while a whole per-process share of the budget remains; otherwise the scan stops and the next one resumes at that process, and processes not reached keep their previous counts or show as not read yet. File locks come from one read of `/proc/locks`: POSIX, flock and lease lines count as held by their pid, and each blocked request (`->`, nested deeper for a request queued behind another) is mapped to the holder of the lock line above it. A request blocked on a lock no process can be named for queues at its own nest.
+
+**The fox.** When a unit's `oom_kills` count rises, a fox runs to the largest member (by memory) that vanished in the last 4 seconds, or two and a half sampling intervals when `--sample-ms` is longer, and takes it. The window exists because cgroup counters are read every 2 s on a background thread, so the count can rise a sample or two after the process disappears from the list; each victim is claimed by one kill only. If no member vanished, the fox leaves empty-mouthed. Kills recorded while another view is shown are dropped once they are older than a fox's run, so switching to the coop does not replay them. Memory pressure puts fox eyes in the hedge: more pairs and nearer the fence as pressure grows, and foragers near them flee.
+
+**What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the pressure term of the noise is fixed; the CPU-variation term still applies. I/O counters of other users' processes are unreadable without privileges, so those chickens raise no dust, and the legend counts them ("I/O unreadable for N"). The same goes for their descriptor tables: their open files add nothing to the clutch, and the legend says "no files for N (permissions)". A process the file scan has not reached yet (just started, or past a scan's budget) is not counted there; its inspector says "open files not read yet". Kernel threads hold no descriptors and count as having no files. Open file description (OFD) locks belong to an open file, not a process, and `/proc/locks` reports them with pid -1: no hen broods for them, a request blocked on one has no holder to walk to and queues at its own nest, and the legend counts them.
+
+**Fixed time step.** The yard advances in whole 20 Hz steps of wall-clock time, so the frame rate does not change how a flock moves; a gap longer than half a second, such as a pause, is capped at half a second.
+
+The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) with its four bugs fixed: it updated headings in place instead of synchronously, its alignment readout summed speed magnitudes so it was always 1, it stepped once per frame instead of by time, and it searched neighbours in O(N²).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -283,7 +341,7 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix |
+| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
 | Shift + Tab | Previous view |
 | `1`-`9`, `0` | Jump to a view in that order |
 | Two-finger scroll / wheel | Pan (vertical and horizontal) |
@@ -338,9 +396,9 @@ combines PID and start time to distinguish PID reuse.
 ```
 
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
-uses a 16:9 viewport; ripple, flow, cores and reef simulate four seconds first so
-the media and creatures have settled, and demo strata replays a minute of
-history. Live headless output takes two samples to measure CPU, so live strata
+uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
+the media and creatures have settled, demo strata replays a minute of
+history, and demo coop replays 30 seconds of samples for CPU variation. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and

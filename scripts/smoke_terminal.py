@@ -28,6 +28,8 @@ def exercise(binary, demo, shared_memory):
     queries = 0
     decoded = []
     headers = set()
+    back_tab_sent = False
+    coop_left = False
     commands_sent = False
     tour_sent = False
     started = time.monotonic()
@@ -41,7 +43,7 @@ def exercise(binary, demo, shared_memory):
                         break
                     raise
                 buffer += data
-                for header in [b"/ CITY /", b"/ ORBIT /", b"/ STRATA /", b"/ PAUSED", b"/ TOUR"]:
+                for header in [b"/ CITY /", b"/ ORBIT /", b"/ STRATA /", b"/ COOP /", b"/ PAUSED", b"/ TOUR"]:
                     if header in data:
                         headers.add(header)
                 while b"\x1b_G" in buffer:
@@ -83,7 +85,13 @@ def exercise(binary, demo, shared_memory):
                     buffer = buffer[-4096:]
                 if b"\x1b[c" in data:
                     os.write(master, b"\x1b[?62;22c")
-            if frame_count >= 2 and not commands_sent:
+            if frame_count >= 1 and not back_tab_sent:
+                os.write(master, b"\x1b[Z")
+                back_tab_sent = True
+            if b"/ COOP /" in headers and not coop_left:
+                os.write(master, b"\t")
+                coop_left = True
+            if frame_count >= 2 and coop_left and not commands_sent:
                 os.write(master, b"\t/worker\r+ef \x1b")
                 commands_sent = True
             if frame_count >= 5 and commands_sent and not tour_sent:
@@ -98,6 +106,7 @@ def exercise(binary, demo, shared_memory):
         assert frame_count >= 8, f"only {frame_count} frames"
         assert len(set(decoded)) >= 2, "frames never changed"
         assert b"/ CITY /" in headers and b"/ ORBIT /" in headers, headers
+        assert b"/ COOP /" in headers, "Shift+Tab did not switch to the coop view"
         assert b"/ PAUSED" in headers, "pause did not take effect"
         assert b"/ TOUR" in headers, "g did not start the tour"
         assert b"/ STRATA /" in headers, "7 did not switch to the strata view"
@@ -105,7 +114,7 @@ def exercise(binary, demo, shared_memory):
         leftovers = [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{child.pid}-")]
         assert not leftovers, f"shared memory left behind: {leftovers}"
         transport = "shared memory" if shared_memory else "inline zlib"
-        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, search, focus, pause, number keys, tour, quit, terminal restoration passed")
+        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, back-tab to coop, search, focus, pause, number keys, tour, quit, terminal restoration passed")
     finally:
         if child.poll() is None:
             child.kill()

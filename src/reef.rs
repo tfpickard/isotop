@@ -584,11 +584,19 @@ mod tests {
             cpu: 0.0,
             memory: 0,
             io_rate: None,
+            read_rate: None,
+            write_rate: None,
+            written: None,
+            priority: 20,
+            nice: 0,
             threads: 1,
             gpu_memory: 0,
             core: 0,
             cpu_time: 0.0,
             cgroup: cgroup.into(),
+            files: crate::model::Measured::Pending,
+            locks_held: crate::model::Measured::Pending,
+            blocked_on: None,
         };
         let system = unit(Kind::System, "/system.slice/dbus.service");
         let session = unit(

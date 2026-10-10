@@ -3,7 +3,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::{cells, cores, globe, glyphs, matrix, reef, strata};
+use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
@@ -47,11 +47,12 @@ pub enum View {
     Globe,
     Reef,
     Matrix,
+    Coop,
 }
 
 impl View {
     /// Every view in Tab order; number keys 1 to 9, then 0, pick from this list.
-    pub const ALL: [View; 10] = [
+    pub const ALL: [View; 11] = [
         Self::City,
         Self::Orbit,
         Self::Ripple,
@@ -62,6 +63,7 @@ impl View {
         Self::Globe,
         Self::Reef,
         Self::Matrix,
+        Self::Coop,
     ];
 
     pub fn next(&mut self) {
@@ -76,7 +78,7 @@ impl View {
 
     fn backdrop(self) -> Backdrop {
         match self {
-            Self::City | Self::Cells | Self::Strata => Backdrop::Dusk,
+            Self::City | Self::Cells | Self::Strata | Self::Coop => Backdrop::Dusk,
             Self::Reef => Backdrop::Sea,
             Self::Matrix => Backdrop::Void,
             Self::Orbit | Self::Ripple | Self::Flow | Self::Cores | Self::Globe => Backdrop::Space,
@@ -412,7 +414,7 @@ impl Frame {
             let row = sky.profile(v, 1.9);
             let line = &mut self.pixels[y * w * 3..(y + 1) * w * 3];
             if sky.hazy() {
-                for (pixel, column) in line.chunks_exact_mut(3).zip(&columns) {
+                for (pixel, column) in line.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
                     let density = row * column;
                     for k in 0..3 {
                         pixel[k] = (base[k] + sky.haze[k] * density).min(255.0) as u8;
@@ -420,8 +422,8 @@ impl Frame {
                 }
             } else {
                 let color = base.map(|c| c as u8);
-                for pixel in line.chunks_exact_mut(3) {
-                    pixel.copy_from_slice(&color);
+                for pixel in line.as_chunks_mut::<3>().0 {
+                    *pixel = color;
                 }
             }
         }
@@ -907,6 +909,7 @@ pub struct Scene {
     strata: strata::Strata,
     globe: globe::Globe,
     reef: reef::Reef,
+    pub coop: coop::Coop,
     pub matrix: matrix::Rain,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
@@ -954,6 +957,7 @@ impl Scene {
             strata: strata::Strata::default(),
             globe: globe::Globe::default(),
             reef: reef::Reef::default(),
+            coop: coop::Coop::default(),
             matrix: matrix::Rain::default(),
             spare: Buffers::default(),
             visible: 0,
@@ -973,6 +977,7 @@ impl Scene {
     /// Feeds a new sample to views that keep their own history, whichever view is shown.
     pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
         self.strata.record(snapshot, time);
+        self.coop.record(snapshot);
     }
 
     #[cfg(test)]
@@ -1180,7 +1185,7 @@ impl Scene {
                 self.matrix.draw(&mut frame, time);
                 self.visible = 0;
             }
-            View::Cores | View::Cells | View::Strata | View::Globe | View::Reef => {
+            View::Cores | View::Cells | View::Strata | View::Globe | View::Reef | View::Coop => {
                 self.positions.clear();
                 let mut stage = Stage {
                     frame: &mut frame,
@@ -1198,7 +1203,9 @@ impl Scene {
                     View::Cells => self.cells.draw(&mut stage, &processes, snapshot),
                     View::Strata => self.strata.draw(&mut stage, &processes, snapshot),
                     View::Globe => self.globe.draw(&mut stage, &processes, snapshot),
-                    _ => self.reef.draw(&mut stage, &processes, snapshot),
+                    View::Reef => self.reef.draw(&mut stage, &processes, snapshot),
+                    View::Coop => self.coop.draw(&mut stage, &processes, snapshot),
+                    _ => unreachable!(),
                 };
                 self.visible = shown;
                 self.collapsed = processes.len().saturating_sub(shown);
@@ -2903,11 +2910,19 @@ mod tests {
             cpu: 0.0,
             memory: 1 << 20,
             io_rate: None,
+            read_rate: None,
+            write_rate: None,
+            written: None,
+            priority: 20,
+            nice: 0,
             threads: 1,
             gpu_memory: 0,
             core: 0,
             cpu_time: 0.0,
             cgroup: "/system.slice/g.service".into(),
+            files: crate::model::Measured::Pending,
+            locks_held: crate::model::Measured::Pending,
+            blocked_on: None,
         }
     }
 
