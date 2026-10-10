@@ -85,12 +85,19 @@ impl Strata {
                 .filter_map(|(_, sample)| sample.get(id).copied())
                 .fold(0.0_f32, f32::max)
         };
+        // Rows are given to every sampled process, drawn or not, so focusing a subtree, or the
+        // process limit (and a selection swapped across it) hiding some, frees none of their
+        // rows: clearing it brings every ridge back to the row it had. Only drawn ridges are
+        // drawn below.
+        let mut kinds: HashMap<Identity, Kind> =
+            snapshot.processes.iter().map(|p| (p.id, p.kind)).collect();
+        kinds.extend(processes.iter().map(|p| (p.id, p.kind)));
         self.rows
-            .retain(|id, _| index.contains_key(id) && peak(id) >= BUSY);
-        let mut candidates: Vec<(f32, Identity)> = processes
-            .iter()
-            .filter(|p| !self.rows.contains_key(&p.id))
-            .map(|p| (peak(&p.id), p.id))
+            .retain(|id, _| kinds.contains_key(id) && peak(id) >= BUSY);
+        let mut candidates: Vec<(f32, Identity)> = kinds
+            .keys()
+            .filter(|id| !self.rows.contains_key(id))
+            .map(|&id| (peak(&id), id))
             .filter(|&(value, _)| value >= BUSY)
             .collect();
         candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -100,7 +107,7 @@ impl Strata {
             }
             // Each kind owns a quarter of the floor, back to front; a newcomer takes the free row
             // nearest the middle of its kind's quarter, spilling into neighbours when it is full.
-            let rank = match processes[index[&id]].kind {
+            let rank = match kinds[&id] {
                 Kind::Kernel => 0,
                 Kind::System => 1,
                 Kind::Session => 2,
@@ -145,9 +152,14 @@ impl Strata {
             };
             stage.places.push(([x, depth + 2.5, 0.0], text));
         }
+        let mut shown = 0;
         for (id, &row) in &self.rows {
-            let process = processes[index[id]];
-            let pick = index[id] as u32;
+            let Some(&pick) = index.get(id) else {
+                continue;
+            };
+            shown += 1;
+            let process = processes[pick];
+            let pick = pick as u32;
             let y = row as f32 * SPACING;
             let mut profile: Vec<[f32; 2]> = window
                 .iter()
@@ -204,7 +216,7 @@ impl Strata {
                 )],
             );
         }
-        if self.rows.is_empty() {
+        if shown == 0 {
             stage.places.push((
                 [-width * 0.5, depth * 0.5, 0.0],
                 "no process has used CPU yet".into(),
@@ -216,6 +228,22 @@ impl Strata {
                 .flat_map(|x| [-SPACING, depth + 2.5].map(|y| [x, y]))
                 .flat_map(|[x, y]| [[x, y, 0.0], [x, y, PEAK * 0.7]]),
         );
-        self.rows.len()
+        shown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::demo;
+    use crate::render::{View, hiding};
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_ridge_in_its_row() {
+        hiding::focus_and_clear(View::Strata, &demo(30.0, 160));
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_strata_row() {
+        hiding::limit_and_lift(View::Strata, &demo(30.0, 160));
     }
 }

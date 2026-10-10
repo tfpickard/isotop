@@ -3142,8 +3142,9 @@ pub(crate) mod hiding {
         }
     }
 
-    /// Focuses one family of sixteen and clears the focus again, repeating the last frame's
-    /// time so nothing steps and anything that moves was moved by the change of focus.
+    /// Focuses one family of sixteen of `model::demo` and clears the focus again, repeating the
+    /// last frame's time so nothing steps and anything that moves was moved by the change of
+    /// focus. The family is the first with a drawn member after init's, which holds everyone.
     pub fn focus_and_clear(view: View, sample: &Snapshot) {
         focus_and_clear_by(view, sample, |point| point);
     }
@@ -3159,7 +3160,12 @@ pub(crate) mod hiding {
         };
         let (mut scene, time, before) = settled(view, sample);
         let before = measure(before);
-        let root = sample.processes[16].id;
+        let first = before
+            .keys()
+            .filter(|id| id.pid >= 1016)
+            .min()
+            .expect("a process outside init's family is drawn");
+        let root = sample.processes[(first.pid as usize - 1000) / 16 * 16].id;
         let focused = measure(place(
             &mut scene,
             sample,
