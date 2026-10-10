@@ -1628,7 +1628,7 @@ mod tests {
     }
 
     /// The macOS gaps, as the collector reports them.
-    const MACOS: [&str; 7] = [
+    const MACOS: [&str; 8] = [
         "cpu pressure",
         "io pressure",
         "last cpu",
@@ -1636,6 +1636,7 @@ mod tests {
         "run queue",
         "cgroups",
         "socket traffic",
+        "file locks",
     ];
 
     /// The status text of `view` over the demo workload with the given gaps, after one frame so
@@ -1651,6 +1652,14 @@ mod tests {
                 process.performance_share = None;
                 process.waiting = None;
             }
+        }
+        if missing.contains(&"file locks") {
+            // No lock table: every process's locks are unreadable and none waits on one.
+            for process in &mut snapshot.processes {
+                process.locks_held = model::Measured::Unreadable;
+                process.blocked_on = None;
+            }
+            snapshot.unattributed_locks = 0;
         }
         let mut app = App::new(view, snapshot);
         app.render(320, 180, 512);
@@ -1763,6 +1772,30 @@ mod tests {
             "{linux}"
         );
         assert!(!linux.contains("no cgroups"), "{linux}");
+    }
+
+    #[test]
+    fn coop_legend_on_macos_counts_open_files_but_has_no_brooding() {
+        let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        assert!(
+            mac.contains("eggs = open files (log2), cracked = deleted but open | chicks = threads"),
+            "{mac}"
+        );
+        assert!(
+            mac.contains("no file lock table: no brooding or queueing"),
+            "{mac}"
+        );
+        assert!(
+            !mac.contains("brooding =") && !mac.contains("file locks unreadable"),
+            "{mac}"
+        );
+        assert!(!mac.contains("without a process (OFD)"), "{mac}");
+        let linux = lines_with(View::Coop, &[], 0)[2].clone();
+        assert!(
+            linux.contains("brooding = holds a file lock, queue at a nest = blocked on one"),
+            "{linux}"
+        );
+        assert!(!linux.contains("no file lock table"), "{linux}");
     }
 
     #[test]

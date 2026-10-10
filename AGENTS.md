@@ -10,8 +10,9 @@ The README covers usage. This file covers how to work on the code.
 1. **Sample** (`model.rs`, `platform/`). `Collector::sample` reads the operating system through
    `platform::Sampler` (on Linux, `/proc`) once per `--sample-ms`, smooths CPU use and returns a
    `Snapshot`. Slow sources (sockets in `platform/linux/net.rs`, open files and file locks in
-   `platform/linux/files.rs`, cgroup accounting, NVIDIA memory in `platform/linux/nvml.rs`) run
-   on a background thread every 2 s and are merged in, so the frame loop never waits on them.
+   `platform/linux/files.rs`, cgroup accounting, NVIDIA memory in `platform/linux/nvml.rs`;
+   on macOS sockets and open files only, as it has no lock table) run on a background thread
+   every 2 s and are merged in, so the frame loop never waits on them.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
@@ -40,9 +41,9 @@ The README covers usage. This file covers how to work on the code.
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
-| `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, and what it reports through `missing`, `per_cluster` and `unreadable` |
+| `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, the bounded open-file scan (`FileScan`, one `proc_pidfdinfo` per vnode), and what it reports through `missing`, `per_cluster` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
-| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing |
+| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
 | `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
 
 ## Invariants

@@ -304,14 +304,16 @@ fn background(
 }
 
 /// Sets a process's open files and locks from the background scans: absent from the file scan
-/// means not read yet, not unreadable. Kernel threads keep their empty table.
+/// means not read yet, not unreadable. Kernel threads keep the empty table the platform gave
+/// them (Linux); a kernel process the platform leaves to the scan (kernel_task on macOS, which
+/// has a descriptor table like any process) takes what the scan found.
 fn merge_files(
     process: &mut Process,
     files: &HashMap<u32, Option<platform::Files>>,
     locks: &Measured<platform::Locks>,
 ) {
     let pid = process.id.pid;
-    if process.kind != Kind::Kernel {
+    if process.kind != Kind::Kernel || process.files == Measured::Pending {
         process.files = match files.get(&pid) {
             Some(Some(found)) => Measured::Known(found.clone()),
             Some(None) => Measured::Unreadable,
@@ -1447,5 +1449,29 @@ mod tests {
         merge_files(&mut process, &found, &locks);
         assert_eq!(process.files, Measured::Known(scanned));
         assert_eq!(process.locks_held, Measured::Known(2));
+    }
+
+    #[test]
+    fn kernel_threads_keep_their_empty_table_and_kernel_task_takes_the_scan() {
+        let scanned = platform::Files {
+            open: 3,
+            ..platform::Files::default()
+        };
+        let found = HashMap::from([(0, Some(scanned.clone())), (2, Some(scanned.clone()))]);
+        let mut thread = demo(0.0, 1).processes[0].clone();
+        thread.kind = Kind::Kernel;
+        thread.id.pid = 2;
+        thread.files = Measured::Known(platform::Files::default());
+        merge_files(&mut thread, &found, &Measured::Pending);
+        assert_eq!(thread.files, Measured::Known(platform::Files::default()));
+        // kernel_task on macOS comes from the sampler not read yet, like every process there.
+        let mut task = thread.clone();
+        task.id.pid = 0;
+        task.files = Measured::Pending;
+        merge_files(&mut task, &found, &Measured::Pending);
+        assert_eq!(task.files, Measured::Known(scanned));
+        task.files = Measured::Pending;
+        merge_files(&mut task, &HashMap::from([(0, None)]), &Measured::Pending);
+        assert_eq!(task.files, Measured::Unreadable, "without root");
     }
 }

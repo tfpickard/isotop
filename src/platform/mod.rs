@@ -17,8 +17,9 @@
 //!     `Snapshot::missing` names it and appended to it every sample. The names views react to
 //!     are "cpu pressure", "memory pressure", "io pressure", "last cpu" (`Process::core` is
 //!     meaningless), "cpu clock" (`Cpu::mhz` is 0), "run queue" (`Cpu::wait` is 0), "cgroups"
-//!     (no accounting units, so no limits, quotas or pressure) and "socket traffic" (no
-//!     per-connection rates or round-trip times). Linux returns none;
+//!     (no accounting units, so no limits, quotas or pressure), "socket traffic" (no
+//!     per-connection rates or round-trip times) and "file locks" (no lock table: `locks()`
+//!     returns None, so no process holds or waits for a lock). Linux returns none;
 //!   - `per_cluster(&self) -> Vec<&'static str>`: sources measured per CPU cluster rather than
 //!     per CPU, named as `Snapshot::per_cluster` names them: "cpu clock" when every CPU's
 //!     `Cpu::mhz` is the average clock of the cluster of its kind. Linux returns none;
@@ -81,7 +82,7 @@ pub struct RawProcess {
     /// state, memory, threads, core, cgroup, priority, nice and written. The derived fields
     /// (cpu, the I/O rates, cpu_time and gpu_memory) are left at zero or None, and those the
     /// background thread fills (files, locks_held and blocked_on) at Pending or None, except
-    /// that a kernel thread's files are known to be none.
+    /// that a Linux kernel thread's files are known to be none.
     pub process: Process,
     /// Cumulative CPU time in ticks of `Sampler::hz()`.
     pub ticks: u64,

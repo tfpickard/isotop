@@ -813,6 +813,8 @@ pub struct Coop {
     cgroups_missing: bool,
     /// The OS reports no last CPU, so running chickens queue at one shared trough.
     trough_shared: bool,
+    /// The OS has no file lock table, so no hen broods or queues at a nest.
+    locks_missing: bool,
     unreadable: usize,
     /// Drawn processes whose descriptor tables or lock state could not be read (not merely not
     /// read yet), and locks that name no process.
@@ -1169,8 +1171,13 @@ impl Coop {
         } else {
             ("cgroup", "fox = OOM kill, ")
         };
+        let locks = if self.locks_missing {
+            ""
+        } else {
+            "brooding = holds a file lock, queue at a nest = blocked on one | "
+        };
         let mut line = format!(
-            " Chicken = process, size = memory | flock = {flock} | foraging speed = CPU, roost = idle | {feeder}, pecking order = priority | eggs = open files (log2), cracked = deleted but open | brooding = holds a file lock, queue at a nest = blocked on one | chicks = threads | dust = reads | {fox}eyes = memory pressure | phi {phi}"
+            " Chicken = process, size = memory | flock = {flock} | foraging speed = CPU, roost = idle | {feeder}, pecking order = priority | eggs = open files (log2), cracked = deleted but open | {locks}chicks = threads | dust = reads | {fox}eyes = memory pressure | phi {phi}"
         );
         if self.trough_shared {
             line.push_str(" | no last CPU: running chickens share one trough");
@@ -1187,7 +1194,9 @@ impl Coop {
         if self.no_files > 0 {
             line.push_str(&format!(" | no files for {} (permissions)", self.no_files));
         }
-        if self.no_locks > 0 {
+        if self.locks_missing {
+            line.push_str(" | no file lock table: no brooding or queueing");
+        } else if self.no_locks > 0 {
             line.push_str(&format!(" | file locks unreadable for {}", self.no_locks));
         }
         if self.unattributed_locks > 0 {
@@ -1453,6 +1462,7 @@ impl Coop {
         let psi = snapshot.pressure[0];
         self.pressure_missing = snapshot.missing.contains(&"cpu pressure");
         self.cgroups_missing = snapshot.missing.contains(&"cgroups");
+        self.locks_missing = snapshot.missing.contains(&"file locks");
         let by_pid: HashMap<u32, &Process> = snapshot
             .processes
             .iter()
@@ -4061,6 +4071,52 @@ mod tests {
         let legend = scene.coop.legend();
         assert!(!legend.contains("share one trough"));
         assert!(legend.contains("no CPU pressure"));
+    }
+
+    #[test]
+    fn without_a_lock_table_no_hen_broods_or_queues_and_the_legend_says_so() {
+        // macOS: every process's locks are unreadable and none is blocked on one.
+        let path = "/session/app";
+        let processes: Vec<Process> = (1..=4)
+            .map(|pid| {
+                let mut p = process(pid, path);
+                p.cpu = 0.0;
+                p.locks_held = Measured::Unreadable;
+                p
+            })
+            .collect();
+        let mut sample = snapshot(processes, 1.0);
+        sample.missing = vec!["file locks"];
+        let mut scene = Scene::new();
+        render(&mut scene, &sample, 1.0);
+        assert!(
+            scene
+                .coop
+                .yard
+                .chickens
+                .iter()
+                .all(|chicken| !matches!(chicken.role, Role::Brooding | Role::Waiting))
+        );
+        let legend = scene.coop.legend();
+        assert!(
+            legend.contains("cracked = deleted but open | chicks = threads"),
+            "{legend}"
+        );
+        assert!(
+            legend.contains("no file lock table: no brooding or queueing"),
+            "{legend}"
+        );
+        assert!(
+            !legend.contains("brooding =") && !legend.contains("file locks unreadable"),
+            "{legend}"
+        );
+        // Where locks exist but could not be read, the legend counts the processes instead.
+        sample.missing.clear();
+        sample.elapsed = 2.0;
+        render(&mut scene, &sample, 2.0);
+        let legend = scene.coop.legend();
+        assert!(legend.contains("file locks unreadable for 4"), "{legend}");
+        assert!(legend.contains("brooding = holds a file lock"), "{legend}");
     }
 
     #[test]

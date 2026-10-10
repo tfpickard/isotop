@@ -96,6 +96,21 @@ thread is running, S otherwise, T for stopped and Z for zombies. The performance
 efficiency cores come from the IORegistry (`cluster-type`); if that cannot be read,
 the lanes have no kind and are not guessed.
 
+**Open files.** The coop's eggs are measured on macOS too. Each process's
+descriptors come from `proc_pidinfo` (`PROC_PIDLISTFDS`), and each vnode among them
+from `proc_pidfdinfo` (`PROC_PIDFDVNODEPATHINFO`), which stats the file through the
+descriptor. A regular file counts once by device and inode, and one whose link count
+is 0 was deleted while still open: a rotten egg, with its size. The scan has the
+same bounds as on Linux (4096 vnodes examined and 16 384 descriptors listed per
+process, 65 536 per scan, resuming where it stopped), but only vnodes are examined,
+since the listing already says which descriptors are sockets, pipes or kqueues, and
+past 4096 the open count is estimated in proportion among the vnodes alone. A zombie
+holds no files. Other users' tables need root, as their CPU and memory do, and
+`kernel_task` is read like any process when isotop runs as root. macOS cannot ask a
+filesystem for cached attributes only, as Linux does, so a network mount that stops
+answering can hold up the background thread (sockets, files) while its attribute
+cache is stale.
+
 ### What macOS does not report and how each view shows it
 
 | Missing on macOS | How it shows |
@@ -108,6 +123,7 @@ the lanes have no kind and are not guessed.
 | cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group, and no fox comes for an OOM kill; its legend says so |
 | Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
+| File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos |
 | The systemd journal | Matrix follows the unified log instead; see below |
 
@@ -331,9 +347,9 @@ A fenced chicken yard in which every process is a chicken in a Vicsek flock: eac
 | Frozen, crouched | Stopped or traced state | Held in place without noise |
 | Mud puddle | Uninterruptible sleep | Does not move |
 | Feet up | Zombie | Does not move |
-| Clutch of eggs in the nest box | Open regular files of the flock's members (`/proc/<pid>/fd`) | round(log2(1 + Σ open files)) eggs, at most 16: 1 file lays 1 egg, 7 lay 3, 140 lay 7, and 46 340 or more fill the clutch. Each member counts a file once however many of its descriptors refer to it. A state, not events: the clutch shrinks when files close. Members whose descriptor tables are unreadable or not read yet add nothing, and the nest's inspector line says how many |
+| Clutch of eggs in the nest box | Open regular files of the flock's members (`/proc/<pid>/fd`; `proc_pidfdinfo` on macOS) | round(log2(1 + Σ open files)) eggs, at most 16: 1 file lays 1 egg, 7 lay 3, 140 lay 7, and 46 340 or more fill the clutch. Each member counts a file once however many of its descriptors refer to it. A state, not events: the clutch shrinks when files close. Members whose descriptor tables are unreadable or not read yet add nothing, and the nest's inspector line says how many |
 | Rotten eggs, cracked and olive | Files deleted while still open (link count 0) | One per deleted file (by device and inode, so a rotated log that several members hold open is one egg), at most 8 shown in front of the clutch; the inspector gives the count and the bytes held |
-| Brooding by the nest | Holding a file lock or lease (`/proc/locks`) | A holder that is not running sits on a straw pad beside her own house's nest box, clear of its eggs |
+| Brooding by the nest | Holding a file lock or lease (`/proc/locks`; macOS has no lock table, so none brood there) | A holder that is not running sits on a straw pad beside her own house's nest box, clear of its eggs |
 | Queueing at a nest | Blocked on a file lock (a `->` line in `/proc/locks`) | Walks to the nest of the house of the process holding the lock, whatever its own flock, and queues beside it after the brooders, with a faint line to the holder |
 | Dust puffs | Read rate | min(5, 1 + ⌊log2(rate / 64 KiB)⌋) puffs above 64 KiB/s |
 | Chicks | Threads | min(threads − 1, 12), following the hen along her trail |
@@ -358,7 +374,7 @@ Decorative: the grass grid and the dirt band under the feeders, the hedge, the f
 
 **The fox.** When a unit's `oom_kills` count rises, a fox runs to the largest member (by memory) that vanished in the last 4 seconds, or two and a half sampling intervals when `--sample-ms` is longer, and takes it. The window exists because cgroup counters are read every 2 s on a background thread, so the count can rise a sample or two after the process disappears from the list; each victim is claimed by one kill only. If no member vanished, the fox leaves empty-mouthed. Kills recorded while another view is shown are dropped once they are older than a fox's run, so switching to the coop does not replay them. Memory pressure puts fox eyes in the hedge: more pairs and nearer the fence as pressure grows, and foragers near them flee.
 
-**What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the pressure term of the noise is fixed; the CPU-variation term still applies. I/O counters of other users' processes are unreadable without privileges, so those chickens raise no dust, and the legend counts them ("I/O unreadable for N"). The same goes for their descriptor tables: their open files add nothing to the clutch, and the legend says "no files for N (permissions)". A process the file scan has not reached yet (just started, or past a scan's budget) is not counted there; its inspector says "open files not read yet". Kernel threads hold no descriptors and count as having no files. Open file description (OFD) locks belong to an open file, not a process, and `/proc/locks` reports them with pid -1: no hen broods for them, a request blocked on one has no holder to walk to and queues at its own nest, and the legend counts them.
+**What cannot be measured.** The legend says so. Without CPU pressure (kernels without PSI) the pressure term of the noise is fixed; the CPU-variation term still applies. I/O counters of other users' processes are unreadable without privileges, so those chickens raise no dust, and the legend counts them ("I/O unreadable for N"). The same goes for their descriptor tables: their open files add nothing to the clutch, and the legend says "no files for N (permissions)". A process the file scan has not reached yet (just started, or past a scan's budget) is not counted there; its inspector says "open files not read yet". Kernel threads hold no descriptors and count as having no files. Open file description (OFD) locks belong to an open file, not a process, and `/proc/locks` reports them with pid -1: no hen broods for them, a request blocked on one has no holder to walk to and queues at its own nest, and the legend counts them. macOS has no lock table at all, so there no hen broods or queues, and the legend says so in place of the brooding and queueing entries.
 
 **Fixed time step.** The yard advances in whole 20 Hz steps of wall-clock time, so the frame rate does not change how a flock moves; a gap longer than half a second, such as a pause, is capped at half a second.
 

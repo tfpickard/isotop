@@ -4,11 +4,11 @@
 // On Linux only the tests below use these items.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::model::{CoreKind, Kind};
-use crate::platform::{Network, Remote};
+use crate::platform::{DeletedFile, Files, Network, Remote};
 
 /// Executables that run virtual machines or containers. A trailing `*` matches any suffix.
 const VIRTUALIZATION: [&str; 8] = [
@@ -447,6 +447,86 @@ pub fn address(vflag: u8, bytes: [u8; 16]) -> IpAddr {
 /// A port from `in_sockinfo`: a network-order `u_short` widened to `int`.
 pub fn port(raw: i32) -> u16 {
     u16::from_be(raw as u16)
+}
+
+/// The file type bits of a mode and the regular-file type (bsd/sys/stat.h).
+const S_IFMT: u16 = 0o170000;
+const S_IFREG: u16 = 0o100000;
+
+/// The fields of a vnode's `vinfo_stat` that decide what a descriptor holds.
+#[derive(Clone, Copy, Debug)]
+pub struct VnodeStat {
+    pub device: u32,
+    pub mode: u16,
+    pub links: u16,
+    pub inode: u64,
+    pub size: i64,
+}
+
+/// What one descriptor refers to, as far as open files are concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Descriptor {
+    /// A regular file with at least one name, by device and inode.
+    File(u64, u64),
+    /// A regular file with no name left.
+    Deleted(DeletedFile),
+    /// Anything else: a directory, a device, a FIFO, a vnode that could not be read, or a
+    /// socket, pipe, kqueue or shared memory object, which are not vnodes at all.
+    Other,
+}
+
+/// Classifies a vnode descriptor by its attributes. A regular file whose link count is 0 was
+/// deleted while open: the kernel keeps it until the last descriptor closes. Unlike Linux,
+/// macOS gives no path suffix to confirm it, but none is needed, since the count comes from
+/// the open file itself.
+pub fn descriptor(stat: VnodeStat) -> Descriptor {
+    if stat.mode & S_IFMT != S_IFREG {
+        return Descriptor::Other;
+    }
+    let device = u64::from(stat.device);
+    if stat.links == 0 {
+        Descriptor::Deleted(DeletedFile {
+            device,
+            inode: stat.inode,
+            size: u64::try_from(stat.size).unwrap_or(0),
+        })
+    } else {
+        Descriptor::File(device, stat.inode)
+    }
+}
+
+/// Counts examined descriptors, each file once however many descriptors refer to it.
+pub fn tally(descriptors: impl IntoIterator<Item = Descriptor>) -> Files {
+    let mut open = HashSet::new();
+    let mut deleted = BTreeSet::new();
+    for descriptor in descriptors {
+        match descriptor {
+            Descriptor::File(device, inode) => {
+                open.insert((device, inode));
+            }
+            Descriptor::Deleted(file) => {
+                open.insert((file.device, file.inode));
+                deleted.insert(file);
+            }
+            Descriptor::Other => {}
+        }
+    }
+    Files {
+        open: u32::try_from(open.len()).unwrap_or(u32::MAX),
+        deleted: deleted.into_iter().collect(),
+        partial: false,
+    }
+}
+
+/// The open-file count of a table with `examined + beyond` vnode descriptors of which
+/// `examined` were looked at and held `files` distinct regular files: the rest are assumed to
+/// hold files in the same proportion. Deleted files are never extrapolated.
+pub fn estimate(files: u32, examined: usize, beyond: usize) -> u32 {
+    if examined == 0 {
+        return 0;
+    }
+    let extra = beyond as u64 * files as u64 / examined as u64;
+    files.saturating_add(u32::try_from(extra).unwrap_or(u32::MAX))
 }
 
 #[cfg(test)]
@@ -928,5 +1008,77 @@ mod tests {
         );
         let raw = i32::from(u16::from_ne_bytes(8080_u16.to_be_bytes()));
         assert_eq!(port(raw), 8080);
+    }
+
+    fn stat(mode: u16, links: u16, inode: u64, size: i64) -> VnodeStat {
+        VnodeStat {
+            device: 0x0100_0004,
+            mode,
+            links,
+            inode,
+            size,
+        }
+    }
+
+    #[test]
+    fn a_regular_file_with_no_links_left_is_deleted_and_other_vnodes_are_not_files() {
+        let regular = 0o100644;
+        assert_eq!(
+            descriptor(stat(regular, 1, 42, 10)),
+            Descriptor::File(0x0100_0004, 42)
+        );
+        assert_eq!(
+            descriptor(stat(regular, 0, 43, 5 << 30)),
+            Descriptor::Deleted(DeletedFile {
+                device: 0x0100_0004,
+                inode: 43,
+                size: 5 << 30,
+            })
+        );
+        // Directories, character devices (/dev/null, ttys) and FIFOs are vnodes but not files,
+        // even when their link count reads 0.
+        for mode in [0o040755, 0o020666, 0o010600, 0o120755] {
+            assert_eq!(descriptor(stat(mode, 0, 44, 0)), Descriptor::Other);
+        }
+        let Descriptor::Deleted(file) = descriptor(stat(regular, 0, 45, -1)) else {
+            panic!("a deleted file");
+        };
+        assert_eq!(file.size, 0, "a negative off_t is no size");
+    }
+
+    #[test]
+    fn a_file_held_through_several_descriptors_counts_once_by_device_and_inode() {
+        let regular = 0o100600;
+        let files = tally(
+            [
+                stat(regular, 1, 10, 1),
+                stat(regular, 1, 10, 1),
+                stat(regular, 2, 11, 1),
+                stat(regular, 0, 12, 4096),
+                stat(regular, 0, 12, 4096),
+                stat(0o040755, 3, 13, 0),
+            ]
+            .map(descriptor)
+            .into_iter()
+            .chain([Descriptor::Other]),
+        );
+        assert_eq!(files.open, 3, "10, 11 and the deleted 12");
+        assert_eq!(files.deleted.len(), 1);
+        assert_eq!(files.deleted_bytes(), 4096);
+        assert!(!files.partial);
+        // The same inode on another device is another file.
+        let other_device = Descriptor::File(0x0100_0005, 10);
+        assert_eq!(
+            tally([descriptor(stat(regular, 1, 10, 1)), other_device]).open,
+            2
+        );
+    }
+
+    #[test]
+    fn unexamined_vnodes_are_estimated_in_proportion_and_deleted_files_are_not() {
+        assert_eq!(estimate(1000, 4096, 4096), 2000);
+        assert_eq!(estimate(7, 7, 0), 7);
+        assert_eq!(estimate(0, 0, 100), 0);
+        assert_eq!(estimate(u32::MAX, 1, 1), u32::MAX);
     }
 }

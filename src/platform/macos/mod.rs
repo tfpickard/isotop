@@ -1,11 +1,12 @@
 //! macOS: processes from libproc and `KERN_PROCARGS2`, CPU time in Mach absolute time, CPUs and
 //! memory from Mach host statistics, P/E cores from the IORegistry, the memory pressure level,
-//! sockets from `proc_pidfdinfo`, and the unified log. Other users' processes are counted but
-//! not measured unless isotop runs as root. macOS has no stall accounting, last CPU, per-CPU
-//! clock readings, run queues, cgroups or per-socket byte counters; `Sampler::missing` names
-//! them. What it has instead is per process and per cluster: `proc_pid_rusage` splits CPU time
-//! and cycles between the performance and efficiency cores and counts runnable time, which give
-//! each process's share of performance-core time, its waiting threads and each cluster's clock.
+//! sockets and open files from `proc_pidfdinfo`, and the unified log. Other users' processes are
+//! counted but not measured unless isotop runs as root. macOS has no stall accounting, last CPU,
+//! per-CPU clock readings, run queues, cgroups, per-socket byte counters or file lock table;
+//! `Sampler::missing` names them. What it has instead is per process and per cluster:
+//! `proc_pid_rusage` splits CPU time and cycles between the performance and efficiency cores and
+//! counts runnable time, which give each process's share of performance-core time, its waiting
+//! threads and each cluster's clock.
 
 mod ffi;
 mod journal;
@@ -243,6 +244,7 @@ impl Sampler {
             cpu_time: 0.0,
             performance_share: None,
             waiting: None,
+            // The background file scan reads every table, kernel_task's included.
             files: Measured::Pending,
             locks_held: Measured::Pending,
             blocked_on: None,
@@ -428,6 +430,7 @@ impl Sampler {
             "run queue",
             "cgroups",
             "socket traffic",
+            "file locks",
         ];
         if self.clocked() {
             missing.retain(|&name| name != "cpu clock");
@@ -479,6 +482,61 @@ fn list_pids(pids: &mut Vec<c_int>) -> io::Result<()> {
         }
         let grown = pids.len() * 2;
         pids.resize(grown, 0);
+    }
+}
+
+/// Lists the descriptors of `pid` into `descriptors`, a buffer reused between processes, up to
+/// `limit` of them, and returns how many were listed and whether the table held more. An error
+/// when the table cannot be listed: EPERM for another user's process, ESRCH for one that has
+/// exited or is a zombie.
+fn list_descriptors(
+    pid: c_int,
+    descriptors: &mut Vec<libc::proc_fdinfo>,
+    limit: usize,
+) -> io::Result<(usize, bool)> {
+    let empty = libc::proc_fdinfo {
+        proc_fd: 0,
+        proc_fdtype: 0,
+    };
+    if descriptors.is_empty() {
+        descriptors.resize(256, empty);
+    }
+    loop {
+        // One entry past the limit, so that a buffer filled at the cap proves there are more.
+        let capacity = descriptors.len().min(limit.saturating_add(1));
+        let bytes = capacity * size_of::<libc::proc_fdinfo>();
+        // libproc returns 0 both for an empty table and for an error, which alone sets errno.
+        // SAFETY: __error returns this thread's errno, which is always writable.
+        unsafe { *libc::__error() = 0 };
+        // SAFETY: the buffer is valid for writes of `bytes` bytes.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDLISTFDS,
+                0,
+                descriptors.as_mut_ptr().cast(),
+                bytes as c_int,
+            )
+        };
+        let Ok(written) = usize::try_from(written).map(|written| written.min(bytes)) else {
+            return Err(io::Error::last_os_error());
+        };
+        if written == 0 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(0) | None => Ok((0, false)),
+                Some(_) => Err(error),
+            };
+        }
+        // The kernel fills at most the whole buffer and says nothing when it truncates.
+        if written < bytes {
+            return Ok((written / size_of::<libc::proc_fdinfo>(), false));
+        }
+        if capacity > limit {
+            return Ok((limit, true));
+        }
+        let grown = descriptors.len() * 2;
+        descriptors.resize(grown, empty);
     }
 }
 
@@ -772,37 +830,8 @@ struct Sockets {
 impl Sockets {
     /// Adds the sockets of one process; `descriptors` is a buffer reused between processes.
     fn scan(&mut self, pid: c_int, descriptors: &mut Vec<libc::proc_fdinfo>) {
-        let empty = libc::proc_fdinfo {
-            proc_fd: 0,
-            proc_fdtype: 0,
-        };
-        if descriptors.is_empty() {
-            descriptors.resize(256, empty);
-        }
-        let count = loop {
-            let bytes = descriptors.len() * size_of::<libc::proc_fdinfo>();
-            // SAFETY: the buffer is valid for writes of `bytes` bytes.
-            let written = unsafe {
-                libc::proc_pidinfo(
-                    pid,
-                    libc::PROC_PIDLISTFDS,
-                    0,
-                    descriptors.as_mut_ptr().cast(),
-                    bytes as c_int,
-                )
-            };
-            let Ok(written) = usize::try_from(written) else {
-                return;
-            };
-            if written == 0 {
-                return;
-            }
-            // The kernel fills at most the whole buffer and says nothing when it truncates.
-            if written < bytes {
-                break written / size_of::<libc::proc_fdinfo>();
-            }
-            let grown = descriptors.len() * 2;
-            descriptors.resize(grown, empty);
+        let Ok((count, _)) = list_descriptors(pid, descriptors, usize::MAX) else {
+            return;
         };
         for descriptor in &descriptors[..count] {
             if descriptor.proc_fdtype == libc::PROX_FDTYPE_SOCKET as u32
@@ -920,20 +949,177 @@ pub fn account(
     HashMap::new()
 }
 
-/// Open files per process; not read on macOS yet, so every process stays not read.
-pub struct FileScan;
+/// How much one open-file scan may read, with the same numbers as on Linux. Listing a table is
+/// one `proc_pidinfo` call; examining a vnode descriptor is one `proc_pidfdinfo` call, which
+/// stats the file and builds its path, much as Linux's readlink and stat do.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    /// Vnode descriptors examined per process; past them the open count is estimated.
+    examined: usize,
+    /// Descriptors listed per process; the listing stops there.
+    listed: usize,
+    /// Descriptors listed per scan. A process is only scanned while a whole `listed` share
+    /// remains, so none is judged from a sliver of its table.
+    scan: usize,
+}
+
+const BOUNDS: Bounds = Bounds {
+    examined: 4096,
+    listed: 16384,
+    scan: 65536,
+};
+
+/// The open-file scan across processes, which resumes where the previous scan ran out of budget.
+pub struct FileScan {
+    bounds: Bounds,
+    /// The last pid scanned, so the next scan starts after it.
+    after: u32,
+    /// The last result for each pid: None for an unreadable table.
+    known: HashMap<u32, Option<Files>>,
+    /// Buffers reused by every scan.
+    pids: Vec<c_int>,
+    descriptors: Vec<libc::proc_fdinfo>,
+}
 
 impl FileScan {
     pub fn new() -> Self {
-        Self
+        Self {
+            bounds: BOUNDS,
+            after: 0,
+            known: HashMap::new(),
+            pids: Vec::new(),
+            descriptors: Vec::new(),
+        }
     }
 
+    /// Open files per pid; None for a table that could not be read. A pid the scan has not
+    /// reached yet, this time or ever, is absent unless it keeps a previous result (a pid
+    /// reused within those few seconds briefly shows its predecessor's files); so is one that
+    /// exited during the scan.
     pub fn sample(&mut self) -> HashMap<u32, Option<Files>> {
-        HashMap::new()
+        if list_pids(&mut self.pids).is_err() {
+            self.known.clear();
+            return HashMap::new();
+        }
+        let mut pids: Vec<u32> = self
+            .pids
+            .iter()
+            .filter_map(|&pid| u32::try_from(pid).ok())
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        let start = pids.partition_point(|&pid| pid <= self.after);
+        let mut budget = self.bounds.scan;
+        let mut found = HashMap::with_capacity(pids.len());
+        for &pid in pids[start..].iter().chain(&pids[..start]) {
+            if budget < self.bounds.listed {
+                break;
+            }
+            self.after = pid;
+            match open_files(pid as c_int, self.bounds, &mut self.descriptors) {
+                Ok((files, listed)) => {
+                    budget -= listed;
+                    found.insert(pid, Some(files));
+                }
+                Err(Absent::Gone) => {}
+                Err(Absent::Unreadable) => {
+                    found.insert(pid, None);
+                }
+            }
+        }
+        for pid in pids {
+            if let Some(previous) = self.known.get(&pid) {
+                found.entry(pid).or_insert_with(|| previous.clone());
+            }
+        }
+        self.known = found.clone();
+        found
     }
 }
 
-/// File locks; not read on macOS yet.
+/// The open files of one process, and how many descriptors were listed. Unreadable for another
+/// user's process without root, as on Linux; Gone for one that has exited.
+fn open_files(
+    pid: c_int,
+    bounds: Bounds,
+    descriptors: &mut Vec<libc::proc_fdinfo>,
+) -> Result<(Files, usize), Absent> {
+    let (listed, truncated) = match list_descriptors(pid, descriptors, bounds.listed) {
+        Ok(listing) => listing,
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+            // xnu lists nothing for a zombie and answers ESRCH as for a process that is gone,
+            // but a zombie's table was closed when it exited: it holds no files. A nonzero
+            // argument makes PROC_PIDTBSDINFO search the zombie list.
+            return match pid_info::<libc::proc_bsdinfo>(pid, libc::PROC_PIDTBSDINFO, 1) {
+                Ok(bsd) if logic::zombie(bsd.pbi_status) => Ok((Files::default(), 0)),
+                _ => Err(Absent::Gone),
+            };
+        }
+        Err(_) => return Err(Absent::Unreadable),
+    };
+    let mut examined = Vec::new();
+    let mut beyond = 0;
+    // Only vnodes can be files; sockets, pipes, kqueues and shared memory are told apart by
+    // the listing itself, so they cost nothing and are not counted as examined.
+    for descriptor in descriptors[..listed]
+        .iter()
+        .filter(|descriptor| descriptor.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
+    {
+        if examined.len() < bounds.examined {
+            examined.push(vnode_descriptor(pid, descriptor.proc_fd));
+        } else {
+            beyond += 1;
+        }
+    }
+    let count = examined.len();
+    let mut files = logic::tally(examined);
+    files.open = logic::estimate(files.open, count, beyond);
+    files.partial = truncated || beyond > 0;
+    Ok((files, listed))
+}
+
+/// What vnode descriptor `fd` of `pid` holds; Other when it has closed since the listing or
+/// cannot be read.
+fn vnode_descriptor(pid: c_int, fd: i32) -> logic::Descriptor {
+    let Some(info) = vnode_info(pid, fd) else {
+        return logic::Descriptor::Other;
+    };
+    let stat = info.pvip.vip_vi.vi_stat;
+    logic::descriptor(logic::VnodeStat {
+        device: stat.vst_dev,
+        mode: stat.vst_mode,
+        links: stat.vst_nlink,
+        inode: stat.vst_ino,
+        size: stat.vst_size,
+    })
+}
+
+/// An open vnode's `vnode_fdinfowithpath`, only when the kernel wrote exactly the size of ours,
+/// which proves the layouts agree. The kernel stats the vnode the descriptor holds, so a file
+/// deleted while open is still found, with a link count of 0. macOS has no equivalent of
+/// Linux's AT_STATX_DONT_SYNC: the filesystem is asked for the attributes, which a network
+/// filesystem answers from its attribute cache while that is fresh.
+fn vnode_info(pid: c_int, fd: i32) -> Option<ffi::vnode_fdinfowithpath> {
+    let mut info = MaybeUninit::<ffi::vnode_fdinfowithpath>::zeroed();
+    let size = size_of::<ffi::vnode_fdinfowithpath>() as c_int;
+    // SAFETY: the buffer is valid for writes of `size` bytes.
+    let written = unsafe {
+        libc::proc_pidfdinfo(
+            pid,
+            fd,
+            ffi::PROC_PIDFDVNODEPATHINFO,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    // SAFETY: vnode_fdinfowithpath holds only integers and C chars, so the zeroed or filled
+    // bytes are valid.
+    (written == size).then(|| unsafe { info.assume_init() })
+}
+
+/// File locks. macOS keeps no table of them that can be read: `fcntl(F_GETLK)` only tests a
+/// range of a file the caller has open itself, so no process can be named as a holder or a
+/// waiter. `Sampler::missing` names "file locks".
 pub fn locks() -> Option<Locks> {
     None
 }
@@ -1125,5 +1311,123 @@ mod tests {
             available > 0 && available <= total,
             "{available} of {total}"
         );
+    }
+
+    /// A path in the temporary directory that no other test or run uses.
+    fn temporary(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("isotop-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
+    fn a_file_deleted_while_open_is_found_with_its_size() {
+        use std::os::unix::fs::MetadataExt;
+        let me = std::process::id() as c_int;
+        let mut descriptors = Vec::new();
+        let Ok((before, _)) = open_files(me, BOUNDS, &mut descriptors) else {
+            panic!("this process can read its own table");
+        };
+        let path = temporary("deleted");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&[7; 12345]).unwrap();
+        let metadata = file.metadata().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let ours = |files: &Files| {
+            files
+                .deleted
+                .iter()
+                .find(|f| f.inode == metadata.ino())
+                .copied()
+        };
+        assert_eq!(ours(&before), None);
+
+        // The kernel writes exactly the 1200 bytes of vnode_fdinfowithpath, or vnode_info
+        // would return None.
+        let info = vnode_info(me, file.as_raw_fd()).expect("PROC_PIDFDVNODEPATHINFO size differs");
+        let stat = info.pvip.vip_vi.vi_stat;
+        assert_eq!(
+            u32::from(stat.vst_mode) & u32::from(libc::S_IFMT),
+            u32::from(libc::S_IFREG)
+        );
+        assert_eq!(stat.vst_nlink, 0);
+        assert_eq!(stat.vst_ino, metadata.ino());
+        assert_eq!(stat.vst_size, 12345);
+
+        let Ok((after, listed)) = open_files(me, BOUNDS, &mut descriptors) else {
+            panic!("this process can read its own table");
+        };
+        assert!(listed > 0);
+        let deleted = ours(&after).expect("the deleted file is still open");
+        assert_eq!(deleted.size, 12345);
+        assert_eq!(deleted.device, u64::from(metadata.dev() as u32));
+        assert!(after.open >= 1 && !after.partial);
+
+        drop(file);
+        let Ok((closed, _)) = open_files(me, BOUNDS, &mut descriptors) else {
+            panic!("this process can read its own table");
+        };
+        assert_eq!(ours(&closed), None, "closing the file frees it");
+    }
+
+    #[test]
+    fn the_scan_reaches_this_process_and_cannot_read_other_users_without_root() {
+        let path = temporary("open");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut scan = FileScan::new();
+        let me = std::process::id();
+        // A scan that runs out of budget resumes where it stopped, so a few reach every pid.
+        let found = (0..64)
+            .find_map(|_| scan.sample().remove(&me))
+            .expect("the scan reaches this process");
+        let files = found.expect("this process can read its own table");
+        assert!(files.open >= 1, "{files:?}");
+        drop(file);
+        std::fs::remove_file(&path).unwrap();
+        // SAFETY: geteuid cannot fail and has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            // launchd (pid 1) runs as root.
+            assert!(matches!(
+                open_files(1, BOUNDS, &mut Vec::new()),
+                Err(Absent::Unreadable)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_zombie_holds_no_files() {
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id() as c_int;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pid_info::<libc::proc_bsdinfo>(pid, libc::PROC_PIDTBSDINFO, 1)
+            .is_ok_and(|bsd| logic::zombie(bsd.pbi_status))
+        {
+            assert!(Instant::now() < deadline, "the child never became a zombie");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let Ok((files, listed)) = open_files(pid, BOUNDS, &mut Vec::new()) else {
+            panic!("a zombie is read as holding no files");
+        };
+        assert_eq!((files, listed), (Files::default(), 0));
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn a_listing_capped_below_the_table_says_it_was_cut_short() {
+        let files: Vec<std::fs::File> = (0..8)
+            .map(|_| std::fs::File::open("/dev/null").unwrap())
+            .collect();
+        let me = std::process::id() as c_int;
+        let mut descriptors = Vec::new();
+        let (all, cut) = list_descriptors(me, &mut descriptors, usize::MAX).unwrap();
+        assert!(all >= files.len() && !cut);
+        assert_eq!(
+            list_descriptors(me, &mut descriptors, 4).unwrap(),
+            (4, true)
+        );
+        let (again, cut) = list_descriptors(me, &mut descriptors, all + 64).unwrap();
+        assert!(again >= files.len() && !cut);
     }
 }
