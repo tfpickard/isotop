@@ -221,6 +221,7 @@ impl Chicken {
     }
 
     /// On the ground and immovable: separation pushes foragers off it but never moves it.
+    /// Walking chickens are obstacles in the same way while they walk.
     fn planted(&self) -> bool {
         match self.role {
             Role::Zombie | Role::Stuck => true,
@@ -430,12 +431,13 @@ impl Yard {
     }
 
     /// Jacobi separation: overlaps measured before any push, then every push applied at once.
-    /// Two foragers share an overlap; a forager against a planted chicken takes all of it.
+    /// Two foragers share an overlap; a forager against a planted or walking chicken takes all
+    /// of it, so walkers are never displaced and always reach their targets.
     fn separate(&mut self) {
         let members: Vec<usize> = (0..self.chickens.len())
             .filter(|&i| {
                 let chicken = &self.chickens[i];
-                chicken.role == Role::Foraging || chicken.planted()
+                chicken.role == Role::Foraging || chicken.planted() || chicken.walking()
             })
             .collect();
         if members.is_empty() {
@@ -1074,7 +1076,11 @@ impl Coop {
             let kills = snapshot.units[path].oom_kills;
             let seen = *self.kills.entry(path.clone()).or_insert(kills);
             if kills > seen {
-                for k in 0..(kills - seen).min(MAX_FOXES) as usize {
+                // Every kill claims a suspect, but only the first MAX_FOXES send a fox. The loop
+                // stops once the suspects run out, since the count can be very large.
+                let suspects = self.departed.iter().filter(|g| g.cgroup == *path).count();
+                let claims = (kills - seen).min(MAX_FOXES.max(suspects as u64));
+                for k in 0..claims as usize {
                     // The largest departed member that no earlier kill has claimed.
                     let victim = self
                         .departed
@@ -1084,6 +1090,9 @@ impl Coop {
                         .max_by(|(_, a), (_, b)| a.memory.cmp(&b.memory).then(b.id.cmp(&a.id)))
                         .map(|(index, _)| index)
                         .map(|index| self.departed.remove(index));
+                    if k as u64 >= MAX_FOXES {
+                        continue;
+                    }
                     self.calls.push(Call {
                         flock: path.clone(),
                         at: snapshot.elapsed,
@@ -3226,6 +3235,33 @@ mod tests {
     }
 
     #[test]
+    fn foragers_step_aside_from_walking_chickens_that_keep_their_course() {
+        for role in [Role::Roosting, Role::Feeding] {
+            let mut yard = Yard::new([-100.0, -100.0], [100.0, 100.0]);
+            let mut walker = forager(2, 0, [0.2, 0.0], 0.0, 0.0);
+            walker.role = role;
+            walker.target = [5.0, 0.0];
+            yard.chickens = vec![forager(1, 0, [0.0, 0.0], 0.0, 0.0), walker];
+            yard.separate();
+            let [a, b] = [&yard.chickens[0], &yard.chickens[1]];
+            let distance = (a.position[0] - b.position[0]).hypot(a.position[1] - b.position[1]);
+            assert!(
+                distance >= a.radius + b.radius - 1e-5,
+                "{role:?} walker overlaps a forager at {distance}"
+            );
+            assert_eq!(b.position, [0.2, 0.0], "the walker is not pushed");
+            for _ in 0..200 {
+                yard.step(H);
+            }
+            assert!(
+                yard.chickens[1].arrived,
+                "{role:?} walker reaches its target"
+            );
+            assert_eq!(yard.chickens[1].position, [5.0, 0.0]);
+        }
+    }
+
+    #[test]
     fn talking_processes_walk_together() {
         let run = |weight: f32| {
             let mut yard = Yard::new([-100.0, -100.0], [100.0, 100.0]);
@@ -3775,6 +3811,40 @@ mod tests {
         render(&mut scene, &now, 2400.0);
         assert!(scene.coop.foxes.is_empty());
         assert!(scene.coop.calls.is_empty());
+    }
+
+    #[test]
+    fn kills_beyond_the_fox_cap_still_claim_their_victims() {
+        let path = "/system.slice/greedy.service";
+        let mut coop = Coop::default();
+        let members: Vec<Process> = (1..=6)
+            .map(|pid| {
+                let mut member = process(pid, path);
+                member.memory = (pid as u64 * 100) << 20;
+                member
+            })
+            .collect();
+        let mut before = snapshot(members.clone(), 1.0);
+        before.units = units(path, 0);
+        coop.record(&before);
+        let mut burst = snapshot(members[..1].to_vec(), 2.0);
+        burst.units = units(path, 5);
+        coop.record(&burst);
+        let named: Vec<Option<u32>> = coop
+            .calls
+            .iter()
+            .map(|call| call.victim.map(|id| id.pid))
+            .collect();
+        assert_eq!(named, vec![Some(6), Some(5), Some(4)]);
+        coop.calls.clear();
+        let mut later = snapshot(members[..1].to_vec(), 3.0);
+        later.units = units(path, 6);
+        coop.record(&later);
+        assert_eq!(coop.calls.len(), 1);
+        assert_eq!(
+            coop.calls[0].victim, None,
+            "the five killed together are all accounted for by the burst"
+        );
     }
 
     #[test]
