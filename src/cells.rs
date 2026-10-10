@@ -336,13 +336,15 @@ impl Dishes {
         // Spread the organelles over most of the cell rather than huddling round the nucleus.
         let spacing = (r * 0.8 / (self.seats.span(&cell.name) as f32 + 1.0).sqrt()).max(SEAT);
         let core = mass_radius(cell.core as f32).clamp(0.45, r * 0.32);
-        stage.frame.glow(
-            camera,
-            [x, y, 0.4],
-            core * camera.zoom * 3.0,
-            tint(color, 1.2),
-            0.35,
-        );
+        if nucleus.is_some() {
+            stage.frame.glow(
+                camera,
+                [x, y, 0.4],
+                core * camera.zoom * 3.0,
+                tint(color, 1.2),
+                0.35,
+            );
+        }
         for &index in &cell.members {
             let process = processes[index];
             let (position, size) = if Some(index) == nucleus {
@@ -504,6 +506,39 @@ mod tests {
             process.cgroup.clear();
         }
         hiding::limit_and_lift(View::Cells, &sample);
+    }
+
+    #[test]
+    fn a_hidden_nucleus_leaves_the_centre_of_its_cell_dark() {
+        use crate::render::{Camera, Item, Scene};
+        let mut snapshot = demo(30.0, 2);
+        let [parent, child] = [0, 1].map(|i| snapshot.processes[i].id);
+        assert_eq!(snapshot.processes[1].parent, parent.pid);
+        for (process, memory) in snapshot.processes.iter_mut().zip([800 << 20, 8 << 20]) {
+            process.memory = memory;
+            process.cpu = 0.0;
+            process.cgroup = "/system.slice/one.service".into();
+        }
+        let cores = |focus| {
+            let frame = Scene::new().render(
+                &snapshot,
+                View::Cells,
+                &Camera::default(),
+                320,
+                180,
+                None,
+                30.0,
+                512,
+                focus,
+            );
+            frame
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::Glow { strength, .. } if *strength == 0.35))
+                .count()
+        };
+        assert_eq!(cores(None), 1);
+        assert_eq!(cores(Some(child)), 0);
     }
 
     #[test]
