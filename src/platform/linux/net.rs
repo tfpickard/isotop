@@ -7,43 +7,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-#[derive(Clone, Debug, Default)]
-pub struct Network {
-    /// Unordered pid pairs (smaller first) with the number of sockets connecting them.
-    pub links: HashMap<(u32, u32), u32>,
-    /// Established TCP connections whose far end is not a local socket, per pid.
-    pub outside: HashMap<u32, u32>,
-    /// Those outside connections in detail, from the kernel's TCP statistics.
-    pub remotes: Vec<Remote>,
-    /// Loopback TCP sockets between two known processes, for per-link traffic.
-    pub loopback: Vec<Loopback>,
-}
-
-/// One end of an established loopback TCP connection between two different processes.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Loopback {
-    pub inode: u64,
-    /// The process that owns this end and the one that owns the other end.
-    pub pid: u32,
-    pub peer: u32,
-    /// Bytes received on this end since the connection opened. What one end receives the other
-    /// end sent, so summing both ends counts every byte of the connection once.
-    pub received: u64,
-}
-
-/// One established TCP connection to another machine.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Remote {
-    pub pid: u32,
-    pub inode: u64,
-    pub address: IpAddr,
-    pub port: u16,
-    /// Smoothed round-trip time in microseconds.
-    pub rtt: u32,
-    /// Bytes acknowledged by the peer and bytes received, since the connection opened.
-    pub sent: u64,
-    pub received: u64,
-}
+use crate::platform::{Loopback, Network, Remote};
 
 pub fn sample() -> Network {
     let owners = socket_owners();

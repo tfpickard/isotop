@@ -13,11 +13,15 @@ use crate::places::{COUNTRIES, LEGACY_CODES};
 /// Legacy GeoIP country databases store leaves at or above this record value.
 const COUNTRY_BEGIN: usize = 16_776_960;
 
-const CITY_DATABASES: [&str; 4] = [
+/// Where distributions and Homebrew (Apple Silicon, then Intel) put city databases.
+const CITY_DATABASES: [&str; 7] = [
     "/usr/share/GeoIP/GeoLite2-City.mmdb",
     "/var/lib/GeoIP/GeoLite2-City.mmdb",
     "/usr/share/GeoIP/dbip-city-lite.mmdb",
     "/usr/local/share/GeoIP/GeoLite2-City.mmdb",
+    "/opt/homebrew/share/GeoIP/GeoLite2-City.mmdb",
+    "/opt/homebrew/var/GeoIP/GeoLite2-City.mmdb",
+    "/usr/local/var/GeoIP/GeoLite2-City.mmdb",
 ];
 
 pub struct Geo {

@@ -10,6 +10,8 @@ use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::platform::{DeletedFile, Files, Locks, UNNAMED};
+
 /// How much one scan may read. Listing a descriptor directory costs about a microsecond per
 /// entry warm and several cold; examining a descriptor adds a readlink and a stat.
 #[derive(Clone, Copy, Debug)]
@@ -28,36 +30,6 @@ const BOUNDS: Bounds = Bounds {
     listed: 16384,
     scan: 65536,
 };
-
-/// A regular file whose last link is gone while it is still open: its disk space is not returned
-/// until every descriptor on it is closed. Identified by device and inode, so a file held through
-/// several descriptors or by several processes counts once.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeletedFile {
-    pub device: u64,
-    pub inode: u64,
-    pub size: u64,
-}
-
-/// The regular files one process holds open.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Files {
-    /// Distinct regular files: several descriptors on one file count once.
-    pub open: u32,
-    /// The deleted files among them, sorted. Found only among examined descriptors.
-    pub deleted: Vec<DeletedFile>,
-    /// Whether the table was larger than what was examined: `open` is then an estimate and
-    /// `deleted` a lower bound.
-    pub partial: bool,
-}
-
-impl Files {
-    pub fn deleted_bytes(&self) -> u64 {
-        self.deleted
-            .iter()
-            .fold(0, |total, file| total.saturating_add(file.size))
-    }
-}
 
 /// What one descriptor refers to, as far as open files are concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -203,6 +175,10 @@ impl Default for FileScan {
 }
 
 impl FileScan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Open files per pid; None for a table that could not be read. A pid the scan has not
     /// reached yet, this time or ever, is absent unless it keeps a previous result (a pid
     /// reused within those few seconds briefly shows its predecessor's files); so is one that
@@ -247,28 +223,12 @@ impl FileScan {
     }
 }
 
-/// The pid standing for a lock holder that no process can be named for: an OFD lock, which
-/// belongs to an open file and reports -1, or a holder outside this pid namespace (0).
-pub const UNNAMED: u32 = 0;
-
-/// File locks from `/proc/locks`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Locks {
-    /// Locks and leases held, per pid.
-    pub held: HashMap<u32, u32>,
-    /// Pids blocked on a lock, with the pid holding the lock that blocks them, or UNNAMED.
-    pub blocked: HashMap<u32, u32>,
-    /// Open file description locks: they belong to an open file, not a process, and report pid
-    /// -1, so no process can be named as their holder.
-    pub unattributed: u32,
-}
-
 /// Parses `/proc/locks`. Each lock is one line, such as
 /// `1: POSIX  ADVISORY  WRITE 1234 08:01:131 0 EOF`, followed by the requests it blocks, marked
 /// with `->` (indented further for a request blocked behind another waiter). Every waiter is
 /// mapped to the holder of the lock line above it. The pid is the fourth field after the marks
 /// for every kind (POSIX, FLOCK, OFDLCK, LEASE, DELEG).
-pub fn parse_locks(text: &str) -> Locks {
+fn parse_locks(text: &str) -> Locks {
     let mut locks = Locks::default();
     let mut holder = UNNAMED;
     for line in text.lines() {

@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::OnceLock;
 
-use crate::files::{DeletedFile, UNNAMED};
 use crate::model::{CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes};
 use crate::pack::{Discs, Seats};
+use crate::platform::{DeletedFile, UNNAMED};
 use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, kind_color, spin, tint};
 use crate::simulation::{Rng, SpatialHash};
 
@@ -2977,7 +2977,7 @@ mod tests {
             core: 0,
             cpu_time: 0.0,
             cgroup: cgroup.into(),
-            files: Measured::Known(crate::files::Files::default()),
+            files: Measured::Known(crate::platform::Files::default()),
             locks_held: Measured::Known(0),
             blocked_on: None,
         }
@@ -3341,7 +3341,7 @@ mod tests {
     /// A process holding `open` distinct regular files, `deleted` of which are the given files.
     fn holding(pid: u32, cgroup: &str, open: u32, deleted: &[DeletedFile]) -> Process {
         let mut process = process(pid, cgroup);
-        process.files = Measured::Known(crate::files::Files {
+        process.files = Measured::Known(crate::platform::Files {
             open,
             deleted: deleted.to_vec(),
             partial: false,
