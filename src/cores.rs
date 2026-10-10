@@ -4,15 +4,18 @@
 //! 10 s of CPU time and hop across lanes when the scheduler moves them.
 //!
 //! Where the platform reports no last CPU but does split each process's CPU time between the
-//! performance and efficiency clusters (macOS), a marble rides between the two groups of lanes
-//! by that share instead, trailed by beads for its threads waiting to run.
+//! performance and efficiency clusters (macOS), a marble rides the middle of the group of lanes
+//! it mostly ran on instead, like an electron on an energy level, and hops to the other group
+//! when that changes. Beads trail it for its threads waiting to run.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::f32::consts::{PI, TAU};
 
 use crate::model::{CoreKind, Cpu, Identity, Process, Snapshot, bounded};
-use crate::render::{Color, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, tint};
+use crate::render::{
+    Camera, Color, Frame, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, tint,
+};
 
 /// Seconds of CPU time per lap, so a process using one full core laps every LAP seconds.
 const LAP: f32 = 10.0;
@@ -22,8 +25,13 @@ const GROUP_GAP: f32 = 1.2;
 /// Rise per unit of radius, banking the track like a velodrome so outer lanes stand higher.
 const BANK: f32 = 0.16;
 const HOP_SECONDS: f32 = 0.6;
-/// Time constant of a marble's drift towards the radius of its performance share.
-const DRIFT_SECONDS: f32 = 0.8;
+/// Shares of performance-core time at which a cluster marble hops up to the performance band or
+/// down to the efficiency band. Between them it stays where it is, so a process that splits its
+/// time evenly does not hop back and forth every sample; a new marble starts on the band of the
+/// larger part.
+const TO_PERFORMANCE: f32 = 0.6;
+const TO_EFFICIENCY: f32 = 0.4;
+const FIRST_LEVEL: f32 = 0.5;
 const SEGMENTS: usize = 120;
 const PERFORMANCE: Color = [236, 178, 92];
 const EFFICIENCY: Color = [72, 183, 199];
@@ -41,11 +49,54 @@ pub struct Track {
 struct Marble {
     angle: f32,
     core: u32,
-    /// Lane the marble left and when, while it hops.
+    /// Radius the marble left and when, while it hops.
     hop: Option<(f32, f32)>,
     hops: u32,
-    /// Distance from the centre when placed by cluster rather than by lane.
-    radius: f32,
+    /// The band it rides when placed by cluster rather than by lane; Unknown on a lane.
+    level: CoreKind,
+}
+
+/// Where a marble is on its way to `target`, given the hop it may be making: its radius, its
+/// lift above the track, and the radius it left with how far it has come (0 to 1) while hopping.
+/// It eases across in HOP_SECONDS along an arc that rises higher for a longer hop.
+fn hopping(hop: Option<(f32, f32)>, target: f32, time: f32) -> (f32, f32, Option<(f32, f32)>) {
+    match hop {
+        Some((from, start)) => {
+            let u = ((time - start) / HOP_SECONDS).clamp(0.0, 1.0);
+            let eased = u * u * (3.0 - 2.0 * u);
+            let height = 0.8 + 0.3 * (target - from).abs();
+            (
+                from + (target - from) * eased,
+                height * (PI * u).sin(),
+                Some((from, u)),
+            )
+        }
+        None => (target, 0.0, None),
+    }
+}
+
+/// The beam a hopping marble leaves along its arc, from the radius it left to where it is now.
+#[allow(clippy::too_many_arguments)]
+fn hop_trail(
+    frame: &mut Frame,
+    camera: &Camera,
+    ring: impl Fn(f32, f32, f32) -> Point,
+    angle: f32,
+    from: f32,
+    target: f32,
+    u: f32,
+    size: f32,
+) {
+    let mut last = ring(angle, from, size);
+    for k in 1..=12 {
+        let v = u * k as f32 / 12.0;
+        let eased = v * v * (3.0 - 2.0 * v);
+        let rr = from + (target - from) * eased;
+        let height = (0.8 + 0.3 * (target - from).abs()) * (PI * v).sin();
+        let next = ring(angle, rr, size + height);
+        frame.beam(camera, last, next, [255, 236, 200], 0.6);
+        last = next;
+    }
 }
 
 impl Track {
@@ -253,39 +304,61 @@ impl Track {
                 continue;
             }
             if let Some([performance, efficiency]) = bands {
-                let target = process
-                    .performance_share
-                    .map(|share| efficiency + (performance - efficiency) * share);
+                let band = |level: CoreKind| match level {
+                    CoreKind::Performance => performance,
+                    _ => efficiency,
+                };
+                let share = process.performance_share;
                 // A process gets a marble once a share places it: one just seen, or one whose
                 // counters cannot be read, has no measurement to put it anywhere.
-                let marble = match (self.marbles.entry(process.id), target) {
+                let marble = match (self.marbles.entry(process.id), share) {
                     (Entry::Occupied(entry), _) => entry.into_mut(),
-                    (Entry::Vacant(entry), Some(radius)) => entry.insert(Marble {
+                    (Entry::Vacant(entry), Some(share)) => entry.insert(Marble {
                         angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
                         core: process.core,
                         hop: None,
                         hops: 0,
-                        radius,
+                        level: if share >= FIRST_LEVEL {
+                            CoreKind::Performance
+                        } else {
+                            CoreKind::Efficiency
+                        },
                     }),
                     (Entry::Vacant(_), None) => continue,
                 };
                 marble.angle =
                     (marble.angle + TAU / LAP * process.cpu / 100.0 * dt).rem_euclid(TAU);
                 // A process with no CPU time in the last interval has no share, which says
-                // nothing about where it runs, so its marble stays where it was.
-                if let Some(target) = target {
-                    marble.radius += (target - marble.radius) * (1.0 - (-dt / DRIFT_SECONDS).exp());
+                // nothing about where it runs, so its marble stays on its band.
+                let level = match share {
+                    Some(share) if share >= TO_PERFORMANCE => CoreKind::Performance,
+                    Some(share) if share <= TO_EFFICIENCY => CoreKind::Efficiency,
+                    _ => marble.level,
+                };
+                if level != marble.level {
+                    marble.hop = Some((band(marble.level), time));
+                    marble.level = level;
+                    marble.hops += 1;
                 }
-                let r = marble.radius;
+                let target = band(marble.level);
+                let (r, lift, progress) = hopping(marble.hop, target, time);
+                if progress.is_some_and(|(_, u)| u >= 1.0) {
+                    marble.hop = None;
+                }
                 let size = (0.2 + 0.3 * mass_radius(process.memory as f32)).min(LANE * 0.4);
-                let position = ring(marble.angle, r, size);
+                let position = ring(marble.angle, r, size + lift);
                 let color = kind_color(process);
                 let trail = (0.05 + 0.5 * bounded(process.cpu, 60.0)) / r * 6.0;
                 let mut last = position;
+                // The trail flies with the marble: a hop between bands is long, and a trail
+                // left on the band it is bound for would cut straight across the lanes between.
                 for k in 1..=8 {
-                    let next = ring(marble.angle - trail * k as f32 / 8.0, r, size);
+                    let next = ring(marble.angle - trail * k as f32 / 8.0, r, size + lift);
                     frame.beam(camera, last, next, color, 0.5 * (1.0 - k as f32 / 9.0));
                     last = next;
+                }
+                if let Some((from, u)) = progress {
+                    hop_trail(frame, camera, ring, marble.angle, from, target, u, size);
                 }
                 if process.cpu > 20.0 {
                     frame.glow(
@@ -319,13 +392,18 @@ impl Track {
                     stage.selected == Some(process.id),
                 );
                 stage.positions.insert(process.id, position);
-                let mut note = match process.performance_share {
+                let mut note = match share {
                     Some(share) => format!(
                         "ran {:.0}% of its CPU time on performance cores",
                         share * 100.0
                     ),
                     None => "no CPU time measured in the last sample".to_owned(),
                 };
+                note.push_str(&format!(
+                    " | {} cluster hop{} while watched",
+                    marble.hops,
+                    if marble.hops == 1 { "" } else { "s" }
+                ));
                 if let Some(waiting) = process.waiting {
                     note.push_str(&format!(" | {waiting:.1} threads waiting on average"));
                 }
@@ -343,7 +421,7 @@ impl Track {
                 core,
                 hop: None,
                 hops: 0,
-                radius: lane_radius(core),
+                level: CoreKind::Unknown,
             });
             marble.angle = (marble.angle + TAU / LAP * process.cpu / 100.0 * dt).rem_euclid(TAU);
             if marble.core != core {
@@ -352,19 +430,7 @@ impl Track {
                 marble.hops += 1;
             }
             let target = lane_radius(core);
-            let (r, lift, progress) = match marble.hop {
-                Some((from, start)) => {
-                    let u = ((time - start) / HOP_SECONDS).clamp(0.0, 1.0);
-                    let eased = u * u * (3.0 - 2.0 * u);
-                    let height = 0.8 + 0.3 * (target - from).abs();
-                    (
-                        from + (target - from) * eased,
-                        height * (PI * u).sin(),
-                        Some((from, u)),
-                    )
-                }
-                None => (target, 0.0, None),
-            };
+            let (r, lift, progress) = hopping(marble.hop, target, time);
             if progress.is_some_and(|(_, u)| u >= 1.0) {
                 marble.hop = None;
             }
@@ -379,16 +445,7 @@ impl Track {
                 last = next;
             }
             if let Some((from, u)) = progress {
-                let mut last = ring(marble.angle, from, size);
-                for k in 1..=12 {
-                    let v = u * k as f32 / 12.0;
-                    let eased = v * v * (3.0 - 2.0 * v);
-                    let rr = from + (target - from) * eased;
-                    let height = (0.8 + 0.3 * (target - from).abs()) * (PI * v).sin();
-                    let next = ring(marble.angle, rr, size + height);
-                    frame.beam(camera, last, next, [255, 236, 200], 0.6);
-                    last = next;
-                }
+                hop_trail(frame, camera, ring, marble.angle, from, target, u, size);
             }
             if process.cpu > 20.0 {
                 frame.glow(
@@ -453,8 +510,8 @@ pub fn legend(snapshot: &Snapshot) -> String {
     line.push_str(if !lacks("last cpu") {
         " | marble = running process, one lap per 10 s of CPU, hops = migrations"
     } else if clustered {
-        " | marble = running process, one lap per 10 s of CPU; nearer the centre = more of it on \
-         performance cores (macOS reports the cluster, not the core)"
+        " | marble = running process, one lap per 10 s of CPU; it rides the band it mostly ran on \
+         and hops when that changes (macOS reports the cluster, not the core)"
     } else {
         " | lanes = load; macOS reports no last CPU per process, so no marbles"
     });
@@ -483,7 +540,7 @@ fn active(process: &Process) -> bool {
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::{Camera, Scene, View};
+    use crate::render::{Scene, View};
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
         scene.render(
@@ -556,6 +613,11 @@ mod tests {
         );
     }
 
+    /// The middle of the performance lanes and of the efficiency lanes: the demo has eight
+    /// performance lanes inside eight efficiency lanes.
+    const PERFORMANCE_BAND: f32 = INNER + 3.5 * LANE;
+    const EFFICIENCY_BAND: f32 = INNER + 8.0 * LANE + GROUP_GAP + 3.5 * LANE;
+
     #[test]
     fn cluster_marbles_ride_the_band_of_the_cores_they_ran_on() {
         let mut snapshot = by_cluster();
@@ -568,56 +630,82 @@ mod tests {
             racing,
             "every running process is a marble"
         );
-        // The demo has eight performance lanes inside eight efficiency lanes.
-        let inner_edge = INNER - LANE * 0.5;
-        let performance_edge = INNER + 7.0 * LANE + LANE * 0.5;
-        let efficiency_edge = performance_edge + GROUP_GAP;
-        let outer_edge = efficiency_edge + 8.0 * LANE;
         let (p, e, m) = (
             radius(&scene, performance),
             radius(&scene, efficiency),
             radius(&scene, mixed),
         );
-        assert!(inner_edge < p && p < performance_edge, "fully on P at {p}");
-        assert!(efficiency_edge < e && e < outer_edge, "fully on E at {e}");
-        assert!(
-            performance_edge < m && m < efficiency_edge,
-            "half on P at {m}"
-        );
-        assert!(
-            (p - (INNER + 3.5 * LANE)).abs() < 1e-3,
-            "the middle of the P lanes"
-        );
+        assert!((p - PERFORMANCE_BAND).abs() < 1e-3, "fully on P at {p}");
+        assert!((e - EFFICIENCY_BAND).abs() < 1e-3, "fully on E at {e}");
+        assert!((m - PERFORMANCE_BAND).abs() < 1e-3, "half on P at {m}");
         let note = &scene.notes[&performance][0];
         assert!(
-            note.starts_with("ran 100% of its CPU time on performance cores | ")
-                && note.ends_with(" threads waiting on average"),
+            note.starts_with(
+                "ran 100% of its CPU time on performance cores | 0 cluster hops while watched | "
+            ) && note.ends_with(" threads waiting on average"),
             "{note}"
         );
     }
 
     #[test]
-    fn cluster_marbles_drift_to_a_new_share_and_stay_put_without_one() {
+    fn cluster_marbles_hop_between_bands_with_hysteresis() {
         let mut snapshot = by_cluster();
-        let [moving, idle, _] = three_shares(&mut snapshot);
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, 12.0);
-        let (start, kept) = (radius(&scene, moving), radius(&scene, idle));
+        let [_, hopper, idle] = three_shares(&mut snapshot);
         for process in &mut snapshot.processes {
-            if process.id == moving {
-                process.performance_share = Some(0.0);
-            } else if process.id == idle {
-                process.performance_share = None;
+            if process.id == hopper {
+                process.performance_share = Some(0.3);
             }
         }
-        render(&mut scene, &snapshot, 12.3);
-        let after = radius(&scene, moving);
-        render(&mut scene, &snapshot, 12.6);
-        let later = radius(&scene, moving);
-        assert!(start < after && after < later, "{start} {after} {later}");
-        let target = INNER + 8.0 * LANE + GROUP_GAP + 3.5 * LANE;
-        assert!(later < target - 0.5, "eases rather than hops: {later}");
-        assert!((radius(&scene, idle) - kept).abs() < 1e-3);
+        let mut scene = Scene::new();
+        let mut time = 12.0;
+        render(&mut scene, &snapshot, time);
+        let first = radius(&scene, hopper);
+        assert!(
+            (first - EFFICIENCY_BAND).abs() < 1e-3,
+            "starts on E at {first}"
+        );
+        // From here on the idle process has no share. Each step sets the hopper's share, renders as it takes off and again once it has
+        // landed, and checks the band it lands on and the hops counted so far.
+        let mut step = |share: f32, band: f32, hops: u32, hopped: bool| {
+            for process in &mut snapshot.processes {
+                if process.id == hopper {
+                    process.performance_share = Some(share);
+                } else if process.id == idle {
+                    process.performance_share = None;
+                }
+            }
+            time += 0.1;
+            render(&mut scene, &snapshot, time);
+            let marble = &scene.cores.marbles[&hopper];
+            assert_eq!(marble.hops, hops, "share {share}");
+            assert_eq!(marble.hop.is_some(), hopped, "share {share}");
+            if let Some((from, _)) = marble.hop {
+                assert!((from - band).abs() > LANE, "leaves the other band: {from}");
+                let [_, _, z] = scene.positions[&hopper];
+                assert!(z > 1.0, "lifted off the track mid-hop: {z}");
+            }
+            time += HOP_SECONDS + 0.1;
+            render(&mut scene, &snapshot, time);
+            assert!(scene.cores.marbles[&hopper].hop.is_none(), "share {share}");
+            let landed = radius(&scene, hopper);
+            assert!((landed - band).abs() < 1e-3, "share {share} at {landed}");
+            let plural = if hops == 1 { "" } else { "s" };
+            let note = &scene.notes[&hopper][0];
+            assert!(
+                note.contains(&format!(" | {hops} cluster hop{plural} while watched")),
+                "{note}"
+            );
+        };
+        step(0.55, EFFICIENCY_BAND, 0, false);
+        step(0.65, PERFORMANCE_BAND, 1, true);
+        step(0.45, PERFORMANCE_BAND, 1, false);
+        step(0.35, EFFICIENCY_BAND, 2, true);
+        let kept = radius(&scene, idle);
+        assert!(
+            (kept - PERFORMANCE_BAND).abs() < 1e-3,
+            "a marble with no share stays on its band: {kept}"
+        );
+        assert_eq!(scene.cores.marbles[&idle].hops, 0);
         assert_eq!(
             scene.notes[&idle][0].split(" | ").next(),
             Some("no CPU time measured in the last sample")
@@ -688,8 +776,8 @@ mod tests {
             legend(&snapshot),
             " Lane = CPU (gold performance, teal efficiency) | brightness = busy | chevrons = \
              cluster clock (cycles per CPU second) | red beads = threads waiting to run | marble \
-             = running process, one lap per 10 s of CPU; nearer the centre = more of it on \
-             performance cores (macOS reports the cluster, not the core)"
+             = running process, one lap per 10 s of CPU; it rides the band it mostly ran on and \
+             hops when that changes (macOS reports the cluster, not the core)"
         );
         let mut unclocked = by_cluster();
         unclocked.per_cluster.clear();

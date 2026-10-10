@@ -971,7 +971,7 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     bounds: Vec<Point>,
     pub notes: HashMap<Identity, Vec<String>>,
-    cores: cores::Track,
+    pub(crate) cores: cores::Track,
     cells: cells::Dishes,
     strata: strata::Strata,
     globe: globe::Globe,
