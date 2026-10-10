@@ -17,6 +17,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io;
 use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::process::Child;
 use std::time::Instant;
 
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
@@ -472,6 +473,19 @@ impl Sampler {
     pub fn shadows(&self) -> Vec<Shadow> {
         self.shadows.clone()
     }
+}
+
+/// Ends the log follower and everything it started, then reaps it. `journal` makes the child
+/// the leader of a process group of its own, and while `log show` runs the child is the shell
+/// waiting for it, so killing the shell alone would leave `log show` running, orphaned.
+pub fn stop_journal(child: &mut Child) {
+    let group = child.id() as libc::pid_t;
+    // SAFETY: killpg only sends a signal. The group is the one the child leads since its spawn,
+    // and the child is not reaped yet, so no other process can have its pid as a group id.
+    if unsafe { libc::killpg(group, libc::SIGKILL) } != 0 {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 /// What any user may read of another user's process: xnu answers PROC_PIDT_SHORTBSDINFO without
@@ -1447,6 +1461,29 @@ mod tests {
                 Err(Absent::Unreadable)
             ));
         }
+    }
+
+    #[test]
+    fn stopping_the_journal_ends_the_whole_follower_group() {
+        let (mut child, _) = journal().unwrap();
+        let mut output = child.stdout.take().unwrap();
+        // Its first output comes from `log show`, so the shell is waiting for it by then. The
+        // pipe stays open: closing it would end `log show` by SIGPIPE whatever stopped it.
+        let mut byte = [0];
+        output.read_exact(&mut byte).unwrap();
+        let group = child.id() as libc::pid_t;
+        stop_journal(&mut child);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 is not sent; killpg only says whether the group has a member.
+        while unsafe { libc::killpg(group, 0) } == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "a process of the follower's group outlived it"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        drop(output);
     }
 
     #[test]

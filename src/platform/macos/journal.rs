@@ -2,6 +2,7 @@
 //! newline-delimited JSON. The parser is std-only and compiled into Linux test builds too.
 
 use std::io::{self, BufRead};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 
 use crate::journal::Line;
@@ -12,7 +13,8 @@ pub const JOURNAL: &str = "log";
 
 /// History first, so the rain begins full, then the live stream. `log show` needs `--info` to
 /// include info messages; `log stream` takes `--level`. `exec` leaves `log stream` as the child
-/// itself, so killing the child ends it.
+/// itself, but while `log show` runs the child is the shell waiting for it, so the follower runs
+/// in a process group of its own and `stop_journal` ends the whole group.
 const FOLLOW: &str = "/usr/bin/log show --last 2m --style ndjson --info; \
                       exec /usr/bin/log stream --style ndjson --level info";
 
@@ -30,13 +32,15 @@ const NOTICE: u8 = 5;
 const INFO: u8 = 6;
 const DEBUG: u8 = 7;
 
-/// Follows the unified log, starting with its most recent entries so the rain begins full.
+/// Follows the unified log, starting with its most recent entries so the rain begins full. The
+/// child leads a new process group, which holds `log show` too.
 pub fn journal() -> io::Result<(Child, JournalParser)> {
     let child = Command::new("/bin/sh")
         .args(["-c", FOLLOW])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()?;
     Ok((child, read_entry))
 }
@@ -352,6 +356,23 @@ mod tests {
 
     fn parse(line: &str) -> Option<Line> {
         parse_line(line.as_bytes())
+    }
+
+    /// Linux runs the follower's shell too, though `log` is missing there, so the gates can see
+    /// that it leads a process group of its own, the group `stop_journal` ends on macOS.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_follower_leads_a_process_group_of_its_own() {
+        let (mut child, _) = journal().unwrap();
+        let pid = child.id();
+        // Until it is reaped, even a shell that has exited keeps its stat: "pid (comm) state
+        // ppid pgrp ...", where comm may hold spaces and parentheses.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let after = &stat[stat.rfind(')').unwrap() + 1..];
+        let group: u32 = after.split_whitespace().nth(2).unwrap().parse().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(group, pid, "{stat}");
     }
 
     const TRUSTD: &str = r#"{"traceID":1824493551157252,"eventMessage":"ocsp responder: (null) did not include status of requested cert","eventType":"logEvent","source":null,"formatString":"ocsp responder: %@ did not include status of requested cert","activityIdentifier":8049628,"subsystem":"com.apple.securityd","category":"ocsp","threadID":13337131,"senderImageUUID":"AD8A1343-96A6-3E87-8CFA-14FE13754B06","backtrace":{"frames":[{"imageOffset":256208,"imageUUID":"AD8A1343-96A6-3E87-8CFA-14FE13754B06"}]},"bootUUID":"","processImagePath":"/usr/libexec/trustd","timestamp":"2021-04-08 22:28:22.002306-0500","senderImagePath":"/usr/libexec/trustd","machTimestamp":51793593259945,"messageType":"Default","processImageUUID":"AD8A1343-96A6-3E87-8CFA-14FE13754B06","processID":565,"senderProgramCounter":256208,"parentActivityIdentifier":0,"timezoneName":""}"#;

@@ -17,7 +17,7 @@ use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Un
 use crate::platform::{Files, Network, RawProcess, Shadow};
 
 pub use files::{FileScan, locks};
-pub use journal::{JOURNAL, journal};
+pub use journal::{JOURNAL, journal, stop_journal};
 pub use nvml::Nvml as Gpu;
 
 /// What `Process::memory` measures here: the resident set size.

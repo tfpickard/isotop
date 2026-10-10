@@ -44,6 +44,9 @@
 //!   stdout and stderr, and the parser that reads one entry at a time from its stdout;
 //!   `JOURNAL: &str` names the follower (`journalctl` or `log`) in the messages isotop prints
 //!   when it cannot run or when it complains on stderr.
+//! - `stop_journal(child: &mut Child)`: ends that follower and every process it started, and
+//!   reaps it. The child may be a shell running the follower's commands in turn (macOS), so
+//!   killing the child alone could leave the command it is waiting on running.
 //! - `MEMORY_LABEL: &str` names what `Process::memory` measures (RSS on Linux), as the
 //!   inspector and legends show it.
 

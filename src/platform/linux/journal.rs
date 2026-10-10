@@ -31,6 +31,13 @@ pub fn journal() -> io::Result<(Child, JournalParser)> {
     Ok((child, parse))
 }
 
+/// Ends the follower and reaps it. `journalctl` starts nothing of its own, so killing it is
+/// enough.
+pub fn stop_journal(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// `read_entry` over a type-erased reader, as `JournalParser` needs.
 fn parse(mut reader: &mut dyn BufRead) -> io::Result<Option<Line>> {
     read_entry(&mut reader)

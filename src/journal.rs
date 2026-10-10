@@ -108,8 +108,7 @@ impl Journal {
 impl Drop for Journal {
     fn drop(&mut self) {
         if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
+            platform::stop_journal(child);
         }
     }
 }
