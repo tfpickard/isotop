@@ -26,7 +26,7 @@ The README covers usage. This file covers how to work on the code.
 | File | Owns |
 |---|---|
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, background thread, merge), demo workload, `describe` |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `Gpu`, `journal`) and the platform-neutral `Network`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
@@ -39,9 +39,9 @@ The README covers usage. This file covers how to work on the code.
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
-| `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry), the socket scan, and the permanent gaps it reports through `missing` and `unreadable` |
+| `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, and what it reports through `missing`, `per_cluster` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
-| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, socket pairing |
+| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing |
 | `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
 
 ## Invariants
@@ -124,7 +124,8 @@ match your own shell.
   behaviour (`city_does_not_relocate_when_resources_or_population_change`). Rendering tests use
   `model::demo` or the `process(pid, parent)` helper in `render.rs`.
 - When you add a field to `Process` or `Snapshot`, update `parse_stat` (in
-  `platform/linux/mod.rs`), `model::demo` and the `render.rs` test helper.
+  `platform/linux/mod.rs`), `Sampler::process` (in `platform/macos/mod.rs`), `model::demo`
+  and the `render.rs` test helper.
 - A new view needs: a `View` variant, a `next()` entry, the status-line name and legend in
   `App::text`, and a draw function called from `Scene::render`.
 - Prefer the standard library. Add a dependency only when it replaces substantial,

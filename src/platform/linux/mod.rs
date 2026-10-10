@@ -81,7 +81,13 @@ impl Sampler {
                 process.kind = cgroup.as_deref().map_or(Kind::System, classify);
                 process.cgroup = cgroup.as_deref().and_then(cgroup_path).unwrap_or_default();
             }
-            processes.push(RawProcess { process, ticks, io });
+            processes.push(RawProcess {
+                process,
+                ticks,
+                io,
+                performance_ticks: None,
+                runnable_ticks: None,
+            });
         }
         Ok(processes)
     }
@@ -120,6 +126,11 @@ impl Sampler {
 
     /// Linux measures everything isotop shows.
     pub fn missing(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// Linux measures every CPU on its own.
+    pub fn per_cluster(&self) -> Vec<&'static str> {
         Vec::new()
     }
 
@@ -423,6 +434,8 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             core: number(36).unwrap_or(0) as u32,
             cpu_time: 0.0,
             cgroup: String::new(),
+            performance_share: None,
+            waiting: None,
         },
         number(11)?.saturating_add(number(12)?),
     ))
