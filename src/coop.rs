@@ -9,7 +9,9 @@ use std::sync::OnceLock;
 
 use crate::model::{CoreKind, Cpu, Identity, Kind, Process, Snapshot, bounded, bytes};
 use crate::pack::{Discs, Seats};
-use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, kind_color, spin, tint};
+use crate::render::{
+    Camera, Color, Frame, NONE, Point, SCALE, Stage, kind_color, spin, tint, without_apple_prefix,
+};
 use crate::simulation::{Rng, SpatialHash};
 
 /// Fixed simulation step in seconds. The yard advances on wall-clock time in whole steps, so
@@ -1784,7 +1786,7 @@ impl Coop {
             if rank < 10 || selected {
                 stage.places.push((
                     [flock.center[0], flock.center[1] + HOUSE_Y, RIDGE + 0.3],
-                    flock.label.clone(),
+                    without_apple_prefix(&flock.label).to_owned(),
                 ));
             }
         }

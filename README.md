@@ -398,8 +398,12 @@ processes leave a brief flash and an expanding ring.
 ### Labels, hover, and the tour
 
 System names (`init`, `systemd --user`, `kthreadd`, ...) and the busiest
-processes are labelled; `l` toggles labels. Hovering a body or building shows its
-name and a short description of what it is. After 20 seconds without input
+processes are labelled; `l` toggles labels. Labels are at most 15 cells wide, so
+a longer name (macOS allows 31 characters) is cut after 14 characters and ends in
+`…`, and Apple's own `com.apple.` prefix is dropped. Two labels on the same row
+always have a blank column between them; one that would touch another is left
+out. Hovering a body or building shows its full name and a short description of
+what it is. After 20 seconds without input
 (`--tour`, `0` disables), a guided tour eases the camera between notable
 processes: system stars, the busiest, and the largest. Each gets a callout with
 a pointer. `g` starts the tour at any time, even with the idle tour disabled.

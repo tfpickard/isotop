@@ -10,7 +10,8 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use crate::model::{Kind, Process, Snapshot, Unit, bounded, bytes};
 use crate::pack::{Discs, Seats};
 use crate::render::{
-    Color, GOLDEN_ANGLE, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, spin, tint,
+    Color, GOLDEN_ANGLE, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, spin,
+    tint, without_apple_prefix,
 };
 
 const DISHES: [(Kind, &str, Color); 3] = [
@@ -354,7 +355,7 @@ fn cell_name(process: &Process) -> &str {
 /// for a label.
 fn short(name: &str) -> String {
     let leaf = name.rsplit('/').next().unwrap_or(name);
-    let leaf = leaf
+    let leaf = without_apple_prefix(leaf)
         .trim_end_matches(".service")
         .trim_end_matches(".scope")
         .replace("\\x2d", "-")

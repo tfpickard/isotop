@@ -33,7 +33,7 @@ use crossterm::event::{
 
 use journal::Journal;
 use model::{Collector, Identity, Process, Snapshot, bytes, describe};
-use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View};
+use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
@@ -235,7 +235,23 @@ struct Pointer {
 struct Board(Vec<[u16; 4]>);
 
 impl Board {
+    /// Claims a label's cells if they are free and at least one column clear of every claimed
+    /// rectangle on the same rows, so neighbouring labels never run together.
     fn claim(&mut self, column: u16, row: u16, width: u16, height: u16) -> bool {
+        let rect = [column, row, column + width, row + height];
+        let free = self
+            .0
+            .iter()
+            .all(|r| rect[2] < r[0] || r[2] < rect[0] || rect[3] <= r[1] || r[3] <= rect[1]);
+        if free {
+            self.0.push(rect);
+        }
+        free
+    }
+
+    /// Claims a panel's cells if they are free. Panels may touch each other and labels, but a
+    /// label keeps its gap from them.
+    fn reserve(&mut self, column: u16, row: u16, width: u16, height: u16) -> bool {
         let rect = [column, row, column + width, row + height];
         let free = self
             .0
@@ -724,7 +740,7 @@ impl App {
         let mut labels = Vec::new();
         let mut panels = Vec::new();
         if let Some(popup) = self.popup(frame, layout) {
-            board.claim(popup.column, popup.row, popup.width, popup.height());
+            board.reserve(popup.column, popup.row, popup.width, popup.height());
             panels.push(popup);
         }
         if let Some(tour) = &self.tour
@@ -753,7 +769,7 @@ impl App {
                     (panel.row + panel.height()) as f32 * h,
                 );
                 pointer(frame, [x, y], anchor);
-                board.claim(panel.column, panel.row, panel.width, panel.height());
+                board.reserve(panel.column, panel.row, panel.width, panel.height());
                 panels.push(panel);
             }
         }
@@ -764,7 +780,7 @@ impl App {
             && let Some(p) = lookup.get(&id)
         {
             let text = format!(" {} - {} ", p.name, describe(p));
-            let width = text.len() as u16;
+            let width = text.chars().count() as u16;
             let column = (hover.cell.0 + 2).min(layout.columns.saturating_sub(width));
             let row = hover.cell.1.saturating_sub(1);
             if board.claim(column, row, width, 1) {
@@ -803,12 +819,13 @@ impl App {
                     ("systemd", _) => "systemd --user",
                     (name, _) => name,
                 };
+                let name = label_name(name);
                 let text = if members > 1 {
                     format!("{name} ({members})")
                 } else {
-                    name.into()
+                    name.into_owned()
                 };
-                let width = text.len() as u16;
+                let width = text.chars().count() as u16;
                 // Small systems are labelled just below their outer edge, large ones at the star.
                 let star = self.scene.positions[&id];
                 let edge = frame
@@ -835,9 +852,9 @@ impl App {
         busy.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         for p in busy.into_iter().take(6) {
             if let Some(at) = self.screen(frame, p.id) {
-                let text = format!("{} {:.0}%", p.name, p.cpu);
+                let text = format!("{} {:.0}%", label_name(&p.name), p.cpu);
                 let (column, row) = layout.cell_of(at);
-                if board.claim(column + 2, row, text.len() as u16, 1) {
+                if board.claim(column + 2, row, text.chars().count() as u16, 1) {
                     labels.push(Label {
                         column: column + 2,
                         row,
@@ -1418,6 +1435,77 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_on_one_row_keep_a_free_column_between_them() {
+        let mut board = Board::default();
+        assert!(board.claim(10, 4, 5, 1));
+        assert!(!board.claim(15, 4, 5, 1), "touching on the right");
+        assert!(!board.claim(5, 4, 5, 1), "touching on the left");
+        assert!(board.claim(16, 4, 5, 1), "one free column is enough");
+        assert!(board.claim(4, 4, 5, 1), "one free column on the left");
+        assert!(board.claim(10, 5, 5, 1), "other rows are not neighbours");
+        assert!(!board.claim(12, 4, 2, 1), "overlap is still refused");
+    }
+
+    #[test]
+    fn labels_keep_a_free_column_from_panels_but_panels_may_touch() {
+        let mut board = Board::default();
+        assert!(board.reserve(20, 2, 10, 6));
+        assert!(board.reserve(30, 2, 5, 6), "panels keep their old rule");
+        assert!(!board.reserve(32, 2, 5, 6), "panels still never overlap");
+        assert!(!board.claim(35, 4, 6, 1), "label against a panel's edge");
+        assert!(!board.claim(14, 4, 6, 1), "label ending at a panel's edge");
+        assert!(board.claim(36, 4, 6, 1));
+        assert!(board.claim(13, 4, 6, 1));
+    }
+
+    #[test]
+    fn long_process_names_are_cut_in_labels_but_not_in_the_hover_tag() {
+        let mut snapshot = model::demo(1.0, 64);
+        for process in &mut snapshot.processes {
+            process.name = "com.google.BatteriesAvocadoWidgetExtension".into();
+            process.cpu = 30.0;
+        }
+        let hovered = snapshot.processes[0].id;
+        let mut app = App::new(View::Orbit, snapshot);
+        let mut frame = app.render(1600, 900, 512);
+        frame.rasterize();
+        let layout = Layout {
+            columns: 200,
+            rows: 56,
+            width: 1600,
+            height: 900,
+            cell: None,
+        };
+        let at = app
+            .screen(&frame, hovered)
+            .expect("the process is on screen");
+        app.hover = Some(Pointer {
+            frame: at,
+            cell: layout.cell_of(at),
+        });
+        let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+        let busy: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Quiet).collect();
+        assert!(!busy.is_empty());
+        for label in &busy {
+            assert!(
+                label.text.starts_with("com.google.Bat\u{2026} "),
+                "{}",
+                label.text
+            );
+            assert!(label.text.chars().count() <= 15 + 5, "{}", label.text);
+        }
+        let tags: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Tag).collect();
+        assert_eq!(tags.len(), 1, "the hovered process has a tag");
+        assert!(
+            tags[0].text.contains("WidgetExtension"),
+            "the tag keeps the full name"
+        );
+        for label in labels.iter().filter(|l| l.tone == Tone::Bright) {
+            assert!(!label.text.contains("WidgetExtension"), "{}", label.text);
+        }
+    }
 
     #[test]
     fn tour_key_toggles_a_tour_that_runs_even_with_the_idle_tour_off() {

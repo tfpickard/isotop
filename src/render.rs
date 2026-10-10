@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
@@ -770,6 +771,32 @@ pub(crate) fn ring_bounds(center: [f32; 2], radius: f32, low: f32, high: f32) ->
             [[x, y, low], [x, y, high]]
         })
         .collect()
+}
+
+/// The longest process name a scene label shows, in terminal cells. Linux `comm` stops here, so
+/// only the longer macOS names are ever cut.
+pub const LABEL_NAME_CELLS: usize = 15;
+
+/// A name without Apple's own `com.apple.` prefix, which says nothing on macOS. Other vendors'
+/// reverse-DNS names stay whole, and so does a name that is nothing but the prefix.
+pub fn without_apple_prefix(name: &str) -> &str {
+    name.strip_prefix("com.apple.")
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
+
+/// A process name as a scene label: the Apple prefix dropped, then anything still longer than
+/// `LABEL_NAME_CELLS` keeps its first 14 characters and ends in an ellipsis, which takes one cell,
+/// so a label is never wider than 15 cells. Hover tags, the inspector and search keep the full
+/// name.
+pub fn label_name(name: &str) -> Cow<'_, str> {
+    let name = without_apple_prefix(name);
+    if name.chars().count() <= LABEL_NAME_CELLS {
+        return Cow::Borrowed(name);
+    }
+    let mut cut: String = name.chars().take(LABEL_NAME_CELLS - 1).collect();
+    cut.push('\u{2026}');
+    Cow::Owned(cut)
 }
 
 pub fn tint(color: Color, scale: f32) -> Color {
@@ -3561,5 +3588,57 @@ mod tests {
             assert_eq!(frame.pixels.len(), 320 * 180 * 3);
             assert_eq!(scene.visible, 16);
         }
+    }
+
+    #[test]
+    fn long_names_are_cut_to_fifteen_cells_with_an_ellipsis() {
+        let cut = label_name("BatteriesAvocadoWidgetExtension");
+        assert_eq!(cut, "BatteriesAvoca\u{2026}");
+        assert_eq!(cut.chars().count(), 15);
+        assert_eq!(label_name("fifteen_chars_ok"), "fifteen_chars_\u{2026}");
+        assert_eq!(label_name("exactly15chars!"), "exactly15chars!");
+        assert_eq!(label_name("kworker/u16:2-e"), "kworker/u16:2-e");
+        assert_eq!(label_name("systemd"), "systemd");
+        assert_eq!(label_name(""), "");
+    }
+
+    #[test]
+    fn labels_count_characters_not_bytes() {
+        let name = "\u{00e9}".repeat(16);
+        let cut = label_name(&name);
+        assert_eq!(cut.chars().count(), 15);
+        assert!(cut.ends_with('\u{2026}'));
+        assert_eq!(label_name(&"\u{00e9}".repeat(15)).chars().count(), 15);
+    }
+
+    #[test]
+    fn apples_reverse_dns_prefix_is_dropped_from_labels() {
+        assert_eq!(label_name("com.apple.dock"), "dock");
+        assert_eq!(
+            label_name("com.apple.accessibility.mediaac"),
+            "accessibility.\u{2026}"
+        );
+        assert_eq!(
+            label_name("com.apple.dock.external.extra.a"),
+            "dock.external.\u{2026}"
+        );
+        assert_eq!(label_name("com.apple."), "com.apple.");
+        assert_eq!(
+            without_apple_prefix("com.apple.accessibility.mediaac"),
+            "accessibility.mediaac"
+        );
+        assert_eq!(
+            without_apple_prefix("user@1000.service"),
+            "user@1000.service"
+        );
+    }
+
+    #[test]
+    fn other_vendors_reverse_dns_names_stay_whole_up_to_the_cut() {
+        assert_eq!(label_name("org.mozilla.fx"), "org.mozilla.fx");
+        assert_eq!(
+            label_name("com.google.Chrome.helper"),
+            "com.google.Chr\u{2026}"
+        );
     }
 }
