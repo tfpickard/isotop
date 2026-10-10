@@ -416,12 +416,20 @@ pub fn pair_tcp(sockets: &[TcpSocket], own: &HashSet<IpAddr>) -> (Vec<(u32, u32)
     (pairs, remotes)
 }
 
-/// Links, outside connections and remotes from every socket the scan could read. macOS reports
-/// no per-socket byte counters, so `loopback` stays empty.
+/// Links, outside connections and remotes from every socket the scan could read, with the
+/// links that run over at least one Unix socket in `unix`. macOS reports no per-socket byte
+/// counters, so `loopback` stays empty.
 pub fn network(unix: &[UnixSocket], tcp: &[TcpSocket], own: &HashSet<IpAddr>) -> Network {
     let mut network = Network::default();
     let (tcp_pairs, remotes) = pair_tcp(tcp, own);
-    for (a, b) in pair_unix(unix).into_iter().chain(tcp_pairs) {
+    for (a, b) in pair_unix(unix) {
+        if a != b {
+            let pair = (a.min(b), a.max(b));
+            *network.links.entry(pair).or_default() += 1;
+            network.unix.insert(pair);
+        }
+    }
+    for (a, b) in tcp_pairs {
         if a != b {
             *network.links.entry((a.min(b), a.max(b))).or_default() += 1;
         }
@@ -956,6 +964,44 @@ mod tests {
         assert_eq!(pair_unix(&sockets), vec![(10, 20), (40, 40)]);
         let network = network(&sockets, &[], &HashSet::new());
         assert_eq!(network.links, HashMap::from([((10, 20), 1)]));
+    }
+
+    #[test]
+    fn unix_pairs_fill_the_unix_set_as_well_as_links() {
+        let unix = [
+            UnixSocket {
+                pid: 20,
+                pcb: 0xa,
+                peer: 0xb,
+            },
+            UnixSocket {
+                pid: 10,
+                pcb: 0xb,
+                peer: 0xa,
+            },
+            // A pair inside one process is no link.
+            UnixSocket {
+                pid: 40,
+                pcb: 0xc,
+                peer: 0xd,
+            },
+            UnixSocket {
+                pid: 40,
+                pcb: 0xd,
+                peer: 0xc,
+            },
+        ];
+        let tcp = [
+            // The Unix pair also talks over TCP.
+            tcp(10, 1, "127.0.0.1:50000", "127.0.0.1:8080", ESTABLISHED),
+            tcp(20, 2, "127.0.0.1:8080", "127.0.0.1:50000", ESTABLISHED),
+            // A pair over TCP only.
+            tcp(30, 3, "127.0.0.1:50001", "127.0.0.1:9000", ESTABLISHED),
+            tcp(50, 4, "127.0.0.1:9000", "127.0.0.1:50001", ESTABLISHED),
+        ];
+        let network = network(&unix, &tcp, &HashSet::new());
+        assert_eq!(network.links, HashMap::from([((10, 20), 2), ((30, 50), 1)]));
+        assert_eq!(network.unix, HashSet::from([(10, 20)]));
     }
 
     #[test]
