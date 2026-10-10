@@ -50,7 +50,8 @@ pub struct Sampler {
 
 /// What a process runs, which stays the same until it calls exec.
 struct Description {
-    /// The name it was read under; a different name means the process has exec'd since.
+    /// The pid version it was read under; exec changes it, even when the name stays.
+    version: i32,
     name: String,
     path: String,
     command: String,
@@ -139,7 +140,9 @@ impl Sampler {
         pid: c_int,
         previous: &mut HashMap<Identity, Description>,
     ) -> Result<(RawProcess, logic::Lineage), Absent> {
-        let bsd: libc::proc_bsdinfo = pid_info(pid, libc::PROC_PIDTBSDINFO)?;
+        let info: ffi::proc_bsdinfowithuniqid = pid_info(pid, ffi::PROC_PIDT_BSDINFOWITHUNIQID)?;
+        let bsd = info.pbsd;
+        let version = info.p_uniqidentifier.p_idversion;
         let task: libc::proc_taskinfo = pid_info(pid, libc::PROC_PIDTASKINFO)?;
         let id = Identity {
             pid: pid as u32,
@@ -152,9 +155,12 @@ impl Sampler {
             name if name.is_empty() => c_text(&bsd.pbi_comm),
             name => name,
         };
-        let description = match previous.remove(&id).filter(|d| d.name == name) {
+        let description = match previous
+            .remove(&id)
+            .filter(|d| logic::same_program((d.version, &d.name), (version, &name)))
+        {
             Some(description) => description,
-            None => self.describe(pid, name),
+            None => self.describe(pid, version, name),
         };
         let usage = rusage(pid);
         let memory = usage.map_or(task.pti_resident_size, |usage| usage.ri_phys_footprint);
@@ -219,7 +225,7 @@ impl Sampler {
 
     /// The executable path and command line. Both can be unreadable, for example for
     /// processes that SIP protects; the command then falls back to the name.
-    fn describe(&mut self, pid: c_int, name: String) -> Description {
+    fn describe(&mut self, pid: c_int, version: i32, name: String) -> Description {
         // SAFETY: the buffer is valid for writes of its full length, which lies between
         // PROC_PIDPATHINFO_SIZE and PROC_PIDPATHINFO_MAXSIZE as proc_pidpath requires.
         let length = unsafe {
@@ -258,6 +264,7 @@ impl Sampler {
             command = name.clone();
         }
         Description {
+            version,
             name,
             path,
             command,
@@ -381,8 +388,8 @@ fn pid_info<T: Copy>(pid: c_int, flavor: c_int) -> Result<T, Absent> {
     // SAFETY: the buffer is valid for writes of `size` bytes.
     let written = unsafe { libc::proc_pidinfo(pid, flavor, 0, value.as_mut_ptr().cast(), size) };
     if written == size {
-        // SAFETY: T is one of libc's plain-integer proc_info structs, which every bit pattern
-        // inhabits, and the kernel filled all of it.
+        // SAFETY: T is one of the plain-integer proc_info structs of libc or `ffi`, which every
+        // bit pattern inhabits, and the kernel filled all of it.
         Ok(unsafe { value.assume_init() })
     } else if written <= 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) {
         Err(Absent::Unreadable)
