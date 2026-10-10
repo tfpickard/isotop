@@ -385,11 +385,11 @@ fn accounted(wanted: HashSet<String>, previous: &mut HashSet<String>) -> HashSet
 }
 
 /// What the previous loopback scan saw: when it ran, and each socket's received counter with
-/// the number of scans since it was last seen.
+/// the time it was read and the number of scans since it was last seen.
 #[derive(Default)]
 struct LoopbackScan {
     at: Option<Instant>,
-    received: HashMap<u64, (u64, u32)>,
+    received: HashMap<u64, (u64, Instant, u32)>,
 }
 
 /// Scans a socket's last counter is kept after it drops out, so a socket that one scan missed
@@ -398,8 +398,9 @@ struct LoopbackScan {
 const LOOPBACK_MISSES: u32 = 3;
 
 /// Bytes per second between pid pairs (smaller pid first) from the change in each loopback
-/// socket's received counter since the previous scan. Each end counts what it received, which
-/// is what the other end sent, so both directions together count every byte once.
+/// socket's received counter since the scan that last saw it, divided by the time since then.
+/// Each end counts what it received, which is what the other end sent, so both directions
+/// together count every byte once.
 ///
 /// A socket not in the previous scan was opened inside the interval, so all of its received
 /// bytes fall in it. On the very first scan nothing is known about the interval, and the pairs
@@ -415,21 +416,23 @@ fn traffic(
     let mut next = HashMap::new();
     let mut rates: HashMap<(u32, u32), f32> = HashMap::new();
     for socket in sockets {
-        next.insert(socket.inode, (socket.received, 0));
+        next.insert(socket.inode, (socket.received, now, 0));
         let Some(interval) = interval else {
             continue;
         };
-        let before = previous
+        let (before, elapsed) = previous
             .received
             .get(&socket.inode)
-            .map_or(0, |&(received, _)| received);
+            .map_or((0, interval), |&(received, seen, _)| {
+                (received, now.duration_since(seen).as_secs_f32().max(0.1))
+            });
         *rates
             .entry((socket.pid.min(socket.peer), socket.pid.max(socket.peer)))
-            .or_default() += socket.received.saturating_sub(before) as f32 / interval;
+            .or_default() += socket.received.saturating_sub(before) as f32 / elapsed;
     }
-    for (&inode, &(received, misses)) in &previous.received {
+    for (&inode, &(received, seen, misses)) in &previous.received {
         if misses < LOOPBACK_MISSES {
-            next.entry(inode).or_insert((received, misses + 1));
+            next.entry(inode).or_insert((received, seen, misses + 1));
         }
     }
     *previous = LoopbackScan {
@@ -1470,16 +1473,22 @@ mod tests {
     }
 
     #[test]
-    fn a_loopback_socket_missed_by_one_scan_is_measured_from_its_old_counter() {
+    fn a_loopback_socket_missed_by_scans_is_averaged_over_the_time_since_it_was_last_seen() {
         let start = Instant::now();
         let mut previous = LoopbackScan::default();
         let at = |seconds| start + Duration::from_secs(seconds);
         traffic(&[loopback(7, 40, 41, 0)], &mut previous, at(0));
         traffic(&[loopback(7, 40, 41, 900_000_000)], &mut previous, at(2));
-        // One scan cannot see the socket, then it is back with 2 MB more.
+        // One scan cannot see the socket, then it is back with 2 MB more, sent over the 4
+        // seconds since it was last seen rather than the 2 since the previous scan.
         assert!(traffic(&[], &mut previous, at(4)).is_empty());
         let rates = traffic(&[loopback(7, 40, 41, 902_000_000)], &mut previous, at(6));
-        assert_eq!(rates, HashMap::from([((40, 41), 1_000_000.0)]));
+        assert_eq!(rates, HashMap::from([((40, 41), 500_000.0)]));
+        // Two missed scans spread 3 MB over 6 seconds.
+        assert!(traffic(&[], &mut previous, at(8)).is_empty());
+        assert!(traffic(&[], &mut previous, at(10)).is_empty());
+        let rates = traffic(&[loopback(7, 40, 41, 905_000_000)], &mut previous, at(12));
+        assert_eq!(rates, HashMap::from([((40, 41), 500_000.0)]));
     }
 
     #[test]
