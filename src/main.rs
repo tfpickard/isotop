@@ -1698,6 +1698,27 @@ mod tests {
     }
 
     #[test]
+    fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
+        let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        assert!(mac.contains("flock = app or user group"), "{mac}");
+        assert!(
+            mac.contains("dust = reads | eyes = memory pressure"),
+            "{mac}"
+        );
+        assert!(mac.contains("no cgroups: no OOM foxes"), "{mac}");
+        assert!(
+            !mac.contains("flock = cgroup") && !mac.contains("fox ="),
+            "{mac}"
+        );
+        let linux = lines_with(View::Coop, &[], 0)[2].clone();
+        assert!(
+            linux.contains("flock = cgroup | ") && linux.contains("fox = OOM kill, eyes = "),
+            "{linux}"
+        );
+        assert!(!linux.contains("no cgroups"), "{linux}");
+    }
+
+    #[test]
     fn legends_keep_their_full_text_when_nothing_is_missing() {
         let text = |view| lines_with(view, &[], 0)[2].clone();
         assert!(

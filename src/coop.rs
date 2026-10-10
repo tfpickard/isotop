@@ -682,6 +682,8 @@ pub struct Coop {
     accumulator: f32,
     phi: Option<f32>,
     pressure_missing: bool,
+    /// The OS has no cgroups, so flocks are app or user groups and no OOM kill brings a fox.
+    cgroups_missing: bool,
     /// The OS reports no last CPU, so running chickens queue at one shared trough.
     trough_shared: bool,
     unreadable: usize,
@@ -1054,14 +1056,22 @@ impl Coop {
         } else {
             "feeder = CPU it ran on"
         };
+        let (flock, fox) = if self.cgroups_missing {
+            ("app or user group", "")
+        } else {
+            ("cgroup", "fox = OOM kill, ")
+        };
         let mut line = format!(
-            " Chicken = process, size = memory | flock = cgroup | foraging speed = CPU, roost = idle | {feeder}, pecking order = priority | chicks = threads | eggs = MiB written | dust = reads | fox = OOM kill, eyes = memory pressure | phi {phi}"
+            " Chicken = process, size = memory | flock = {flock} | foraging speed = CPU, roost = idle | {feeder}, pecking order = priority | chicks = threads | eggs = MiB written | dust = reads | {fox}eyes = memory pressure | phi {phi}"
         );
         if self.trough_shared {
             line.push_str(" | no last CPU: running chickens share one trough");
         }
         if self.pressure_missing {
             line.push_str(" | no CPU pressure: noise from CPU variation only");
+        }
+        if self.cgroups_missing {
+            line.push_str(" | no cgroups: no OOM foxes");
         }
         if self.unreadable > 0 {
             line.push_str(&format!(" | I/O unreadable for {}", self.unreadable));
@@ -1319,6 +1329,7 @@ impl Coop {
 
         let psi = snapshot.pressure[0];
         self.pressure_missing = snapshot.missing.contains(&"cpu pressure");
+        self.cgroups_missing = snapshot.missing.contains(&"cgroups");
         for (k, &i) in order.iter().enumerate() {
             let process = measured(i);
             let chicken = &mut chickens[k];

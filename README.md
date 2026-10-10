@@ -105,7 +105,7 @@ the lanes have no kind and are not guessed.
 | Last CPU of each process | Cores draws the lanes with their load and no marbles, and its legend says so. In the coop, running chickens share one trough instead of walking to the feeder of the core they ran on; the feeders are still drawn, brightened by how busy each core is |
 | CPU clock | Cores shows no chevron motion, and its legend says "no clock readings" |
 | Run queue | Cores draws no red queue marbles, and its legend says "no run queue readings" |
-| cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group |
+| cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group, and no fox comes for an OOM kill; its legend says so |
 | Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos |
