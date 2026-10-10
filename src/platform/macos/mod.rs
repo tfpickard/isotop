@@ -8,7 +8,7 @@ use std::io;
 use std::time::Instant;
 
 use crate::model::{Cpu, Unit};
-use crate::platform::{Network, RawProcess};
+use crate::platform::{Files, Locks, Network, RawProcess};
 
 pub use journal::journal;
 
@@ -56,6 +56,24 @@ pub fn account(
     _previous: &mut HashMap<String, (Instant, u64, u64)>,
 ) -> HashMap<String, Unit> {
     HashMap::new()
+}
+
+/// Open files per process; not read on macOS yet, so every process stays not read.
+pub struct FileScan;
+
+impl FileScan {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn sample(&mut self) -> HashMap<u32, Option<Files>> {
+        HashMap::new()
+    }
+}
+
+/// File locks; not read on macOS yet.
+pub fn locks() -> Option<Locks> {
+    None
 }
 
 /// GPU memory per process; not read on macOS yet.

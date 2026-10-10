@@ -1,6 +1,8 @@
 //! Linux: processes from /proc, CPUs from /proc/stat, /proc/schedstat and cpufreq, pressure
-//! stall information, cgroup v2 accounting, sockets, NVML and the systemd journal.
+//! stall information, cgroup v2 accounting, sockets, open files and file locks, NVML and the
+//! systemd journal.
 
+mod files;
 mod journal;
 mod net;
 mod nvml;
@@ -11,9 +13,10 @@ use std::io;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Process, Unit};
-use crate::platform::{Network, RawProcess};
+use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
+use crate::platform::{Files, Network, RawProcess};
 
+pub use files::{FileScan, locks};
 pub use journal::journal;
 pub use nvml::Nvml as Gpu;
 
@@ -379,6 +382,14 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
     let signed = |index: usize| fields.get(index)?.parse::<i32>().ok();
     let name = text.get(open + 1..close)?.to_owned();
     let rss = fields.get(21)?.parse::<i64>().ok()?.max(0) as u64;
+    let kernel = number(6)? & PF_KTHREAD != 0;
+    // Kernel threads hold no descriptors of their own (their tables read empty even as root), so
+    // they are known to have no files; other processes wait for the background scan.
+    let files = if kernel {
+        Measured::Known(Files::default())
+    } else {
+        Measured::Pending
+    };
     Some((
         Process {
             id: Identity {
@@ -389,11 +400,7 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             command: name.clone(),
             name,
             group: String::new(),
-            kind: if number(6)? & PF_KTHREAD != 0 {
-                Kind::Kernel
-            } else {
-                Kind::System
-            },
+            kind: if kernel { Kind::Kernel } else { Kind::System },
             state: fields.first()?.chars().next()?,
             cpu: 0.0,
             memory: rss.saturating_mul(page_size),
@@ -410,6 +417,9 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             core: number(36).unwrap_or(0) as u32,
             cpu_time: 0.0,
             cgroup: String::new(),
+            files,
+            locks_held: Measured::Pending,
+            blocked_on: None,
         },
         number(11)?.saturating_add(number(12)?),
     ))

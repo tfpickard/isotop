@@ -55,6 +55,35 @@ pub struct Process {
     pub cpu_time: f32,
     /// Full cgroup v2 path, such as /system.slice/cron.service.
     pub cgroup: String,
+    /// Regular files held open (memfds excluded), with those deleted while still open. Other
+    /// users' descriptor tables are unreadable without privileges.
+    pub files: Measured<platform::Files>,
+    /// File locks and leases held. OFD locks name no process and are not counted.
+    pub locks_held: Measured<u32>,
+    /// The pid holding the file lock this process is waiting for, or `platform::UNNAMED` when no
+    /// process can be named for it (an OFD lock, or a holder in another pid namespace).
+    pub blocked_on: Option<u32>,
+}
+
+/// A measurement taken on the background thread, which may not have reached a process yet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Measured<T> {
+    /// Not measured yet: before the first background pass, a process born since the last one,
+    /// or one a budget-limited scan has not reached.
+    #[default]
+    Pending,
+    /// Could not be read, normally for lack of permission.
+    Unreadable,
+    Known(T),
+}
+
+impl<T> Measured<T> {
+    pub fn known(&self) -> Option<&T> {
+        match self {
+            Measured::Known(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,6 +165,9 @@ pub struct Snapshot {
     pub home: Option<Place>,
     /// Where remote locations come from, for the status line.
     pub geo: String,
+    /// File locks no process can be named for: OFD locks, which belong to an open file and report
+    /// pid -1.
+    pub unattributed_locks: u32,
     /// System-wide sources that could not be read this sample, such as "pressure". The set of
     /// names grows as platform ports add sources of their own (the macOS port will add more).
     pub missing: Vec<&'static str>,
@@ -180,6 +212,9 @@ struct Extras {
     remotes: Vec<Remote>,
     /// Loopback traffic in bytes per second between pid pairs (smaller pid first).
     traffic: HashMap<(u32, u32), f32>,
+    /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
+    files: HashMap<u32, Option<platform::Files>>,
+    locks: Measured<platform::Locks>,
     geo: String,
 }
 
@@ -198,8 +233,9 @@ pub struct Collector {
     started: bool,
 }
 
-/// Samples sockets, GPU usage, cgroups and remote locations every two seconds on a background
-/// thread; the thread stops once the collector is gone. Returns None when no thread can be spawned.
+/// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every two
+/// seconds on a background thread; the thread stops once the collector is gone. Returns None
+/// when no thread can be spawned.
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
@@ -216,6 +252,7 @@ fn background(
             let mut sockets = HashMap::new();
             let mut loopback = LoopbackScan::default();
             let mut retained = HashSet::new();
+            let mut scan = platform::FileScan::new();
             while Arc::strong_count(&writer) > 1 {
                 let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
                 let paths = accounted(wanted_now, &mut retained);
@@ -229,6 +266,8 @@ fn background(
                     units: platform::account(&paths, &mut units),
                     remotes,
                     traffic,
+                    files: scan.sample(),
+                    locks: platform::locks().map_or(Measured::Unreadable, Measured::Known),
                     geo: geo.source.clone(),
                 };
                 match writer.lock() {
@@ -240,6 +279,31 @@ fn background(
         })
         .ok()
         .map(|_| shared)
+}
+
+/// Sets a process's open files and locks from the background scans: absent from the file scan
+/// means not read yet, not unreadable. Kernel threads keep their empty table.
+fn merge_files(
+    process: &mut Process,
+    files: &HashMap<u32, Option<platform::Files>>,
+    locks: &Measured<platform::Locks>,
+) {
+    let pid = process.id.pid;
+    if process.kind != Kind::Kernel {
+        process.files = match files.get(&pid) {
+            Some(Some(found)) => Measured::Known(found.clone()),
+            Some(None) => Measured::Unreadable,
+            None => Measured::Pending,
+        };
+    }
+    (process.locks_held, process.blocked_on) = match locks {
+        Measured::Known(locks) => (
+            Measured::Known(locks.held.get(&pid).copied().unwrap_or(0)),
+            locks.blocked.get(&pid).copied(),
+        ),
+        Measured::Unreadable => (Measured::Unreadable, None),
+        Measured::Pending => (Measured::Pending, None),
+    };
 }
 
 /// Byte rates from the change in each socket's counters since the previous scan, and locations.
@@ -292,11 +356,11 @@ fn accounted(wanted: HashSet<String>, previous: &mut HashSet<String>) -> HashSet
 }
 
 /// What the previous loopback scan saw: when it ran, and each socket's received counter with
-/// the number of scans since it was last seen.
+/// the time it was read and the number of scans since it was last seen.
 #[derive(Default)]
 struct LoopbackScan {
     at: Option<Instant>,
-    received: HashMap<u64, (u64, u32)>,
+    received: HashMap<u64, (u64, Instant, u32)>,
 }
 
 /// Scans a socket's last counter is kept after it drops out, so a socket that one scan missed
@@ -305,8 +369,9 @@ struct LoopbackScan {
 const LOOPBACK_MISSES: u32 = 3;
 
 /// Bytes per second between pid pairs (smaller pid first) from the change in each loopback
-/// socket's received counter since the previous scan. Each end counts what it received, which
-/// is what the other end sent, so both directions together count every byte once.
+/// socket's received counter since the scan that last saw it, divided by the time since then.
+/// Each end counts what it received, which is what the other end sent, so both directions
+/// together count every byte once.
 ///
 /// A socket not in the previous scan was opened inside the interval, so all of its received
 /// bytes fall in it. On the very first scan nothing is known about the interval, and the pairs
@@ -322,21 +387,23 @@ fn traffic(
     let mut next = HashMap::new();
     let mut rates: HashMap<(u32, u32), f32> = HashMap::new();
     for socket in sockets {
-        next.insert(socket.inode, (socket.received, 0));
+        next.insert(socket.inode, (socket.received, now, 0));
         let Some(interval) = interval else {
             continue;
         };
-        let before = previous
+        let (before, elapsed) = previous
             .received
             .get(&socket.inode)
-            .map_or(0, |&(received, _)| received);
+            .map_or((0, interval), |&(received, seen, _)| {
+                (received, now.duration_since(seen).as_secs_f32().max(0.1))
+            });
         *rates
             .entry((socket.pid.min(socket.peer), socket.pid.max(socket.peer)))
-            .or_default() += socket.received.saturating_sub(before) as f32 / interval;
+            .or_default() += socket.received.saturating_sub(before) as f32 / elapsed;
     }
-    for (&inode, &(received, misses)) in &previous.received {
+    for (&inode, &(received, seen, misses)) in &previous.received {
         if misses < LOOPBACK_MISSES {
-            next.entry(inode).or_insert((received, misses + 1));
+            next.entry(inode).or_insert((received, seen, misses + 1));
         }
     }
     *previous = LoopbackScan {
@@ -443,7 +510,10 @@ impl Collector {
                 .collect();
             for process in &mut snapshot.processes {
                 process.gpu_memory = extras.gpu.get(&process.id.pid).copied().unwrap_or(0);
+                merge_files(process, &extras.files, &extras.locks);
             }
+            snapshot.unattributed_locks =
+                extras.locks.known().map_or(0, |locks| locks.unattributed);
             snapshot.links = extras
                 .network
                 .links
@@ -508,6 +578,46 @@ fn demo_write_share(index: usize) -> f32 {
     (1 + index % 3) as f32 / 4.0
 }
 
+/// Demo open files, deleted-but-open files and file locks of process `index`, fixed for the whole
+/// run so the clutches hold still: open files spread log-uniformly from 3 to about 380, a database
+/// holding a rotated 1.2 GiB log and a browser two cache files after deleting them, four lock
+/// holders, and two waiters in other flocks than their holders. Returns the open files, locks
+/// held and the index of the holder it waits for.
+fn demo_files(index: usize, kind: Kind) -> (platform::Files, u32, Option<usize>) {
+    if kind == Kind::Kernel {
+        return (platform::Files::default(), 0, None);
+    }
+    let spread = (index * 37 + 11) % 97;
+    let open = (3.0 * (7.0 * spread as f32 / 96.0).exp2()).round() as u32;
+    let deleted = |inode: u64, size: u64| platform::DeletedFile {
+        device: 2049,
+        inode,
+        size,
+    };
+    let deleted = match index {
+        69 => vec![deleted(6900, 1_288_490_189)],
+        83 => vec![deleted(8300, 32 << 20), deleted(8301, 16 << 20)],
+        _ => Vec::new(),
+    };
+    let held = match index {
+        5 => 2,
+        21 | 34 | 101 => 1,
+        _ => 0,
+    };
+    let waiting = match index {
+        40 => Some(5),
+        70 => Some(21),
+        _ => None,
+    };
+    let open = open.max(deleted.len() as u32);
+    let files = platform::Files {
+        open,
+        deleted,
+        partial: false,
+    };
+    (files, held, waiting)
+}
+
 pub fn demo(time: f64, count: usize) -> Snapshot {
     let names = [
         "init",
@@ -552,6 +662,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             (20, 0)
         };
         let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
+        let (files, locks_held, waiting) = demo_files(i, kind);
         processes.push(Process {
             id: Identity {
                 pid: 1000 + i as u32,
@@ -596,6 +707,10 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             },
             core: ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32,
             cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
+            files: Measured::Known(files),
+            locks_held: Measured::Known(locks_held),
+            // Holders come before their waiters, so a waiter's holder always exists.
+            blocked_on: waiting.map(|holder| 1000 + holder as u32),
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -699,6 +814,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         cpus,
         units,
         remotes,
+        unattributed_locks: 1,
         missing: Vec::new(),
         home: Some(Place {
             latitude: 52.37,
@@ -898,16 +1014,22 @@ mod tests {
     }
 
     #[test]
-    fn a_loopback_socket_missed_by_one_scan_is_measured_from_its_old_counter() {
+    fn a_loopback_socket_missed_by_scans_is_averaged_over_the_time_since_it_was_last_seen() {
         let start = Instant::now();
         let mut previous = LoopbackScan::default();
         let at = |seconds| start + Duration::from_secs(seconds);
         traffic(&[loopback(7, 40, 41, 0)], &mut previous, at(0));
         traffic(&[loopback(7, 40, 41, 900_000_000)], &mut previous, at(2));
-        // One scan cannot see the socket, then it is back with 2 MB more.
+        // One scan cannot see the socket, then it is back with 2 MB more, sent over the 4
+        // seconds since it was last seen rather than the 2 since the previous scan.
         assert!(traffic(&[], &mut previous, at(4)).is_empty());
         let rates = traffic(&[loopback(7, 40, 41, 902_000_000)], &mut previous, at(6));
-        assert_eq!(rates, HashMap::from([((40, 41), 1_000_000.0)]));
+        assert_eq!(rates, HashMap::from([((40, 41), 500_000.0)]));
+        // Two missed scans spread 3 MB over 6 seconds.
+        assert!(traffic(&[], &mut previous, at(8)).is_empty());
+        assert!(traffic(&[], &mut previous, at(10)).is_empty());
+        let rates = traffic(&[loopback(7, 40, 41, 905_000_000)], &mut previous, at(12));
+        assert_eq!(rates, HashMap::from([((40, 41), 500_000.0)]));
     }
 
     #[test]
@@ -1015,5 +1137,89 @@ mod tests {
         assert!(rates.iter().any(|&rate| rate > 0.0 && rate < 100_000.0));
         assert!(rates.iter().any(|&rate| rate >= 1.0e6));
         assert_eq!(demo(30.0, 128).link_traffic, snapshot.link_traffic);
+    }
+
+    #[test]
+    fn demo_files_and_locks_hold_still_and_cover_the_coop_cases() {
+        let files = |snapshot: &Snapshot| {
+            snapshot
+                .processes
+                .iter()
+                .map(|p| (p.files.clone(), p.locks_held.clone(), p.blocked_on))
+                .collect::<Vec<_>>()
+        };
+        let snapshot = demo(30.0, 192);
+        assert_eq!(files(&demo(3.0, 192)), files(&snapshot));
+        let processes = &snapshot.processes;
+        let open: Vec<u32> = processes
+            .iter()
+            .filter(|p| p.kind != Kind::Kernel)
+            .map(|p| p.files.known().unwrap().open)
+            .collect();
+        assert!(open.iter().all(|&n| (3..=400).contains(&n)));
+        assert!(open.iter().any(|&n| n < 8) && open.iter().any(|&n| n > 200));
+        assert!(
+            processes
+                .iter()
+                .filter(|p| p.kind == Kind::Kernel)
+                .all(|p| p.files == Measured::Known(platform::Files::default())
+                    && p.locks_held == Measured::Known(0))
+        );
+        let deleted: usize = processes
+            .iter()
+            .map(|p| p.files.known().unwrap().deleted.len())
+            .sum();
+        assert_eq!(deleted, 3);
+        assert!(processes.iter().any(|p| {
+            let files = p.files.known().unwrap();
+            files.deleted.len() == 1 && files.deleted_bytes() == 1_288_490_189
+        }));
+        let holders = processes
+            .iter()
+            .filter(|p| p.locks_held.known().is_some_and(|&held| held > 0))
+            .count();
+        assert_eq!(holders, 4);
+        let waiters: Vec<&Process> = processes
+            .iter()
+            .filter(|p| p.blocked_on.is_some())
+            .collect();
+        assert_eq!(waiters.len(), 2);
+        for waiter in waiters {
+            let holder = processes
+                .iter()
+                .find(|p| Some(p.id.pid) == waiter.blocked_on)
+                .unwrap();
+            assert!(holder.locks_held.known().is_some_and(|&held| held > 0));
+            assert_ne!(holder.cgroup, waiter.cgroup, "waits in another flock");
+        }
+    }
+
+    #[test]
+    fn a_process_the_file_scan_has_not_reached_is_pending_not_unreadable() {
+        let mut process = demo(0.0, 2).processes[1].clone();
+        let locks = Measured::Known(platform::Locks {
+            held: HashMap::from([(1001, 2)]),
+            ..platform::Locks::default()
+        });
+        let scanned = platform::Files {
+            open: 4,
+            ..platform::Files::default()
+        };
+        let mut found = HashMap::new();
+        merge_files(&mut process, &found, &Measured::Pending);
+        assert_eq!(process.files, Measured::Pending, "not reached");
+        assert_eq!(
+            process.locks_held,
+            Measured::Pending,
+            "before the first pass"
+        );
+        found.insert(1001, None);
+        merge_files(&mut process, &found, &Measured::Unreadable);
+        assert_eq!(process.files, Measured::Unreadable);
+        assert_eq!(process.locks_held, Measured::Unreadable);
+        found.insert(1001, Some(scanned.clone()));
+        merge_files(&mut process, &found, &locks);
+        assert_eq!(process.files, Measured::Known(scanned));
+        assert_eq!(process.locks_held, Measured::Known(2));
     }
 }

@@ -15,6 +15,11 @@
 //!   - `network() -> Network`;
 //!   - `account(paths, state) -> HashMap<String, Unit>`: resource accounting of the named
 //!     cgroups, given the state the previous call left;
+//!   - `FileScan::new() -> FileScan` and `FileScan::sample(&mut self) -> HashMap<u32, Option<Files>>`:
+//!     the regular files each process holds open, None for a table that could not be read; a
+//!     pid the scan has not reached is absent;
+//!   - `locks() -> Option<Locks>`: file locks with their holders and waiters, None when they
+//!     cannot be read;
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, u64>`: GPU memory
 //!     per pid.
 //! - `journal() -> io::Result<(Child, JournalParser)>`: a running log follower with piped
@@ -44,7 +49,9 @@ compile_error!("isotop has platform support for Linux and macOS only");
 pub struct RawProcess {
     /// Every `Process` field the OS gives directly: id, parent, name, command, group, kind,
     /// state, memory, threads, core, cgroup, priority, nice and written. The derived fields
-    /// (cpu, the I/O rates, cpu_time and gpu_memory) are left at zero or None.
+    /// (cpu, the I/O rates, cpu_time and gpu_memory) are left at zero or None, and those the
+    /// background thread fills (files, locks_held and blocked_on) at Pending or None, except
+    /// that a kernel thread's files are known to be none.
     pub process: Process,
     /// Cumulative CPU time in ticks of `Sampler::hz()`.
     pub ticks: u64,
@@ -94,4 +101,50 @@ pub struct Remote {
     /// Bytes acknowledged by the peer and bytes received, since the connection opened.
     pub sent: u64,
     pub received: u64,
+}
+
+/// A regular file whose last link is gone while it is still open: its disk space is not returned
+/// until every descriptor on it is closed. Identified by device and inode, so a file held through
+/// several descriptors or by several processes counts once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeletedFile {
+    pub device: u64,
+    pub inode: u64,
+    pub size: u64,
+}
+
+/// The regular files one process holds open.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Files {
+    /// Distinct regular files: several descriptors on one file count once.
+    pub open: u32,
+    /// The deleted files among them, sorted. Found only among examined descriptors.
+    pub deleted: Vec<DeletedFile>,
+    /// Whether the table was larger than what was examined: `open` is then an estimate and
+    /// `deleted` a lower bound.
+    pub partial: bool,
+}
+
+impl Files {
+    pub fn deleted_bytes(&self) -> u64 {
+        self.deleted
+            .iter()
+            .fold(0, |total, file| total.saturating_add(file.size))
+    }
+}
+
+/// The pid standing for a lock holder that no process can be named for: an OFD lock, which
+/// belongs to an open file and reports -1, or a holder outside this pid namespace (0).
+pub const UNNAMED: u32 = 0;
+
+/// File locks and the processes blocked on them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Locks {
+    /// Locks and leases held, per pid.
+    pub held: HashMap<u32, u32>,
+    /// Pids blocked on a lock, with the pid holding the lock that blocks them, or UNNAMED.
+    pub blocked: HashMap<u32, u32>,
+    /// Open file description locks: they belong to an open file, not a process, and report pid
+    /// -1, so no process can be named as their holder.
+    pub unattributed: u32,
 }
