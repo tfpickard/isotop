@@ -58,9 +58,10 @@ The README covers usage. This file covers how to work on the code.
 - **Picking.** A pickable item carries an index into `frame.identities`. `NONE` means "not
   pickable", and lines clear picking where they draw. Mouse input is cell-coarse, so
   `pick_near` searches a radius.
-- **OS access lives in `platform/`.** Nothing outside it reads `/proc` or `/sys`, calls
-  OS-specific APIs or spawns OS tools. Both platforms provide the same names; a macOS build
-  must compile without warnings (`cargo clippy --target aarch64-apple-darwin`).
+- **Process and system sampling lives in `platform/`.** Nothing outside it reads `/proc` or
+  `/sys` or spawns OS tools; terminal I/O (`terminal.rs`) and local lookups (`geo.rs`) are the
+  exceptions. Both platforms provide the same names; a macOS build must compile without
+  warnings (`cargo clippy --target aarch64-apple-darwin`).
 - **Sampling stays off the frame loop.** Anything slower than a `/proc/<pid>/stat` read belongs
   on the background thread.
 - **Process text is untrusted.** Names and command lines are sanitized before they reach the

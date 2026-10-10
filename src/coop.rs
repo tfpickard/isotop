@@ -802,6 +802,9 @@ pub struct Coop {
     extent: Option<([f32; 2], [f32; 2])>,
     band: f32,
     yard: Yard,
+    /// Chickens of processes still sampled but not drawn now (hidden by focus or the process
+    /// limit), kept as they were so they come back where they left.
+    hidden: HashMap<Identity, Chicken>,
     /// The sample the roles were last decided for, and the processes they were decided over.
     decided: Option<f64>,
     drawn: Vec<Identity>,
@@ -1343,7 +1346,7 @@ impl Coop {
             snapshot.processes.iter().map(|p| (p.id, p)).collect();
         let measured =
             |i: usize| -> &Process { raw.get(&processes[i].id).copied().unwrap_or(processes[i]) };
-        // Each flock's label, members and nest.
+        // Each drawn flock's label, members and nest.
         let mut groups: BTreeMap<String, (String, Vec<Identity>, Nest)> = BTreeMap::new();
         for &i in order {
             let process = measured(i);
@@ -1353,19 +1356,36 @@ impl Coop {
             group.1.push(process.id);
             group.2.add(process);
         }
-        self.seats.assign(
-            groups
+        // Seats and house discs are reserved for every sampled process, drawn or not, so focusing
+        // a subtree, or the process limit (and a selection swapped across it) hiding some, does
+        // not free their seats or their flock's place: clearing it brings everyone back to where
+        // they were. Only the drawn flocks get houses below.
+        let mut members: Vec<(Identity, String)> = snapshot
+            .processes
+            .iter()
+            .map(|process| (process.id, flock_key(process)))
+            .collect();
+        members.extend(
+            order
                 .iter()
-                .flat_map(|(key, (_, ids, _))| ids.iter().map(move |&id| (id, key.as_str()))),
+                .map(|&i| measured(i))
+                .filter(|process| !raw.contains_key(&process.id))
+                .map(|process| (process.id, flock_key(process))),
         );
-        let needs: Vec<(String, f32)> = groups
-            .keys()
-            .map(|key| (key.clone(), house_radius(self.seats.span(key))))
+        self.seats
+            .assign(members.iter().map(|(id, key)| (*id, key.as_str())));
+        let keys: BTreeSet<&str> = members.iter().map(|(_, key)| key.as_str()).collect();
+        let needs: Vec<(String, f32)> = keys
+            .into_iter()
+            .map(|key| (key.to_owned(), house_radius(self.seats.span(key))))
             .collect();
         let centers = self.discs.arrange(&needs);
         // The fence hugs the houses' reserved discs, and only grows: a flock at the edge arriving
         // or leaving must not move the fence, the feeders along it or the fox eyes around it.
-        // It is at least MIN_YARD wide for the feeders.
+        // The discs of hidden flocks count too, so a process limit that hides many flocks gives
+        // a yard larger than the houses drawn in it; that is the price of a fence that does not
+        // move when focus or the limit changes what is drawn. It is at least MIN_YARD wide for
+        // the feeders.
         let (mut low, mut high) = self.extent.unwrap_or(([f32::MAX; 2], [f32::MIN; 2]));
         for (key, center) in &centers {
             let reserved = self.discs.reserved(key);
@@ -1425,23 +1445,29 @@ impl Coop {
             .map(|(index, flock)| (flock.key.as_str(), index))
             .collect();
 
-        let mut old = std::mem::take(&mut self.yard.chickens)
-            .into_iter()
-            .peekable();
-        let first = old.peek().is_none();
+        // Every chicken drawn so far joins the hidden ones, the drawn set is taken back out of
+        // them, and what is left waits there unchanged while its process is still sampled.
+        let first = self.yard.chickens.is_empty() && self.hidden.is_empty();
+        let before: HashSet<Identity> = self.yard.chickens.iter().map(|c| c.id).collect();
+        self.hidden.extend(
+            std::mem::take(&mut self.yard.chickens)
+                .into_iter()
+                .map(|chicken| (chicken.id, chicken)),
+        );
         let mut chickens: Vec<Chicken> = Vec::with_capacity(order.len());
         let mut newcomers: Vec<bool> = Vec::with_capacity(order.len());
+        // Chickens back from hiding, whose roles were decided for an older sample.
+        let mut returning: Vec<bool> = Vec::with_capacity(order.len());
         for &i in order {
             let process = measured(i);
-            while old.peek().is_some_and(|c| c.id < process.id) {
-                old.next();
-            }
             let flock = flock_of[flock_key(process).as_str()];
-            if let Some(chicken) = old.next_if(|c| c.id == process.id) {
+            if let Some(chicken) = self.hidden.remove(&process.id) {
+                returning.push(!before.contains(&process.id));
                 chickens.push(chicken);
                 newcomers.push(false);
                 continue;
             }
+            returning.push(false);
             // Newcomers hatch at their flock's gathering spot beyond the perches, close enough
             // to their mates to align with them; the spot's direction is fixed by the flock name.
             let mut rng = Rng::for_identity(process.id, 0xc0_0b);
@@ -1458,6 +1484,7 @@ impl Coop {
             chickens.push(Chicken::new(process.id, flock, position, theta, rng));
             newcomers.push(true);
         }
+        self.hidden.retain(|id, _| raw.contains_key(id));
 
         let psi = snapshot.pressure[0];
         self.pressure_missing = snapshot.missing.contains(&"cpu pressure");
@@ -1479,7 +1506,7 @@ impl Coop {
             } else if fresh {
                 chicken.quiet = chicken.quiet.saturating_add(1);
             }
-            if fresh || newcomers[k] {
+            if fresh || newcomers[k] || returning[k] {
                 let previous = (!newcomers[k]).then_some(chicken.role);
                 let role = match process.state {
                     'Z' => Role::Zombie,
@@ -1798,7 +1825,24 @@ impl Coop {
                 .get(&(a, b))
                 .or_else(|| snapshot.link_traffic.get(&(b, a)))
                 .copied();
-            let weight = peer_weight(traffic, measured(order[i]).cpu, measured(order[j]).cpu);
+            let unix =
+                snapshot.unix_links.contains(&(a, b)) || snapshot.unix_links.contains(&(b, a));
+            // A pair can talk over TCP and Unix sockets at once, and measured TCP traffic says
+            // nothing about the Unix sockets, so the stronger of the two pulls. A pair known by
+            // neither (TCP not measured yet, or a platform that does not tell the protocols
+            // apart) falls back to co-activity.
+            let together = peer_weight(None, measured(order[i]).cpu, measured(order[j]).cpu);
+            let (weight, traffic) = match traffic {
+                Some(rate) => {
+                    let tcp = peer_weight(Some(rate), 0.0, 0.0);
+                    if unix && together > tcp {
+                        (together, None)
+                    } else {
+                        (tcp, Some(rate))
+                    }
+                }
+                None => (together, None),
+            };
             if weight <= 0.0 {
                 continue;
             }
@@ -3360,6 +3404,46 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_unix_link_still_pulls_when_the_same_pair_has_an_idle_tcp_link() {
+        let pull = |traffic: f32, unix: bool| {
+            let processes: Vec<Process> = (1..=2)
+                .map(|pid| {
+                    let mut p = process(pid, "/system.slice/a.service");
+                    p.cpu = 50.0;
+                    p
+                })
+                .collect();
+            let mut sample = snapshot(processes, 1.0);
+            let pair = (identity(1), identity(2));
+            sample.links = vec![(pair.0, pair.1, 2)];
+            sample.link_traffic.insert(pair, traffic);
+            if unix {
+                sample.unix_links.insert(pair);
+            }
+            let mut scene = Scene::new();
+            render(&mut scene, &sample, 1.0);
+            let chicken = scene.coop.yard.find(identity(1)).unwrap();
+            assert_eq!(chicken.role, Role::Foraging);
+            let walks = notes(&scene, 1)
+                .into_iter()
+                .find(|note| note.starts_with("walks with"));
+            (chicken.peers.first().map(|&(_, weight)| weight), walks)
+        };
+        let busy = peer_weight(None, 50.0, 50.0);
+        assert!(busy > 0.0);
+        assert_eq!(pull(0.0, false), (None, None), "an idle TCP link alone");
+        assert_eq!(
+            pull(0.0, true),
+            (Some(busy), Some("walks with hen-2 (both busy)".into()))
+        );
+        // Busy TCP outweighs co-activity, and the note names the term that won.
+        let (weight, walks) = pull(1.0e6, true);
+        assert_eq!(weight, Some(peer_weight(Some(1.0e6), 0.0, 0.0)));
+        assert!(weight.unwrap() > busy);
+        assert!(walks.unwrap().ends_with("/s over TCP)"));
+    }
+
+    #[test]
     fn higher_priority_chicken_takes_the_feeder() {
         let mut processes: Vec<Process> = (1..=3)
             .map(|pid| {
@@ -4337,5 +4421,112 @@ mod tests {
             pixels
         };
         assert!(draw() == draw());
+    }
+
+    fn draw_some(
+        scene: &mut Scene,
+        snapshot: &Snapshot,
+        time: f32,
+        limit: usize,
+        selected: Option<Identity>,
+        focus: Option<Identity>,
+    ) {
+        let frame = scene.render(
+            snapshot,
+            View::Coop,
+            &Camera::default(),
+            160,
+            90,
+            selected,
+            time,
+            limit,
+            focus,
+        );
+        scene.spare = frame.release();
+    }
+
+    type Places = (BTreeMap<String, [f32; 2]>, BTreeMap<Identity, [f32; 2]>);
+
+    /// House centres by flock and chicken positions by process, of what is drawn.
+    fn places(scene: &Scene) -> Places {
+        let houses = scene
+            .coop
+            .flocks
+            .iter()
+            .map(|flock| (flock.key.clone(), flock.center))
+            .collect();
+        let chickens = scene
+            .coop
+            .yard
+            .chickens
+            .iter()
+            .map(|chicken| (chicken.id, chicken.position))
+            .collect();
+        (houses, chickens)
+    }
+
+    /// The demo yard after five seconds of walking on one sample, so every chicken has left the
+    /// spot it hatched at; returns the scene and the time of its last frame.
+    fn settled_demo(sample: &Snapshot) -> (Scene, f32) {
+        let mut scene = Scene::new();
+        let mut time = 30.0;
+        for _ in 0..20 {
+            draw_some(&mut scene, sample, time, 4096, None, None);
+            time += 0.25;
+        }
+        (scene, time - 0.25)
+    }
+
+    /// Asserts that what `scene` draws now stands where it stood in `before`.
+    fn in_place(scene: &Scene, before: &Places) {
+        let (houses, chickens) = places(scene);
+        for (key, center) in &houses {
+            assert_eq!(before.0[key], *center, "house of {key}");
+        }
+        for (id, position) in &chickens {
+            assert_eq!(before.1[id], *position, "chicken {id:?}");
+        }
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_house_and_chicken_in_place() {
+        let sample = demo(30.0, 160);
+        let (mut scene, time) = settled_demo(&sample);
+        let before = places(&scene);
+        let fence = (scene.coop.yard.low, scene.coop.yard.high);
+        // One family of sixteen, all in one flock. The frames repeat the last time, so the yard
+        // does not step and anything that moves was moved by the change of focus.
+        let root = sample.processes[16].id;
+        draw_some(&mut scene, &sample, time, 4096, None, Some(root));
+        let (houses, chickens) = places(&scene);
+        assert_eq!((houses.len(), chickens.len()), (1, 16));
+        in_place(&scene, &before);
+        draw_some(&mut scene, &sample, time, 4096, None, None);
+        assert_eq!(places(&scene), before);
+        assert_eq!((scene.coop.yard.low, scene.coop.yard.high), fence);
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_flocks_place() {
+        let sample = demo(30.0, 160);
+        let (mut scene, time) = settled_demo(&sample);
+        let before = places(&scene);
+        let fence = (scene.coop.yard.low, scene.coop.yard.high);
+        draw_some(&mut scene, &sample, time, 80, None, None);
+        assert!(places(&scene).0.len() < before.0.len());
+        in_place(&scene, &before);
+        // Selecting a process beyond the limit swaps it in, alone in its flock: its house is
+        // where its whole flock had it, sized for every member.
+        let selected = sample.processes[150].id;
+        let key = flock_key(&sample.processes[150]);
+        let span = scene.coop.seats.span(&key);
+        draw_some(&mut scene, &sample, time, 80, Some(selected), None);
+        assert!(places(&scene).0.contains_key(&key));
+        assert!(places(&scene).1.contains_key(&selected));
+        assert_eq!(scene.coop.seats.span(&key), span);
+        in_place(&scene, &before);
+        draw_some(&mut scene, &sample, time, 4096, None, None);
+        assert_eq!(places(&scene), before);
+        assert_eq!((scene.coop.yard.low, scene.coop.yard.high), fence);
     }
 }

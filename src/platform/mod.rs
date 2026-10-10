@@ -50,7 +50,7 @@
 //! - `MEMORY_LABEL: &str` names what `Process::memory` measures (RSS on Linux), as the
 //!   inspector and legends show it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead};
 use std::net::IpAddr;
 
@@ -123,6 +123,9 @@ pub type JournalParser = fn(&mut dyn BufRead) -> io::Result<Option<Line>>;
 pub struct Network {
     /// Unordered pid pairs (smaller first) with the number of sockets connecting them.
     pub links: HashMap<(u32, u32), u32>,
+    /// The pairs in `links` connected by at least one Unix socket. Empty on a platform that does
+    /// not tell the protocols apart.
+    pub unix: HashSet<(u32, u32)>,
     /// Established TCP connections whose far end is not a local socket, per pid.
     pub outside: HashMap<u32, u32>,
     /// Those outside connections in detail, from the kernel's TCP statistics.
