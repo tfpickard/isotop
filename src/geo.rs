@@ -7,11 +7,14 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use crate::model::Place;
+use crate::model::{Location, Place};
 use crate::places::{COUNTRIES, LEGACY_CODES};
 
 /// Legacy GeoIP country databases store leaves at or above this record value.
 const COUNTRY_BEGIN: usize = 16_776_960;
+
+/// The legacy country databases for IPv4 and IPv6 addresses.
+const LEGACY_DATABASES: [&str; 2] = ["/usr/share/GeoIP/GeoIP.dat", "/usr/share/GeoIP/GeoIPv6.dat"];
 
 /// Where distributions and Homebrew (Apple Silicon, then Intel) put city databases.
 const CITY_DATABASES: [&str; 7] = [
@@ -26,10 +29,12 @@ const CITY_DATABASES: [&str; 7] = [
 
 pub struct Geo {
     candidates: Vec<PathBuf>,
+    /// The legacy country databases for IPv4 and IPv6, in that order.
+    legacy_paths: [PathBuf; 2],
     loaded: bool,
     city: Option<maxminddb::Reader<Vec<u8>>>,
     legacy: [Option<Vec<u8>>; 2],
-    cache: HashMap<IpAddr, Option<Place>>,
+    cache: HashMap<IpAddr, Location>,
     /// Which database answers lookups, for the status strip.
     pub source: String,
 }
@@ -52,8 +57,15 @@ impl Geo {
             }
         }
         candidates.extend(CITY_DATABASES.iter().map(PathBuf::from));
+        Self::with_databases(candidates, LEGACY_DATABASES.map(PathBuf::from))
+    }
+
+    /// A locator over exactly these databases: city candidates in order of preference, then the
+    /// legacy country files for IPv4 and IPv6.
+    pub(crate) fn with_databases(candidates: Vec<PathBuf>, legacy_paths: [PathBuf; 2]) -> Self {
         Self {
             candidates,
+            legacy_paths,
             loaded: false,
             city: None,
             legacy: [None, None],
@@ -69,8 +81,8 @@ impl Geo {
             .iter()
             .find_map(|path| Some((path, maxminddb::Reader::open_readfile(path).ok()?)));
         self.legacy = [
-            fs::read("/usr/share/GeoIP/GeoIP.dat").ok(),
-            fs::read("/usr/share/GeoIP/GeoIPv6.dat").ok(),
+            fs::read(&self.legacy_paths[0]).ok(),
+            fs::read(&self.legacy_paths[1]).ok(),
         ];
         self.source = match (&city, &self.legacy) {
             (Some((path, reader)), _) => {
@@ -86,21 +98,26 @@ impl Geo {
                     format!("cities from {name}")
                 }
             }
-            (None, [Some(_), _] | [_, Some(_)]) => {
-                "countries from the system GeoIP database".into()
+            (None, [Some(_), Some(_)]) => "countries from the system GeoIP database".into(),
+            // The ring and the inspector say "no GeoIP database" for the other family, so the
+            // legend must not claim a database without saying which family it covers.
+            (None, [Some(_), None]) => {
+                "countries from the system GeoIP database (IPv4 only)".into()
+            }
+            (None, [None, Some(_)]) => {
+                "countries from the system GeoIP database (IPv6 only)".into()
             }
             (None, _) => "no GeoIP database (see --geoip)".into(),
         };
         self.city = city.map(|(_, reader)| reader);
     }
 
-    pub fn locate(&mut self, address: IpAddr) -> Option<Place> {
-        let address = match address {
-            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(address, IpAddr::V4),
-            v4 => v4,
-        };
+    /// Where `address` is, or why it has no place. Private addresses are answered without
+    /// reading any database.
+    pub fn locate(&mut self, address: IpAddr) -> Location {
+        let address = unmapped(address);
         if !public(address) {
-            return None;
+            return Location::Private;
         }
         if let Some(known) = self.cache.get(&address) {
             return known.clone();
@@ -108,9 +125,14 @@ impl Geo {
         if !self.loaded {
             self.load();
         }
-        let found = self
-            .city_lookup(address)
-            .or_else(|| self.country_lookup(address));
+        let family = usize::from(address.is_ipv6());
+        let found = if self.city.is_none() && self.legacy[family].is_none() {
+            Location::NoDatabase
+        } else {
+            self.city_lookup(address)
+                .or_else(|| self.country_lookup(address))
+                .map_or(Location::Unlisted, Location::Known)
+        };
         self.cache.insert(address, found.clone());
         found
     }
@@ -170,10 +192,18 @@ fn legacy_country(data: &[u8], address: &[u8]) -> Option<usize> {
     None
 }
 
-/// Globally routable addresses only: private, loopback, link-local, CGNAT and ULA ranges have
-/// no geography.
-fn public(address: IpAddr) -> bool {
+/// An IPv4-mapped IPv6 address as the IPv4 address it carries; any other address as it is.
+fn unmapped(address: IpAddr) -> IpAddr {
     match address {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(address, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+/// Globally routable addresses only: private, loopback, link-local, CGNAT and ULA ranges have
+/// no geography. An IPv4-mapped IPv6 address is judged as the IPv4 address it carries.
+pub(crate) fn public(address: IpAddr) -> bool {
+    match unmapped(address) {
         IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
             !(v4.is_private()
@@ -250,6 +280,8 @@ mod tests {
         assert!(!public("10.1.2.3".parse().unwrap()));
         assert!(!public("100.64.0.1".parse().unwrap()));
         assert!(!public("fd00::1".parse().unwrap()));
+        assert!(!public("::ffff:10.1.2.3".parse().unwrap()));
+        assert!(public("::ffff:8.8.8.8".parse().unwrap()));
         assert!(public("8.8.8.8".parse().unwrap()));
         assert_eq!(country("JP").unwrap().name, "Japan");
         const PSEUDO: [&str; 6] = ["--", "AP", "EU", "A1", "A2", "O1"];
@@ -259,6 +291,111 @@ mod tests {
                 "legacy code {code} has no label point"
             );
         }
+    }
+
+    /// A locator over no city database and the given legacy files, which are written to a
+    /// directory of their own and read by the first public lookup.
+    fn locator(name: &str, legacy: [Option<Vec<u8>>; 2]) -> Geo {
+        let directory =
+            std::env::temp_dir().join(format!("isotop-geo-{}-{name}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let paths = ["v4.dat", "v6.dat"].map(|file| directory.join(file));
+        for (path, data) in paths.iter().zip(legacy) {
+            match data {
+                Some(data) => fs::write(path, data).unwrap(),
+                None => drop(fs::remove_file(path)),
+            }
+        }
+        Geo::with_databases(Vec::new(), paths)
+    }
+
+    /// A legacy tree of one node whose two children are leaves holding `record`.
+    fn leaves(record: usize) -> Vec<u8> {
+        let bytes = record.to_le_bytes();
+        [&bytes[..3], &bytes[..3]].concat()
+    }
+
+    #[test]
+    fn private_addresses_are_private_without_reading_a_database() {
+        let mut geo = locator("private", [None, None]);
+        for address in [
+            "10.1.2.3",
+            "100.64.0.1",
+            "192.168.0.9",
+            "127.0.0.1",
+            "fd00::1",
+            "::ffff:10.1.2.3",
+            "::ffff:100.64.0.1",
+        ] {
+            assert_eq!(geo.locate(address.parse().unwrap()), Location::Private);
+        }
+        assert!(geo.source.contains("loading"), "{}", geo.source);
+        assert!(!geo.loaded);
+    }
+
+    #[test]
+    fn a_public_address_without_any_database_says_there_is_none() {
+        let mut geo = locator("none", [None, None]);
+        assert_eq!(geo.locate("8.8.8.8".parse().unwrap()), Location::NoDatabase);
+        assert_eq!(
+            geo.locate("2001:4860:4860::8888".parse().unwrap()),
+            Location::NoDatabase
+        );
+        assert_eq!(geo.source, "no GeoIP database (see --geoip)");
+    }
+
+    #[test]
+    fn an_address_the_database_does_not_list_is_unlisted() {
+        let mut geo = locator("unlisted", [Some(leaves(COUNTRY_BEGIN)), None]);
+        assert_eq!(geo.locate("8.8.8.8".parse().unwrap()), Location::Unlisted);
+    }
+
+    #[test]
+    fn an_address_the_database_lists_is_known() {
+        let index = LEGACY_CODES.iter().position(|&code| code == "JP").unwrap();
+        let mut geo = locator("known", [Some(leaves(COUNTRY_BEGIN + index)), None]);
+        match geo.locate("::ffff:202.12.27.33".parse().unwrap()) {
+            Location::Known(place) => assert_eq!(place.name, "Japan"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_the_missing_family_has_no_database() {
+        let mut geo = locator("family", [Some(leaves(COUNTRY_BEGIN)), None]);
+        assert_eq!(geo.locate("8.8.8.8".parse().unwrap()), Location::Unlisted);
+        assert_eq!(
+            geo.locate("2001:4860:4860::8888".parse().unwrap()),
+            Location::NoDatabase
+        );
+        let mut geo = locator("family-v6", [None, Some(leaves(COUNTRY_BEGIN))]);
+        assert_eq!(geo.locate("8.8.8.8".parse().unwrap()), Location::NoDatabase);
+        assert_eq!(
+            geo.locate("2001:4860:4860::8888".parse().unwrap()),
+            Location::Unlisted
+        );
+    }
+
+    #[test]
+    fn the_legend_says_which_family_a_single_legacy_database_covers() {
+        let mut geo = locator("legend-v4", [Some(leaves(COUNTRY_BEGIN)), None]);
+        geo.locate("8.8.8.8".parse().unwrap());
+        assert_eq!(
+            geo.source,
+            "countries from the system GeoIP database (IPv4 only)"
+        );
+        let mut geo = locator("legend-v6", [None, Some(leaves(COUNTRY_BEGIN))]);
+        geo.locate("8.8.8.8".parse().unwrap());
+        assert_eq!(
+            geo.source,
+            "countries from the system GeoIP database (IPv6 only)"
+        );
+        let mut geo = locator(
+            "legend-both",
+            [Some(leaves(COUNTRY_BEGIN)), Some(leaves(COUNTRY_BEGIN))],
+        );
+        geo.locate("8.8.8.8".parse().unwrap());
+        assert_eq!(geo.source, "countries from the system GeoIP database");
     }
 
     #[test]

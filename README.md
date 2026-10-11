@@ -309,9 +309,25 @@ shown; nothing is sent anywhere.
   requires; GeoLite2 City in `/usr/share/GeoIP` or `/var/lib/GeoIP` is found
   automatically.
 - Otherwise the legacy country database many distributions ship
-  (`/usr/share/GeoIP/GeoIP.dat`) places connections at country label points.
-- Private, loopback and carrier-grade NAT addresses have no location;
-  connections the database cannot place circle the north pole.
+  (`/usr/share/GeoIP/GeoIP.dat`) places connections at country label points. If
+  only the IPv4 or only the IPv6 file is installed, the legend says so and
+  connections of the other family are counted as having no database.
+- macOS ships no GeoIP database, and isotop never looks addresses up online, so
+  install one to see places. For example, DB-IP's City Lite:
+
+  ```sh
+  mkdir -p ~/.local/share/isotop
+  curl -L "https://download.db-ip.com/free/dbip-city-lite-$(date +%Y-%m).mmdb.gz" | gunzip > ~/.local/share/isotop/dbip-city-lite.mmdb
+  ```
+
+- Connections with no place circle the north pole, and the reason is shown. With
+  no database, one label there counts the addresses (`no GeoIP database: N
+  addresses`), and while addresses are still being looked up another says
+  `locating N addresses`. An address the database does not list is labelled with
+  the address itself, and a private, loopback or carrier-grade NAT address, which
+  has no geography, with `(private)`. The count label sits over the north pole, so
+  it is out of sight when the globe is turned to show the south; the legend still
+  says "no GeoIP database".
 - Home is the system time zone's city (`/etc/localtime` and `zone1970.tab`), or
   `--home LAT,LON`.
 
@@ -451,7 +467,7 @@ Any key or mouse movement ends the tour.
 | Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
 | Shift + Tab | Previous view |
 | `1`-`9`, `0` | Jump to a view in that order |
-| Two-finger scroll / wheel | Pan (vertical and horizontal) |
+| Two-finger scroll / wheel | Pan (vertical and horizontal); on the globe, turn the earth (horizontal) and tilt it (vertical) |
 | Ctrl + scroll | Zoom towards the pointer |
 | Alt + scroll | Rotate |
 | Right or middle drag | Rotate (horizontal) and tilt (vertical) |
@@ -461,14 +477,14 @@ Any key or mouse movement ends the tour.
 | PgUp / PgDn | Tilt up / down |
 | `t` | Toggle top-down and isometric |
 | Home | Fit scene |
-| `r` | Reset camera and fit |
+| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again |
 | Hover | Name and description of the process under the pointer |
 | Left click | Select the nearest process and open its inspector popup |
 | Left click on empty space | Close the popup |
-| Left drag | Pan |
+| Left drag | Pan (on the globe too) |
 | `l` | Toggle labels |
 | `h` | Hide or show the status panel, giving the scene the whole terminal |
-| `g` | Start the guided tour now; `g` again (or any input) ends it |
+| `g` | Start the guided tour now; `g` again (or any input) ends it; on the globe it also lets a turned earth spin again |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
 | Tab while searching / `n` afterward | Next match |
@@ -479,6 +495,13 @@ Any key or mouse movement ends the tour.
 | `[` / `]` | Previous / next retained snapshot |
 | `?` | Toggle help |
 | `q` / Ctrl-C | Quit |
+
+On the globe, scrolling follows your fingers the way panning moves the other
+views: scrolling right carries the surface to the left, and scrolling down
+carries it up, so any latitude, the poles included, can be brought to face you.
+Scrolling at all stops the earth's own turn, and a turned globe holds still until
+`r` or `g`; the idle tour waits while it is held. Search keeps the hold and
+stands the earth upright on the match.
 
 Terminals deliver touchpad scrolling as wheel events but do not forward pinch or
 rotate gestures, so Ctrl-scroll and Alt-scroll stand in for them. Camera moves
