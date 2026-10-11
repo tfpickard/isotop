@@ -111,6 +111,9 @@ pub struct ViewInfo {
     /// integral. Every demo snapshot taken while the view is shown follows it. Default: none,
     /// which is `model::demo` exactly.
     pub demo: DemoOptions,
+    /// The view's own keys, for the `?` help line while it is shown, such as `b boost`; they
+    /// reach the view as `ViewKey::Local`. Default: none.
+    pub keys: &'static str,
     /// What the shared view harness expects of the view (`harness.rs`). Default: it draws
     /// processes, checked where they are drawn within 1 world unit, and fails nothing.
     #[cfg_attr(
@@ -165,6 +168,7 @@ impl ViewInfo {
                 exact_cpu_time: false,
                 observer: false,
             },
+            keys: "",
             contract: Contract::DEFAULT,
         }
     }
@@ -349,6 +353,12 @@ pub enum Phase {
     /// Feeds the demo samples of the `seconds` whole seconds before `time` to `Scene::record`,
     /// skipping those before 0, without rasterizing.
     Record { seconds: u32 },
+    /// The same as `Record`, with the samples `--sample-ms` apart, as a live run takes them.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no view replays until the first new view")
+    )]
+    Replay { seconds: u32 },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
     /// The same as `Settle`, in `f64` seconds, handing the journal lines that arrived since the
@@ -365,6 +375,13 @@ pub enum When {
     Output,
     /// `--output` or `--benchmark`, live or demo. A new view's warm-up uses this.
     Headless,
+    /// `--demo` with `--output` or `--benchmark`: for a phase that replays demo samples, which
+    /// a live run must not mix into its own.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no view replays until the first new view")
+    )]
+    DemoHeadless,
 }
 
 /// The settling the simulated media and creatures need before a captured frame.
@@ -1009,6 +1026,72 @@ pub mod testing {
         }
     }
 
+    /// The line `Witness` adds to the tour callout of the process the tour visits.
+    pub const WITNESS_CALLOUT: &str = "witness: toured";
+
+    /// A module view that seats every process on a line and tells what the stage handed it: its
+    /// legend shows the toured process, the focus and the limit of the last frame. It adds a
+    /// line to the tour callout of the toured process.
+    #[derive(Default)]
+    pub struct Witness {
+        seen: String,
+    }
+
+    impl ViewModule for Witness {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            self.seen = format!(
+                "toured {:?} | focus {:?} | limit {}",
+                stage.toured.map(|id| id.pid),
+                stage.focus.map(|id| id.pid),
+                stage.limit
+            );
+            for (index, process) in processes.iter().enumerate() {
+                let position = [index as f32 * 4.0, 0.0, 0.0];
+                stage.positions.insert(process.id, position);
+                stage.frame.sphere(
+                    stage.camera,
+                    position,
+                    1.0,
+                    [200, 200, 200],
+                    index as u32,
+                    false,
+                );
+            }
+            if let Some(id) = stage.toured {
+                stage.callout.push((id, WITNESS_CALLOUT.into()));
+            }
+            processes.len()
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" witness: {}", self.seen)
+        }
+    }
+
+    /// `witness`, whose keys the help line shows, then `probe`.
+    pub static WITNESSED: &[ViewInfo] = &[
+        ViewInfo {
+            keys: "m witness mode",
+            ..ViewInfo::new(
+                "witness",
+                "WITNESS",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Witness::default())),
+            )
+        },
+        ViewInfo::new(
+            "probe",
+            "PROBE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        ),
+    ];
+
     /// `shuffle`, then `listed`, the same view with its churn failure listed as known, and a
     /// resource-change failure it does not have.
     pub static SHUFFLED: &[ViewInfo] = &[
@@ -1226,6 +1309,21 @@ pub mod testing {
             Hooks::Module(|| Box::new(Probe::default())),
         ),
     ];
+
+    /// `replaying`, which replays four seconds of demo samples before a headless frame of a demo
+    /// run.
+    pub static REPLAYING: &[ViewInfo] = &[ViewInfo {
+        warmup: &[Warmup {
+            phase: Phase::Replay { seconds: 4 },
+            when: When::DemoHeadless,
+        }],
+        ..ViewInfo::new(
+            "replaying",
+            "REPLAYING",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        )
+    }];
 
     /// Two module views for the demo options: `plain`, which asks for nothing, then `demanding`,
     /// which asks for births, exits and exact CPU time and replays two seconds of history before

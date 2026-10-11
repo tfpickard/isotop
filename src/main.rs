@@ -607,6 +607,7 @@ impl App {
             limit,
             focus: self.focus,
             paused: self.paused,
+            toured: self.tour.as_ref().map(|tour| tour.target),
         };
         let mut frame = self.scene.render(&input);
         if self.fit {
@@ -871,7 +872,12 @@ impl App {
         } else if self.picker.is_some() {
             lines.push(" Type to filter views | Up/Down move | Enter show | Space add or remove from the Tab playlist | Esc close".into());
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links".into());
+            // The shown view's own keys lead, so they survive a narrow terminal.
+            let keys = match row.keys {
+                "" => String::new(),
+                keys => format!(" {keys} |"),
+            };
+            lines.push(format!("{keys} Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links"));
         } else {
             let scroll = if self.row().turn.is_some() {
                 "scroll turn/tilt | drag pan"
@@ -1081,7 +1087,7 @@ impl App {
                 .tour_point(tour.target)
                 .and_then(|point| frame.locate(&self.camera, point))
         {
-            let lines = vec![
+            let mut lines = vec![
                 p.name.clone(),
                 describe(p),
                 format!(
@@ -1092,6 +1098,13 @@ impl App {
                     p.id.pid
                 ),
             ];
+            lines.extend(
+                self.scene
+                    .callout
+                    .iter()
+                    .filter(|(owner, _)| *owner == tour.target)
+                    .map(|(_, line)| line.clone()),
+            );
             if let Some(panel) = place_panel(lines, Some(layout.cell_of(anchor)), layout, true, 24)
             {
                 let [w, h] = layout.cell_size();
@@ -1890,6 +1903,7 @@ fn due(warmup: &Warmup, options: &Options) -> bool {
         When::DemoOutput => options.demo && options.output.is_some(),
         When::Output => options.output.is_some(),
         When::Headless => options.headless(),
+        When::DemoHeadless => options.demo && options.headless(),
     }
 }
 
@@ -1952,6 +1966,17 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
                     let at = options.time - back as f64;
                     if at >= 0.0 {
                         let snapshot = demo_snapshot(row, at - 1.0, at, count);
+                        app.scene.record(&snapshot, at as f32);
+                    }
+                }
+            }
+            Phase::Replay { seconds } => {
+                let step = options.sample_seconds();
+                let samples = (f64::from(seconds) / step).round() as u32;
+                for back in (1..=samples).rev() {
+                    let at = options.time - f64::from(back) * step;
+                    if at >= 0.0 {
+                        let snapshot = demo_snapshot(row, at - step, at, count);
                         app.scene.record(&snapshot, at as f32);
                     }
                 }
@@ -3134,6 +3159,101 @@ mod tests {
             !popup(&mut app, other)
                 .iter()
                 .any(|line| line == views::testing::GUIDE_LINE)
+        );
+    }
+
+    #[test]
+    fn module_views_learn_the_tour_target_focus_and_limit_and_add_callout_lines() {
+        let rows = views::testing::WITNESSED;
+        let snapshot = model::demo(12.0, 16);
+        let mut app = App::new(View::at(0), snapshot, vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        let layout = Layout {
+            columns: 120,
+            rows: 40,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 7);
+        let legend = |app: &App| app.scene.legend(app.view, app.snapshot());
+        assert_eq!(legend(&app), " witness: toured None | focus None | limit 7");
+        let callouts = |app: &App, frame: &mut Frame| -> Vec<String> {
+            let (_, panels) = app.overlay(frame, &layout, 4.0);
+            panels.into_iter().flat_map(|panel| panel.lines).collect()
+        };
+        assert!(!callouts(&app, &mut frame).contains(&views::testing::WITNESS_CALLOUT.into()));
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        let target = app.tour.as_ref().map(|tour| tour.target).expect("a tour");
+        let mut frame = app.render(320, 180, 7);
+        assert_eq!(
+            legend(&app),
+            format!(
+                " witness: toured Some({}) | focus None | limit 7",
+                target.pid
+            )
+        );
+        let lines = callouts(&app, &mut frame);
+        let at = lines
+            .iter()
+            .position(|line| line == views::testing::WITNESS_CALLOUT)
+            .expect("the view's line is in the callout");
+        assert!(lines[at - 1].starts_with("CPU "), "{lines:?}");
+        app.tour = None;
+        app.focus = Some(target);
+        app.render(320, 180, 7);
+        assert_eq!(
+            legend(&app),
+            format!(
+                " witness: toured None | focus Some({}) | limit 7",
+                target.pid
+            )
+        );
+    }
+
+    #[test]
+    fn the_help_line_leads_with_the_shown_views_keys() {
+        let rows = views::testing::WITNESSED;
+        let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        app.show_help = true;
+        let help = |app: &App| app.text(1.0, "test", 10, 512)[3].clone();
+        assert!(
+            help(&app).starts_with(" m witness mode | Arrows/WASD pan"),
+            "{}",
+            help(&app)
+        );
+        app.switch(View::at(1));
+        assert!(help(&app).starts_with(" Arrows/WASD pan"), "{}", help(&app));
+    }
+
+    #[test]
+    fn a_replay_feeds_demo_samples_at_the_sample_interval_and_only_to_demo_runs() {
+        let records = |arguments: &[&str]| {
+            let rows = views::testing::REPLAYING;
+            let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+            app.scene = Scene::with_rows(rows);
+            let mut all = vec!["--time", "12", "--processes", "16"];
+            all.extend_from_slice(arguments);
+            warm_up(&mut app, &options(&all), None);
+            app.scene.legend(app.view, app.snapshot())
+        };
+        let counted = |count: usize| format!(" probe: 0 draws | {count} records | keys []");
+        assert_eq!(records(&["--demo", "--output", "x.png"]), counted(4));
+        assert_eq!(records(&["--demo", "--benchmark", "3"]), counted(4));
+        assert_eq!(
+            records(&["--demo", "--output", "x.png", "--sample-ms", "250"]),
+            counted(16)
+        );
+        assert_eq!(
+            records(&["--output", "x.png"]),
+            counted(0),
+            "a live run keeps demo samples out of its history"
+        );
+        assert_eq!(
+            records(&["--demo"]),
+            counted(0),
+            "only headless runs warm up"
         );
     }
 

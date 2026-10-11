@@ -61,7 +61,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 3. Draw with the signature the module views already use (`cells.rs`, `cores.rs`, `strata.rs`, `reef.rs`, `coop.rs`):
    `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
    The return value is the number of processes shown; the rest count as collapsed. The trait's other hooks, each with a default, are `record`, `key`, `inspector_line` and `card(&self, Thing, &Snapshot) -> Option<Card>` (the inspector card of a thing the view drew; see "Picking"). A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
-4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets).
+4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets), and extra tour callout lines in `stage.callout`. `stage.toured` names the process the tour is visiting, `stage.focus` the root of a focused subtree and `stage.limit` the `--limit` a view keeps within when it draws more than the slice (exited processes).
 5. Add a smoke-test line, a README section and the key help. See "Tests", "README section" and "Keys".
 
 `isotop --list-views` (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)) prints the views available on the running platform. [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) and the smoke test use it.
@@ -100,7 +100,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 - Calendar-dependent visuals use `SystemTime::now()` in live mode. In demo mode they use the fixed epoch 2026-10-10T04:12:00Z plus `--time`.
 - Headless warm-ups:
   - **Existing views.** The warm-ups in `main.rs` today (strata, coop, ripple, flow, reef, cores, matrix) differ in kind: some rasterize frames, some only record samples, and some run only under `--demo` with `--output`. [P1 (#17)](https://github.com/tfpickard/isotop/issues/17) moves each one to its registry row unchanged, with the same phases, step counts, rasterizing and `--demo`/`--output`/`--benchmark` conditions. Their PNGs and benchmark behaviour stay as they are.
-  - **New views.** A view that needs a settled frame declares a warm-up on its registry row. It runs before both `--output` and `--benchmark`, in live and demo runs, so the benchmark measures a settled scene. It replays N seconds of demo samples through the record hook, steps the simulation without rasterizing, or both. It rasterizes frames only if the view builds state inside `draw`, and the PR says why under `## Decisions`.
+  - **New views.** A view that needs a settled frame declares a warm-up on its registry row. It runs before both `--output` and `--benchmark`, in live and demo runs, so the benchmark measures a settled scene. It replays N seconds of demo samples through the record hook (`Phase::Replay`, at `--sample-ms`, under `When::DemoHeadless`, since a live run must not take in demo samples), steps the simulation without rasterizing, or both. It rasterizes frames only if the view builds state inside `draw`, and the PR says why under `## Decisions`.
   - Two runs with the same `--time` produce byte-identical PNGs.
 - The default reference time is `--time 12`. A view whose history window is not full at 12 s states a later time in its issue (for example `--time 300`) and uses it for parity, the mockup comparison, the README image and the view harness (`time` on the row's `contract`).
 - Prove that existing views are unchanged after any change to shared code. Render every existing view with `--demo --time 12 --renderer cpu --width 960 --output` before and after, compare the files with `cmp`, and paste the result.
@@ -269,7 +269,7 @@ Rules:
 - `m` is the conventional key for a view's alternate mode.
 - Home, r or Esc may gain an extra view effect only if the global meaning still happens, at most one press later.
 - No new view gets a digit. Digits stay bound to the first ten registry rows; never reorder those rows. New views are reached by Tab within the playlist, the `v` picker, `--view` or `--views`.
-- List each view-local key in the view's README section, in `## Controls`, and on the `?` help line while the view is shown.
+- List each view-local key in the view's README section, in `## Controls`, and on the `?` help line while the view is shown (the row's `keys`).
 - Per-view options that are not keys are flags named `--<view>-<option>`.
 
 Assignments:

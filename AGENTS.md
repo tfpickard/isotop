@@ -110,7 +110,7 @@ a state struct and implements `views::ViewModule`:
 `inspector_line` and `card` (the inspector card of a `Thing` it drew, built on demand). A view
 reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage`
 outputs. `Stage` carries in the frame, camera, selection (and `thing`, the selected or hovered
-thing), time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
+thing), the process the tour visits (`toured`), the focused subtree's root, `--limit`, time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
 history (`history.rs`), which `Scene` fills on every sample whichever view is shown and a view
 reads from the shown snapshot's `elapsed` (`History::window`, `History::series`); what the
 platform could not measure is `snapshot.missing`, which `Stage` does not
@@ -121,8 +121,8 @@ with a fixed-step clock fed from `stage.time`; the older views keep their own cl
 writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
 `stage.places`, `stage.notes` (popup lines after the sockets), `stage.tour` (`TourTarget { id,
-position, weight }`, which the tour visits heaviest first) and `stage.popup` (popup lines right
-after the process's own figures), and returns how many processes it showed; the rest count as
+position, weight }`, which the tour visits heaviest first) `stage.popup` (popup lines right
+after the process's own figures) and `stage.callout` (lines for the tour's callout of a process), and returns how many processes it showed; the rest count as
 collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
 time, limit, focus and whether the app is paused). Orbit, Ripple and Flow still report through
 `scene.stars`, `scene.mass` and `scene.hub_names`, which `main.rs` reads besides the outputs
@@ -280,10 +280,12 @@ match your own shell.
   - One `ViewInfo` at the end of `REGISTRY` in `views.rs`, built with
     `ViewInfo::new(name, title, backdrop, Hooks::Module(...))`, setting only the fields that
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
-    `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
+    `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
+    demo samples, such as `Phase::Replay` at `--sample-ms`, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
-    wheel pans), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
+    wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
+    shown), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
     (`Contract::DEFAULT`: it draws processes, which may move at most 1 world unit over the
     ground, checked where they are drawn at 12 s of demo time, and it is known to fail nothing).
     Tab, Shift+Tab, the `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow

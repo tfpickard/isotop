@@ -914,6 +914,8 @@ pub struct RenderInput<'a> {
     pub focus: Option<Identity>,
     /// Whether the app is paused, so `Stage::dt` is 0 whatever `time` does.
     pub paused: bool,
+    /// The process the tour is visiting, if a tour runs.
+    pub toured: Option<Identity>,
 }
 
 #[cfg(test)]
@@ -933,6 +935,7 @@ impl<'a> RenderInput<'a> {
             limit: 512,
             focus: None,
             paused: false,
+            toured: None,
         }
     }
 }
@@ -986,6 +989,29 @@ pub(crate) struct Stage<'a> {
     /// it. Never Some while a process is selected.
     #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub thing: Option<Thing>,
+    /// The process the tour is visiting, if a tour runs; the tour clears the selection.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no view follows the tour until the first new view"
+        )
+    )]
+    pub toured: Option<Identity>,
+    /// The root of the focused subtree, if one is focused: the process slice holds only that
+    /// subtree, so a view leaves out what it draws besides the processes (exited ones).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no view reads the focus until the first new view")
+    )]
+    pub focus: Option<Identity>,
+    /// `--limit`, the most processes a frame draws. The slice is already cut to it; a view that
+    /// draws more than the slice (exited processes) keeps within it.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no view reads the limit until the first new view")
+    )]
+    pub limit: usize,
     pub time: f32,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
     /// first frame, while paused, and when `time` went back (a rewind or a headless replay);
@@ -1019,6 +1045,16 @@ pub(crate) struct Stage<'a> {
     /// pushed: what the view knows about it beyond the sample, such as the memory of the
     /// subtree it anchors.
     pub popup: &'a mut Vec<(Identity, String)>,
+    /// Lines for the tour's callout of a process, after its own figures and in the order pushed:
+    /// what the view makes of the visit, such as a frame it cannot enter.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no view adds callout lines until the first new view"
+        )
+    )]
+    pub callout: &'a mut Vec<(Identity, String)>,
 }
 
 impl Stage<'_> {
@@ -1186,9 +1222,10 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     bounds: Vec<Point>,
     pub notes: HashMap<Identity, Vec<String>>,
-    /// The last frame's `Stage::tour` and `Stage::popup`.
+    /// The last frame's `Stage::tour`, `Stage::popup` and `Stage::callout`.
     pub tour: Vec<TourTarget>,
     pub popup: Vec<(Identity, String)>,
+    pub callout: Vec<(Identity, String)>,
     pub(crate) cores: cores::Track,
     cells: cells::Dishes,
     pub(crate) strata: strata::Strata,
@@ -1252,6 +1289,7 @@ impl Scene {
             notes: HashMap::new(),
             tour: Vec::new(),
             popup: Vec::new(),
+            callout: Vec::new(),
             cores: cores::Track::default(),
             cells: cells::Dishes::default(),
             strata: strata::Strata::default(),
@@ -1461,6 +1499,7 @@ impl Scene {
             limit,
             focus,
             paused,
+            toured: _,
         } = *input;
         self.frames += 1;
         // The sample is already in when the main loop recorded it; headless renders and tests
@@ -1503,6 +1542,7 @@ impl Scene {
         self.notes.clear();
         self.tour.clear();
         self.popup.clear();
+        self.callout.clear();
         // Only the city draws buildings, and it measures them again every frame it is shown.
         self.tallest = 0.0;
         let lift = self.draw_view(&mut frame, input, &processes, dt);
@@ -1578,7 +1618,9 @@ impl Scene {
             selected,
             thing,
             time,
+            limit,
             focus,
+            toured,
             ..
         } = *input;
         let [cpu, memory, io] = snapshot.pressure;
@@ -1626,6 +1668,9 @@ impl Scene {
                     camera,
                     selected,
                     thing,
+                    toured,
+                    focus,
+                    limit,
                     time,
                     dt,
                     history: &self.history,
@@ -1637,6 +1682,7 @@ impl Scene {
                     notes: &mut self.notes,
                     tour: &mut self.tour,
                     popup: &mut self.popup,
+                    callout: &mut self.callout,
                 };
                 let shown = match arm {
                     Some(BuiltIn::Cores) => self.cores.draw(&mut stage, processes, snapshot),
