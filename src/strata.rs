@@ -2,14 +2,14 @@
 //! profile is its CPU use over time, newest at the front edge. Ridges are seated from kernel
 //! threads at the back to containers at the front and keep their row while they stay busy.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
+use crate::history::Sample;
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::palette::{kind_color, tint};
 use crate::render::{Point, Stage, label_name};
 
 const WINDOW: f64 = 60.0;
-const SAMPLES: usize = 240;
 const ROWS: usize = 40;
 /// Ground units per second of history, between rows, and of ridge height at saturating CPU.
 const SPAN: f32 = 1.0;
@@ -20,9 +20,6 @@ const BUSY: f32 = 0.5;
 
 #[derive(Default)]
 pub struct Strata {
-    history: VecDeque<(f64, HashMap<Identity, f32>)>,
-    /// Scene time at which the newest sample arrived, so the landscape scrolls smoothly in between.
-    arrived: f32,
     /// Each ridge's row, 0 at the back; a ridge keeps its row for as long as it has one.
     rows: HashMap<Identity, usize>,
 }
@@ -35,23 +32,6 @@ impl Strata {
         rows.into_iter().map(|(_, id)| id).collect()
     }
 
-    /// Keeps a sample in the history. The scene records every sample, whichever view is shown, so
-    /// the landscape is already a minute deep when the view opens.
-    pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
-        if self
-            .history
-            .back()
-            .is_none_or(|&(elapsed, _)| snapshot.elapsed > elapsed)
-        {
-            let sample = snapshot.processes.iter().map(|p| (p.id, p.cpu)).collect();
-            self.history.push_back((snapshot.elapsed, sample));
-            self.arrived = time;
-            while self.history.len() > SAMPLES {
-                self.history.pop_front();
-            }
-        }
-    }
-
     #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
@@ -59,20 +39,16 @@ impl Strata {
         processes: &[&Process],
         snapshot: &Snapshot,
     ) -> usize {
-        self.record(snapshot, stage.time);
         let now = snapshot.elapsed;
-        let window: Vec<&(f64, HashMap<Identity, f32>)> = self
-            .history
-            .iter()
-            .filter(|(elapsed, _)| (now - WINDOW..=now).contains(elapsed))
-            .collect();
+        let window: Vec<&Sample> = stage.history.window(now, WINDOW).collect();
         let interval = match window.as_slice() {
-            [.., a, b] => (b.0 - a.0) as f32,
+            [.., a, b] => (b.elapsed - a.elapsed) as f32,
             _ => 1.0,
         };
-        let live = self.history.back().is_some_and(|&(e, _)| e == now);
+        // The landscape scrolls smoothly between samples while the newest one is the shown one.
+        let live = stage.history.newest() == Some(now);
         let scroll = if live {
-            (stage.time - self.arrived).clamp(0.0, interval)
+            (stage.time - stage.history.arrived()).clamp(0.0, interval)
         } else {
             0.0
         };
@@ -84,7 +60,7 @@ impl Strata {
         let peak = |id: &Identity| {
             window
                 .iter()
-                .filter_map(|(_, sample)| sample.get(id).copied())
+                .filter_map(|sample| sample.cpu(*id))
                 .fold(0.0_f32, f32::max)
         };
         // Rows are given to every sampled process, drawn or not, so focusing a subtree, or the
@@ -180,9 +156,9 @@ impl Strata {
             let y = row as f32 * SPACING;
             let mut profile: Vec<[f32; 2]> = window
                 .iter()
-                .map(|(elapsed, sample)| {
-                    let x = ((elapsed - now) as f32 - scroll) * SPAN;
-                    [x, height(sample.get(id).copied().unwrap_or(0.0))]
+                .map(|sample| {
+                    let x = ((sample.elapsed - now) as f32 - scroll) * SPAN;
+                    [x, height(sample.cpu(*id).unwrap_or(0.0))]
                 })
                 .filter(|&[x, _]| x >= -width)
                 .collect();
@@ -229,7 +205,7 @@ impl Strata {
                 vec![format!(
                     "peak {:.0}% CPU over the last {:.0} s",
                     peak(id),
-                    window.last().map_or(0.0, |l| l.0 - window[0].0)
+                    window.last().map_or(0.0, |l| l.elapsed - window[0].elapsed)
                 )],
             );
         }

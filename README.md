@@ -609,7 +609,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-29,640 lines of Rust (19,017 production, 10,623 test) in 37 files, 382 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+29,906 lines of Rust (19,115 production, 10,791 test) in 38 files, 389 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

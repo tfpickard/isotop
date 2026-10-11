@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use crate::geometry::{dot, normalize};
+use crate::history::History;
 use crate::layout::{spin, spiral, vacant};
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
 use crate::model::{Identity, Process, Snapshot, bounded};
@@ -859,6 +860,10 @@ pub(crate) struct Stage<'a> {
         expect(dead_code, reason = "no view steps with it until the first new view")
     )]
     pub dt: f32,
+    /// Every process's CPU and memory over the last samples, as of this frame. The scene records
+    /// each sample whichever view is shown; read the past with `History::window` and `series`,
+    /// from the shown snapshot's `elapsed`.
+    pub history: &'a History,
     births: &'a HashMap<Identity, f32>,
     /// CPU and memory as eased for every sampled process, drawn or not.
     resources: &'a HashMap<Identity, (f32, f32)>,
@@ -1057,6 +1062,8 @@ pub struct Scene {
     pub(crate) cores: cores::Track,
     cells: cells::Dishes,
     pub(crate) strata: strata::Strata,
+    /// Every process's CPU and memory over the last samples, recorded whichever view is shown.
+    pub(crate) history: History,
     globe: globe::Globe,
     reef: reef::Reef,
     pub coop: coop::Coop,
@@ -1118,6 +1125,7 @@ impl Scene {
             cores: cores::Track::default(),
             cells: cells::Dishes::default(),
             strata: strata::Strata::default(),
+            history: History::default(),
             globe: globe::Globe::default(),
             reef: reef::Reef::default(),
             coop: coop::Coop::default(),
@@ -1182,6 +1190,7 @@ impl Scene {
     /// Feeds a new sample to every view's record hook in registry order, whichever view is
     /// shown, so views that keep their own history have it when they open.
     pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
+        self.history.record(snapshot, time);
         let rows = self.rows;
         for (index, row) in rows.iter().enumerate() {
             match row.hooks {
@@ -1302,6 +1311,9 @@ impl Scene {
             paused,
         } = *input;
         self.frames += 1;
+        // The sample is already in when the main loop recorded it; headless renders and tests
+        // that never call `record` fill the history here.
+        self.history.record(snapshot, time);
         let dt = self.clock.step(time, paused);
         let alive: HashSet<_> = snapshot.processes.iter().map(|p| p.id).collect();
         let visual = self.ease(snapshot, &alive, time);
@@ -1457,6 +1469,7 @@ impl Scene {
                     selected,
                     time,
                     dt,
+                    history: &self.history,
                     births: &self.births,
                     resources: &self.resources,
                     positions: &mut self.positions,
@@ -4197,6 +4210,27 @@ mod tests {
             "efficiency lanes are outside"
         );
         assert_eq!(scene.visible, 1, "idle processes stay off the track");
+    }
+
+    #[test]
+    fn history_records_while_another_view_is_shown() {
+        let mut scene = Scene::new();
+        let mut snapshot = demo(0.0, 16);
+        // Samples the main loop records, and a render of a sample it never recorded.
+        for step in 0..3 {
+            snapshot.elapsed = step as f64;
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, view("city"), step as f32);
+        }
+        snapshot.elapsed = 3.0;
+        render(&mut scene, &snapshot, view("city"), 3.0);
+        let elapsed: Vec<f64> = scene.history.window(3.0, 60.0).map(|s| s.elapsed).collect();
+        assert_eq!(elapsed, [0.0, 1.0, 2.0, 3.0]);
+        let id = snapshot.processes[0].id;
+        let series = scene.history.series(id, 3.0, 4);
+        assert_eq!(series.len(), 4);
+        assert!(series.iter().all(|reading| reading.is_some()));
+        assert_eq!(scene.history.arrived(), 3.0);
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod glyphs;
 mod gpu;
 #[cfg(test)]
 mod harness;
+mod history;
 mod journal;
 mod layout;
 mod matrix;
@@ -48,7 +49,7 @@ use render::{
     Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, label_name,
 };
 use terminal::{Label, Popup, Terminal, Tone};
-use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, When};
+use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
 /// How long the journal follower keeps running after the demand last contained
@@ -1795,10 +1796,50 @@ fn demo_snapshot(row: &ViewInfo, time: f64, count: usize) -> Snapshot {
     model::demo_with(time, count, row.demo)
 }
 
-/// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured,
-/// by running the shown view's warm-up phases (`ViewInfo::warmup`) whose condition holds. The
-/// golden render test runs this too, so the hashes it checks are the PNGs' frames.
+/// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured:
+/// the shared history, then the shown view's warm-up phases (`ViewInfo::warmup`) whose condition
+/// holds. The golden render test runs this too, so the hashes it checks are the PNGs' frames.
 fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
+    replay_history(app, options);
+    run_phases(app, options, journal);
+}
+
+/// Whether a warm-up phase runs in this run.
+fn due(warmup: &Warmup, options: &Options) -> bool {
+    match warmup.when {
+        When::DemoOutput => options.demo && options.output.is_some(),
+        When::Output => options.output.is_some(),
+        When::Headless => options.headless(),
+    }
+}
+
+/// Fills the scene's shared history, which a live run has by the time a view opens, with the
+/// demo samples of the `history::SERIES` whole seconds before `--time`, skipping those before 0.
+/// The samples go straight into `scene.history`, not through `Scene::record`, so no view's own
+/// record hook sees them and the views that warm up through `Phase::Record` are unchanged. A row
+/// whose due `Phase::History` already fills the history while it rasterizes skips the replay.
+fn replay_history(app: &mut App, options: &Options) {
+    let row = app.row();
+    let filled = row
+        .warmup
+        .iter()
+        .any(|warmup| matches!(warmup.phase, Phase::History { .. }) && due(warmup, options));
+    if !options.demo || !options.headless() || filled {
+        return;
+    }
+    let count = options.processes as usize;
+    for back in (1..=history::SERIES).rev() {
+        let at = options.time - back as f64;
+        if at >= 0.0 {
+            app.scene
+                .history
+                .record(&demo_snapshot(row, at, count), at as f32);
+        }
+    }
+}
+
+/// Runs the shown view's warm-up phases whose condition holds.
+fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
     let (width, height, limit) = (
         options.width,
         options.headless_height(),
@@ -1807,12 +1848,7 @@ fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
     let count = options.processes as usize;
     let row = app.row();
     for warmup in row.warmup {
-        let due = match warmup.when {
-            When::DemoOutput => options.demo && options.output.is_some(),
-            When::Output => options.output.is_some(),
-            When::Headless => options.headless(),
-        };
-        if !due {
+        if !due(warmup, options) {
             continue;
         }
         match warmup.phase {
@@ -2575,6 +2611,54 @@ mod tests {
             format!("{:?}", app.history[0].processes),
             format!("{:?}", model::demo_with(12.0, 64, asked).processes)
         );
+    }
+
+    /// The frame a headless demo run of `name` captures, and the app it came from.
+    fn warmed_frame(name: &str, replay: bool) -> (App, Vec<u8>) {
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "75",
+            "--processes",
+            "64",
+            "--width",
+            "160",
+            "--renderer",
+            "cpu",
+            "--output",
+            "warm.png",
+            "--view",
+            name,
+        ]);
+        let view = View::all().find(|view| view.name() == name).unwrap();
+        let mut app = App::new(
+            view,
+            demo_snapshot(view.info(), options.time, 64),
+            all_available(),
+        );
+        if replay {
+            warm_up(&mut app, &options, None);
+        } else {
+            run_phases(&mut app, &options, None);
+        }
+        app.animation = options.time as f32;
+        let frame = app.render(160, options.headless_height(), options.limit as usize);
+        (app, frame.pixels.to_vec())
+    }
+
+    #[test]
+    fn headless_replay_leaves_coop_warm_up_unchanged() {
+        let (replayed, with) = warmed_frame("coop", true);
+        let (bare, without) = warmed_frame("coop", false);
+        assert!(with == without, "the replay changed coop's frame");
+        // The replay fills the shared history, one sample a second before the captured one; coop's
+        // own `Record` phase reaches it through `Scene::record` for its 30 seconds only.
+        assert_eq!(replayed.scene.history.window(75.0, 60.0).count(), 61);
+        assert_eq!(bare.scene.history.window(75.0, 60.0).count(), 31);
+        // Strata fills it by rasterizing, so it is not replayed on top.
+        let (strata, _) = warmed_frame("strata", true);
+        assert_eq!(strata.scene.history.window(75.0, 60.0).count(), 61);
     }
 
     #[test]

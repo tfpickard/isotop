@@ -344,7 +344,9 @@ pub struct Warmup {
 pub enum Phase {
     /// For each whole second from `seconds` back to 1 before `time`, makes the demo sample of
     /// that second the whole history and rasterizes a frame at it; then leaves the history at the
-    /// sample of `time`. It replays demo samples, so it belongs under `When::DemoOutput`.
+    /// sample of `time`. It replays demo samples, so it belongs under `When::DemoOutput`. Every
+    /// frame it rasterizes records its sample in the scene's history, so a row with a due
+    /// `History` phase skips `main.rs`'s replay of the shared history.
     History { seconds: u32 },
     /// Feeds the demo samples of the `seconds` whole seconds before `time` to `Scene::record`,
     /// skipping those before 0, without rasterizing.
@@ -587,7 +589,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::BuiltIn {
                 arm: BuiltIn::Strata,
                 legend: strata_legend,
-                record: Some(|scene, snapshot, time| scene.strata.record(snapshot, time)),
+                record: None,
                 inspector_line: None,
             },
         )
@@ -1082,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn only_strata_and_coop_record_and_only_matrix_replaces_the_inspector() {
+    fn only_coop_records_and_only_matrix_replaces_the_inspector() {
         let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
             REGISTRY
                 .iter()
@@ -1098,8 +1100,8 @@ mod tests {
                     ..
                 }
             )),
-            ["strata", "coop"],
-            "Strata records before Coop, as it always has"
+            ["coop"],
+            "Strata reads the shared history, so it has no record hook"
         );
         assert_eq!(
             with(|hooks| matches!(
