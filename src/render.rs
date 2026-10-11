@@ -1325,6 +1325,18 @@ impl Scene {
             .is_some_and(|module| module.key(key))
     }
 
+    /// Where the view harness looks for `view`'s processes after a frame: the row's anchors for
+    /// a built-in view, the module's own for a module view. None checks `positions`.
+    #[cfg(test)]
+    pub fn anchors(&self, view: View) -> Option<HashMap<Identity, Point>> {
+        match self.row(view).hooks {
+            Hooks::BuiltIn { .. } => self.row(view).contract.anchors.map(|anchors| anchors(self)),
+            Hooks::Module(_) => self.modules[view.index()]
+                .as_ref()
+                .and_then(|module| module.anchors()),
+        }
+    }
+
     fn growth(&self, id: Identity, time: f32) -> f32 {
         growth(&self.births, id, time)
     }

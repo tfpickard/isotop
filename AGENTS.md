@@ -284,9 +284,9 @@ match your own shell.
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
     wheel pans), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
     (`Contract::DEFAULT`: it draws processes, which may move at most 1 world unit over the
-    ground, checked where they are drawn, and it is known to fail nothing). Tab, Shift+Tab, the
-    `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow from the table. Never
-    reorder the first ten rows: the digits pick them.
+    ground, checked where they are drawn at 12 s of demo time, and it is known to fail nothing).
+    Tab, Shift+Tab, the `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow
+    from the table. Never reorder the first ten rows: the digits pick them.
   - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
     . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
     (returning true consumes that press). Every other key is global, and no key reaches the view
@@ -297,7 +297,9 @@ match your own shell.
     that no surviving process moves when CPU and memory change (CPU scaled 0.25 to 4, memory 0.5
     to 2) or when a tenth of the processes exit and as many start, and that an empty machine
     draws. A new view needs tests only for what is its own beyond that. Set its tolerance on
-    the row's `contract`; a view whose creatures wander declares `anchors` (Coop's seats). Never
+    the row's `contract`, and a later `time` there if its history window is not full at 12 s;
+    a module view whose bodies move by themselves returns the places they keep from
+    `ViewModule::anchors` (a built-in view declares `anchors` on the contract, as Coop's seats). Never
     add a `known_unstable` entry for a new view: those record debt of the views that predate the
     harness, each with its issue, and the harness reports one that starts to pass.
   - Test the module through `Scene::with_rows` and a table of its own, as `views::testing` does.

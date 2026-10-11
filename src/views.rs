@@ -183,9 +183,12 @@ pub struct Contract {
     /// change. Default: 1.
     pub tolerance: f32,
     /// Where the stability properties look for a process instead of where it is drawn: its
-    /// anchor (seat, house), for a view whose creatures wander. Default: None, which checks
-    /// `Scene::positions`.
+    /// anchor (seat, house), for a built-in view whose creatures wander. Default: None, which
+    /// checks `Scene::positions`. A module view returns its anchors from `ViewModule::anchors`.
     pub anchors: Option<Anchors>,
+    /// The demo time, in seconds, the harness checks the view at: the default reference time, or
+    /// a later one for a view whose history window is not full by then. Default: 12.
+    pub time: f64,
     /// Properties the view is known to fail, each with the issue that tracks it. The harness
     /// still checks them, reports one that starts to pass, and does not fail on them.
     pub known_unstable: &'static [Unstable],
@@ -199,6 +202,7 @@ impl Contract {
         draws_processes: true,
         tolerance: 1.0,
         anchors: None,
+        time: 12.0,
         known_unstable: &[],
     };
 
@@ -427,6 +431,14 @@ pub trait ViewModule {
     /// build the card here from the view's own state, never one per thing per frame. The
     /// snapshot is the shown sample, for figures the view does not keep itself.
     fn card(&self, _thing: Thing, _snapshot: &Snapshot) -> Option<Card> {
+        None
+    }
+
+    /// Where the view harness looks for each drawn process instead of where it is drawn, for a
+    /// view whose bodies move by themselves: the place each one keeps, read after a frame. None,
+    /// the default, checks `Scene::positions`.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
         None
     }
 }
@@ -1014,6 +1026,55 @@ pub mod testing {
             )
         },
     ];
+
+    /// A module view that seats processes by rank as `Shuffle` does, so one exit moves the rest,
+    /// but anchors each at a place fixed by its pid, and shows nothing before 30 s of demo time:
+    /// the harness must look at its anchors and run it at its own reference time to pass it.
+    #[derive(Default)]
+    pub struct Anchored {
+        anchors: HashMap<Identity, Point>,
+    }
+
+    impl ViewModule for Anchored {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            self.anchors.clear();
+            if snapshot.elapsed < 30.0 {
+                return 0;
+            }
+            for process in processes {
+                self.anchors
+                    .insert(process.id, [process.id.pid as f32 * 3.0, 0.0, 0.0]);
+            }
+            Shuffle.draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            " anchored".into()
+        }
+
+        fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+            Some(self.anchors.clone())
+        }
+    }
+
+    /// `anchored`, checked at 40 s.
+    pub static ANCHORED: &[ViewInfo] = &[ViewInfo {
+        contract: Contract {
+            time: 40.0,
+            ..Contract::DEFAULT
+        },
+        ..ViewInfo::new(
+            "anchored",
+            "ANCHORED",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Anchored::default())),
+        )
+    }];
 
     /// Two module views: `probe`, with every optional field at its default, then `quiet`, which
     /// sets them otherwise: no links, flash, haze or tour, a pitch of its own and fixed counts.
