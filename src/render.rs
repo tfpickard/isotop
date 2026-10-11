@@ -74,6 +74,14 @@ pub struct Camera {
     pub rotation: f32,
     /// Elevation above the ground plane: isometric by default, top-down at pi/2.
     pub pitch: f32,
+    /// Globe only: how far the earth has been turned by hand about its axis, in radians.
+    pub globe_turn: f32,
+    /// Globe only: how far the earth leans about the screen-horizontal axis, in radians;
+    /// positive brings the southern hemisphere up. Used clamped to the camera's pitch +- pi/2,
+    /// because the pitch changes without touching it.
+    pub globe_tilt: f32,
+    /// Globe only: the earth holds still at `globe_turn` instead of turning with time.
+    pub globe_held: bool,
 }
 
 impl Default for Camera {
@@ -83,6 +91,9 @@ impl Default for Camera {
             zoom: 5.0,
             rotation: 0.0,
             pitch: ISOMETRIC,
+            globe_turn: 0.0,
+            globe_tilt: 0.0,
+            globe_held: false,
         }
     }
 }
@@ -163,6 +174,27 @@ impl Camera {
         self.zoom *= (goal.zoom / self.zoom).powf(amount);
         self.rotation += ((goal.rotation - self.rotation + PI).rem_euclid(TAU) - PI) * amount;
         self.pitch += (goal.pitch - self.pitch) * amount;
+        self.globe_turn += ((goal.globe_turn - self.globe_turn + PI).rem_euclid(TAU) - PI) * amount;
+        self.globe_tilt += (goal.globe_tilt - self.globe_tilt) * amount;
+        self.globe_held = goal.globe_held;
+    }
+
+    /// Globe only: freezes the earth where it is at `time`, folding the turn it has made with
+    /// time into `globe_turn`, so nothing moves on screen. Does nothing if already held.
+    pub fn hold(&mut self, time: f32) {
+        if !self.globe_held {
+            self.globe_turn = (self.globe_turn + globe::drift(time)).rem_euclid(TAU);
+            self.globe_held = true;
+        }
+    }
+
+    /// Globe only: lets a held earth turn with time again from where it stands at `time`.
+    /// Does nothing unless held.
+    pub fn release(&mut self, time: f32) {
+        if self.globe_held {
+            self.globe_turn = (self.globe_turn - globe::drift(time)).rem_euclid(TAU);
+            self.globe_held = false;
+        }
     }
 }
 
@@ -828,6 +860,8 @@ pub(crate) struct Stage<'a> {
     )]
     pub dt: f32,
     births: &'a HashMap<Identity, f32>,
+    /// CPU and memory as eased for every sampled process, drawn or not.
+    resources: &'a HashMap<Identity, (f32, f32)>,
     /// Where each drawn process is, for picking anchors, labels and the tour.
     pub positions: &'a mut HashMap<Identity, Point>,
     /// World-anchored text labels.
@@ -855,6 +889,17 @@ pub(crate) struct Stage<'a> {
 impl Stage<'_> {
     pub fn growth(&self, id: Identity) -> f32 {
         growth(self.births, id, self.time)
+    }
+
+    /// A sampled process's CPU and memory as the scene eases them, whether it is drawn or not.
+    /// A drawn process carries these very figures, so a view that sizes or ranks by processes it
+    /// hides measures them as it measures the ones it shows.
+    pub fn eased(&self, process: &Process) -> (f32, u64) {
+        self.resources
+            .get(&process.id)
+            .map_or((process.cpu, process.memory), |&(cpu, memory)| {
+                (cpu, memory as u64)
+            })
     }
 }
 
@@ -1413,6 +1458,7 @@ impl Scene {
                     time,
                     dt,
                     births: &self.births,
+                    resources: &self.resources,
                     positions: &mut self.positions,
                     places: &mut self.places,
                     bounds: &mut self.bounds,
@@ -3502,6 +3548,48 @@ mod tests {
     }
 
     #[test]
+    fn approach_turns_the_globe_the_short_way_leans_it_linearly_and_follows_the_hold() {
+        let mut camera = Camera {
+            globe_turn: 0.1,
+            globe_tilt: 1.0,
+            ..Camera::default()
+        };
+        let goal = Camera {
+            globe_turn: TAU - 0.1,
+            globe_tilt: 0.0,
+            globe_held: true,
+            ..Camera::default()
+        };
+        camera.approach(&goal, 0.5);
+        assert!(camera.globe_turn.abs() < 1e-5, "{}", camera.globe_turn);
+        assert!((camera.globe_tilt - 0.5).abs() < 1e-6);
+        assert!(camera.globe_held);
+        camera.approach(&Camera::default(), 1.0);
+        assert!(!camera.globe_held && camera.globe_tilt == 0.0);
+    }
+
+    #[test]
+    fn holding_and_releasing_change_nothing_unless_the_state_changes() {
+        let mut camera = Camera::default();
+        camera.release(40.0);
+        assert!(
+            camera == Camera::default(),
+            "releasing a free earth is a no-op"
+        );
+        camera.hold(40.0);
+        let held = camera.clone();
+        assert!(held.globe_held);
+        camera.hold(90.0);
+        assert!(camera == held, "holding again must not fold the turn twice");
+        camera.release(40.0);
+        assert!(
+            (camera.globe_turn.rem_euclid(TAU)).abs() < 1e-4
+                || (camera.globe_turn - TAU).abs() < 1e-4
+        );
+        assert!(!camera.globe_held);
+    }
+
+    #[test]
     fn default_camera_is_isometric_and_ground_inverts_the_projection() {
         let v = Camera::default().view([1.0, 0.0, 0.0]);
         assert!((v[0] - 0.866).abs() < 1e-3 && (v[1] - 0.5).abs() < 1e-3);
@@ -3512,6 +3600,7 @@ mod tests {
                 zoom: 7.0,
                 rotation,
                 pitch,
+                ..Camera::default()
             };
             let q = camera.view([10.0, 4.0, 0.0]);
             let g = camera.ground(q[0] * camera.zoom, q[1] * camera.zoom);

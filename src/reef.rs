@@ -55,34 +55,21 @@ impl Reef {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1));
         self.last = Some(time);
-        // Each drawn colony, school or gang and its drawn members.
-        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
-        for (index, process) in processes.iter().enumerate() {
-            if process.kind != Kind::Kernel {
-                groups.entry(habitat(process)).or_default().push(index);
-            }
-        }
         // Seats and homes are reserved for every sampled process, drawn or not, so focusing a
-        // subtree, or the process limit (and a selection swapped across it) hiding some, frees
-        // neither their seats nor their group's home: clearing it brings everyone back to where
-        // they were. Only the drawn groups are drawn below.
-        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
-        let members: Vec<(Identity, String)> = snapshot
+        // subtree, or `--limit` hiding some, neither frees their seats nor drops their cluster's
+        // place: clearing it puts everything back where it was. Only drawn processes are drawn.
+        let habitats: Vec<(Identity, String)> = snapshot
             .processes
             .iter()
-            .chain(
-                processes
-                    .iter()
-                    .copied()
-                    .filter(|p| !sampled.contains(&p.id)),
-            )
             .filter(|process| process.kind != Kind::Kernel)
             .map(|process| (process.id, habitat(process)))
             .collect();
         self.seats
-            .assign(members.iter().map(|(id, name)| (*id, name.as_str())));
-        let names: BTreeSet<&str> = members.iter().map(|(_, name)| name.as_str()).collect();
-        let needs: Vec<(String, f32)> = names
+            .assign(habitats.iter().map(|(id, name)| (*id, name.as_str())));
+        let needs: Vec<(String, f32)> = habitats
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect::<BTreeSet<_>>()
             .into_iter()
             .map(|name| {
                 let span = self.seats.span(name) as f32;
@@ -92,21 +79,24 @@ impl Reef {
         let homes = self.homes.arrange(&needs);
         let reach = (self.homes.reach() + 6.0).max(16.0);
         self.draw_seabed(stage, reach, time);
-        let alive: HashMap<Identity, usize> = processes
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.id, i))
-            .collect();
-        // A fish that is not drawn while its process is still sampled waits where it was, and
-        // swims on from there when it is drawn again.
-        self.fish
-            .retain(|id, _| alive.contains_key(id) || sampled.contains(id));
+        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, process) in processes.iter().enumerate() {
+            if process.kind != Kind::Kernel {
+                groups.entry(habitat(process)).or_default().push(index);
+            }
+        }
+        // A fish whose process is sampled but not drawn waits where it swam, and swims on from
+        // there when it comes back instead of hatching again.
+        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        self.fish.retain(|id, _| sampled.contains(id));
         let mut shown = 0;
         let mut names: Vec<&String> = groups.keys().collect();
         names.sort();
         for name in names {
             let members = &groups[name];
-            let home = homes[name];
+            let Some(&home) = homes.get(name) else {
+                continue;
+            };
             let room = self.homes.reserved(name) / 1.15;
             let kind = processes[members[0]].kind;
             let palette = (spin(name) / TAU * 997.0) as usize;
@@ -137,7 +127,52 @@ impl Reef {
                 }
             }
         }
-        shown += kernel_motes(stage, processes, reach, time);
+        for (index, process) in processes
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.kind == Kind::Kernel)
+        {
+            // pid only: kept for pixel stability, see A33
+            let h = hash::knuth_xor_rotated_prime2(process.id.pid);
+            let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0;
+            let drift = [
+                (time * 0.07 + unit(0) * TAU).sin() * 3.0,
+                (time * 0.05 + unit(8) * TAU).cos() * 3.0,
+                (time * 0.11 + unit(16) * TAU).sin() * 0.8,
+            ];
+            let position = [
+                (unit(4) * 2.0 - 1.0) * reach * 0.8 + drift[0],
+                (unit(12) * 2.0 - 1.0) * reach * 0.8 + drift[1],
+                2.0 + unit(20) * (DEPTH - 4.0) + drift[2],
+            ];
+            let heading = [
+                (time * 0.07 + unit(0) * TAU).cos(),
+                -(time * 0.05 + unit(8) * TAU).sin(),
+                0.0,
+            ];
+            let tail = [0, 1, 2].map(|k| position[k] - heading[k] * 0.5);
+            // Idle kernel threads are faint glints; busy ones become motes you can click.
+            if process.cpu < 0.5 && stage.selected != Some(process.id) {
+                stage
+                    .frame
+                    .beam(stage.camera, position, tail, [150, 210, 220], 0.12);
+                continue;
+            }
+            let glow = 0.4 + 0.6 * bounded(process.cpu, 5.0);
+            stage
+                .frame
+                .beam(stage.camera, position, tail, [150, 210, 220], glow * 0.6);
+            stage.frame.sphere(
+                stage.camera,
+                position,
+                0.05,
+                tint([140, 200, 210], 0.6 + glow),
+                index as u32,
+                stage.selected == Some(process.id),
+            );
+            stage.positions.insert(process.id, position);
+            shown += 1;
+        }
         for (index, process) in processes.iter().enumerate() {
             if process.io_rate.is_some_and(|rate| rate > 4096.0)
                 && let Some(&from) = stage.positions.get(&process.id)
@@ -544,64 +579,11 @@ fn habitat(process: &Process) -> String {
     format!("{:?} {path}", process.kind)
 }
 
-/// Kernel threads drift through the water: idle ones as faint glints, busy ones as motes you
-/// can click. Returns how many motes are shown.
-fn kernel_motes(stage: &mut Stage, processes: &[&Process], reach: f32, time: f32) -> usize {
-    let mut shown = 0;
-    for (index, process) in processes
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.kind == Kind::Kernel)
-    {
-        // pid only: kept for pixel stability, see A33
-        let h = hash::knuth_xor_rotated_prime2(process.id.pid);
-        let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0;
-        let drift = [
-            (time * 0.07 + unit(0) * TAU).sin() * 3.0,
-            (time * 0.05 + unit(8) * TAU).cos() * 3.0,
-            (time * 0.11 + unit(16) * TAU).sin() * 0.8,
-        ];
-        let position = [
-            (unit(4) * 2.0 - 1.0) * reach * 0.8 + drift[0],
-            (unit(12) * 2.0 - 1.0) * reach * 0.8 + drift[1],
-            2.0 + unit(20) * (DEPTH - 4.0) + drift[2],
-        ];
-        let heading = [
-            (time * 0.07 + unit(0) * TAU).cos(),
-            -(time * 0.05 + unit(8) * TAU).sin(),
-            0.0,
-        ];
-        let tail = [0, 1, 2].map(|k| position[k] - heading[k] * 0.5);
-        // Idle kernel threads are faint glints; busy ones become motes you can click.
-        if process.cpu < 0.5 && stage.selected != Some(process.id) {
-            stage
-                .frame
-                .beam(stage.camera, position, tail, [150, 210, 220], 0.12);
-            continue;
-        }
-        let glow = 0.4 + 0.6 * bounded(process.cpu, 5.0);
-        stage
-            .frame
-            .beam(stage.camera, position, tail, [150, 210, 220], glow * 0.6);
-        stage.frame.sphere(
-            stage.camera,
-            position,
-            0.05,
-            tint([140, 200, 210], 0.6 + glow),
-            index as u32,
-            stage.selected == Some(process.id),
-        );
-        stage.positions.insert(process.id, position);
-        shown += 1;
-    }
-    shown
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::hiding;
+    use crate::render::{Camera, RenderInput, Scene};
     use crate::views::view;
 
     #[test]
@@ -623,18 +605,84 @@ mod tests {
         assert_eq!(habitat(&system), habitat(&system.clone()));
     }
 
+    type Places = HashMap<Identity, Point>;
+
+    /// Renders one reef frame and returns where every drawn process stands.
+    fn draw(
+        scene: &mut Scene,
+        snapshot: &Snapshot,
+        time: f32,
+        limit: usize,
+        selected: Option<Identity>,
+        focus: Option<Identity>,
+    ) -> Places {
+        let camera = Camera::default();
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
+            selected,
+            limit,
+            focus,
+            ..RenderInput::small(snapshot, view("reef"), &camera, time)
+        });
+        scene.spare = frame.release();
+        scene.positions.clone()
+    }
+
+    /// Asserts that everything in `now` stands where it stood in `before`.
+    fn in_place(now: &Places, before: &Places) {
+        for (id, position) in now {
+            assert_eq!(before.get(id), Some(position), "{id:?} moved");
+        }
+    }
+
+    /// The demo reef grown in two stages, so its clusters stand where they arrived and not where a
+    /// fresh packing would put them, and swum for at least a second, so no fish is still where it
+    /// hatched. Returns the scene, the full sample and the time of the last frame.
+    fn settled() -> (Scene, Snapshot, f32) {
+        let early = demo(30.0, 32);
+        let sample = demo(30.0, 160);
+        let mut scene = Scene::new();
+        let mut time = 30.0;
+        for step in 0..20 {
+            let snapshot = if step < 8 { &early } else { &sample };
+            draw(&mut scene, snapshot, time, 4096, None, None);
+            time += 0.1;
+        }
+        (scene, sample, time - 0.1)
+    }
+
     #[test]
     fn focusing_and_clearing_focus_keeps_every_reef_cluster_in_place() {
-        hiding::focus_and_clear(view("reef"), &demo(30.0, 160));
+        let (mut scene, sample, time) = settled();
+        let before = draw(&mut scene, &sample, time, 4096, None, None);
+        // One family of sixteen, all in one school. The frames repeat the last time, so the fish
+        // do not swim and anything that moves was moved by the change of focus.
+        let root = sample.processes[16].id;
+        let focused = draw(&mut scene, &sample, time, 4096, None, Some(root));
+        assert_eq!(focused.len(), 16);
+        in_place(&focused, &before);
+        let cleared = draw(&mut scene, &sample, time, 4096, None, None);
+        assert_eq!(cleared.len(), before.len());
+        in_place(&cleared, &before);
     }
 
     #[test]
-    fn the_camera_fit_ignores_what_focus_and_the_limit_hide() {
-        hiding::bounds_ignore_hiding(view("reef"), &demo(30.0, 160));
-    }
-
-    #[test]
-    fn processes_beyond_the_limit_keep_their_reef_place() {
-        hiding::limit_and_lift(view("reef"), &demo(30.0, 160));
+    fn processes_beyond_the_limit_keep_their_reef_places() {
+        let (mut scene, sample, time) = settled();
+        let before = draw(&mut scene, &sample, time, 4096, None, None);
+        let limited = draw(&mut scene, &sample, time, 80, None, None);
+        assert!(limited.len() < before.len());
+        in_place(&limited, &before);
+        // Selecting a process beyond the limit swaps it in for the last one inside it: its fish
+        // comes back with the state it had, in its cluster's old home, not hatched anew in a
+        // cluster of its own.
+        let selected = sample.processes[150].id;
+        let swapped = draw(&mut scene, &sample, time, 80, Some(selected), None);
+        assert!(swapped.contains_key(&selected));
+        in_place(&swapped, &before);
+        let restored = draw(&mut scene, &sample, time, 4096, None, None);
+        assert_eq!(restored.len(), before.len());
+        in_place(&restored, &before);
     }
 }

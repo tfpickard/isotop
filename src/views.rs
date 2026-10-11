@@ -99,6 +99,10 @@ pub struct ViewInfo {
     /// The camera's rotation and pitch that turn a world point towards the viewer, for a tour or
     /// search target that would otherwise face away. Default: None, which only pans to it.
     pub face: Option<Face>,
+    /// A sphere the wheel turns and tilts by hand instead of panning, which then holds still
+    /// until `r` or `g` lets it go on turning by itself (`Camera::hold`). Default: None, where
+    /// the wheel pans.
+    pub turn: Option<Turn>,
     /// Optional sources the view reads, which run only while it needs them: `Locations` turns
     /// GeoIP lookups on while the view is shown, and `Journal` runs the journal follower while it
     /// is shown and for `JOURNAL_LINGER` after. Default: none.
@@ -122,6 +126,16 @@ pub type Header = fn(&Scene) -> (usize, usize);
 /// The camera rotation and pitch that turn a world point towards the viewer.
 pub type Face = fn(Point, &Camera) -> (f32, f32);
 
+/// The sphere a view lets the wheel turn (scroll sideways) and tilt (scroll up and down).
+#[derive(Clone, Copy)]
+pub struct Turn {
+    /// Its radius in world units, which sets how far one wheel step turns it.
+    pub radius: f32,
+    /// A point drawn with the given camera, as it would be drawn with the sphere standing upright
+    /// again, for aiming a tour or search target while the camera is still easing out of a lean.
+    pub upright: fn(Point, &Camera) -> Point,
+}
+
 impl ViewInfo {
     /// A row with every field after `hooks` at its default.
     pub const fn new(
@@ -144,6 +158,7 @@ impl ViewInfo {
             tour: true,
             header: None,
             face: None,
+            turn: None,
             sources: Sources::of(&[]),
             demo: DemoOptions {
                 churn: false,
@@ -579,6 +594,10 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         face: Some(globe::face),
+        turn: Some(Turn {
+            radius: globe::RADIUS,
+            upright: globe::upright,
+        }),
         sources: Sources::of(&[Source::Locations]),
         ..ViewInfo::new(
             "globe",
