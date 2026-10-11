@@ -1,7 +1,8 @@
 //! Shared, pure simulation helpers used by views: neighbour queries over 2D and 3D points
 //! ([`SpatialHash`], [`SpatialHash3`] with exact k-nearest), small deterministic random generators
-//! (uniform and standard normal) and hashes, and complex transforms ([`dft`], [`fft`],
-//! [`inverse_fft`]). Nothing here draws or reads the system.
+//! (uniform and standard normal) and hashes, complex transforms ([`dft`], [`fft`],
+//! [`inverse_fft`]), and the fixed-step clock [`FixedStep`]. Nothing here draws or reads the
+//! system.
 //!
 //! New views seed from a process with [`Rng::for_identity`] or [`hash_identity`], which mix the
 //! pid and the start time so a reused pid does not look like its predecessor. Everything else in
@@ -785,6 +786,53 @@ impl Rng {
     pub fn normal(&mut self) -> f32 {
         let radius = (-2.0 * (1.0 - self.unit()).ln()).sqrt();
         radius * (std::f32::consts::TAU * self.unit()).cos()
+    }
+}
+
+/// A fixed-step clock: turns wall-clock time into whole simulation steps, so every frame rate
+/// follows the same trajectory. Steps are taken in whole `step`s from an accumulator, and the part
+/// of a step left over is the interpolation fraction for drawing.
+#[derive(Debug, Clone)]
+pub struct FixedStep {
+    step: f32,
+    max_steps: usize,
+    max_gap: f32,
+    clock: Option<f32>,
+    accumulator: f32,
+}
+
+impl FixedStep {
+    /// A clock that steps by `step` seconds. A single frame takes at most `max_steps` steps and
+    /// counts at most `max_gap` seconds of wall-clock time, so a stall or a pause is dropped
+    /// rather than caught up.
+    pub fn new(step: f32, max_steps: usize, max_gap: f32) -> Self {
+        Self {
+            step,
+            max_steps,
+            max_gap,
+            clock: None,
+            accumulator: 0.0,
+        }
+    }
+
+    /// Advances to wall-clock `time`, calling `tick(step)` once per whole step taken; returns how
+    /// far the frame lies into the next step, in [0, 1]. The first call, an unchanged `time` and
+    /// a `time` that went back (a rewind) take no steps; the clock resumes from the new time.
+    pub fn advance(&mut self, time: f32, mut tick: impl FnMut(f32)) -> f32 {
+        let dt = match self.clock {
+            Some(last) if time >= last => (time - last).min(self.max_gap),
+            _ => 0.0,
+        };
+        self.clock = Some(time);
+        self.accumulator += dt;
+        let mut steps = 0;
+        while self.accumulator >= self.step && steps < self.max_steps {
+            tick(self.step);
+            self.accumulator -= self.step;
+            steps += 1;
+        }
+        self.accumulator = self.accumulator.min(self.step);
+        (self.accumulator / self.step).clamp(0.0, 1.0)
     }
 }
 
@@ -1612,5 +1660,92 @@ mod tests {
             "hand-rolled hash or random constants in {offenders:?}: use simulation::hash, \
              simulation::Rng or simulation::XorShift32 instead of copying them"
         );
+    }
+
+    #[test]
+    fn fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second() {
+        // A damped oscillator, so any difference in the step sequence would show in the state.
+        fn run(frames_per_second: u32) -> HashMap<usize, [f32; 2]> {
+            let mut clock = FixedStep::new(0.05, 10, 0.5);
+            let mut state = [1.0_f32, 0.0];
+            let mut steps = 0;
+            let mut states = HashMap::new();
+            for frame in 0..=(3 * frames_per_second) {
+                let time = 100.0 + frame as f32 / frames_per_second as f32;
+                clock.advance(time, |step| {
+                    let acceleration = -40.0 * state[0] - 0.8 * state[1];
+                    state[1] += acceleration * step;
+                    state[0] += state[1] * step;
+                    steps += 1;
+                });
+                states.insert(steps, state);
+            }
+            states
+        }
+        let slow = run(10);
+        let fast = run(60);
+        let mut shared = 0;
+        for (steps, state) in &slow {
+            if let Some(other) = fast.get(steps) {
+                assert_eq!(state, other, "state after {steps} steps");
+                shared += 1;
+            }
+        }
+        assert!(shared >= 25, "only {shared} shared step counts");
+    }
+
+    #[test]
+    fn a_clock_that_does_not_advance_takes_no_steps() {
+        let mut clock = FixedStep::new(0.05, 10, 0.5);
+        let mut ticks = 0;
+        assert_eq!(clock.advance(100.0, |_| ticks += 1), 0.0);
+        for _ in 0..5 {
+            assert_eq!(clock.advance(100.0, |_| ticks += 1), 0.0);
+        }
+        assert_eq!(ticks, 0);
+    }
+
+    #[test]
+    fn a_clock_that_goes_back_takes_no_steps_and_resumes_from_the_new_time() {
+        let mut clock = FixedStep::new(0.25, 10, 10.0);
+        let mut ticks = 0;
+        clock.advance(10.0, |_| ticks += 1);
+        clock.advance(11.0, |_| ticks += 1);
+        assert_eq!(ticks, 4);
+        clock.advance(3.0, |_| ticks += 1);
+        assert_eq!(ticks, 4, "a rewind takes no steps");
+        clock.advance(3.5, |_| ticks += 1);
+        assert_eq!(
+            ticks, 6,
+            "half a second after the new time is two steps, not a jump back"
+        );
+    }
+
+    #[test]
+    fn a_long_stall_runs_at_most_max_steps_and_drops_the_rest() {
+        let mut clock = FixedStep::new(0.05, 10, 100.0);
+        let mut ticks = 0;
+        clock.advance(0.0, |_| ticks += 1);
+        clock.advance(10.0, |_| ticks += 1);
+        assert_eq!(ticks, 10);
+        // The clamped backlog is one step, so a small advance completes it and nothing more.
+        clock.advance(10.01, |_| ticks += 1);
+        assert_eq!(ticks, 11, "one more step, not 190 steps of catching up");
+        clock.advance(10.02, |_| ticks += 1);
+        assert_eq!(ticks, 11);
+    }
+
+    #[test]
+    fn the_returned_fraction_stays_within_zero_and_one() {
+        let mut clock = FixedStep::new(0.05, 10, 0.5);
+        let mut time = 5.0_f32;
+        for gap in [0.0, 0.01, 0.049, 0.05, 0.2, 3.0, 0.001, 0.0] {
+            time += gap;
+            let fraction = clock.advance(time, |_| {});
+            assert!(
+                (0.0..=1.0).contains(&fraction),
+                "{fraction} after a gap of {gap}"
+            );
+        }
     }
 }
