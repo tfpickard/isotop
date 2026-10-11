@@ -247,11 +247,12 @@ match your own shell.
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
     `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
-    `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the wheel pans), `sources` (none),
-    `demo` (`DemoOptions::default()`) and `contract` (`Contract::DEFAULT`: it draws processes,
-    which may move at most 1 world unit over the ground, checked where they are drawn, and it is
-    known to fail nothing). Tab, Shift+Tab, the `v` picker, `--view`, `--views`,
-    `--list-views` and `--verbose` follow from the table. Never reorder the first ten rows: the digits pick them.
+    `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
+    wheel pans), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
+    (`Contract::DEFAULT`: it draws processes, which may move at most 1 world unit over the
+    ground, checked where they are drawn, and it is known to fail nothing). Tab, Shift+Tab, the
+    `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow from the table. Never
+    reorder the first ten rows: the digits pick them.
   - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
     . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
     (returning true consumes that press). Every other key is global, and no key reaches the view
