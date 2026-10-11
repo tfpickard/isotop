@@ -111,7 +111,10 @@ with their count, instead of each standing alone.
 Monitor shows. Available memory is free plus inactive pages. CPU time comes from
 Mach absolute time converted to nanoseconds. I/O is the disk bytes each process has
 read and written. Priority is `51 - Mach priority`, so an ordinary application (31)
-reads as 20 and a lower number runs first, as on Linux. Process state is R when a
+reads as 20 and a lower number runs first, as on Linux. The scheduling policy is
+`pti_policy` (timeshare, round robin or FIFO), the kernel-mode share of CPU time comes
+from the system and user times of `proc_pid_rusage` (`PROC_PIDTASKINFO` when that is
+unreadable), and the start time from `pbi_start_tvsec` and `pbi_start_tvusec`. Process state is R when a
 thread is running, S otherwise, T for stopped and Z for zombies. The performance and
 efficiency cores come from the IORegistry (`cluster-type`); if that cannot be read,
 the lanes have no kind and are not guessed.
@@ -147,6 +150,8 @@ cache is stale.
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
+| Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`

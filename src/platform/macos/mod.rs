@@ -264,6 +264,11 @@ impl Sampler {
             files: Measured::Pending,
             locks_held: Measured::Pending,
             blocked_on: None,
+            system_share: None,
+            policy: logic::policy_from_mach(task.pti_policy),
+            syscall_io: None,
+            major_faults: None,
+            started: logic::start_seconds(bsd.pbi_start_tvsec, bsd.pbi_start_tvusec),
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -280,6 +285,8 @@ impl Sampler {
             task.pti_total_user.saturating_add(task.pti_total_system),
             |usage| usage.ri_user_time.saturating_add(usage.ri_system_time),
         ));
+        let system_ticks =
+            nanoseconds(usage.map_or(task.pti_total_system, |usage| usage.ri_system_time));
         let mut performance_ticks = None;
         let mut runnable_ticks = None;
         if let Some(usage) = usage.filter(|_| self.rusage_version >= libc::RUSAGE_INFO_V4) {
@@ -307,6 +314,10 @@ impl Sampler {
                 io,
                 performance_ticks,
                 runnable_ticks,
+                system_ticks,
+                syscalls: None,
+                // The kernel's page-in count wraps as an i32.
+                major_faults: Some(u64::from(task.pti_pageins as u32)),
             },
             logic::Lineage {
                 pid: id.pid,
@@ -1194,6 +1205,21 @@ mod tests {
         let process = &raw.process;
         assert!(process.memory > 1 << 20, "memory {}", process.memory);
         assert!(raw.ticks > 0);
+        assert!(
+            raw.system_ticks <= raw.ticks,
+            "kernel time is part of the CPU time"
+        );
+        assert!(raw.syscalls.is_none() && raw.major_faults.is_some());
+        assert_eq!(process.policy, crate::model::Policy::Normal);
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        assert!(
+            (0.0..3600.0).contains(&(seconds - process.started)),
+            "started {}",
+            process.started
+        );
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

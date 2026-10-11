@@ -13,7 +13,9 @@ use std::io;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
+use crate::model::{
+    CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Policy, Process, SyscallCounts, Unit,
+};
 use crate::platform::{Files, Network, RawProcess, Shadow, Source, Sources};
 
 pub use files::{FileScan, locks};
@@ -38,6 +40,9 @@ pub struct Sampler {
     core_kinds: HashMap<u32, CoreKind>,
     hz: f32,
     page_size: u64,
+    /// When the machine booted, in seconds since the Unix epoch (`btime` in /proc/stat), read
+    /// once; None when it is missing.
+    boot_time: Option<f64>,
     /// What this machine lacks for good: core kinds, and cgroup v2 accounting.
     fixed_gaps: Sources,
     /// What the last `cpus` call could not read.
@@ -122,6 +127,10 @@ impl Sampler {
             hz: unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f32,
             // SAFETY: as above.
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
+            boot_time: fs::read_to_string("/proc/stat")
+                .ok()
+                .as_deref()
+                .and_then(parse_boot_time),
             cpu_gaps: Sources::default(),
             grouped: false,
             texts: HashMap::new(),
@@ -151,12 +160,16 @@ impl Sampler {
             let Ok(stat) = fs::read_to_string(path.join("stat")) else {
                 continue;
             };
-            let Some((mut process, ticks)) = parse_stat(pid, &stat, self.page_size) else {
+            let Some((mut process, counters)) = parse_stat(pid, &stat, self.page_size) else {
                 continue;
             };
-            let io = fs::read_to_string(path.join("io"))
+            process.started = self
+                .boot_time
+                .map_or(0.0, |boot| start_time(boot, process.id.start, self.hz));
+            let (io, syscalls) = fs::read_to_string(path.join("io"))
                 .ok()
-                .map(|text| parse_io(&text));
+                .map(|text| parse_io(&text))
+                .unzip();
             process.written = io.map(|io| io.write);
             let cached = self.texts.remove(&process.id);
             let text = match cached {
@@ -169,10 +182,13 @@ impl Sampler {
             texts.insert(process.id, text);
             processes.push(RawProcess {
                 process,
-                ticks,
+                ticks: counters.ticks,
                 io,
                 performance_ticks: None,
                 runnable_ticks: None,
+                system_ticks: counters.system_ticks,
+                syscalls,
+                major_faults: Some(counters.major_faults),
             });
         }
         self.grouped = processes.iter().any(|raw| !raw.process.cgroup.is_empty());
@@ -510,9 +526,39 @@ fn parse_pressure(text: &str) -> Option<f32> {
         .ok()
 }
 
-/// Cumulative `read_bytes` and `write_bytes` from /proc/<pid>/io.
-fn parse_io(text: &str) -> IoBytes {
+/// The `btime` line of /proc/stat: when the machine booted, in seconds since the Unix epoch.
+fn parse_boot_time(text: &str) -> Option<f64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// When a process that started `start_ticks` ticks after boot (`USER_HZ` ticks per second) began,
+/// in seconds since the Unix epoch.
+fn start_time(boot_time: f64, start_ticks: u64, hz: f32) -> f64 {
+    boot_time + start_ticks as f64 / f64::from(hz)
+}
+
+/// The scheduling policy of a `sched.h` policy number (field 41 of /proc/<pid>/stat).
+fn policy(number: u64) -> Policy {
+    match number {
+        0 => Policy::Normal,
+        1 => Policy::Fifo,
+        2 => Policy::RoundRobin,
+        3 => Policy::Batch,
+        5 => Policy::Idle,
+        6 => Policy::Deadline,
+        _ => Policy::Unknown,
+    }
+}
+
+/// Cumulative `read_bytes` and `write_bytes` of storage, and the syscall-level `rchar`, `wchar`,
+/// `syscr` and `syscw`, from /proc/<pid>/io.
+fn parse_io(text: &str) -> (IoBytes, SyscallCounts) {
     let mut bytes = IoBytes::default();
+    let mut syscalls = SyscallCounts::default();
     for line in text.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
@@ -523,10 +569,24 @@ fn parse_io(text: &str) -> IoBytes {
         match key {
             "read_bytes" => bytes.read = value,
             "write_bytes" => bytes.write = value,
+            "rchar" => syscalls.read_chars = value,
+            "wchar" => syscalls.write_chars = value,
+            "syscr" => syscalls.reads = value,
+            "syscw" => syscalls.writes = value,
             _ => {}
         }
     }
-    bytes
+    (bytes, syscalls)
+}
+
+/// The cumulative counters of /proc/<pid>/stat that rates are made from.
+struct StatCounters {
+    /// utime plus stime, in `USER_HZ` ticks.
+    ticks: u64,
+    /// stime, the kernel-mode part of `ticks`.
+    system_ticks: u64,
+    /// majflt.
+    major_faults: u64,
 }
 
 fn cgroup_name(text: &str) -> Option<String> {
@@ -577,7 +637,7 @@ fn classify(cgroup: &str) -> Kind {
     }
 }
 
-fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
+fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCounters)> {
     const PF_KTHREAD: u64 = 0x0020_0000;
     // comm can contain both whitespace and closing parentheses; only the last ')' delimits it.
     let open = text.find('(')?;
@@ -628,8 +688,20 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             files,
             locks_held: Measured::Pending,
             blocked_on: None,
+            system_share: None,
+            // Field 41 of /proc/<pid>/stat; a kernel without it reads as unknown.
+            policy: number(38).map_or(Policy::Unknown, policy),
+            syscall_io: None,
+            major_faults: None,
+            // Needs the boot time, which `Sampler::processes` adds.
+            started: 0.0,
         },
-        number(11)?.saturating_add(number(12)?),
+        StatCounters {
+            ticks: number(11)?.saturating_add(number(12)?),
+            system_ticks: number(12)?,
+            // Field 12 of /proc/<pid>/stat.
+            major_faults: number(9)?,
+        },
     ))
 }
 
@@ -676,11 +748,11 @@ mod tests {
         fields[19] = "999";
         fields[21] = "-1";
         let text = format!("73 (a tricky ) name) {}", fields.join(" "));
-        let (p, ticks) = parse_stat(73, &text, 4096).unwrap();
+        let (p, counters) = parse_stat(73, &text, 4096).unwrap();
         assert_eq!(p.name, "a tricky ) name");
         assert_eq!(p.parent, 42);
         assert_eq!(p.id.start, 999);
-        assert_eq!(ticks, 130);
+        assert_eq!(counters.ticks, 130);
         assert_eq!(p.memory, 0);
         assert!(parse_stat(73, "73 (short) S", 4096).is_none());
     }
@@ -952,11 +1024,78 @@ mod tests {
     fn io_counters_come_from_read_bytes_and_write_bytes() {
         let text = "rchar: 99\nwchar: 98\nsyscr: 1\nsyscw: 1\nread_bytes: 4096\nwrite_bytes: 1000\ncancelled_write_bytes: 0\n";
         assert_eq!(
-            parse_io(text),
+            parse_io(text).0,
             IoBytes {
                 read: 4096,
                 write: 1000
             }
         );
+    }
+
+    #[test]
+    fn syscall_io_rates_come_from_rchar_wchar_syscr_and_syscw() {
+        let text = "rchar: 99\nwchar: 98\nsyscr: 7\nsyscw: 5\nread_bytes: 4096\nwrite_bytes: 1000\ncancelled_write_bytes: 0\n";
+        assert_eq!(
+            parse_io(text).1,
+            SyscallCounts {
+                read_chars: 99,
+                write_chars: 98,
+                reads: 7,
+                writes: 5
+            }
+        );
+        assert_eq!(parse_io("read_bytes: 1\n").1, SyscallCounts::default());
+    }
+
+    #[test]
+    fn stat_parsing_keeps_user_and_system_time_apart() {
+        let text = stat_line(|fields| {
+            fields[11] = "123";
+            fields[12] = "7";
+        });
+        let (_, counters) = parse_stat(5, &text, 4096).unwrap();
+        assert_eq!(counters.ticks, 130);
+        assert_eq!(counters.system_ticks, 7);
+    }
+
+    #[test]
+    fn policy_and_major_faults_parse_from_stat() {
+        let with_policy = |number: &'static str| {
+            let mut fields = vec!["0"; 40];
+            fields[0] = "S";
+            fields[9] = "812";
+            fields[38] = number;
+            format!("5 (x) {}", fields.join(" "))
+        };
+        let (fifo, counters) = parse_stat(5, &with_policy("1"), 4096).unwrap();
+        assert_eq!(fifo.policy, Policy::Fifo);
+        assert_eq!(counters.major_faults, 812);
+        let (batch, _) = parse_stat(5, &with_policy("3"), 4096).unwrap();
+        assert_eq!(batch.policy, Policy::Batch);
+        for (number, expected) in [
+            ("0", Policy::Normal),
+            ("2", Policy::RoundRobin),
+            ("5", Policy::Idle),
+            ("6", Policy::Deadline),
+            ("4", Policy::Unknown),
+        ] {
+            let (process, _) = parse_stat(5, &with_policy(number), 4096).unwrap();
+            assert_eq!(process.policy, expected, "policy {number}");
+        }
+        let (short, _) = parse_stat(5, &stat_line(|_| {}), 4096).unwrap();
+        assert_eq!(
+            short.policy,
+            Policy::Unknown,
+            "a stat line without field 41"
+        );
+    }
+
+    #[test]
+    fn start_time_converts_to_seconds_since_the_epoch() {
+        let stat = "cpu  1 2 3\nintr 5\nbtime 1700000000\nprocesses 99\n";
+        assert_eq!(parse_boot_time(stat), Some(1_700_000_000.0));
+        assert_eq!(parse_boot_time("cpu  1 2 3\n"), None);
+        assert_eq!(start_time(1_700_000_000.0, 250, 100.0), 1_700_000_002.5);
+        assert_eq!(start_time(1_700_000_000.0, 0, 100.0), 1_700_000_000.0);
     }
 }

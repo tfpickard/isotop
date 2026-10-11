@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::model::{CoreKind, Kind};
+use crate::model::{CoreKind, Kind, Policy};
 use crate::platform::{DeletedFile, Files, Network, Remote, Source, Sources};
 
 /// Executables that run virtual machines or containers. A trailing `*` matches any suffix.
@@ -90,6 +90,23 @@ fn file_name(path: &str) -> &str {
 /// like Linux's real-time priorities.
 pub fn priority_from_mach(priority: i32) -> i32 {
     51 - priority
+}
+
+/// The scheduling policy of a Mach policy number (`pti_policy`, from osfmk/mach/policy.h):
+/// 1 is timeshare, 2 round robin and 4 FIFO. Other numbers read as unknown.
+pub fn policy_from_mach(policy: i32) -> Policy {
+    match policy {
+        1 => Policy::Normal,
+        2 => Policy::RoundRobin,
+        4 => Policy::Fifo,
+        _ => Policy::Unknown,
+    }
+}
+
+/// When a process started, in seconds since the Unix epoch, from `pbi_start_tvsec` and
+/// `pbi_start_tvusec`.
+pub fn start_seconds(seconds: u64, microseconds: u64) -> f64 {
+    seconds as f64 + microseconds as f64 / 1e6
 }
 
 /// The executable path and argv from a `KERN_PROCARGS2` buffer: a native-endian `int argc`,
@@ -186,8 +203,9 @@ pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
 }
 
 /// What macOS never measures: the pressures it has no stall accounting for, the last CPU, the
-/// run queue, cgroups, socket traffic, the lock table and GPU memory (Apple GPUs share memory
-/// with the CPU and report none per process). The clock is missing too unless it is measured
+/// run queue, cgroups, socket traffic, the lock table, GPU memory (Apple GPUs share memory
+/// with the CPU and report none per process) and syscall I/O (no per-process counters of the
+/// bytes and calls of read and write). The clock is missing too unless it is measured
 /// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
 pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
     let mut missing = Sources::from([
@@ -199,6 +217,7 @@ pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
         Source::SocketTraffic,
         Source::FileLocks,
         Source::GpuMemory,
+        Source::SyscallIo,
     ]);
     if !clocked {
         missing.insert(Source::CpuClock);
@@ -906,6 +925,33 @@ mod tests {
             assert!(!gaps.contains(Source::MemoryPressure) && !gaps.contains(Source::CoreKinds));
         }
         assert!(missing(true, false).contains(Source::CoreKinds));
+    }
+
+    #[test]
+    fn macos_reports_syscall_io_as_missing() {
+        for clocked in [false, true] {
+            for kinds_known in [false, true] {
+                let gaps = missing(clocked, kinds_known);
+                assert!(gaps.contains(Source::SyscallIo), "{gaps:?}");
+            }
+        }
+        assert_eq!(Source::SyscallIo.name(), "syscall io");
+    }
+
+    #[test]
+    fn mach_policy_maps_to_policy() {
+        assert_eq!(policy_from_mach(1), Policy::Normal);
+        assert_eq!(policy_from_mach(2), Policy::RoundRobin);
+        assert_eq!(policy_from_mach(4), Policy::Fifo);
+        for other in [0, 3, 5, -1] {
+            assert_eq!(policy_from_mach(other), Policy::Unknown, "policy {other}");
+        }
+    }
+
+    #[test]
+    fn start_seconds_join_the_seconds_and_microseconds() {
+        assert_eq!(start_seconds(1_700_000_000, 250_000), 1_700_000_000.25);
+        assert_eq!(start_seconds(0, 0), 0.0);
     }
 
     #[test]

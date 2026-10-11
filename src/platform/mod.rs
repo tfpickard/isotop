@@ -57,7 +57,7 @@ use std::io::{self, BufRead};
 use std::net::IpAddr;
 
 use crate::journal::Line;
-use crate::model::{Blocker, IoBytes, Process};
+use crate::model::{Blocker, IoBytes, Process, SyscallCounts};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -120,11 +120,13 @@ pub enum Source {
     OpenFiles,
     /// `Remote::place`, where remote addresses are, from the local GeoIP database.
     Locations,
+    /// `Process::syscall_io`, the bytes and calls of read and write syscalls.
+    SyscallIo,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 14] = [
+    pub const ALL: [Source; 15] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -139,6 +141,7 @@ impl Source {
         Source::Sockets,
         Source::OpenFiles,
         Source::Locations,
+        Source::SyscallIo,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -158,6 +161,7 @@ impl Source {
             Source::Sockets => "sockets",
             Source::OpenFiles => "open files",
             Source::Locations => "remote locations",
+            Source::SyscallIo => "syscall io",
         }
     }
 
@@ -233,8 +237,9 @@ impl fmt::Debug for Sources {
 /// One process as the OS reports it, before isotop smooths anything.
 pub struct RawProcess {
     /// Every `Process` field the OS gives directly: id, parent, name, command, group, kind,
-    /// state, memory, threads, core, cgroup, priority, nice and written. The derived fields
-    /// (cpu, the I/O rates, cpu_time and gpu_memory) are left at zero or None, and those the
+    /// state, memory, threads, core, cgroup, priority, nice, written, policy and started. The
+    /// derived fields (cpu, the I/O rates, system_share, syscall_io, major_faults, cpu_time and
+    /// gpu_memory) are left at zero or None, and those the
     /// background thread fills (files, locks_held and blocked_on) at Pending or None, except
     /// that a Linux kernel thread's files are known to be none.
     pub process: Process,
@@ -251,6 +256,12 @@ pub struct RawProcess {
     /// while threads run and catch up later; the collector counts as waiting only the growth of
     /// `runnable_ticks - ticks` beyond its highest earlier value.
     pub runnable_ticks: Option<u64>,
+    /// The part of `ticks` spent in kernel mode, in the same unit; the rest is user time.
+    pub system_ticks: u64,
+    /// Cumulative syscall-level I/O, or None when unreadable or not counted (macOS).
+    pub syscalls: Option<SyscallCounts>,
+    /// Cumulative major page faults (macOS: pages paged in), or None when unreadable.
+    pub major_faults: Option<u64>,
 }
 
 /// A process the platform can see but not measure, because it belongs to another user: only

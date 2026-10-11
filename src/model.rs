@@ -26,6 +26,13 @@ pub enum Kind {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "policy and started are read by the views that come after P5 (#21)"
+    )
+)]
 pub struct Process {
     pub id: Identity,
     pub parent: u32,
@@ -75,6 +82,58 @@ pub struct Process {
     pub locks_held: Measured<u32>,
     /// The holder of the file lock this process is waiting for; None when it waits for none.
     pub blocked_on: Option<Blocker>,
+    /// Share of its CPU time since the previous sample that ran in kernel mode, 0 to 1; the
+    /// rest ran in user mode. None on the first sample and when no CPU time elapsed.
+    pub system_share: Option<f32>,
+    /// The scheduling policy of its main thread; `Policy::Unknown` where the platform does not
+    /// say. On macOS only timesharing, round-robin and FIFO exist.
+    pub policy: Policy,
+    /// Syscall-level I/O per second, counting bytes that never reached storage (page cache,
+    /// pipes, sockets) too. None until a second reading exists, after an exec or a counter that
+    /// went backwards, when /proc/<pid>/io is unreadable, and always on macOS
+    /// (`Source::SyscallIo`).
+    pub syscall_io: Option<SyscallIo>,
+    /// Major page faults per second: faults that had to read from storage. macOS counts the
+    /// pages paged in instead (`pti_pageins`), which includes pages brought in ahead of faults.
+    /// None until a second reading exists, and after an exec or a counter that went backwards.
+    pub major_faults: Option<f32>,
+    /// When it started, in seconds since the Unix epoch; 0 when the platform cannot tell (Linux
+    /// without `btime` in /proc/stat).
+    pub started: f64,
+}
+
+/// The scheduling class of a process's main thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    target_os = "macos",
+    expect(dead_code, reason = "macOS has no deadline policy to report")
+)]
+pub enum Policy {
+    /// The default time-sharing policy (`SCHED_OTHER`; macOS timeshare).
+    Normal,
+    /// For batch work that should not preempt interactive tasks (`SCHED_BATCH`).
+    Batch,
+    /// Runs only when nothing else wants the CPU (`SCHED_IDLE`).
+    Idle,
+    /// Real time, first in first out (`SCHED_FIFO`).
+    Fifo,
+    /// Real time, round robin (`SCHED_RR`).
+    RoundRobin,
+    /// Real time, earliest deadline first (`SCHED_DEADLINE`).
+    Deadline,
+    /// Not read, or a policy this table does not know.
+    #[default]
+    Unknown,
+}
+
+/// Syscall-level I/O rates of a process: bytes per second passed through `read` and `write`
+/// style calls, and the calls per second.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SyscallIo {
+    pub read_chars: f32,
+    pub write_chars: f32,
+    pub reads: f32,
+    pub writes: f32,
 }
 
 impl Default for Process {
@@ -107,6 +166,11 @@ impl Default for Process {
             files: Measured::Pending,
             locks_held: Measured::Pending,
             blocked_on: None,
+            system_share: None,
+            policy: Policy::Unknown,
+            syscall_io: None,
+            major_faults: None,
+            started: 0.0,
         }
     }
 }
@@ -353,6 +417,9 @@ struct Counters {
     waited: Option<i128>,
     runnable_ticks: Option<u64>,
     threads: u32,
+    system_ticks: u64,
+    syscalls: Option<SyscallCounts>,
+    major_faults: Option<u64>,
 }
 
 /// Cumulative bytes a process has read from and written to storage.
@@ -379,6 +446,28 @@ impl IoBytes {
             ]
             .map(|bytes| bytes as f32 / dt),
         )
+    }
+}
+
+/// Cumulative syscall-level I/O of a process: bytes and call counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyscallCounts {
+    pub read_chars: u64,
+    pub write_chars: u64,
+    pub reads: u64,
+    pub writes: u64,
+}
+
+impl SyscallCounts {
+    /// Per-second rates over `dt` seconds; None when a counter went backwards.
+    fn rates(self, before: Self, dt: f32) -> Option<SyscallIo> {
+        let rate = |now: u64, then: u64| Some(now.checked_sub(then)? as f32 / dt);
+        Some(SyscallIo {
+            read_chars: rate(self.read_chars, before.read_chars)?,
+            write_chars: rate(self.write_chars, before.write_chars)?,
+            reads: rate(self.reads, before.reads)?,
+            writes: rate(self.writes, before.writes)?,
+        })
     }
 }
 
@@ -915,6 +1004,9 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         io,
         performance_ticks,
         runnable_ticks,
+        system_ticks,
+        syscalls,
+        major_faults,
     } = raw;
     process.cpu_time = ticks as f32 / hz;
     // Runnable time counts running time too, so what remains after the CPU time is waiting.
@@ -931,6 +1023,25 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
             process.read_rate = Some(read);
             process.write_rate = Some(write);
         }
+        let reset = restarted(ticks, runnable_ticks, system_ticks, previous);
+        // The kernel-mode part of the CPU time that elapsed; none when no time elapsed or the
+        // counters went back.
+        process.system_share = ticks
+            .checked_sub(previous.ticks)
+            .zip(system_ticks.checked_sub(previous.system_ticks))
+            .filter(|&(elapsed, _)| elapsed > 0 && !reset)
+            .map(|(elapsed, system)| (system as f32 / elapsed as f32).min(1.0));
+        // After a reset (exec or wraparound) the old counters say nothing about the interval,
+        // so the rates are unknown until the next reading, never zero or negative.
+        process.syscall_io = syscalls
+            .zip(previous.syscalls)
+            .filter(|_| !reset)
+            .and_then(|(now, before)| now.rates(before, dt));
+        process.major_faults = major_faults
+            .zip(previous.major_faults)
+            .filter(|_| !reset)
+            .and_then(|(now, before)| now.checked_sub(before))
+            .map(|faults| faults as f32 / dt);
         // A counter that went backwards (a reused pid) gives no reading rather than a wrong one.
         process.performance_share = performance_ticks
             .zip(previous.performance_ticks)
@@ -945,11 +1056,13 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         let threads = process.threads.max(previous.threads) as f32;
         process.waiting = waited
             .zip(previous.waited)
-            .filter(|_| !restarted(ticks, runnable_ticks, previous))
+            .filter(|_| !reset)
             .map(|(now, highest)| ((now - highest).max(0) as f32 / hz / dt).min(threads));
     }
     let highest = match (waited, previous) {
-        (Some(now), Some(previous)) if !restarted(ticks, runnable_ticks, previous) => {
+        (Some(now), Some(previous))
+            if !restarted(ticks, runnable_ticks, system_ticks, previous) =>
+        {
             Some(previous.waited.map_or(now, |highest| now.max(highest)))
         }
         (now, _) => now,
@@ -962,15 +1075,25 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         waited: highest,
         runnable_ticks,
         threads: process.threads,
+        system_ticks,
+        syscalls,
+        major_faults,
     };
     (process, counters)
 }
 
-/// Whether a process's CPU or runnable total went backwards since the previous reading. On
-/// macOS exec gives the process a new task that keeps only the exec'ing thread's counters, so
-/// the old high-water mark of its waiting no longer applies.
-fn restarted(ticks: u64, runnable_ticks: Option<u64>, previous: &Counters) -> bool {
+/// Whether a process's CPU, kernel-mode or runnable total went backwards since the previous
+/// reading. On macOS exec gives the process a new task that keeps only the exec'ing thread's
+/// counters, so the old high-water mark of its waiting no longer applies, and no rate derived
+/// from the old counters does either.
+fn restarted(
+    ticks: u64,
+    runnable_ticks: Option<u64>,
+    system_ticks: u64,
+    previous: &Counters,
+) -> bool {
     ticks < previous.ticks
+        || system_ticks < previous.system_ticks
         || runnable_ticks
             .zip(previous.runnable_ticks)
             .is_some_and(|(now, before)| now < before)
@@ -1002,6 +1125,65 @@ fn demo_cpu_integral(time: f64, index: usize) -> f64 {
 /// The share of a demo process's I/O that is writes.
 fn demo_write_share(index: usize) -> f32 {
     (1 + index % 3) as f32 / 4.0
+}
+
+/// When the demo machine booted, in seconds since the Unix epoch.
+const DEMO_BOOT_TIME: f64 = 1_760_000_000.0;
+
+/// Seconds between the starts of consecutive demo processes (`Identity::start` counts them).
+const DEMO_START_SPACING: f64 = 30.0;
+
+/// The kernel-mode share of a demo process's CPU time: kernel threads spend nearly all of it
+/// there, and each family leans a different way, drifting a little over time.
+fn demo_system_share(family: usize, kind: Kind, phase: f32) -> f32 {
+    if kind == Kind::Kernel {
+        0.97
+    } else {
+        (0.08 + 0.14 * (family % 5) as f32 + 0.06 * (phase * 0.3).sin()).clamp(0.0, 1.0)
+    }
+}
+
+/// The scheduling policy of demo process `index`: real time where its priority is -51, batch or
+/// idle where its nice is 19, normal for the rest.
+fn demo_policy(index: usize, priority: i32, nice: i32) -> Policy {
+    if priority == -51 {
+        Policy::Fifo
+    } else if nice == 19 {
+        if index % 12 == 10 {
+            Policy::Idle
+        } else {
+            Policy::Batch
+        }
+    } else {
+        Policy::Normal
+    }
+}
+
+/// Syscall I/O of demo process `index`, on the processes that do storage I/O (`io_rate`, of
+/// which `write_rate` is writes): the bytes passed through read and write calls are at least
+/// the bytes that reached storage, because the page cache absorbs some.
+fn demo_syscall_io(index: usize, io_rate: f32, write_rate: f32) -> SyscallIo {
+    if !index.is_multiple_of(7) {
+        return SyscallIo::default();
+    }
+    let read_chars = (io_rate - write_rate) * (1.25 + 0.25 * (index % 4) as f32);
+    let write_chars = write_rate * (1.1 + 0.1 * (index % 3) as f32);
+    let call_size = 4096.0 * (1 + index % 8) as f32;
+    SyscallIo {
+        read_chars,
+        write_chars,
+        reads: read_chars / call_size,
+        writes: write_chars / call_size,
+    }
+}
+
+/// Major faults per second of demo process `index`: a few processes page in from storage.
+fn demo_major_faults(index: usize, phase: f32) -> f32 {
+    if index % 23 == 5 {
+        4.0 * (1.1 + (phase * 0.7).sin())
+    } else {
+        0.0
+    }
 }
 
 /// Demo open files, deleted-but-open files and file locks of process `index`, fixed for the whole
@@ -1143,6 +1325,11 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             locks_held: Measured::Known(locks_held),
             // Holders come before their waiters, so a waiter's holder always exists.
             blocked_on: waiting_for.map(|holder| Blocker::Process(1000 + holder as u32)),
+            system_share: (cpu > 0.0).then(|| demo_system_share(family, kind, phase)),
+            policy: demo_policy(i, priority, nice),
+            syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
+            major_faults: Some(demo_major_faults(i, phase)),
+            started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -1619,12 +1806,18 @@ mod tests {
                 io_rate: None,
                 read_rate: None,
                 write_rate: None,
+                system_share: None,
+                syscall_io: None,
+                major_faults: None,
                 ..demo(0.0, 1).processes[0].clone()
             },
             ticks,
             io: None,
             performance_ticks: performance,
             runnable_ticks: runnable,
+            system_ticks: 0,
+            syscalls: None,
+            major_faults: None,
         }
     }
 
@@ -1677,6 +1870,196 @@ mod tests {
         // of waiting; only the waiting counts.
         let (caught_up, _) = at(4 * SECOND, 8_500_000_000, Some(&third));
         assert_eq!(caught_up.waiting, Some(0.25));
+    }
+
+    /// `reading` with the kernel-mode time and the cumulative syscall and fault counters set.
+    fn counted(
+        ticks: u64,
+        system_ticks: u64,
+        syscalls: SyscallCounts,
+        major_faults: u64,
+    ) -> RawProcess {
+        RawProcess {
+            system_ticks,
+            syscalls: Some(syscalls),
+            major_faults: Some(major_faults),
+            ..reading(ticks, None, None)
+        }
+    }
+
+    fn calls(read_chars: u64, write_chars: u64, reads: u64, writes: u64) -> SyscallCounts {
+        SyscallCounts {
+            read_chars,
+            write_chars,
+            reads,
+            writes,
+        }
+    }
+
+    #[test]
+    fn syscall_io_and_major_fault_rates_come_from_counter_deltas() {
+        let (first, counters) = measure(
+            counted(SECOND, 0, calls(1000, 500, 10, 4), 20),
+            None,
+            1e9,
+            2.0,
+        );
+        assert_eq!((first.syscall_io, first.major_faults), (None, None));
+        let (second, _) = measure(
+            counted(2 * SECOND, 0, calls(5000, 1500, 30, 14), 26),
+            Some(&counters),
+            1e9,
+            2.0,
+        );
+        assert_eq!(
+            second.syscall_io,
+            Some(SyscallIo {
+                read_chars: 2000.0,
+                write_chars: 500.0,
+                reads: 10.0,
+                writes: 5.0
+            })
+        );
+        assert_eq!(second.major_faults, Some(3.0));
+    }
+
+    #[test]
+    fn counter_resets_read_as_unknown_rates_not_negative() {
+        let (_, before) = measure(
+            counted(10 * SECOND, 4 * SECOND, calls(9000, 9000, 90, 90), 50),
+            None,
+            1e9,
+            1.0,
+        );
+        // Exec: every counter went back.
+        let (exec, after) = measure(
+            counted(SECOND, SECOND / 2, calls(100, 100, 1, 1), 2),
+            Some(&before),
+            1e9,
+            1.0,
+        );
+        assert_eq!(exec.syscall_io, None);
+        assert_eq!(exec.major_faults, None);
+        assert_eq!(exec.system_share, None);
+        // A single counter that wrapped while the CPU time did not is unknown as well.
+        let (wrapped, _) = measure(
+            counted(2 * SECOND, SECOND, calls(50, 400, 0, 5), 1),
+            Some(&after),
+            1e9,
+            1.0,
+        );
+        assert_eq!(wrapped.syscall_io, None);
+        assert_eq!(wrapped.major_faults, None);
+        // Counters that only grew give rates again.
+        let (grown, _) = measure(
+            counted(3 * SECOND, SECOND, calls(150, 700, 2, 9), 4),
+            Some(&after),
+            1e9,
+            1.0,
+        );
+        let io = grown.syscall_io.unwrap();
+        assert_eq!((io.read_chars, io.write_chars), (50.0, 600.0));
+        assert_eq!((io.reads, io.writes), (1.0, 8.0));
+        assert_eq!(grown.major_faults, Some(2.0));
+    }
+
+    #[test]
+    fn system_share_is_the_kernel_part_of_the_intervals_cpu_time() {
+        let at = |ticks, system, previous: Option<&Counters>| {
+            measure(
+                counted(ticks, system, SyscallCounts::default(), 0),
+                previous,
+                1e9,
+                1.0,
+            )
+        };
+        let (_, first) = at(2 * SECOND, SECOND, None);
+        // 4 s of CPU time passed, 1 s of it in the kernel.
+        let (process, _) = at(6 * SECOND, 2 * SECOND, Some(&first));
+        assert_eq!(process.system_share, Some(0.25));
+        // Rounding in a unit conversion can put the kernel part above the total.
+        let (capped, _) = at(3 * SECOND, 4 * SECOND, Some(&first));
+        assert_eq!(capped.system_share, Some(1.0));
+    }
+
+    #[test]
+    fn system_share_is_none_until_cpu_time_elapses() {
+        let at = |ticks, system, previous: Option<&Counters>| {
+            measure(
+                counted(ticks, system, SyscallCounts::default(), 0),
+                previous,
+                1e9,
+                1.0,
+            )
+        };
+        let (first, counters) = at(2 * SECOND, SECOND, None);
+        assert_eq!(first.system_share, None, "no previous sample");
+        let (idle, _) = at(2 * SECOND, SECOND, Some(&counters));
+        assert_eq!(idle.system_share, None, "no CPU time elapsed");
+    }
+
+    #[test]
+    fn demo_fills_every_new_field() {
+        let snapshot = demo(12.0, 128);
+        let policies = |wanted: Policy| {
+            snapshot
+                .processes
+                .iter()
+                .filter(move |p| p.policy == wanted)
+        };
+        for process in &snapshot.processes {
+            assert!(process.syscall_io.is_some() && process.major_faults.is_some());
+            assert!(process.started >= DEMO_BOOT_TIME);
+            assert_eq!(
+                process.system_share.is_some(),
+                process.cpu > 0.0,
+                "{}",
+                process.name
+            );
+            if let Some(share) = process.system_share {
+                assert!((0.0..=1.0).contains(&share));
+            }
+            let io = process.syscall_io.unwrap();
+            assert!(
+                io.read_chars >= process.read_rate.unwrap(),
+                "{}",
+                process.name
+            );
+            assert!(io.write_chars >= process.write_rate.unwrap());
+            assert_eq!(process.policy == Policy::Fifo, process.priority == -51);
+            assert_eq!(
+                matches!(process.policy, Policy::Batch | Policy::Idle),
+                process.nice == 19
+            );
+        }
+        assert!(policies(Policy::Fifo).count() > 0);
+        assert!(policies(Policy::Batch).count() > 0 && policies(Policy::Idle).count() > 0);
+        assert!(policies(Policy::Normal).count() > 0);
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .any(|p| p.major_faults > Some(0.0))
+        );
+        let busy = |p: &&Process| p.syscall_io.is_some_and(|io| io.reads > 0.0);
+        assert!(snapshot.processes.iter().filter(busy).count() > 0);
+        let starts: Vec<f64> = snapshot.processes.iter().map(|p| p.started).collect();
+        assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(snapshot.missing.is_empty());
+    }
+
+    #[test]
+    fn the_demo_keeps_its_new_fields_to_closed_forms_of_time_and_index() {
+        // The same index at the same time reads the same however many processes surround it.
+        let small = demo(12.0, 20);
+        let large = demo(12.0, 128);
+        for (a, b) in small.processes.iter().zip(&large.processes) {
+            assert_eq!(a.policy, b.policy);
+            assert_eq!(a.system_share, b.system_share);
+            assert_eq!(a.syscall_io, b.syscall_io);
+            assert_eq!(a.major_faults, b.major_faults);
+            assert_eq!(a.started, b.started);
+        }
     }
 
     #[test]
