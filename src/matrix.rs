@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use crate::glyphs::{self, HEIGHT, WIDTH};
 use crate::journal::Line;
 use crate::render::{Color, Frame, Item};
+use crate::simulation::{Rng, hash};
 
 /// Seconds after arriving that a character shows even if no rain has passed over it.
 const UNVEIL: f32 = 3.0;
@@ -77,7 +78,7 @@ pub struct Rain {
     grid: (usize, usize, u32),
     last: Option<f32>,
     release: f32,
-    random: u64,
+    random: Rng,
     greeted: bool,
     /// Lines dropped because they arrived faster than the log could show them.
     pub skipped: u64,
@@ -113,13 +114,9 @@ impl Rain {
         self.pending.len()
     }
 
+    /// Deterministic, so a demo frame at a fixed time is repeatable.
     fn uniform(&mut self) -> f32 {
-        // SplitMix64: deterministic, so a demo frame at a fixed time is repeatable.
-        self.random = self.random.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.random;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+        self.random.unit()
     }
 
     fn between(&mut self, range: [f32; 2]) -> f32 {
@@ -326,8 +323,7 @@ impl Rain {
 /// A rain glyph that changes several times a second, out of step with its neighbours.
 fn flicker(column: usize, row: usize, time: f32) -> char {
     let tick = (time * 6.0 + column as f32 * 0.37) as u64;
-    let hash = ((column as u64 * 0x9e37_79b9) ^ (row as u64 * 0x85eb_ca6b) ^ tick)
-        .wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+    let hash = hash::lattice_flicker(column as u64, row as u64, tick);
     (b'!' + ((hash >> 59) ^ (hash >> 33)) as u8 % 94) as char
 }
 
@@ -558,5 +554,44 @@ mod tests {
         assert_eq!(rain.pending() as u64 + rain.skipped, 1000);
         assert!(rain.pending() <= rain.grid.1.max(16) * 2);
         assert_eq!(rain.latest(), Some("line 999"));
+    }
+
+    #[test]
+    fn matrix_uniform_stream_equals_rng() {
+        let mut rain = Rain::default();
+        let mut rng = Rng::new(0);
+        for _ in 0..1000 {
+            assert_eq!(rain.uniform().to_bits(), rng.unit().to_bits());
+        }
+        // Values from the splitmix64 copy that lived here before.
+        let mut rain = Rain::default();
+        let first: Vec<u32> = (0..6).map(|_| rain.uniform().to_bits()).collect();
+        assert_eq!(
+            first,
+            [
+                1_063_395_496,
+                1_054_667_068,
+                1_020_824_480,
+                1_064_864_696,
+                1_037_683_784,
+                1_051_170_622
+            ]
+        );
+    }
+
+    #[test]
+    fn flicker_glyphs_stay_what_they_were() {
+        let glyphs: Vec<u32> = [
+            (0, 0, 0.0),
+            (1, 0, 0.5),
+            (0, 1, 1.25),
+            (79, 29, 33.3),
+            (1000, 500, 12_345.6),
+            (16_777_215, 7, 99.0),
+        ]
+        .iter()
+        .map(|&(column, row, time)| flicker(column, row, time) as u32)
+        .collect();
+        assert_eq!(glyphs, [33, 64, 81, 100, 73, 58]);
     }
 }

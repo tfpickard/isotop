@@ -1495,6 +1495,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::hash::fnv1a_64_bytes as fnv1a;
 
     #[test]
     fn labels_on_one_row_keep_a_free_column_between_them() {
@@ -1997,13 +1998,6 @@ mod tests {
         depth: u64,
     }
 
-    fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
-        // The 64-bit offset basis and prime from the FNV specification.
-        bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-            (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3)
-        })
-    }
-
     fn view_name(view: View) -> String {
         use clap::ValueEnum;
         let value = view.to_possible_value().expect("every view has a name");
@@ -2037,7 +2031,9 @@ mod tests {
         );
         Hashes {
             pixels: fnv1a(frame.pixels.iter().copied()),
-            picks: fnv1a(frame.picks.iter().flat_map(|pick| pick.to_le_bytes())),
+            picks: crate::simulation::hash::fnv1a_64_bytes(
+                frame.picks.iter().flat_map(|pick| pick.to_le_bytes()),
+            ),
             depth: fnv1a(
                 frame
                     .depth()

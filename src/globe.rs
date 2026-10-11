@@ -13,6 +13,7 @@ use crate::render::{
     Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
     mass_radius, normalize, tint,
 };
+use crate::simulation::hash;
 
 const RADIUS: f32 = 20.0;
 const SPIN_SECONDS: f32 = 300.0;
@@ -166,7 +167,7 @@ impl Globe {
                 count: 0,
                 top: (-1.0, remote.id),
                 key,
-                phase: hash(&match key {
+                phase: hash::fnv1a_64(&match key {
                     Spot::Place(lat, lon) => format!("{lat},{lon}"),
                     Spot::Address(address) => address.to_string(),
                 }),
@@ -375,12 +376,6 @@ fn tangents(up: Point) -> (Point, Point) {
         up[0] * east[1] - up[1] * east[0],
     ];
     (east, north)
-}
-
-fn hash(text: &str) -> u64 {
-    text.bytes().fold(14_695_981_039_346_656_037_u64, |h, b| {
-        (h ^ b as u64).wrapping_mul(1_099_511_628_211)
-    })
 }
 
 /// Coastlines as polylines of (longitude, latitude) in degrees.

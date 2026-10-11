@@ -8,6 +8,7 @@ use std::f32::consts::TAU;
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::pack::{Discs, Seats};
 use crate::render::{Color, GOLDEN_ANGLE, NONE, Point, Stage, normalize, spin, tint};
+use crate::simulation::hash;
 
 /// Height of the water surface above the sand.
 const DEPTH: f32 = 14.0;
@@ -116,7 +117,8 @@ impl Reef {
             .enumerate()
             .filter(|(_, p)| p.kind == Kind::Kernel)
         {
-            let h = hash(process.id.pid);
+            // pid only: kept for pixel stability, see A33
+            let h = hash::knuth_xor_rotated_prime2(process.id.pid);
             let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0;
             let drift = [
                 (time * 0.07 + unit(0) * TAU).sin() * 3.0,
@@ -225,7 +227,7 @@ impl Reef {
             }
         }
         for strand in 0..28_u32 {
-            let h = hash(strand + 1);
+            let h = hash::knuth_xor_rotated_prime2(strand + 1);
             let angle = (h & 0xffff) as f32 / 65536.0 * TAU;
             let distance = reach * (0.82 + 0.12 * ((h >> 16) & 0xff) as f32 / 255.0);
             let root = [distance * angle.cos(), distance * angle.sin(), 0.0];
@@ -274,7 +276,8 @@ impl Reef {
         ];
         for &index in members {
             let id = processes[index].id;
-            let h = hash(id.pid);
+            // pid only: kept for pixel stability, see A33
+            let h = hash::knuth_xor_rotated_prime2(id.pid);
             self.fish.entry(id).or_insert_with(|| Swimmer {
                 position: [
                     target[0] + ((h & 0xff) as f32 / 255.0 - 0.5) * 4.0,
@@ -561,10 +564,6 @@ fn habitat(process: &Process) -> String {
         &process.cgroup
     };
     format!("{:?} {path}", process.kind)
-}
-
-fn hash(value: u32) -> u32 {
-    value.wrapping_mul(2_654_435_761) ^ value.wrapping_mul(2_246_822_519).rotate_left(13)
 }
 
 #[cfg(test)]

@@ -13,7 +13,8 @@ use crate::platform::{DeletedFile, UNNAMED};
 use crate::render::{
     Camera, Color, Frame, NONE, Point, SCALE, Stage, kind_color, spin, tint, without_apple_prefix,
 };
-use crate::simulation::{Rng, SpatialHash};
+use crate::simulation::hash::unit_from as fraction;
+use crate::simulation::{Rng, SpatialHash, hash};
 
 /// Fixed simulation step in seconds. The yard advances on wall-clock time in whole steps, so
 /// every frame rate follows the same trajectory.
@@ -293,7 +294,8 @@ fn unit(v: [f32; 2]) -> [f32; 2] {
 /// A fixed direction for two coincident chickens, opposite for each of the pair.
 fn parting(a: Identity, b: Identity) -> [f32; 2] {
     let (low, high, sign) = if a < b { (a, b, 1.0) } else { (b, a, -1.0) };
-    let angle = (low.pid.wrapping_mul(2_654_435_761) ^ high.pid) as f32 / u32::MAX as f32 * TAU;
+    // pid only: kept for pixel stability, see A33
+    let angle = (hash::knuth(low.pid) ^ high.pid) as f32 / u32::MAX as f32 * TAU;
     [sign * angle.cos(), sign * angle.sin()]
 }
 
@@ -1042,18 +1044,6 @@ fn peer_weight(traffic: Option<f32>, cpu: f32, other: f32) -> f32 {
 
 fn rate(value: f32) -> String {
     bytes(value.max(0.0) as u64)
-}
-
-fn hash(value: u32) -> u32 {
-    let mut x = value.wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b;
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x2c1b_3c6d);
-    x ^= x >> 12;
-    x
-}
-
-fn fraction(value: u32) -> f32 {
-    (hash(value) >> 8) as f32 / 16_777_216.0
 }
 
 impl Coop {

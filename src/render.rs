@@ -5,6 +5,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::platform::Shadow;
+use crate::simulation::hash;
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
 pub mod shared;
@@ -342,7 +343,7 @@ impl Frame {
         };
         if sky.backdrop == Backdrop::Space {
             for i in 0..(width * height / 1100).clamp(200, 4000) {
-                let hash = i.wrapping_mul(2654435761);
+                let hash = hash::knuth(i);
                 let x = (hash % width) as f32;
                 let y = (hash.rotate_left(13) % height) as f32;
                 frame.items.push(Item::Star([x, y], [37, 48, 71]));
@@ -883,7 +884,8 @@ pub(crate) fn kind_color(process: &Process) -> Color {
         (_, Kind::Session) => [236, 178, 92],
         (_, Kind::Container) => [178, 136, 232],
     };
-    let jitter = (process.id.pid.wrapping_mul(2_654_435_761) >> 24) as f32 / 255.0;
+    // pid only: kept for pixel stability, see A33
+    let jitter = (hash::knuth(process.id.pid) >> 24) as f32 / 255.0;
     tint(base, 0.86 + 0.24 * jitter)
 }
 
@@ -1844,7 +1846,8 @@ impl Scene {
             }
             // Saturn-style rings in a plane tilted towards the viewer, so the front arc passes over
             // the body while the depth buffer hides the back arc behind it.
-            let yaw = (process.id.pid.wrapping_mul(2_246_822_519) >> 20) as f32 / 4096.0 * TAU;
+            // pid only: kept for pixel stability, see A33
+            let yaw = (hash::xxhash_prime2(process.id.pid) >> 20) as f32 / 4096.0 * TAU;
             let (ys, yc) = yaw.sin_cos();
             let (ts, tc) = 0.45_f32.sin_cos();
             let across = [yc, ys, 0.0];
@@ -1913,7 +1916,8 @@ impl Scene {
             .filter(|(body, _)| processes[body.index].cpu > 0.3)
             .map(|(body, &at)| {
                 let process = processes[body.index];
-                let hash = process.id.pid.wrapping_mul(2_654_435_761);
+                // pid only: kept for pixel stability, see A33
+                let hash = hash::knuth(process.id.pid);
                 let frequency = 0.35 + 0.9 * (hash >> 24) as f32 / 255.0;
                 let phase = (hash >> 8 & 0xffff) as f32 / 65536.0 * TAU;
                 (
@@ -2497,7 +2501,8 @@ impl Scene {
             let k = *slot as f32;
             let distance = cluster.spacing * (k + 0.5).sqrt();
             let angle = k * GOLDEN_ANGLE + spin(group);
-            let hash = process.id.pid.wrapping_mul(2_654_435_761);
+            // pid only: kept for pixel stability, see A33
+            let hash = hash::knuth(process.id.pid);
             let jitter = cluster.spacing * 0.1 * (hash & 0xffff) as f32 / 65536.0;
             let toss = (hash >> 16) as f32 / 65536.0 * TAU;
             self.positions.insert(
@@ -2774,9 +2779,7 @@ struct Cluster {
 
 /// A stable angle per name, so clusters don't all share one spiral orientation.
 pub(crate) fn spin(name: &str) -> f32 {
-    let hash = name.bytes().fold(2_166_136_261_u32, |h, b| {
-        (h ^ b as u32).wrapping_mul(16_777_619)
-    });
+    let hash = hash::fnv1a_32(name);
     (hash >> 8) as f32 / 16_777_216.0 * TAU
 }
 
@@ -2924,7 +2927,8 @@ fn arc(extent: f32) -> f32 {
 /// Eccentricity and periapsis direction shared by all of one parent's shells. Confocal ellipses
 /// with the same shape are scaled copies of each other, so neighbouring shells never cross.
 fn elements(pid: u32) -> (f32, f32) {
-    let hash = pid.wrapping_mul(2_654_435_761);
+    // pid only: kept for pixel stability, see A33
+    let hash = hash::knuth(pid);
     let e = 0.06 + 0.16 * (hash >> 24) as f32 / 255.0;
     let omega = TAU * ((hash >> 8) & 0xffff) as f32 / 65536.0;
     (e, omega)
@@ -3848,6 +3852,18 @@ mod tests {
             );
             assert!(!shown.contains('?'), "{shown}");
             assert!(shown.chars().count() <= LABEL_NAME_CELLS);
+        }
+    }
+
+    #[test]
+    fn spin_returns_the_angles_it_returned_before_hashing_moved() {
+        for (name, bits) in [
+            ("", 1_078_644_461),
+            ("a", 1_085_479_852),
+            ("dbus.service", 1_084_250_095),
+            ("System /system.slice Ünï", 1_085_165_909),
+        ] {
+            assert_eq!(spin(name).to_bits(), bits, "spin({name:?})");
         }
     }
 }
