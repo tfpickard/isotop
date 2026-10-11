@@ -181,26 +181,10 @@ impl Sampler {
         Ok(processes)
     }
 
-    /// Total and available memory in bytes from /proc/meminfo; 0 when unreadable.
-    pub fn memory(&self) -> (u64, u64) {
-        let (mut total, mut available) = (0, 0);
-        if let Ok(info) = fs::read_to_string("/proc/meminfo") {
-            for line in info.lines() {
-                let mut fields = line.split_whitespace();
-                let key = fields.next().unwrap_or_default();
-                let value = fields
-                    .next()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0)
-                    * 1024;
-                match key {
-                    "MemTotal:" => total = value,
-                    "MemAvailable:" => available = value,
-                    _ => {}
-                }
-            }
-        }
-        (total, available)
+    /// Total and available memory in bytes from /proc/meminfo; each None when it could not be
+    /// read.
+    pub fn memory(&self) -> (Option<u64>, Option<u64>) {
+        fs::read_to_string("/proc/meminfo").map_or((None, None), |info| meminfo(&info))
     }
 
     /// Pressure stall percentages, and the pressures that could not be read.
@@ -244,30 +228,58 @@ impl Sampler {
     }
 }
 
+/// Total and available memory in bytes from the text of /proc/meminfo.
+fn meminfo(text: &str) -> (Option<u64>, Option<u64>) {
+    let (mut total, mut available) = (None, None);
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let key = fields.next();
+        let kibibytes = fields.next().and_then(|v| v.parse::<u64>().ok());
+        let bytes = kibibytes.map(|kibibytes| kibibytes.saturating_mul(1024));
+        match key {
+            Some("MemTotal:") => total = bytes,
+            Some("MemAvailable:") => available = bytes,
+            _ => {}
+        }
+    }
+    (total, available)
+}
+
 /// Socket links between processes.
 pub fn network() -> Network {
     net::sample()
 }
 
-/// CPU counters from /proc/stat and /proc/schedstat: busy and total ticks, waiting nanoseconds.
+/// CPU counters from /proc/stat and /proc/schedstat: busy and total ticks, waiting nanoseconds
+/// when /proc/schedstat counts them.
 #[derive(Clone, Copy)]
 struct Ticks {
     busy: u64,
     total: u64,
-    wait: u64,
+    wait: Option<u64>,
 }
 
 /// Reads the accounting files of each cgroup. CPU use comes from the change in usage since the
 /// previous reading.
 pub fn account(
     paths: &HashSet<String>,
-    previous: &mut HashMap<String, (Instant, u64, u64)>,
+    previous: &mut HashMap<String, (Instant, Option<u64>, Option<u64>)>,
+) -> HashMap<String, Unit> {
+    account_under(Path::new("/sys/fs/cgroup"), paths, previous)
+}
+
+/// `account` for the cgroup hierarchy mounted at `root`. A reading that is missing, and one that
+/// needs an earlier reading to become a rate and has none, is None in the `Unit`, never 0.
+fn account_under(
+    root: &Path,
+    paths: &HashSet<String>,
+    previous: &mut HashMap<String, (Instant, Option<u64>, Option<u64>)>,
 ) -> HashMap<String, Unit> {
     let now = Instant::now();
     let mut next = HashMap::new();
     let mut units = HashMap::new();
     for path in paths {
-        let base = Path::new("/sys/fs/cgroup").join(path.trim_start_matches('/'));
+        let base = root.join(path.trim_start_matches('/'));
         let read = |name: &str| fs::read_to_string(base.join(name)).ok();
         let Some(memory) = read("memory.current").and_then(|v| v.trim().parse().ok()) else {
             continue;
@@ -279,15 +291,22 @@ pub fn account(
                 .find_map(|line| line.strip_prefix(key)?.trim().parse::<u64>().ok())
         };
         let stat = read("cpu.stat");
-        let usage = field(&stat, "usage_usec ").unwrap_or(0);
-        let throttles = field(&stat, "nr_throttled ").unwrap_or(0);
+        let usage = field(&stat, "usage_usec ");
+        let throttles = field(&stat, "nr_throttled ");
+        // A counter that went backwards (a cgroup recreated under the same path) gives no rate.
         let (cpu, throttled) = previous
             .get(path)
-            .map_or((0.0, false), |&(then, used, count)| {
+            .map_or((None, None), |&(then, used, count)| {
                 let dt = now.duration_since(then).as_secs_f32().max(0.1);
                 (
-                    usage.saturating_sub(used) as f32 / 1e6 / dt * 100.0,
-                    throttles > count,
+                    usage
+                        .zip(used)
+                        .and_then(|(now, then)| now.checked_sub(then))
+                        .map(|used| used as f32 / 1e6 / dt * 100.0),
+                    throttles
+                        .zip(count)
+                        .and_then(|(now, then)| now.checked_sub(then))
+                        .map(|throttled| throttled > 0),
                 )
             });
         next.insert(path.clone(), (now, usage, throttles));
@@ -306,12 +325,10 @@ pub fn account(
                 cpu_max,
                 throttled,
                 pressure: ["cpu", "memory", "io"].map(|resource| {
-                    read(&format!("{resource}.pressure"))
-                        .and_then(|text| parse_pressure(&text))
-                        .unwrap_or(0.0)
+                    read(&format!("{resource}.pressure")).and_then(|text| parse_pressure(&text))
                 }),
-                oom_kills: field(&read("memory.events"), "oom_kill ").unwrap_or(0),
-                pids: limit("pids.current").unwrap_or(0),
+                oom_kills: field(&read("memory.events"), "oom_kill "),
+                pids: limit("pids.current"),
                 pids_max: limit("pids.max"),
             },
         );
@@ -337,7 +354,7 @@ fn cpus(
                 Ticks {
                     busy: total.saturating_sub(idle),
                     total,
-                    wait: 0,
+                    wait: None,
                 },
             );
         }
@@ -346,30 +363,39 @@ fn cpus(
     if let Some(text) = &schedstat {
         for (id, values) in text.lines().filter_map(cpu_line) {
             if let (Some(entry), Some(&wait)) = (ticks.get_mut(&id), values.get(WAIT_FIELD)) {
-                entry.wait = wait;
+                entry.wait = Some(wait);
             }
         }
     }
     let mut cpus: Vec<Cpu> = ticks
         .iter()
         .map(|(&id, now)| {
-            let (busy, wait) = previous.get(&id).map_or((0.0, 0.0), |before| {
-                let total = now.total.saturating_sub(before.total).max(1) as f32;
-                (
-                    now.busy.saturating_sub(before.busy) as f32 / total,
-                    now.wait.saturating_sub(before.wait) as f32 / 1e9 / dt.max(0.001),
-                )
+            // No elapsed ticks, or counters that went backwards, give no reading.
+            let (busy, wait) = previous.get(&id).map_or((None, None), |before| {
+                let busy = now
+                    .total
+                    .checked_sub(before.total)
+                    .filter(|&total| total > 0)
+                    .zip(now.busy.checked_sub(before.busy))
+                    .map(|(total, busy)| busy as f32 / total as f32);
+                let wait = now
+                    .wait
+                    .zip(before.wait)
+                    .and_then(|(now, before)| now.checked_sub(before))
+                    .map(|wait| wait as f32 / 1e9 / dt.max(0.001));
+                (busy, wait)
             });
             let mhz = fs::read_to_string(format!(
                 "/sys/devices/system/cpu/cpu{id}/cpufreq/scaling_cur_freq"
             ))
             .ok()
             .and_then(|v| v.trim().parse::<f32>().ok())
-            .map_or(0.0, |khz| khz / 1000.0);
+            .filter(|&khz| khz > 0.0)
+            .map(|khz| khz / 1000.0);
             Cpu {
                 id,
                 kind: kinds.get(&id).copied().unwrap_or(CoreKind::Unknown),
-                busy: busy.clamp(0.0, 1.0),
+                busy: busy.map(|busy| busy.clamp(0.0, 1.0)),
                 mhz,
                 wait,
             }
@@ -377,7 +403,7 @@ fn cpus(
         .collect();
     cpus.sort_by_key(|cpu| cpu.id);
     *previous = ticks;
-    let clocks: Vec<f32> = cpus.iter().map(|cpu| cpu.mhz).collect();
+    let clocks: Vec<Option<f32>> = cpus.iter().map(|cpu| cpu.mhz).collect();
     let gaps = cpu_gaps(schedstat.as_deref(), &clocks);
     (cpus, gaps)
 }
@@ -388,9 +414,9 @@ const WAIT_FIELD: usize = 7;
 
 /// What a CPU reading lacks: the clock when no CPU has a cpufreq reading (common in virtual
 /// machines), and the run queue when /proc/schedstat is unreadable or too old to count waiting.
-fn cpu_gaps(schedstat: Option<&str>, clocks: &[f32]) -> Sources {
+fn cpu_gaps(schedstat: Option<&str>, clocks: &[Option<f32>]) -> Sources {
     let mut gaps = Sources::default();
-    if !clocks.iter().any(|&mhz| mhz > 0.0) {
+    if clocks.iter().all(Option::is_none) {
         gaps.insert(Source::CpuClock);
     }
     let waits = schedstat.is_some_and(|text| {
@@ -592,9 +618,9 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
             priority: signed(15)?,
             nice: signed(16)?,
             threads: number(17)? as u32,
-            gpu_memory: 0,
+            gpu_memory: None,
             // Field 39 of /proc/<pid>/stat, counted from the state as field 3.
-            core: number(36).unwrap_or(0) as u32,
+            core: number(36).map(|core| core as u32),
             cpu_time: 0.0,
             cgroup: String::new(),
             performance_share: None,
@@ -676,7 +702,7 @@ mod tests {
         fields[0] = "R";
         fields[36] = "17";
         let (p, _) = parse_stat(9, &format!("9 (x) {}", fields.join(" ")), 4096).unwrap();
-        assert_eq!(p.core, 17);
+        assert_eq!(p.core, Some(17));
     }
 
     #[test]
@@ -720,25 +746,25 @@ mod tests {
     #[test]
     fn linux_reports_missing_cpufreq_and_schedstat() {
         let schedstat = "version 15\ntimestamp 1\ncpu0 0 0 0 0 0 0 6891 2519 25\ndomain0 3 0\n";
-        assert!(cpu_gaps(Some(schedstat), &[2400.0, 0.0]).is_empty());
+        assert!(cpu_gaps(Some(schedstat), &[Some(2400.0), None]).is_empty());
         assert_eq!(
-            cpu_gaps(Some(schedstat), &[0.0, 0.0]),
+            cpu_gaps(Some(schedstat), &[None, None]),
             Sources::from(Source::CpuClock),
             "no CPU has a cpufreq reading"
         );
         assert_eq!(cpu_gaps(Some(schedstat), &[]), Source::CpuClock.into());
         assert_eq!(
-            cpu_gaps(None, &[2400.0]),
+            cpu_gaps(None, &[Some(2400.0)]),
             Source::RunQueue.into(),
             "/proc/schedstat is unreadable"
         );
         assert_eq!(
-            cpu_gaps(Some("version 14\ncpu0 0 0 0 0 0 0 6891\n"), &[2400.0]),
+            cpu_gaps(Some("version 14\ncpu0 0 0 0 0 0 0 6891\n"), &[Some(2400.0)]),
             Source::RunQueue.into(),
             "a schedstat too old to count waiting"
         );
         assert_eq!(
-            cpu_gaps(None, &[0.0]),
+            cpu_gaps(None, &[None]),
             Sources::from([Source::CpuClock, Source::RunQueue])
         );
     }
@@ -818,6 +844,88 @@ mod tests {
                 Source::IoPressure
             ])
         );
+    }
+
+    /// A cgroup directory under a fresh root, holding the given files.
+    fn cgroup_with(name: &str, files: &[(&str, &str)]) -> (std::path::PathBuf, HashSet<String>) {
+        let root = std::env::temp_dir().join(format!("isotop-{name}-{}", std::process::id()));
+        let cgroup = root.join("system.slice/x.service");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&cgroup).unwrap();
+        for (file, text) in files {
+            fs::write(cgroup.join(file), text).unwrap();
+        }
+        (root, HashSet::from(["/system.slice/x.service".to_string()]))
+    }
+
+    #[test]
+    fn unreadable_cgroup_pressure_is_none() {
+        let (root, paths) = cgroup_with(
+            "pressure",
+            &[
+                ("memory.current", "4096\n"),
+                (
+                    "cpu.pressure",
+                    "some avg10=1.50 avg60=0.00\nfull avg10=0.00\n",
+                ),
+                ("memory.pressure", "garbled"),
+            ],
+        );
+        let units = account_under(&root, &paths, &mut HashMap::new());
+        let unit = &units["/system.slice/x.service"];
+        assert_eq!(unit.memory, 4096);
+        // Only the file that parses is a reading: a missing or garbled one is not 0.0.
+        assert_eq!(unit.pressure, [Some(1.5), None, None]);
+        assert_eq!((unit.pids, unit.oom_kills), (None, None));
+        assert_eq!((unit.cpu, unit.throttled), (None, None));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cgroup_rates_need_an_earlier_reading_and_counters_that_did_not_go_back() {
+        let stat =
+            |usage: u64, throttled: u64| format!("usage_usec {usage}\nnr_throttled {throttled}\n");
+        let (root, paths) = cgroup_with(
+            "rates",
+            &[
+                ("memory.current", "4096\n"),
+                ("cpu.stat", &stat(5_000_000, 3)),
+                ("pids.current", "7\n"),
+                ("memory.events", "low 0\noom_kill 2\n"),
+            ],
+        );
+        let cgroup = root.join("system.slice/x.service");
+        let mut previous = HashMap::new();
+        let first = &account_under(&root, &paths, &mut previous)["/system.slice/x.service"];
+        assert_eq!((first.cpu, first.throttled), (None, None), "first reading");
+        assert_eq!((first.pids, first.oom_kills), (Some(7), Some(2)));
+        fs::write(cgroup.join("cpu.stat"), stat(7_000_000, 3)).unwrap();
+        let second = &account_under(&root, &paths, &mut previous)["/system.slice/x.service"];
+        assert!(second.cpu.is_some_and(|cpu| cpu > 0.0));
+        assert_eq!(second.throttled, Some(false));
+        fs::write(cgroup.join("cpu.stat"), stat(100, 1)).unwrap();
+        let reset = &account_under(&root, &paths, &mut previous)["/system.slice/x.service"];
+        assert_eq!(
+            (reset.cpu, reset.throttled),
+            (None, None),
+            "counters went back"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn meminfo_reads_each_figure_on_its_own() {
+        let text = "MemTotal:       32768 kB\nMemFree: 1 kB\nMemAvailable:   16384 kB\n";
+        assert_eq!(meminfo(text), (Some(32768 * 1024), Some(16384 * 1024)));
+        assert_eq!(meminfo("MemTotal: 8 kB\n"), (Some(8192), None));
+        assert_eq!(meminfo("MemAvailable: lots kB\n"), (None, None));
+        assert_eq!(meminfo(""), (None, None));
+    }
+
+    #[test]
+    fn stat_without_a_last_cpu_field_has_no_core() {
+        let (process, _) = parse_stat(5, &stat_line(|_| {}), 4096).unwrap();
+        assert_eq!(process.core, None);
     }
 
     #[test]

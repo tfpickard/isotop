@@ -34,7 +34,7 @@ use crossterm::event::{
 };
 
 use journal::Journal;
-use model::{Collector, Identity, Process, Snapshot, bytes, describe};
+use model::{Collector, GpuMemory, Identity, Process, Snapshot, bytes, describe};
 use platform::Source;
 use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
@@ -610,8 +610,12 @@ impl App {
             self.scene.collapsed,
             s.processes.iter().map(|p| p.cpu).sum::<f32>() / 100.0,
             s.cores,
-            bytes(s.memory_total.saturating_sub(s.memory_available)),
-            bytes(s.memory_total)
+            known_bytes(
+                s.memory_total
+                    .zip(s.memory_available)
+                    .map(|(total, available)| total.saturating_sub(available))
+            ),
+            known_bytes(s.memory_total)
         )];
         let inspector = if let Some(id) = self.inspected() {
             if let Some(p) = s.processes.iter().find(|p| p.id == id) {
@@ -728,9 +732,13 @@ impl App {
                     ),
                 ];
                 match p.gpu_memory {
-                    0 => {}
-                    1 => lines.push("NVIDIA GPU in use (memory not reported)".into()),
-                    gpu => lines.push(format!("NVIDIA GPU memory {}", bytes(gpu))),
+                    None => {}
+                    Some(GpuMemory::Unreported) => {
+                        lines.push("NVIDIA GPU in use (memory not reported)".into());
+                    }
+                    Some(GpuMemory::Bytes(gpu)) => {
+                        lines.push(format!("NVIDIA GPU memory {}", bytes(gpu)));
+                    }
                 }
                 if let Some(&(total, count)) = self.scene.mass.get(&id) {
                     lines.push(format!(
@@ -1185,6 +1193,11 @@ fn place_panel(
         width,
         lines,
     })
+}
+
+/// A byte count for the status line, `n/a` when it was not measured.
+fn known_bytes(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".to_owned(), bytes)
 }
 
 /// The pressure readings for the status line, `n/a` for each one the platform cannot measure.
@@ -1890,6 +1903,29 @@ mod tests {
         let mut app = App::new(view, snapshot);
         app.render(320, 180, 512);
         app.text(0.0, "test", 20, 512)
+    }
+
+    #[test]
+    fn status_line_shows_n_a_for_memory_it_could_not_read() {
+        let status = |total: Option<u64>, available: Option<u64>| {
+            let mut snapshot = model::demo(1.0, 16);
+            (snapshot.memory_total, snapshot.memory_available) = (total, available);
+            let mut app = App::new(View::City, snapshot);
+            app.render(320, 180, 512);
+            app.text(0.0, "test", 20, 512).swap_remove(0)
+        };
+        let line = status(Some(3 << 30), Some(1 << 30));
+        assert!(
+            line.ends_with(&format!("RAM {} / {}", bytes(2 << 30), bytes(3 << 30))),
+            "{line}"
+        );
+        let line = status(Some(3 << 30), None);
+        assert!(
+            line.ends_with(&format!("RAM n/a / {}", bytes(3 << 30))),
+            "{line}"
+        );
+        let line = status(None, None);
+        assert!(line.ends_with("RAM n/a / n/a"), "{line}");
     }
 
     #[test]

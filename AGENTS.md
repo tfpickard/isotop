@@ -114,6 +114,9 @@ views the module way.
   `/sys` or spawns OS tools; terminal I/O (`terminal.rs`) and local lookups (`geo.rs`) are the
   exceptions. Both platforms provide the same names; a macOS build must compile without
   warnings (`cargo clippy --target aarch64-apple-darwin`).
+- **Unknown is not zero.** A reading that was not taken (the first sample of a rate, a counter
+  that went backwards, an unreadable file) is `None` in the model, not 0. A view converts it at
+  its own boundary (`unwrap_or(0.0)`) only to draw what it drew before.
 - **Sampling stays off the frame loop.** Anything slower than a `/proc/<pid>/stat` read belongs
   on the background thread.
 - **Process text is untrusted.** Names and command lines are sanitized before they reach the

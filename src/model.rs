@@ -50,10 +50,13 @@ pub struct Process {
     /// Nice value, -20 (favoured) to 19 (background); /proc/<pid>/stat field 19.
     pub nice: i32,
     pub threads: u32,
-    /// NVIDIA GPU memory in bytes; 1 means in use with unreported memory.
-    pub gpu_memory: u64,
-    /// The CPU it last ran on, and its total CPU time in seconds.
-    pub core: u32,
+    /// NVIDIA GPU memory; None when the process is not using a GPU, or no GPU source has
+    /// reported it yet.
+    pub gpu_memory: Option<GpuMemory>,
+    /// The CPU it last ran on; None where the platform does not report it (macOS) or the
+    /// field could not be read.
+    pub core: Option<u32>,
+    /// Its total CPU time in seconds.
     pub cpu_time: f32,
     /// Full cgroup v2 path, such as /system.slice/cron.service.
     pub cgroup: String,
@@ -70,9 +73,8 @@ pub struct Process {
     pub files: Measured<platform::Files>,
     /// File locks and leases held. OFD locks name no process and are not counted.
     pub locks_held: Measured<u32>,
-    /// The pid holding the file lock this process is waiting for, or `platform::UNNAMED` when no
-    /// process can be named for it (an OFD lock, or a holder in another pid namespace).
-    pub blocked_on: Option<u32>,
+    /// The holder of the file lock this process is waiting for; None when it waits for none.
+    pub blocked_on: Option<Blocker>,
 }
 
 impl Default for Process {
@@ -96,8 +98,8 @@ impl Default for Process {
             priority: 0,
             nice: 0,
             threads: 0,
-            gpu_memory: 0,
-            core: 0,
+            gpu_memory: None,
+            core: None,
             cpu_time: 0.0,
             cgroup: String::new(),
             performance_share: None,
@@ -120,6 +122,57 @@ impl Process {
             ..Process::default()
         }
     }
+}
+
+/// A process's GPU memory, as far as the driver says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuMemory {
+    Bytes(u64),
+    /// The process uses the GPU but the driver does not report how much.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only the NVML reader on Linux produces it")
+    )]
+    Unreported,
+}
+
+impl GpuMemory {
+    /// The bytes reported; 0 for `Unreported`, which a view that sizes by memory draws as the
+    /// smallest in use.
+    pub fn bytes(self) -> u64 {
+        match self {
+            GpuMemory::Bytes(bytes) => bytes,
+            GpuMemory::Unreported => 0,
+        }
+    }
+
+    /// Adds one driver reading (`None` for a process whose memory the driver does not report) to
+    /// what is known of `pid`. A reported figure outweighs an unreported one, which adds nothing.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only the NVML reader on Linux calls it")
+    )]
+    pub fn accumulate(usage: &mut HashMap<u32, GpuMemory>, pid: u32, reported: Option<u64>) {
+        let entry = usage.entry(pid).or_insert(GpuMemory::Unreported);
+        *entry = match (*entry, reported) {
+            (GpuMemory::Bytes(total), Some(bytes)) => GpuMemory::Bytes(total.saturating_add(bytes)),
+            (GpuMemory::Unreported, Some(bytes)) => GpuMemory::Bytes(bytes),
+            (known, None) => known,
+        };
+    }
+}
+
+/// The holder of a file lock that blocks a process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocker {
+    Process(u32),
+    /// No process can be named: an OFD lock, which belongs to an open file, or a holder in
+    /// another pid namespace.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only the Linux lock table produces it")
+    )]
+    Unnamed,
 }
 
 /// A measurement taken on the background thread, which may not have reached a process yet.
@@ -161,11 +214,14 @@ pub enum CoreKind {
 pub struct Cpu {
     pub id: u32,
     pub kind: CoreKind,
-    /// Share of the last interval spent busy, 0 to 1.
-    pub busy: f32,
-    pub mhz: f32,
-    /// Average number of tasks that were runnable but waiting for this CPU.
-    pub wait: f32,
+    /// Share of the last interval spent busy, 0 to 1; None on the first reading and when no time
+    /// passed on the CPU's counters.
+    pub busy: Option<f32>,
+    /// The clock in MHz; None when the platform has no reading for it (see `Source::CpuClock`).
+    pub mhz: Option<f32>,
+    /// Average number of tasks that were runnable but waiting for this CPU; None on the first
+    /// reading and where the platform does not measure it (see `Source::RunQueue`).
+    pub wait: Option<f32>,
 }
 
 /// Resource accounting of one cgroup.
@@ -173,15 +229,20 @@ pub struct Cpu {
 pub struct Unit {
     pub memory: u64,
     pub memory_max: Option<u64>,
-    /// CPU use and quota in percent of one core.
-    pub cpu: f32,
+    /// CPU use in percent of one core, and its quota; the use is None on the first reading,
+    /// when its counter is unreadable, and when it went backwards.
+    pub cpu: Option<f32>,
     pub cpu_max: Option<f32>,
-    /// The CPU quota throttled it since the previous reading.
-    pub throttled: bool,
-    /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
-    pub pressure: [f32; 3],
-    pub oom_kills: u64,
-    pub pids: u64,
+    /// Whether the CPU quota throttled it since the previous reading; None on the first reading
+    /// and when the counter is unreadable.
+    pub throttled: Option<bool>,
+    /// Pressure stall percentages (10 s average) for CPU, memory and I/O; None for a file that
+    /// could not be read.
+    pub pressure: [Option<f32>; 3],
+    /// OOM kills since the cgroup was created; None when `memory.events` is unreadable.
+    pub oom_kills: Option<u64>,
+    /// Processes in the cgroup; None when `pids.current` is unreadable.
+    pub pids: Option<u64>,
     pub pids_max: Option<u64>,
 }
 
@@ -193,17 +254,19 @@ pub struct Remote {
     pub port: u16,
     /// Smoothed round-trip time in milliseconds.
     pub rtt: f32,
-    /// Bytes per second sent and received.
-    pub up: f32,
-    pub down: f32,
+    /// Bytes per second sent and received since the previous scan; None until the connection has
+    /// been seen twice, and when its counters went backwards.
+    pub up: Option<f32>,
+    pub down: Option<f32>,
     pub place: Option<Place>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub processes: Vec<Process>,
-    pub memory_total: u64,
-    pub memory_available: u64,
+    /// None when the platform could not read them.
+    pub memory_total: Option<u64>,
+    pub memory_available: Option<u64>,
     pub cores: usize,
     pub elapsed: f64,
     /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
@@ -304,14 +367,18 @@ impl IoBytes {
         self.read.saturating_add(self.write)
     }
 
-    /// Bytes per second of read and write combined, read, and write over `dt` seconds.
-    fn rates(self, before: Self, dt: f32) -> [f32; 3] {
-        [
-            self.total().saturating_sub(before.total()),
-            self.read.saturating_sub(before.read),
-            self.write.saturating_sub(before.write),
-        ]
-        .map(|bytes| bytes as f32 / dt)
+    /// Bytes per second of read and write combined, read, and write over `dt` seconds. None when
+    /// a counter went backwards (a recycled pid starts again from zero), since the change is
+    /// then unknown.
+    fn rates(self, before: Self, dt: f32) -> Option<[f32; 3]> {
+        Some(
+            [
+                self.total().checked_sub(before.total())?,
+                self.read.checked_sub(before.read)?,
+                self.write.checked_sub(before.write)?,
+            ]
+            .map(|bytes| bytes as f32 / dt),
+        )
     }
 }
 
@@ -323,7 +390,7 @@ struct Extras {
     /// since; `merge` keeps only the pids that still name the same process.
     identities: HashMap<u32, Identity>,
     network: platform::Network,
-    gpu: HashMap<u32, u64>,
+    gpu: HashMap<u32, GpuMemory>,
     units: HashMap<String, Unit>,
     /// Remote connections with the owning pid in `id.pid`.
     remotes: Vec<Remote>,
@@ -552,17 +619,13 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
     };
     for process in &mut snapshot.processes {
         let scanned = extras.identities.get(&process.id.pid) == Some(&process.id);
-        process.gpu_memory = extras
-            .gpu
-            .get(&process.id.pid)
-            .filter(|_| scanned)
-            .copied()
-            .unwrap_or(0);
+        process.gpu_memory = extras.gpu.get(&process.id.pid).filter(|_| scanned).copied();
         merge_files(process, &extras.files, &extras.locks, scanned);
         // A holder that has exited since released its locks, so nothing waits on it any more.
-        process.blocked_on = process
-            .blocked_on
-            .filter(|holder| *holder == platform::UNNAMED || id(holder).is_some());
+        process.blocked_on = process.blocked_on.filter(|blocker| match blocker {
+            Blocker::Process(holder) => id(holder).is_some(),
+            Blocker::Unnamed => true,
+        });
     }
     snapshot.unattributed_locks = extras.locks.known().map_or(0, |locks| locks.unattributed);
     snapshot.links = extras
@@ -657,14 +720,19 @@ fn remotes(
     let found = sockets
         .iter()
         .map(|socket| {
+            let rate = |now_bytes: u64, then_bytes: u64, dt: f32| {
+                now_bytes
+                    .checked_sub(then_bytes)
+                    .map(|bytes| bytes as f32 / dt)
+            };
             let (up, down) =
                 previous
                     .get(&socket.inode)
-                    .map_or((0.0, 0.0), |&(then, sent, received)| {
+                    .map_or((None, None), |&(then, sent, received)| {
                         let dt = now.duration_since(then).as_secs_f32().max(0.1);
                         (
-                            socket.sent.saturating_sub(sent) as f32 / dt,
-                            socket.received.saturating_sub(received) as f32 / dt,
+                            rate(socket.sent, sent, dt),
+                            rate(socket.received, received, dt),
                         )
                     });
             next.insert(socket.inode, (now, socket.sent, socket.received));
@@ -857,7 +925,7 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         process.cpu = previous.cpu + alpha * (raw - previous.cpu);
         if let Some([total, read, write]) = io
             .zip(previous.io)
-            .map(|(current, before)| current.rates(before, dt))
+            .and_then(|(current, before)| current.rates(before, dt))
         {
             process.io_rate = Some(total);
             process.read_rate = Some(read);
@@ -1061,12 +1129,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             priority,
             nice,
             threads: if i % 5 == 0 { 4 << (i % 6) } else { 1 },
-            gpu_memory: if i % 37 == 5 {
-                (300 + i as u64 * 7) << 20
-            } else {
-                0
-            },
-            core,
+            gpu_memory: (i % 37 == 5).then(|| GpuMemory::Bytes((300 + i as u64 * 7) << 20)),
+            core: Some(core),
             cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
             // Mostly on the kind of core it last ran on (0 to 7 are performance cores), with
             // some of its time on the other cluster; no share when it used no CPU.
@@ -1078,7 +1142,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             files: Measured::Known(files),
             locks_held: Measured::Known(locks_held),
             // Holders come before their waiters, so a waiter's holder always exists.
-            blocked_on: waiting_for.map(|holder| 1000 + holder as u32),
+            blocked_on: waiting_for.map(|holder| Blocker::Process(1000 + holder as u32)),
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -1119,13 +1183,13 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
                 } else {
                     CoreKind::Efficiency
                 },
-                busy: load * if id < 8 { 0.9 } else { 0.6 },
-                mhz: if id < 8 {
+                busy: Some(load * if id < 8 { 0.9 } else { 0.6 }),
+                mhz: Some(if id < 8 {
                     1400.0 + 3400.0 * load
                 } else {
                     1000.0 + 2200.0 * load
-                },
-                wait: (load - 0.6).max(0.0) * 3.0,
+                }),
+                wait: Some((load - 0.6).max(0.0) * 3.0),
             }
         })
         .collect();
@@ -1133,8 +1197,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
     for p in processes.iter().filter(|p| !p.cgroup.is_empty()) {
         let unit = units.entry(p.cgroup.clone()).or_default();
         unit.memory += p.memory;
-        unit.cpu += p.cpu;
-        unit.pids += 1;
+        *unit.cpu.get_or_insert(0.0) += p.cpu;
+        *unit.pids.get_or_insert(0) += 1;
     }
     for (k, (path, unit)) in units.iter_mut().enumerate() {
         let family = path.trim_end_matches(".service").rsplit('-').next();
@@ -1144,10 +1208,14 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         }
         if family % 4 == 1 {
             unit.cpu_max = Some(120.0);
-            unit.throttled = unit.cpu > 120.0;
         }
-        unit.pressure = [wave(0.3 + family as f64 * 0.05, 40.0), wave(0.2, 10.0), 0.0];
-        unit.oom_kills = if family == 4 { (time / 23.0) as u64 } else { 0 };
+        unit.throttled = Some(unit.cpu_max.is_some() && unit.cpu.is_some_and(|cpu| cpu > 120.0));
+        unit.pressure = [
+            Some(wave(0.3 + family as f64 * 0.05, 40.0)),
+            Some(wave(0.2, 10.0)),
+            Some(0.0),
+        ];
+        unit.oom_kills = Some(if family == 4 { (time / 23.0) as u64 } else { 0 });
     }
     let remotes = processes
         .iter()
@@ -1163,8 +1231,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
                     address: IpAddr::from([203, 0, 113, (i + k) as u8]),
                     port: [443, 22, 5432][k % 3],
                     rtt: 20.0 + (i * 13 % 180) as f32,
-                    up: 2048.0 * pulse,
-                    down: 65536.0 * pulse * pulse,
+                    up: Some(2048.0 * pulse),
+                    down: Some(65536.0 * pulse * pulse),
                     place: (k < 2).then(|| Place {
                         latitude,
                         longitude,
@@ -1176,8 +1244,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         .collect();
     Snapshot {
         processes,
-        memory_total: 32 * 1024_u64.pow(3),
-        memory_available: 12 * 1024_u64.pow(3),
+        memory_total: Some(32 * 1024_u64.pow(3)),
+        memory_available: Some(12 * 1024_u64.pow(3)),
         cores: 16,
         elapsed: time,
         pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
@@ -1369,9 +1437,7 @@ mod tests {
             read: 4096 + 6000,
             write: 1000 + 2000,
         };
-        assert_eq!(after.rates(before, 2.0), [4000.0, 3000.0, 1000.0]);
-        // A counter that went backwards (a recycled pid's reset) reads as no traffic.
-        assert_eq!(before.rates(after, 2.0), [0.0, 0.0, 0.0]);
+        assert_eq!(after.rates(before, 2.0), Some([4000.0, 3000.0, 1000.0]));
     }
 
     fn loopback(inode: u64, pid: u32, peer: u32, received: u64) -> platform::Loopback {
@@ -1550,6 +1616,9 @@ mod tests {
             process: Process {
                 performance_share: None,
                 waiting: None,
+                io_rate: None,
+                read_rate: None,
+                write_rate: None,
                 ..demo(0.0, 1).processes[0].clone()
             },
             ticks,
@@ -1739,11 +1808,123 @@ mod tests {
         for waiter in waiters {
             let holder = processes
                 .iter()
-                .find(|p| Some(p.id.pid) == waiter.blocked_on)
+                .find(|p| waiter.blocked_on == Some(Blocker::Process(p.id.pid)))
                 .unwrap();
             assert!(holder.locks_held.known().is_some_and(|&held| held > 0));
             assert_ne!(holder.cgroup, waiter.cgroup, "waits in another flock");
         }
+    }
+
+    /// A raw reading of the demo's first process with cumulative I/O counters.
+    fn reading_with_io(ticks: u64, io: IoBytes) -> RawProcess {
+        RawProcess {
+            io: Some(io),
+            ..reading(ticks, None, None)
+        }
+    }
+
+    fn socket(inode: u64, sent: u64, received: u64) -> platform::Remote {
+        platform::Remote {
+            pid: 1000,
+            inode,
+            address: IpAddr::from([203, 0, 113, 7]),
+            port: 443,
+            rtt: 20_000,
+            sent,
+            received,
+        }
+    }
+
+    #[test]
+    fn first_sample_rates_are_unknown_not_zero() {
+        let counters = IoBytes {
+            read: 4096,
+            write: 8192,
+        };
+        let (first, kept) = measure(reading_with_io(SECOND, counters), None, 1e9, 1.0);
+        assert_eq!(
+            (first.io_rate, first.read_rate, first.write_rate),
+            (None, None, None),
+            "a process seen for the first time has no I/O rate yet"
+        );
+        let more = IoBytes {
+            read: 4096,
+            write: 8192 + 2048,
+        };
+        let (second, _) = measure(reading_with_io(2 * SECOND, more), Some(&kept), 1e9, 1.0);
+        assert_eq!(second.io_rate, Some(2048.0));
+        assert_eq!(second.read_rate, Some(0.0), "idle is a measured zero");
+        // A connection seen for the first time has no byte rate either; the second scan has.
+        let mut scans = HashMap::new();
+        let first = remotes(&[socket(5, 1000, 4000)], &mut scans, None);
+        assert_eq!((first[0].up, first[0].down), (None, None));
+        let second = remotes(&[socket(5, 1000, 4500)], &mut scans, None);
+        assert_eq!(second[0].up, Some(0.0));
+        assert!(second[0].down.is_some_and(|rate| rate > 0.0));
+        let fresh = remotes(&[socket(5, 1000, 4500), socket(6, 0, 0)], &mut scans, None);
+        assert_eq!((fresh[1].up, fresh[1].down), (None, None), "a new socket");
+    }
+
+    #[test]
+    fn counter_reversal_reads_as_unknown() {
+        let before = IoBytes {
+            read: 4096,
+            write: 1000,
+        };
+        let after = IoBytes {
+            read: 4096 + 6000,
+            write: 1000 + 2000,
+        };
+        assert_eq!(before.rates(after, 2.0), None, "a recycled pid's reset");
+        // Only one counter going back leaves the others unmeasurable too: the total is wrong.
+        let write_reset = IoBytes {
+            read: 4096 + 6000,
+            write: 0,
+        };
+        assert_eq!(write_reset.rates(after, 2.0), None);
+        let (_, kept) = measure(reading_with_io(SECOND, after), None, 1e9, 1.0);
+        let (process, _) = measure(reading_with_io(2 * SECOND, before), Some(&kept), 1e9, 1.0);
+        assert_eq!(
+            (process.io_rate, process.read_rate, process.write_rate),
+            (None, None, None)
+        );
+        // A socket whose counters went back reads as unknown in that direction only.
+        let mut scans = HashMap::new();
+        remotes(&[socket(5, 9000, 4000)], &mut scans, None);
+        let next = remotes(&[socket(5, 100, 4800)], &mut scans, None);
+        assert_eq!(next[0].up, None);
+        assert!(next[0].down.is_some());
+    }
+
+    #[test]
+    fn gpu_memory_distinguishes_unreported_from_absent() {
+        let mut usage = HashMap::new();
+        GpuMemory::accumulate(&mut usage, 10, None);
+        GpuMemory::accumulate(&mut usage, 20, Some(4096));
+        GpuMemory::accumulate(&mut usage, 20, None);
+        GpuMemory::accumulate(&mut usage, 30, None);
+        GpuMemory::accumulate(&mut usage, 30, Some(1 << 20));
+        GpuMemory::accumulate(&mut usage, 30, Some(1 << 20));
+        GpuMemory::accumulate(&mut usage, 40, Some(0));
+        assert_eq!(usage.get(&10), Some(&GpuMemory::Unreported));
+        assert_eq!(usage.get(&20), Some(&GpuMemory::Bytes(4096)));
+        assert_eq!(usage.get(&30), Some(&GpuMemory::Bytes(2 << 20)));
+        assert_eq!(usage.get(&40), Some(&GpuMemory::Bytes(0)));
+        assert_eq!(usage.get(&50), None, "a process the driver never listed");
+        assert_eq!(GpuMemory::Unreported.bytes(), 0);
+        // The demo lists some processes and leaves the rest absent.
+        let demo = demo(1.0, 64);
+        let using: Vec<_> = demo
+            .processes
+            .iter()
+            .filter(|p| p.gpu_memory.is_some())
+            .collect();
+        assert!(!using.is_empty() && using.len() < demo.processes.len());
+        assert!(
+            using
+                .iter()
+                .all(|p| matches!(p.gpu_memory, Some(GpuMemory::Bytes(bytes)) if bytes > 0))
+        );
     }
 
     #[test]
@@ -1824,15 +2005,15 @@ mod tests {
                 outside: HashMap::from([(7, 2), (8, 1)]),
                 ..platform::Network::default()
             },
-            gpu: HashMap::from([(7, 500), (8, 600)]),
+            gpu: HashMap::from([(7, GpuMemory::Bytes(500)), (8, GpuMemory::Bytes(600))]),
             remotes: [7, 8]
                 .map(|pid| Remote {
                     id: Identity { pid, start: 0 },
                     address: IpAddr::from([203, 0, 113, 1]),
                     port: 443,
                     rtt: 10.0,
-                    up: 1.0,
-                    down: 1.0,
+                    up: Some(1.0),
+                    down: Some(1.0),
                     place: None,
                 })
                 .into(),
@@ -1840,7 +2021,7 @@ mod tests {
             files: HashMap::from([(7, open(4)), (8, open(2))]),
             locks: Measured::Known(platform::Locks {
                 held: HashMap::from([(7, 1)]),
-                blocked: HashMap::from([(8, 7)]),
+                blocked: HashMap::from([(8, Blocker::Process(7))]),
                 unattributed: 0,
             }),
             ..Extras::default()
@@ -1865,10 +2046,10 @@ mod tests {
         // Pid 7 now belongs to a process that started at 71.
         let reused = sample(71);
         let (newcomer, survivor) = (&reused.processes[0], &reused.processes[1]);
-        assert_eq!(newcomer.gpu_memory, 0);
+        assert_eq!(newcomer.gpu_memory, None);
         assert_eq!(newcomer.files, Measured::Pending);
         assert_eq!(newcomer.locks_held, Measured::Pending);
-        assert_eq!(survivor.gpu_memory, 600);
+        assert_eq!(survivor.gpu_memory, Some(GpuMemory::Bytes(600)));
         assert_eq!(survivor.files, Measured::Known(open(2).unwrap()));
         assert_eq!(survivor.blocked_on, None, "its lock's holder has exited");
         assert!(reused.links.is_empty() && reused.unix_links.is_empty());
@@ -1885,10 +2066,10 @@ mod tests {
         // The process the cycle scanned is still there: everything joins.
         let same = sample(70);
         let (scanned, other) = (&same.processes[0], &same.processes[1]);
-        assert_eq!(scanned.gpu_memory, 500);
+        assert_eq!(scanned.gpu_memory, Some(GpuMemory::Bytes(500)));
         assert_eq!(scanned.files, Measured::Known(open(4).unwrap()));
         assert_eq!(scanned.locks_held, Measured::Known(1));
-        assert_eq!(other.blocked_on, Some(7));
+        assert_eq!(other.blocked_on, Some(Blocker::Process(7)));
         assert_eq!(same.links, [(scanned.id, other.id, 1)]);
         assert_eq!(same.link_traffic.len(), 1);
         assert_eq!(same.remotes.len(), 2);

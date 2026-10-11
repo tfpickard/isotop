@@ -196,7 +196,11 @@ impl Dishes {
             .max_by_key(|&i| (processes[i].memory, std::cmp::Reverse(processes[i].id)))
             .expect("a cell has members");
         let unit = cell.unit.cloned().unwrap_or_default();
-        let pressure = unit.pressure.iter().fold(0.0_f32, |a, &b| a.max(b));
+        let pressure = unit
+            .pressure
+            .iter()
+            .flatten()
+            .fold(0.0_f32, |a, &b| a.max(b));
         let phase = spin(&cell.name);
         let wobble = 0.03 + 0.22 * bounded(pressure, 15.0);
         let edge = |angle: f32| {
@@ -204,7 +208,7 @@ impl Dishes {
                 + wobble * (5.0 * angle + time * 2.2 + phase).sin()
                 + wobble * 0.5 * (3.0 * angle - time * 1.7).sin())
         };
-        let cytoplasm = tint(color, 0.16 + 0.14 * bounded(unit.cpu, 50.0));
+        let cytoplasm = tint(color, 0.16 + 0.14 * bounded(unit.cpu.unwrap_or(0.0), 50.0));
         for k in 0..64 {
             let (a, b) = (k as f32 / 64.0 * TAU, (k + 1) as f32 / 64.0 * TAU);
             stage.frame.facet(
@@ -214,7 +218,7 @@ impl Dishes {
                 nucleus as u32,
             );
         }
-        let flash = if unit.throttled {
+        let flash = if unit.throttled == Some(true) {
             0.5 + 0.5 * (time * 12.0).sin()
         } else {
             0.0
@@ -249,7 +253,7 @@ impl Dishes {
                     .line(camera, at(a, limit, 0.1), at(b, limit, 0.1), shade);
             }
         }
-        let share = unit.cpu / unit.cpu_max.unwrap_or(100.0);
+        let share = unit.cpu.unwrap_or(0.0) / unit.cpu_max.unwrap_or(100.0);
         if share > 0.01 {
             let sweep = share.min(1.0) * TAU;
             let gauge = if unit.cpu_max.is_some() && share > 0.9 {
@@ -266,14 +270,21 @@ impl Dishes {
                     .line(camera, at(a, r + 0.35, 0.15), at(b, r + 0.35, 0.15), gauge);
             }
         }
-        let seen = self
-            .kills
-            .entry(cell.name.clone())
-            .or_insert((unit.oom_kills, f32::NEG_INFINITY));
-        if unit.oom_kills > seen.0 {
-            *seen = (unit.oom_kills, time);
-        }
-        let age = (time - seen.1) / LYSIS_SECONDS;
+        // An unreadable count changes nothing: the last known count stays the one to compare to.
+        let seen = match unit.oom_kills {
+            Some(kills) => {
+                let seen = self
+                    .kills
+                    .entry(cell.name.clone())
+                    .or_insert((kills, f32::NEG_INFINITY));
+                if kills > seen.0 {
+                    *seen = (kills, time);
+                }
+                Some(*seen)
+            }
+            None => self.kills.get(&cell.name).copied(),
+        };
+        let age = seen.map_or(f32::INFINITY, |(_, at)| (time - at) / LYSIS_SECONDS);
         if (0.0..1.0).contains(&age) {
             for k in 0..24 {
                 let angle = k as f32 / 24.0 * TAU + phase;
@@ -392,7 +403,8 @@ fn describe(cell: &Cell, processes: &[&Process], nucleus: bool) -> Vec<String> {
     let quota = unit
         .cpu_max
         .map_or_else(String::new, |max| format!(" of a {max:.0}% quota"));
-    let tasks = unit.pids.max(cell.members.len() as u64);
+    let members = cell.members.len() as u64;
+    let tasks = unit.pids.map_or(members, |pids| pids.max(members));
     let tasks = unit.pids_max.map_or_else(
         || format!("{tasks} tasks"),
         |max| format!("{tasks}/{max} tasks"),
@@ -400,15 +412,15 @@ fn describe(cell: &Cell, processes: &[&Process], nucleus: bool) -> Vec<String> {
     lines.push(format!(
         "cell memory {} ({limit}) | CPU {:.0}%{quota} | {tasks}",
         bytes(cell.memory),
-        unit.cpu,
+        unit.cpu.unwrap_or(0.0),
     ));
-    let [cpu, memory, io] = unit.pressure;
+    let [cpu, memory, io] = unit.pressure.map(|percent| percent.unwrap_or(0.0));
     let mut status = format!("pressure cpu {cpu:.0}% mem {memory:.0}% io {io:.0}%");
-    if unit.throttled {
+    if unit.throttled == Some(true) {
         status.push_str(" | throttled");
     }
-    if unit.oom_kills > 0 {
-        status.push_str(&format!(" | {} OOM kills", unit.oom_kills));
+    if let Some(kills) = unit.oom_kills.filter(|&kills| kills > 0) {
+        status.push_str(&format!(" | {kills} OOM kills"));
     }
     lines.push(status);
     lines

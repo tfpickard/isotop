@@ -150,14 +150,15 @@ pub fn state(status: u32, running: i32) -> char {
 
 /// Share of the interval a CPU was busy, from two readings of its `[user, system, idle, nice]`
 /// scheduler ticks. The counters are 32-bit and wrap, so differences are taken modulo 2^32.
-pub fn busy(previous: [u32; 4], current: [u32; 4]) -> f32 {
+/// None when no ticks passed between the readings.
+pub fn busy(previous: [u32; 4], current: [u32; 4]) -> Option<f32> {
     let [user, system, idle, nice] =
         [0, 1, 2, 3].map(|i| u64::from(current[i].wrapping_sub(previous[i])));
     let total = user + system + idle + nice;
     if total == 0 {
-        return 0.0;
+        return None;
     }
-    ((user + system + nice) as f32 / total as f32).clamp(0.0, 1.0)
+    Some(((user + system + nice) as f32 / total as f32).clamp(0.0, 1.0))
 }
 
 /// A stand-in for the memory stall percentage from `kern.memorystatus_vm_pressure_level`
@@ -252,9 +253,12 @@ pub const CLOCK_FLOOR: f64 = 0.05;
 /// The average clock of the performance and efficiency clusters in MHz over one interval, as
 /// `[performance, efficiency]`, from each process's counters at the start and end of it: the
 /// cycles each cluster ran divided by the CPU time it ran them in, summed over the processes.
-/// A cluster with less than `CLOCK_FLOOR` seconds of CPU time reads 0 (no reading). A process
-/// whose counters went backwards (a reused pid) or disagree with each other is skipped.
-pub fn cluster_clocks(intervals: impl IntoIterator<Item = (Counters, Counters)>) -> [f32; 2] {
+/// A cluster with less than `CLOCK_FLOOR` seconds of CPU time, or whose processes counted no
+/// cycles (virtual machines), has no reading (None). A process whose counters went backwards
+/// (a reused pid) or disagree with each other is skipped.
+pub fn cluster_clocks(
+    intervals: impl IntoIterator<Item = (Counters, Counters)>,
+) -> [Option<f32>; 2] {
     // Cycles and nanoseconds per cluster, as [performance, efficiency].
     let mut cycles = [0_u64; 2];
     let mut time = [0_u64; 2];
@@ -287,11 +291,8 @@ pub fn cluster_clocks(intervals: impl IntoIterator<Item = (Counters, Counters)>)
     }
     [0, 1].map(|cluster| {
         let seconds = time[cluster] as f64 / 1e9;
-        if seconds < CLOCK_FLOOR {
-            0.0
-        } else {
-            (cycles[cluster] as f64 / seconds / 1e6) as f32
-        }
+        (seconds >= CLOCK_FLOOR && cycles[cluster] > 0)
+            .then(|| (cycles[cluster] as f64 / seconds / 1e6) as f32)
     })
 }
 
@@ -628,7 +629,10 @@ mod tests {
             counters(0, 0, 0, 0),
             counters(100 * MS, 100 * MS, 400_000_000, 400_000_000),
         );
-        assert_eq!(cluster_clocks([first, second]), [3400.0, 2000.0]);
+        assert_eq!(
+            cluster_clocks([first, second]),
+            [Some(3400.0), Some(2000.0)]
+        );
     }
 
     #[test]
@@ -639,18 +643,18 @@ mod tests {
             counters(0, 0, 0, 0),
             counters(90 * MS, 50 * MS, 230_000_000, 150_000_000),
         );
-        assert_eq!(cluster_clocks([interval]), [3000.0, 0.0]);
-        assert_eq!(cluster_clocks([]), [0.0, 0.0]);
+        assert_eq!(cluster_clocks([interval]), [Some(3000.0), None]);
+        assert_eq!(cluster_clocks([]), [None, None]);
     }
 
     #[test]
-    fn cluster_clocks_read_zero_without_cycle_counters() {
+    fn cluster_clocks_have_no_reading_without_cycle_counters() {
         // Virtual machines count CPU time but no cycles.
         let interval = (
             counters(0, 0, 0, 0),
             counters(2_000_000_000, 1_000_000_000, 0, 0),
         );
-        assert_eq!(cluster_clocks([interval]), [0.0, 0.0]);
+        assert_eq!(cluster_clocks([interval]), [None, None]);
     }
 
     #[test]
@@ -672,7 +676,7 @@ mod tests {
             cluster_clocks([good, reused, impossible]),
             cluster_clocks([good])
         );
-        assert_eq!(cluster_clocks([good]), [3000.0, 2000.0]);
+        assert_eq!(cluster_clocks([good]), [Some(3000.0), Some(2000.0)]);
     }
 
     #[test]
@@ -869,12 +873,12 @@ mod tests {
 
     #[test]
     fn busy_share_survives_a_wrapping_tick_counter() {
-        assert_eq!(busy([0; 4], [0; 4]), 0.0);
-        assert_eq!(busy([10, 10, 10, 10], [40, 20, 70, 10]), 0.4);
+        assert_eq!(busy([0; 4], [0; 4]), None, "no ticks passed");
+        assert_eq!(busy([10, 10, 10, 10], [40, 20, 70, 10]), Some(0.4));
         let before = [u32::MAX - 9, 0, u32::MAX - 29, 0];
         let after = [20, 0, 10, 0];
-        assert!((busy(before, after) - 30.0 / 70.0).abs() < 1e-6);
-        assert_eq!(busy([0, 0, 0, 0], [5, 0, 0, 5]), 1.0);
+        assert!((busy(before, after).unwrap() - 30.0 / 70.0).abs() < 1e-6);
+        assert_eq!(busy([0, 0, 0, 0], [5, 0, 0, 5]), Some(1.0));
     }
 
     #[test]

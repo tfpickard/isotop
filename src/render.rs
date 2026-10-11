@@ -1526,7 +1526,7 @@ impl Scene {
                     false,
                 );
             }
-            if process.gpu_memory > 0 {
+            if process.gpu_memory.is_some() {
                 let beacon = [x - half * 0.5, y - half * 0.5, height + 0.3];
                 frame.glow(camera, beacon, (1.4 * camera.zoom).max(8.0), NVIDIA, 0.7);
                 frame.sphere(camera, beacon, 0.16, NVIDIA, index as u32, false);
@@ -1761,8 +1761,8 @@ impl Scene {
                 let strength = 0.3 + 0.6 * bounded(process.cpu, 40.0);
                 frame.glow(camera, body.position, radius, WARM, strength);
             }
-            if process.gpu_memory > 0 {
-                let mib = process.gpu_memory as f32 / 1048576.0;
+            if let Some(gpu) = process.gpu_memory {
+                let mib = gpu.bytes() as f32 / 1048576.0;
                 let radius = core * (2.6 + 0.5 * (mib / 64.0).ln_1p());
                 frame.glow(camera, body.position, radius, NVIDIA, 0.6);
             }
@@ -1786,7 +1786,7 @@ impl Scene {
         for body in &bodies {
             let process = processes[body.index];
             let radius = tree.radii[body.index] * body.grow;
-            if process.gpu_memory > 0 {
+            if process.gpu_memory.is_some() {
                 let halo = Orbit {
                     center: body.position,
                     a: radius * 1.9,
@@ -2496,8 +2496,8 @@ impl Scene {
                 0.3 + 0.6 * bounded(process.cpu, 40.0),
             );
         }
-        if process.gpu_memory > 0 {
-            let mib = process.gpu_memory as f32 / 1048576.0;
+        if let Some(gpu) = process.gpu_memory {
+            let mib = gpu.bytes() as f32 / 1048576.0;
             frame.glow(
                 camera,
                 at,
@@ -3304,12 +3304,12 @@ mod tests {
             p.state = 'S';
         }
         snapshot.processes[3].cpu = 60.0;
-        snapshot.processes[3].core = 0;
+        snapshot.processes[3].core = Some(0);
         let id = snapshot.processes[3].id;
         let mut scene = Scene::new();
         render(&mut scene, &snapshot, View::Cores, 1.0);
         let resting = scene.positions[&id][2];
-        snapshot.processes[3].core = 12;
+        snapshot.processes[3].core = Some(12);
         render(&mut scene, &snapshot, View::Cores, 1.1);
         render(&mut scene, &snapshot, View::Cores, 1.4);
         assert!(scene.positions[&id][2] > resting + 0.5, "airborne mid-hop");

@@ -9,9 +9,11 @@ use std::sync::OnceLock;
 
 use crate::geometry::{cuboid, normalize_or_zero, shade};
 use crate::layout::{Discs, Seats, spin};
-use crate::model::{CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes};
+use crate::model::{
+    Blocker, CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes,
+};
 use crate::palette::{core_color, core_name, kind_color, tint};
-use crate::platform::{DeletedFile, GROUP_LABEL, Source, UNNAMED};
+use crate::platform::{DeletedFile, GROUP_LABEL, Source};
 use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, without_apple_prefix};
 use crate::simulation::hash::unit_from as fraction;
 use crate::simulation::{Rng, SpatialHash, hash, sprout};
@@ -941,9 +943,9 @@ fn place_feeders(
             .map(|id| Cpu {
                 id,
                 kind: CoreKind::Unknown,
-                busy: 0.0,
-                mhz: 0.0,
-                wait: 0.0,
+                busy: None,
+                mhz: None,
+                wait: None,
             })
             .collect();
     }
@@ -964,7 +966,7 @@ fn place_feeders(
         feeders.push(Feeder {
             cpu: cpu.id,
             kind: cpu.kind,
-            busy: cpu.busy.clamp(0.0, 1.0),
+            busy: cpu.busy.unwrap_or(0.0).clamp(0.0, 1.0),
             center: [cursor + length * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
             slots,
             shared: false,
@@ -977,7 +979,11 @@ fn place_feeders(
         feeders.push(Feeder {
             cpu: u32::MAX,
             kind: CoreKind::Unknown,
-            busy: cpus.iter().map(|cpu| cpu.busy.clamp(0.0, 1.0)).sum::<f32>() / cpus.len() as f32,
+            busy: cpus
+                .iter()
+                .map(|cpu| cpu.busy.unwrap_or(0.0).clamp(0.0, 1.0))
+                .sum::<f32>()
+                / cpus.len() as f32,
             center: [(left + right) * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
             slots,
             shared: true,
@@ -1071,7 +1077,10 @@ impl Coop {
         let mut paths: Vec<&String> = snapshot.units.keys().collect();
         paths.sort();
         for path in paths {
-            let kills = snapshot.units[path].oom_kills;
+            // An unreadable count says nothing: the last known one stays the one to compare to.
+            let Some(kills) = snapshot.units[path].oom_kills else {
+                continue;
+            };
             let seen = *self.kills.entry(path.clone()).or_insert(kills);
             if kills > seen {
                 // Every kill claims a suspect, but only the first MAX_FOXES send a fox. The loop
@@ -1510,10 +1519,10 @@ impl Coop {
                 }
                 chicken.role = role;
             }
-            let holder = process
-                .blocked_on
-                .filter(|&pid| pid != UNNAMED)
-                .and_then(|pid| by_pid.get(&pid).copied());
+            let holder = match process.blocked_on {
+                Some(Blocker::Process(pid)) => by_pid.get(&pid).copied(),
+                Some(Blocker::Unnamed) | None => None,
+            };
             chicken.holder = holder.map(|holder| holder.id);
             nest_of.push(
                 holder
@@ -1624,7 +1633,10 @@ impl Coop {
                     let feeder = if self.trough_shared {
                         self.feeders.len() - 1
                     } else {
-                        feeder_of.get(&process.core).copied().unwrap_or(0)
+                        process
+                            .core
+                            .and_then(|core| feeder_of.get(&core).copied())
+                            .unwrap_or(0)
                     };
                     eating[feeder].push((process.priority, process.id, k));
                 }
@@ -1692,11 +1704,11 @@ impl Coop {
                 if rank >= feeder.slots {
                     note.push_str(", waiting in line");
                 }
-                if !feeder.shared && feeder.cpu != process.core {
-                    note.push_str(&format!(
-                        " (ran on cpu{}, which has no feeder)",
-                        process.core
-                    ));
+                if let Some(core) = process
+                    .core
+                    .filter(|&core| !feeder.shared && feeder.cpu != core)
+                {
+                    note.push_str(&format!(" (ran on cpu{core}, which has no feeder)"));
                 }
                 if process.state != 'R' {
                     note.push_str(" (held: not running for one sample)");
@@ -1720,24 +1732,29 @@ impl Coop {
                     )
                 ),
                 Role::Waiting => {
-                    let pid = process.blocked_on.unwrap_or(UNNAMED);
-                    match by_pid.get(&pid) {
-                        _ if pid == UNNAMED => "waiting for a file lock no process can be named \
+                    let pid = match process.blocked_on {
+                        Some(Blocker::Process(pid)) => Some(pid),
+                        Some(Blocker::Unnamed) | None => None,
+                    };
+                    match pid.map(|pid| (pid, by_pid.get(&pid))) {
+                        None => "waiting for a file lock no process can be named \
                                                for (an OFD lock, or a holder in another pid \
                                                namespace), at its own nest"
                             .into(),
-                        Some(holder) if flock_key(holder) == self.flocks[nest_of[k]].key => {
+                        Some((pid, Some(holder)))
+                            if flock_key(holder) == self.flocks[nest_of[k]].key =>
+                        {
                             format!(
                                 "waiting for a file lock held by {} (pid {pid})",
                                 holder.name
                             )
                         }
-                        Some(holder) => format!(
+                        Some((pid, Some(holder))) => format!(
                             "waiting for a file lock held by {} (pid {pid}), at its own nest \
                              because the holder's flock is not drawn",
                             holder.name
                         ),
-                        None => format!(
+                        Some((pid, None)) => format!(
                             "waiting for a file lock held by pid {pid}, which was not sampled, \
                              at its own nest"
                         ),
@@ -3374,9 +3391,9 @@ mod tests {
         sample.cpus = vec![Cpu {
             id: 0,
             kind: CoreKind::Efficiency,
-            busy: 1.0,
-            mhz: 0.0,
-            wait: 0.0,
+            busy: Some(1.0),
+            mhz: None,
+            wait: None,
         }];
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
@@ -3624,7 +3641,7 @@ mod tests {
         holder.locks_held = Measured::Known(1);
         let mut waiter = process(2, "/system.slice/waiter.service");
         waiter.cpu = 50.0;
-        waiter.blocked_on = Some(1);
+        waiter.blocked_on = Some(Blocker::Process(1));
         let mut scene = Scene::new();
         let sample = snapshot(vec![holder.clone(), waiter.clone()], 1.0);
         render(&mut scene, &sample, 1.0);
@@ -3654,7 +3671,7 @@ mod tests {
         assert_eq!(chicken.role, Role::Feeding, "running outranks a stale wait");
         // A holder that is not sampled leaves it at its own nest.
         let mut orphan = sample.processes[1].clone();
-        orphan.blocked_on = Some(77);
+        orphan.blocked_on = Some(Blocker::Process(77));
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![orphan.clone()], 1.0), 1.0);
         let chicken = &scene.coop.yard.chickens[0];
@@ -3662,7 +3679,7 @@ mod tests {
         assert!(chicken.target[0] > scene.coop.flocks[0].nest()[0]);
         assert!(notes(&scene, 2)[0].contains("pid 77, which was not sampled"));
         // So does a lock no process can be named for, such as an OFD lock.
-        orphan.blocked_on = Some(UNNAMED);
+        orphan.blocked_on = Some(Blocker::Unnamed);
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![orphan], 1.0), 1.0);
         let chicken = &scene.coop.yard.chickens[0];
@@ -3686,7 +3703,7 @@ mod tests {
             processes.extend((2..2 + count).map(|pid| {
                 let mut waiter = process(pid, "/system.slice/flock.service");
                 waiter.memory = memory;
-                waiter.blocked_on = Some(1);
+                waiter.blocked_on = Some(Blocker::Process(1));
                 waiter
             }));
             let mut scene = Scene::new();
@@ -3730,7 +3747,7 @@ mod tests {
             HashMap::from([(
                 path.to_string(),
                 Unit {
-                    oom_kills: kills,
+                    oom_kills: Some(kills),
                     ..Unit::default()
                 },
             )])
@@ -3775,7 +3792,7 @@ mod tests {
         HashMap::from([(
             path.to_string(),
             Unit {
-                oom_kills: kills,
+                oom_kills: Some(kills),
                 ..Unit::default()
             },
         )])
@@ -3926,7 +3943,7 @@ mod tests {
                 sample.units.insert(
                     path.clone(),
                     Unit {
-                        oom_kills: kills,
+                        oom_kills: Some(kills),
                         ..Unit::default()
                     },
                 );
@@ -3947,7 +3964,7 @@ mod tests {
                 p.state = 'R';
                 p.cpu = 90.0;
                 p.memory = 20 << 20;
-                p.core = u32::from(pid > 9);
+                p.core = Some(u32::from(pid > 9));
                 p
             })
             .collect();
@@ -3992,7 +4009,7 @@ mod tests {
                 p.state = 'R';
                 p.cpu = 90.0;
                 p.memory = 20 << 20;
-                p.core = u32::from(pid > 9);
+                p.core = Some(u32::from(pid > 9));
                 p
             })
             .collect();
@@ -4003,9 +4020,9 @@ mod tests {
             .map(|(id, busy)| Cpu {
                 id: id as u32,
                 kind: CoreKind::Unknown,
-                busy,
-                mhz: 0.0,
-                wait: 0.0,
+                busy: Some(busy),
+                mhz: None,
+                wait: None,
             })
             .collect();
         sample.missing = [Source::CpuPressure, Source::LastCpu].into();

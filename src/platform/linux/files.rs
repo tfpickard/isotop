@@ -10,7 +10,8 @@ use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::platform::{DeletedFile, Files, Locks, UNNAMED};
+use crate::model::Blocker;
+use crate::platform::{DeletedFile, Files, Locks};
 
 /// How much one scan may read. Listing a descriptor directory costs about a microsecond per
 /// entry warm and several cold; examining a descriptor adds a readlink and a stat.
@@ -219,7 +220,7 @@ impl FileScan {
 /// for every kind (POSIX, FLOCK, OFDLCK, LEASE, DELEG).
 fn parse_locks(text: &str) -> Locks {
     let mut locks = Locks::default();
-    let mut holder = UNNAMED;
+    let mut holder = Blocker::Unnamed;
     for line in text.lines() {
         let mut fields = line.split_whitespace().skip(1).peekable();
         let mut waiting = false;
@@ -237,7 +238,7 @@ fn parse_locks(text: &str) -> Locks {
             }
             continue;
         }
-        holder = pid.unwrap_or(UNNAMED);
+        holder = pid.map_or(Blocker::Unnamed, Blocker::Process);
         match pid {
             Some(pid) => *locks.held.entry(pid).or_default() += 1,
             None if number == -1 => locks.unattributed += 1,
@@ -290,11 +291,11 @@ garbage
         assert_eq!(
             locks.blocked,
             HashMap::from([
-                (1300, 1200),
-                (1301, 1200),
-                (1400, UNNAMED),
-                (1501, 1500),
-                (1700, UNNAMED)
+                (1300, Blocker::Process(1200)),
+                (1301, Blocker::Process(1200)),
+                (1400, Blocker::Unnamed),
+                (1501, Blocker::Process(1500)),
+                (1700, Blocker::Unnamed)
             ])
         );
         assert_eq!(locks.unattributed, 1, "the OFD lock has no pid");

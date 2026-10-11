@@ -6,12 +6,14 @@
 //!   - `hz(&self) -> f32`: the unit of `RawProcess::ticks`, in ticks per second;
 //!   - `processes(&mut self) -> io::Result<Vec<RawProcess>>`, in any order; an error means
 //!     live mode cannot run at all;
-//!   - `memory(&self) -> (u64, u64)`: total and available bytes;
+//!   - `memory(&self) -> (Option<u64>, Option<u64>)`: total and available bytes, each None when
+//!     it could not be read;
 //!   - `pressure(&self) -> ([f32; 3], Sources)`: CPU, memory and I/O stall percentages, and
 //!     the pressure sources among them that could not be read (their value is 0);
 //!   - `cpus(&mut self, dt: f32) -> Vec<Cpu>`: per-CPU use over the last `dt` seconds, sorted
 //!     by id. It is called after `processes` in every sample, so a platform may derive CPU
-//!     readings from the processes it has just read;
+//!     readings from the processes it has just read. A reading it cannot take, the first
+//!     reading of a rate included, is None in the `Cpu`, never 0;
 //!   - `missing(&self) -> Sources`: what this platform does not measure, as of the last
 //!     `processes` and `cpus` calls, added to `Snapshot::missing` every sample. `Source` lists
 //!     what each source's absence means for the values;
@@ -27,14 +29,15 @@
 //! - Slow sources, read on the background thread every `model::BACKGROUND_PERIOD`:
 //!   - `network() -> Network`;
 //!   - `account(paths, state) -> HashMap<String, Unit>`: resource accounting of the named
-//!     cgroups, given the state the previous call left;
+//!     cgroups, given the state the previous call left; a reading that could not be taken, or
+//!     that is a rate with no earlier reading, is None in the `Unit`;
 //!   - `FileScan::new() -> FileScan` and `FileScan::sample(&mut self) -> HashMap<u32, Option<Files>>`:
 //!     the regular files each process holds open, None for a table that could not be read; a
 //!     pid the scan has not reached is absent;
 //!   - `locks() -> Option<Locks>`: file locks with their holders and waiters, None when they
 //!     cannot be read (the collector then reports `Source::FileLocks` missing);
-//!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, u64>`: GPU memory
-//!     per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
+//!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, GpuMemory>`: GPU
+//!     memory per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
 //! - `journal() -> io::Result<(Child, JournalParser)>`: a running log follower with piped
 //!   stdout and stderr, and the parser that reads one entry at a time from its stdout;
 //!   `JOURNAL: &str` names the follower (`journalctl` or `log`) in the messages isotop prints
@@ -54,7 +57,7 @@ use std::io::{self, BufRead};
 use std::net::IpAddr;
 
 use crate::journal::Line;
-use crate::model::{IoBytes, Process};
+use crate::model::{Blocker, IoBytes, Process};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -85,8 +88,8 @@ compile_error!("isotop has platform support for Linux and macOS only");
 mod macos_journal;
 
 /// A system-wide source of measurements that a platform or a machine may lack. Where one is
-/// missing, the values it would fill read 0 or None, and the views say so instead of drawing
-/// them. A pull request that adds a source adds its variant here.
+/// missing, the values it would fill read None (0 for the system-wide pressures), and the views
+/// say so instead of drawing them. A pull request that adds a source adds its variant here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// `Snapshot::pressure[0]`, the CPU stall percentage.
@@ -337,17 +340,14 @@ impl Files {
     }
 }
 
-/// The pid standing for a lock holder that no process can be named for: an OFD lock, which
-/// belongs to an open file and reports -1, or a holder outside this pid namespace (0).
-pub const UNNAMED: u32 = 0;
-
 /// File locks and the processes blocked on them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Locks {
     /// Locks and leases held, per pid.
     pub held: HashMap<u32, u32>,
-    /// Pids blocked on a lock, with the pid holding the lock that blocks them, or UNNAMED.
-    pub blocked: HashMap<u32, u32>,
+    /// Pids blocked on a lock, with the holder of the lock that blocks them: `Blocker::Unnamed`
+    /// for an OFD lock, which reports pid -1, or a holder outside this pid namespace (0).
+    pub blocked: HashMap<u32, Blocker>,
     /// Open file description locks: they belong to an open file, not a process, and report pid
     /// -1, so no process can be named as their holder.
     pub unattributed: u32,

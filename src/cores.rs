@@ -113,9 +113,9 @@ impl Track {
                 .map(|id| Cpu {
                     id,
                     kind: CoreKind::Unknown,
-                    busy: 0.0,
-                    mhz: 0.0,
-                    wait: 0.0,
+                    busy: None,
+                    mhz: None,
+                    wait: None,
                 })
                 .collect();
         }
@@ -175,11 +175,10 @@ impl Track {
         let mut racing: HashMap<u32, usize> = HashMap::new();
         let mut parked: HashMap<u32, usize> = HashMap::new();
         for process in processes.iter().filter(|_| placed) {
-            let core = if lanes.contains_key(&process.core) {
-                process.core
-            } else {
-                cpus[0].id
-            };
+            let core = process
+                .core
+                .filter(|core| lanes.contains_key(core))
+                .unwrap_or(cpus[0].id);
             if active(process) {
                 *racing.entry(core).or_default() += 1;
             } else {
@@ -189,7 +188,8 @@ impl Track {
         for cpu in &cpus {
             let r = lane_radius(cpu.id);
             let base = core_color(cpu.kind);
-            let surface = tint(base, 0.10 + 0.45 * cpu.busy);
+            let busy = cpu.busy.unwrap_or(0.0);
+            let surface = tint(base, 0.10 + 0.45 * busy);
             let (inside, outside) = (r - LANE * 0.5 + 0.08, r + LANE * 0.5 - 0.08);
             for k in 0..SEGMENTS {
                 let a = k as f32 / SEGMENTS as f32 * TAU;
@@ -208,8 +208,8 @@ impl Track {
             }
             // Chevrons lap at 0.1 rad/s per GHz: a 4 GHz core turns its pattern about every 16 s.
             let phase = self.chevrons.entry(cpu.id).or_insert(cpu.id as f32 * 1.9);
-            *phase = (*phase + dt * 0.1 * cpu.mhz / 1000.0).rem_euclid(TAU);
-            let mark = tint(base, 0.55 + 0.8 * cpu.busy);
+            *phase = (*phase + dt * 0.1 * cpu.mhz.unwrap_or(0.0) / 1000.0).rem_euclid(TAU);
+            let mark = tint(base, 0.55 + 0.8 * busy);
             for k in 0..12 {
                 let tip = k as f32 / 12.0 * TAU + *phase;
                 let tail = tip - 0.6 / r;
@@ -217,7 +217,7 @@ impl Track {
                     frame.line(camera, ring(tail, r + side, 0.02), ring(tip, r, 0.02), mark);
                 }
             }
-            let waiting = cpu.wait.min(6.0);
+            let waiting = cpu.wait.unwrap_or(0.0).min(6.0);
             if waiting > 0.05 {
                 frame.glow(
                     camera,
@@ -236,11 +236,9 @@ impl Track {
                 CoreKind::Efficiency => "E",
                 CoreKind::Unknown => "",
             };
-            let clock = if cpu.mhz > 0.0 {
-                format!(" {:.1}GHz", cpu.mhz / 1000.0)
-            } else {
-                String::new()
-            };
+            let clock = cpu
+                .mhz
+                .map_or_else(String::new, |mhz| format!(" {:.1}GHz", mhz / 1000.0));
             let occupants = if placed {
                 format!(
                     " | {} running, {} idle",
@@ -252,11 +250,7 @@ impl Track {
             };
             stage.places.push((
                 ring(-0.05, r, 0.0),
-                format!(
-                    "cpu{}{kind}{clock} {:.0}%{occupants}",
-                    cpu.id,
-                    cpu.busy * 100.0
-                ),
+                format!("cpu{}{kind}{clock} {:.0}%{occupants}", cpu.id, busy * 100.0),
             ));
         }
         frame.line(
@@ -309,7 +303,7 @@ impl Track {
                     (Entry::Occupied(entry), _) => entry.into_mut(),
                     (Entry::Vacant(entry), Some(share)) => entry.insert(Marble {
                         angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
-                        core: process.core,
+                        core: process.core.unwrap_or(0),
                         hop: None,
                         hops: 0,
                         level: if share >= FIRST_LEVEL {
@@ -405,11 +399,10 @@ impl Track {
                 shown += 1;
                 continue;
             }
-            let core = if lanes.contains_key(&process.core) {
-                process.core
-            } else {
-                cpus[0].id
-            };
+            let core = process
+                .core
+                .filter(|core| lanes.contains_key(core))
+                .unwrap_or(cpus[0].id);
             let marble = self.marbles.entry(process.id).or_insert_with(|| Marble {
                 angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
                 core,
@@ -574,7 +567,7 @@ mod tests {
         let mut snapshot = demo_missing([Source::LastCpu, Source::RunQueue]);
         snapshot.per_cluster = Source::CpuClock.into();
         for cpu in &mut snapshot.cpus {
-            cpu.wait = 0.0;
+            cpu.wait = None;
         }
         snapshot
     }

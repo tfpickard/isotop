@@ -20,7 +20,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Child;
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
+use crate::model::{CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Process, Unit};
 use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources};
 
 pub use journal::{JOURNAL, journal};
@@ -42,7 +42,8 @@ pub struct Sampler {
     host: libc::mach_port_t,
     timebase: ffi::MachTimebaseInfo,
     page_size: u64,
-    memory_total: u64,
+    /// `hw.memsize`; None when the sysctl failed.
+    memory_total: Option<u64>,
     /// Whose processes count as the session.
     my_uid: u32,
     responsible: Option<ffi::Responsible>,
@@ -55,8 +56,9 @@ pub struct Sampler {
     clusters: bool,
     /// Each process's cluster counters at the previous `processes` call.
     counters: HashMap<Identity, logic::Counters>,
-    /// The cluster clocks over the last interval in MHz, as [performance, efficiency].
-    clocks: [f32; 2],
+    /// The cluster clocks over the last interval in MHz, as [performance, efficiency]; None for
+    /// a cluster with no reading.
+    clocks: [Option<f32>; 2],
     /// Whether the last `processes` call read any cycles; virtual machines count none.
     cycles: bool,
     /// Buffers reused by every `processes` call.
@@ -119,7 +121,7 @@ impl Sampler {
             timebase,
             // SAFETY: sysconf has no preconditions; _SC_PAGESIZE is positive on macOS.
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
-            memory_total: sysctl::<u64>(c"hw.memsize").unwrap_or(0),
+            memory_total: sysctl::<u64>(c"hw.memsize"),
             my_uid,
             responsible: ffi::responsible(),
             core_kinds,
@@ -127,7 +129,7 @@ impl Sampler {
             rusage_version,
             clusters,
             counters: HashMap::new(),
-            clocks: [0.0; 2],
+            clocks: [None; 2],
             cycles: false,
             pids: Vec::new(),
             arguments: vec![0; argmax],
@@ -253,8 +255,8 @@ impl Sampler {
             priority: logic::priority_from_mach(task.pti_priority),
             nice: bsd.pbi_nice,
             threads: task.pti_threadnum.max(0) as u32,
-            gpu_memory: 0,
-            core: 0,
+            gpu_memory: None,
+            core: None,
             cpu_time: 0.0,
             performance_share: None,
             waiting: None,
@@ -363,8 +365,8 @@ impl Sampler {
     }
 
     /// Total memory, and the bytes the kernel can hand out without paging out application
-    /// memory (free and inactive pages); 0 when unreadable.
-    pub fn memory(&self) -> (u64, u64) {
+    /// memory (free and inactive pages); each None when it could not be read.
+    pub fn memory(&self) -> (Option<u64>, Option<u64>) {
         let mut statistics = ffi::VmStatistics64::default();
         let mut count = ffi::HOST_VM_INFO64_COUNT;
         // SAFETY: the buffer holds `count` integer_t values, which is what the kernel may
@@ -377,16 +379,15 @@ impl Sampler {
                 &mut count,
             )
         };
-        let available = if status == libc::KERN_SUCCESS {
-            logic::available(
+        let available = (status == libc::KERN_SUCCESS).then(|| {
+            let available = logic::available(
                 statistics.free_count,
                 statistics.inactive_count,
                 self.page_size,
-            )
-            .min(self.memory_total)
-        } else {
-            0
-        };
+            );
+            self.memory_total
+                .map_or(available, |total| available.min(total))
+        });
         (self.memory_total, available)
     }
 
@@ -416,13 +417,13 @@ impl Sampler {
                     busy: self
                         .cpu_previous
                         .get(index)
-                        .map_or(0.0, |&before| logic::busy(before, now)),
+                        .and_then(|&before| logic::busy(before, now)),
                     mhz: match kind {
                         CoreKind::Performance => self.clocks[0],
                         CoreKind::Efficiency => self.clocks[1],
-                        CoreKind::Unknown => 0.0,
+                        CoreKind::Unknown => None,
                     },
-                    wait: 0.0,
+                    wait: None,
                 }
             })
             .collect();
@@ -973,7 +974,7 @@ fn own_addresses() -> HashSet<IpAddr> {
 /// macOS has no cgroups to account.
 pub fn account(
     _paths: &HashSet<String>,
-    _previous: &mut HashMap<String, (Instant, u64, u64)>,
+    _previous: &mut HashMap<String, (Instant, Option<u64>, Option<u64>)>,
 ) -> HashMap<String, Unit> {
     HashMap::new()
 }
@@ -1162,7 +1163,7 @@ impl Gpu {
         None
     }
 
-    pub fn sample(&self) -> HashMap<u32, u64> {
+    pub fn sample(&self) -> HashMap<u32, GpuMemory> {
         HashMap::new()
     }
 }
@@ -1273,7 +1274,10 @@ mod tests {
             assert_eq!(raw.performance_ticks, None);
         }
         let cpus = sampler.cpus(0.2);
-        assert!(cpus.iter().all(|cpu| cpu.mhz >= 0.0 && cpu.mhz < 10_000.0));
+        assert!(
+            cpus.iter()
+                .all(|cpu| cpu.mhz.is_none_or(|mhz| mhz > 0.0 && mhz < 10_000.0))
+        );
         assert_eq!(sampler.per_cluster().is_empty(), !sampler.clocked());
     }
 
@@ -1333,13 +1337,18 @@ mod tests {
     #[test]
     fn cpus_report_busy_shares_between_zero_and_one() {
         let mut sampler = Sampler::new();
-        assert!(sampler.cpus(0.1).iter().all(|cpu| cpu.busy == 0.0));
+        assert!(sampler.cpus(0.1).iter().all(|cpu| cpu.busy.is_none()));
         std::thread::sleep(Duration::from_millis(100));
         let cpus = sampler.cpus(0.1);
         assert!(!cpus.is_empty());
-        assert!(cpus.iter().all(|cpu| (0.0..=1.0).contains(&cpu.busy)));
+        assert!(
+            cpus.iter()
+                .all(|cpu| cpu.busy.is_none_or(|busy| (0.0..=1.0).contains(&busy)))
+        );
         assert!(cpus.windows(2).all(|pair| pair[0].id < pair[1].id));
-        let (total, available) = sampler.memory();
+        let (Some(total), Some(available)) = sampler.memory() else {
+            panic!("this machine reports its memory");
+        };
         assert!(total > 0);
         assert!(
             available > 0 && available <= total,

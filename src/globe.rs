@@ -160,7 +160,8 @@ impl Globe {
                 ),
                 None => Spot::Address(remote.address),
             };
-            let traffic = remote.up + remote.down;
+            let (up, down) = (remote.up.unwrap_or(0.0), remote.down.unwrap_or(0.0));
+            let traffic = up + down;
             let endpoint = endpoints.entry(key).or_insert_with(|| Endpoint {
                 place: remote.place.clone(),
                 up: 0.0,
@@ -173,8 +174,8 @@ impl Globe {
                     Spot::Address(address) => address.to_string(),
                 }),
             });
-            endpoint.up += remote.up;
-            endpoint.down += remote.down;
+            endpoint.up += up;
+            endpoint.down += down;
             endpoint.count += 1;
             if traffic > endpoint.top.0 {
                 endpoint.top = (traffic, remote.id);
@@ -290,12 +291,12 @@ impl Globe {
                     let place = r.place.as_ref().map_or("unlocated", |p| p.name.as_str());
                     if has_rates {
                         format!(
-                            "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
+                            "{}:{} {place} | {:.0} ms | up {} down {}",
                             r.address,
                             r.port,
                             r.rtt,
-                            bytes(r.up as u64),
-                            bytes(r.down as u64)
+                            rate(r.up),
+                            rate(r.down)
                         )
                     } else {
                         format!("{}:{} {place}", r.address, r.port)
@@ -325,6 +326,15 @@ impl Globe {
 }
 
 /// Spherical interpolation between unit vectors `a` and `b`, `angle` apart.
+/// A connection's byte rate for its note; `n/a` before the scan has an interval to measure over,
+/// rather than a rate of zero.
+fn rate(bytes_per_second: Option<f32>) -> String {
+    bytes_per_second.map_or_else(
+        || "n/a".to_owned(),
+        |value| format!("{}/s", bytes(value as u64)),
+    )
+}
+
 fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
     if angle < 1e-4 {
         return a;
@@ -419,6 +429,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_connection_rate_not_yet_measured_reads_n_a_not_zero() {
+        assert_eq!(rate(None), "n/a");
+        assert_eq!(rate(Some(0.0)), format!("{}/s", bytes(0)));
+        assert_eq!(rate(Some(2048.0)), format!("{}/s", bytes(2048)));
+    }
+
+    #[test]
     fn facing_turns_the_viewer_towards_any_point_on_the_sphere() {
         let center = [0.0, 0.0, RADIUS];
         // As far south as people live; see face for the limit.
@@ -471,7 +488,7 @@ mod tests {
         use crate::render::{Camera, Item, Scene, View};
         let mut snapshot = demo(10.0, 128);
         for remote in &mut snapshot.remotes {
-            (remote.rtt, remote.up, remote.down) = (0.0, 0.0, 0.0);
+            (remote.rtt, remote.up, remote.down) = (0.0, None, None);
         }
         let id = snapshot.remotes[0].id;
         let render = |snapshot: &Snapshot| {
