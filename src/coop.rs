@@ -16,13 +16,15 @@ use crate::palette::{core_color, core_name, kind_color, tint};
 use crate::platform::{DeletedFile, GROUP_LABEL, Source};
 use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, without_apple_prefix};
 use crate::simulation::hash::unit_from as fraction;
-use crate::simulation::{Rng, SpatialHash, hash, sprout};
+use crate::simulation::{FixedStep, Rng, SpatialHash, hash, sprout};
 
 /// Fixed simulation step in seconds. The yard advances on wall-clock time in whole steps, so
 /// every frame rate follows the same trajectory.
 const H: f32 = 0.05;
 /// Steps a single frame may catch up; longer gaps (a stall, a pause) are dropped.
 const MAX_STEPS: usize = 10;
+/// Wall-clock seconds one frame may count; a longer gap (a stall, a pause) is dropped.
+const MAX_GAP: f32 = 0.5;
 /// Vicsek interaction radius in world units: a forager aligns with flock mates nearer than this.
 const NEIGHBOURHOOD: f32 = 4.0;
 /// Foraging speed `V_MIN + V_SPAN * cpu / (cpu + SPEED_KNEE)` in world units per second.
@@ -771,6 +773,15 @@ fn plural(count: u64, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
+/// The yard's fixed-step clock, which starts with coop's constants.
+struct YardClock(FixedStep);
+
+impl Default for YardClock {
+    fn default() -> Self {
+        Self(FixedStep::new(H, MAX_STEPS, MAX_GAP))
+    }
+}
+
 /// The persistent coop view.
 #[derive(Default)]
 pub struct Coop {
@@ -801,8 +812,7 @@ pub struct Coop {
     /// The sample the roles were last decided for, and the processes they were decided over.
     decided: Option<f64>,
     drawn: Vec<Identity>,
-    clock: Option<f32>,
-    accumulator: f32,
+    clock: YardClock,
     phi: Option<f32>,
     pressure_missing: bool,
     /// The OS has no cgroups, so flocks are its process groups (`GROUP_LABEL`) and no OOM kill
@@ -1132,6 +1142,23 @@ impl Coop {
         self.calls.drain(..excess);
     }
 
+    /// Where each drawn chicken belongs, wherever it has walked to: its seat on its house's
+    /// perches, on the ground. The view harness checks layout stability here.
+    pub fn anchors(&self) -> HashMap<Identity, Point> {
+        self.yard
+            .chickens
+            .iter()
+            .filter_map(|chicken| {
+                let center = self.flocks.get(chicken.flock)?.center;
+                let (offset, _) = seat_offset(self.seats.seat(chicken.id)?);
+                Some((
+                    chicken.id,
+                    [center[0] + offset[0], center[1] + offset[1], 0.0],
+                ))
+            })
+            .collect()
+    }
+
     /// The status legend, with the yard's order parameter and what could not be measured.
     pub fn legend(&self) -> String {
         let phi = self
@@ -1220,20 +1247,7 @@ impl Coop {
 
     /// Steps the yard on wall-clock time; returns how far the frame lies into the next step.
     fn advance(&mut self, time: f32) -> f32 {
-        let dt = match self.clock {
-            Some(last) if time >= last => (time - last).min(0.5),
-            _ => 0.0,
-        };
-        self.clock = Some(time);
-        self.accumulator += dt;
-        let mut steps = 0;
-        while self.accumulator >= H && steps < MAX_STEPS {
-            self.yard.step(H);
-            self.accumulator -= H;
-            steps += 1;
-        }
-        self.accumulator = self.accumulator.min(H);
-        (self.accumulator / H).clamp(0.0, 1.0)
+        self.clock.0.advance(time, |step| self.yard.step(step))
     }
 
     /// Turns recorded OOM kills into fox runs: to where the victim was last drawn, or to its
@@ -3001,7 +3015,8 @@ mod tests {
     use super::*;
     use crate::model::{Unit, demo};
     use crate::platform::Sources;
-    use crate::render::{Camera, Scene, View};
+    use crate::render::{Camera, RenderInput, Scene};
+    use crate::views::view;
 
     fn identity(pid: u32) -> Identity {
         Identity {
@@ -3088,17 +3103,12 @@ mod tests {
     }
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
-        let frame = scene.render(
-            snapshot,
-            View::Coop,
-            &Camera::default(),
-            160,
-            90,
-            None,
-            time,
-            4096,
-            None,
-        );
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
+            limit: 4096,
+            ..RenderInput::small(snapshot, view("coop"), &Camera::default(), time)
+        });
         scene.spare = frame.release();
     }
 
@@ -4337,17 +4347,12 @@ mod tests {
             for k in 0..6 {
                 let sample = demo(20.0 + k as f64, 160);
                 scene.record(&sample, 20.0 + k as f32);
-                let mut frame = scene.render(
+                let mut frame = scene.render(&RenderInput::small(
                     &sample,
-                    View::Coop,
+                    view("coop"),
                     &Camera::default(),
-                    320,
-                    180,
-                    None,
                     20.0 + k as f32 * 0.7,
-                    512,
-                    None,
-                );
+                ));
                 frame.rasterize();
                 pixels = frame.pixels.clone();
                 scene.spare = frame.release();
@@ -4365,17 +4370,14 @@ mod tests {
         selected: Option<Identity>,
         focus: Option<Identity>,
     ) {
-        let frame = scene.render(
-            snapshot,
-            View::Coop,
-            &Camera::default(),
-            160,
-            90,
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
             selected,
-            time,
             limit,
             focus,
-        );
+            ..RenderInput::small(snapshot, view("coop"), &Camera::default(), time)
+        });
         scene.spare = frame.release();
     }
 

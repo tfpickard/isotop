@@ -14,7 +14,17 @@ The README covers usage. This file covers how to work on the code.
    on macOS sockets and open files only, as it has no lock table) run on a background thread
    every `model::BACKGROUND_PERIOD` (2 s) and are merged in by `Identity`, against the pids the
    cycle scanned, so the frame loop never waits on them and a reused pid inherits nothing.
-   `Snapshot.sampler` reports whether that thread is alive and how long its scans took. On Linux
+   `Snapshot.sampler` reports whether that thread is alive and how long its scans took.
+   Optional sources, the ones only some views draw, are read only while the shown view declares
+   them: `main.rs` hands `Collector::demand` the `sources` of the shown view's registry row at
+   startup and on every view change, the thread takes a copy of that `Demand` at the start of
+   each cycle, and reads an optional source through `Demand::read_if` (or `Reads::read`, which
+   also records it as active or, when it cannot be read, missing). Remote locations
+   (`Source::Locations`, the GeoIP lookups the globe draws) go through it, and the journal
+   follower in `main.rs` runs while the demand contains `Source::Journal` and for
+   `JOURNAL_LINGER` (30 s) after; no view is special-cased. `Snapshot.sources` lists the
+   optional sources read for the sample, and `Snapshot.missing` those demanded and unreadable;
+   one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there. On Linux
    the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
@@ -30,8 +40,8 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), main loop, headless PNG and benchmark, and `warm_up`, which settles a headless frame (the golden render test calls it too) |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`), headless PNG and benchmark, and `warm_up`, which runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
@@ -39,15 +49,19 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `View`, `Stage`, and `Scene`, which owns City, Orbit, Ripple and Flow as methods, dispatches Matrix by hand and calls the module views below through `Stage` |
+| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
+| `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
 | `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
 | `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
-| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, hashes, and the `growth`, `sprout` and `smoothing` easing |
+| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, the `FixedStep` clock, hashes, and the `growth`, `sprout` and `smoothing` easing |
+| `status.rs` | The legend wording for optional sources, so every view says it alike: `missing_note` (` \| no <source>: <consequence>`) and `sources_note` (` \| sources: a, b`) |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
+| `picker.rs` | The view picker opened by `v` and the Tab playlist: `Picker` (filter, highlight, popup lines), the name and title filter, `playlist` (the `--views` rules) and the `cycle` and `toggle` rules; pure, so the tests drive it without a terminal |
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
@@ -63,7 +77,7 @@ files by path relative to `src/` in the first column; a row may list several.
 ## Architecture
 
 Dependencies mostly run one way: `platform` and `model` (the data), then the shared helpers, then
-`render` with the view modules, then `gpu` and `terminal`, then `main`. Check with
+`render` with `views` and the view modules, then `gpu` and `terminal`, then `main`. Check with
 `grep -n 'use crate::' src/*.rs` before adding an import. Nothing imports `main.rs`, `model` and
 `platform` never import `render`, a view or `terminal`, and `gpu` and `terminal` import only
 `render`. The exceptions, so don't assume otherwise:
@@ -71,29 +85,51 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 - `model` and `platform` import each other: the platform builds `model` types and `model` calls the
   `Sampler`. `journal` and `platform/*/journal.rs` do the same.
 - `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
-  `Color`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
+  `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
+  `Scene`, `Stage` and `Backdrop` and call the built-in views' legends. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
+- The test-only `harness` imports `main` for `App`, `Options`, `demo_snapshot` and `warm_up`, so
+  it runs a view exactly as a headless `--output` run does.
 - `render` and the views read `platform` types (`Shadow`, `Files`, `DeletedFile`, and `Source`
   and `Sources` from `Snapshot::missing`), and Cells and the coop its `GROUP_LABEL` and
   `WITHOUT_CGROUPS`.
 
-**The view contract.** A module view owns a state struct and implements
-`draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
-`Stage` carries in the frame, camera, selection, time, births and growth. A view writes back
-`stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
+**The view contract.** A view is one module plus one row of `views::REGISTRY`. The module owns
+a state struct and implements `views::ViewModule`:
+`draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize` and
+`legend`, and where it needs them `record` (every sample, whichever view is shown), `key` and
+`inspector_line`. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back
+only through `Stage` outputs. `Stage` carries in the frame, camera, selection, time, `dt`, births
+and growth; what the platform could not measure is `snapshot.missing`, which `Stage` does not
+copy. `stage.dt` is the one step policy for new code, computed once per frame by `Scene`: 0 on
+the first frame, while paused and when time goes back (a rewind), otherwise the time since the
+last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulation with it or
+with a fixed-step clock fed from `stage.time`; the older views keep their own clamps. A view
+writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
-`stage.places` and `stage.notes`, and returns how many processes it showed; the rest count as
-collapsed. City, Orbit, Ripple and Flow are still `Scene` methods that use `Scene`'s own fields,
-and Matrix is a special arm in `Scene::render`. They are being moved onto `Stage`, so write new
-views the module way.
+`stage.places`, `stage.notes` (popup lines after the sockets), `stage.tour` (`TourTarget { id,
+position, weight }`, which the tour visits heaviest first) and `stage.popup` (popup lines right
+after the process's own figures), and returns how many processes it showed; the rest count as
+collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
+time, limit, focus and whether the app is paused). Orbit, Ripple and Flow still report through
+`scene.stars`, `scene.mass` and `scene.hub_names`, which `main.rs` reads besides the outputs
+until they move. The row (`ViewInfo`) holds everything else that sets the view apart, and `Scene`,
+`App` and the headless warm-up read it instead of naming the view. The eleven older views are
+built in (`Hooks::BuiltIn`): `Scene` keeps their state in typed fields and draws them in its own
+arms, City, Orbit, Ripple and Flow as `Scene` methods and Matrix by hand. They are being moved
+onto `ViewModule`, so write new views the module way and never add an arm.
 
 **Shared helpers live in one place each.** Don't write a second copy:
 - `simulation`: `SpatialHash` and `SpatialHash3`, `Rng` (seeded per identity, `normal` for a
   Gaussian), `XorShift32`, `Complex` with `dft`, `fft` and `inverse_fft` (forward sign
-  `exp(-2*pi*i*k*n/N)`), `simulation::hash` (`fnv1a_64_bytes` and the rest), `hash_identity`, and
+  `exp(-2*pi*i*k*n/N)`), `FixedStep` (a fixed-step clock: `advance(time, tick)` runs whole steps
+  and returns the interpolation fraction; step simulations with it, never copy `Coop::advance`),
+  `simulation::hash` (`fnv1a_64_bytes` and the rest), `hash_identity`, and
   the `growth`, `sprout` and `smoothing` easing.
 - `palette`: every colour table, `mix`, `tint`, `kind_color`. `geometry`: vector maths and
   `cuboid`. `layout`: `Seats`, `Discs`, the golden-angle `spiral`.
+- `status`: `missing_note` and `sources_note`, the legend wording for missing and active optional
+  sources. `model::top_n` picks the processes a budgeted view draws.
 - `render::shared`: constants the CPU rasterizer and the WGSL shader share.
 - `model::testing::process` builds a `Process` in tests.
 
@@ -106,7 +142,8 @@ views the module way.
   `--renderer gpu` and compare the PNGs.
 - **Layouts are stable.** A process keeps its place when CPU, memory or the population changes.
   Systems and districts are only re-placed when their structure outgrows the reservation, and
-  tests enforce this. Don't introduce a layout that reshuffles every sample.
+  tests enforce this: the view harness checks every registered view (`harness.rs`). Don't
+  introduce a layout that reshuffles every sample.
 - **Picking.** A pickable item carries an index into `frame.identities`. `NONE` means "not
   pickable", and lines clear picking where they draw. Mouse input is cell-coarse, so
   `pick_near` searches a radius.
@@ -193,27 +230,45 @@ match your own shell.
 - Tests live in a `tests` module at the bottom of each file. Name them as sentences about
   behaviour (`city_does_not_relocate_when_resources_or_population_change`). Rendering tests use
   `model::demo` or the shared `process(pid, parent)` helper in `model::testing`.
-- When you add a field to `Process`, decide it in the three exhaustive literals (no
+- When you add a field to `Process`, decide it in the four exhaustive literals (no
   `..Default::default()`, so the compiler insists): `parse_stat` in `platform/linux/mod.rs`,
-  `Sampler::process` in `platform/macos/mod.rs` and `model::demo`. Also set it in `Default for
+  `Sampler::process` in `platform/macos/mod.rs`, `model::demo_with` and `Transient::process`
+  (the demo's churn, `model.rs`). Also set it in `Default for
   Process` in `model.rs`, which `Process::placeholder`, `hub()` and the `model::testing::process`
   test helper build on. Update `RawProcess` in `platform/mod.rs` if the platform supplies it. A
   rate also needs `Counters` and `measure()`; a field filled on the background thread needs
   `Extras`, `background()` and the merge in `Collector::sample` (all in `model.rs`). `Snapshot`
-  derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo`.
-- A new view is a module view like `reef.rs` (`docs/VIEW_CONVENTIONS.md` has the rules). Today it
-  touches these places; `View::next`, Tab, the number keys and `--view` follow from `View::ALL`:
-  - `src/<name>.rs` with a `draw` as in the Architecture section, a `mod` line in `main.rs` and a
-    row in the file table above.
-  - `render.rs`: the `View` variant, `View::ALL` (and its length), `View::backdrop`, a field on
-    `Scene`, and the view in both `match` arms of `Scene::render` (the arm list and the `Stage`
-    dispatch). Add `Scene::record` if it keeps history, and the `quiet` links test if it should
-    draw every link.
-  - `main.rs`: the title and the legend in `App::text`, and `warm_up` if the first frame needs
-    settling.
-  - Outside `src/`: the README section, key table and view lists, the view loop in
-    `.github/workflows/ci.yml`, and a line in `tests/golden.txt` (bless it and say so in the PR).
-  The registry from P1 (#17) will replace most of this list; update it when that merges.
+  derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo_with`.
+- A new view is one module plus one registry row (`docs/VIEW_CONVENTIONS.md` has the rules):
+  - `src/<name>.rs` with a `#[derive(Default)]` state struct that implements `ViewModule`, a
+    `mod` line in `main.rs` and a row in the file table above.
+  - One `ViewInfo` at the end of `REGISTRY` in `views.rs`, built with
+    `ViewInfo::new(name, title, backdrop, Hooks::Module(...))`, setting only the fields that
+    differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
+    `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
+    or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    `header` (None: the scene's visible and collapsed counts), `face` (None), `sources` (none),
+    `demo` (`DemoOptions::default()`) and `contract` (`Contract::DEFAULT`: it draws processes,
+    which may move at most 1 world unit over the ground, checked where they are drawn, and it is
+    known to fail nothing). Tab, Shift+Tab, the `v` picker, `--view`, `--views`,
+    `--list-views` and `--verbose` follow from the table. Never reorder the first ten rows: the digits pick them.
+  - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
+    . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
+    (returning true consumes that press). Every other key is global, and no key reaches the view
+    while a search is open.
+  - The view harness (`harness.rs`) covers every row: `every_view_satisfies_the_view_contract`
+    checks that two runs from the same inputs draw the same pixels and picks, that the demo
+    shows processes with positions and something to click, that every pick names a process,
+    that no surviving process moves when CPU and memory change (CPU scaled 0.25 to 4, memory 0.5
+    to 2) or when a tenth of the processes exit and as many start, and that an empty machine
+    draws. A new view needs tests only for what is its own beyond that. Set its tolerance on
+    the row's `contract`; a view whose creatures wander declares `anchors` (Coop's seats). Never
+    add a `known_unstable` entry for a new view: those record debt of the views that predate the
+    harness, each with its issue, and the harness reports one that starts to pass.
+  - Test the module through `Scene::with_rows` and a table of its own, as `views::testing` does.
+  - Outside `src/`: the README section, key table and view lists, and a line in
+    `tests/golden.txt` (bless it and say so in the PR). CI renders every view `--list-views`
+    prints, and the golden test renders every row.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
   error-prone code.
 - Suppress lints with `#[expect(lint, reason = "...")]` only, never `#[allow]`.

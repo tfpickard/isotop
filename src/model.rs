@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{self, RawProcess, Source, Sources};
-use crate::simulation::smoothing;
+use crate::simulation::{Rng, hash_identity, smoothing};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -361,6 +361,11 @@ pub struct Snapshot {
     /// (`Sampler::missing`), and the lock table and GPU memory once the background thread has
     /// found them absent.
     pub missing: Sources,
+    /// The optional sources read for this sample: demanded by the shown view (`Demand`) and
+    /// readable. A source nobody demanded is in neither `sources` nor `missing`. It lists in
+    /// `Source` declaration order, not in the order the sources were read. Empty in `--demo`,
+    /// which starts no background thread.
+    pub sources: Sources,
     /// Processes the platform could see but not measure because they belong to another user.
     pub unreadable: usize,
     /// Sources the platform measures per CPU cluster rather than per CPU (`Sampler::per_cluster`):
@@ -371,6 +376,102 @@ pub struct Snapshot {
     pub shadows: Vec<platform::Shadow>,
     /// How the background thread that measures the slow sources is doing.
     pub sampler: SamplerHealth,
+}
+
+/// The optional sources the shown view wants read. The background thread reads an optional
+/// source only while it is demanded (`Demand::read_if`), so a source that no shown view draws
+/// costs nothing. `main` sets it from the shown view's registry row at startup and on every view
+/// change (`Collector::demand`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Demand(Sources);
+
+impl Demand {
+    pub fn contains(self, source: Source) -> bool {
+        self.0.contains(source)
+    }
+
+    /// Only tests ask; `main` builds a demand from a registry row's sources.
+    #[cfg(test)]
+    pub fn insert(&mut self, source: Source) {
+        self.0.insert(source);
+    }
+
+    /// Only tests ask.
+    #[cfg(test)]
+    pub fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Runs `read` and returns what it read when `source` is demanded; None, without running
+    /// it, when it is not. Every optional background source reads through this.
+    pub fn read_if<T>(self, source: Source, read: impl FnOnce() -> T) -> Option<T> {
+        self.contains(source).then(read)
+    }
+}
+
+impl From<Sources> for Demand {
+    fn from(sources: Sources) -> Self {
+        Demand(sources)
+    }
+}
+
+/// The optional sources one background cycle reads: what is demanded at its start, and what
+/// came of each source it was asked for.
+struct Reads {
+    demand: Demand,
+    /// Demanded and read.
+    active: Sources,
+    /// Demanded and not readable.
+    missing: Sources,
+}
+
+impl Reads {
+    fn new(demand: Demand) -> Self {
+        Reads {
+            demand,
+            active: Sources::default(),
+            missing: Sources::default(),
+        }
+    }
+
+    /// Reads `source` through `Demand::read_if` and records the outcome: `read` returns None
+    /// when the source cannot be read (permissions, kernel, hardware, platform), which makes it
+    /// missing instead of active. A source that is not demanded is neither.
+    fn read<T>(&mut self, source: Source, read: impl FnOnce() -> Option<T>) -> Option<T> {
+        let value = self.demand.read_if(source, read)?;
+        match value {
+            Some(_) => self.active.insert(source),
+            None => self.missing.insert(source),
+        }
+        value
+    }
+}
+
+/// The `n` processes with the largest `key`, largest first. Ties go to the smaller `Identity`,
+/// and a NaN key sorts after every number, so the choice is the same in every sample that has
+/// the same keys.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "no budgeted selection uses it yet")
+)]
+pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
+    let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
+    let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
+        (true, true) => a.1.id.cmp(&b.1.id),
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.id.cmp(&b.1.id))
+        }
+    };
+    if n < keyed.len() {
+        keyed.select_nth_unstable_by(n, order);
+        keyed.truncate(n);
+    }
+    keyed.sort_by(order);
+    keyed.into_iter().map(|(_, process)| process).collect()
 }
 
 /// How often the background thread runs its scans: sockets, GPU memory, cgroups, open files, file
@@ -488,8 +589,11 @@ struct Extras {
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<platform::Files>>,
     locks: Measured<platform::Locks>,
-    /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table.
+    /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table,
+    /// and the demanded optional sources that could not be read.
     missing: Sources,
+    /// The optional sources this cycle read, because they were demanded when it began.
+    sources: Sources,
     geo: String,
     /// How long each scan took, by the source it reads.
     latency: Vec<(Source, Duration)>,
@@ -584,10 +688,11 @@ pub struct Collector {
     last: Instant,
     origin: Instant,
     background: Option<Background>,
-    /// Cgroup paths the background thread should account, and whether to locate remote
-    /// addresses (only the globe shows them, and the first lookup loads the GeoIP database).
+    /// Cgroup paths the background thread should account, and the optional sources it should
+    /// read (`Collector::demand`): remote locations, for one, which only the globe shows and
+    /// whose first lookup loads the GeoIP database.
     wanted: Arc<Mutex<HashSet<String>>>,
-    locating: Arc<AtomicBool>,
+    demand: Arc<Mutex<Demand>>,
     /// The processes of the latest sample by pid, which the background scans are joined against.
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
     geoip: Option<PathBuf>,
@@ -601,7 +706,7 @@ pub struct Collector {
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
-    locating: Arc<AtomicBool>,
+    demand: Arc<Mutex<Demand>>,
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
@@ -618,13 +723,22 @@ fn background(
             // process named here or one that took its pid since.
             let identities = identities.lock().map(|map| map.clone()).unwrap_or_default();
             let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
+            // Once per cycle, so a view change takes effect at the next cycle and no source is
+            // half read.
+            let mut reads = Reads::new(
+                demand
+                    .lock()
+                    .map_or_else(|error| *error.into_inner(), |d| *d),
+            );
             let paths = accounted(wanted_now, &mut retained);
             let mut latency = Vec::new();
             let network = timed(&mut latency, Source::Sockets, platform::network);
-            let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
-            let remotes = timed(&mut latency, Source::Locations, || {
-                remotes(&network.remotes, &mut sockets, locator)
+            let places = reads.read(Source::Locations, || {
+                timed(&mut latency, Source::Locations, || {
+                    located(&mut geo, &network.remotes)
+                })
             });
+            let remotes = remotes(&network.remotes, &mut sockets, places.as_deref());
             let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
             let gpu_memory = timed(&mut latency, Source::GpuMemory, || {
                 gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default()
@@ -637,7 +751,7 @@ fn background(
             let locks = timed(&mut latency, Source::FileLocks, || {
                 platform::locks().map_or(Measured::Unreadable, Measured::Known)
             });
-            let missing = background_gaps(gpu.is_some(), &locks);
+            let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
                 network,
@@ -648,6 +762,7 @@ fn background(
                 files,
                 locks,
                 missing,
+                sources: reads.active,
                 geo: geo.source.clone(),
                 latency,
                 finished: None,
@@ -753,6 +868,7 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         .collect();
     snapshot.geo = extras.geo.clone();
     snapshot.missing = snapshot.missing.union(extras.missing);
+    snapshot.sources = extras.sources;
 }
 
 /// The slow sources a background pass found absent: GPU memory when no GPU library loaded, and
@@ -798,17 +914,30 @@ fn merge_files(
     };
 }
 
-/// Byte rates from the change in each socket's counters since the previous scan, and locations.
+/// Where each of `sockets` is, in order, from the GeoIP database; None when no database can be
+/// read, which makes `Source::Locations` missing. The database loads on the first public
+/// address, so a machine with none to look up is not judged yet.
+fn located(geo: &mut geo::Geo, sockets: &[platform::Remote]) -> Option<Vec<Option<Place>>> {
+    let places = sockets
+        .iter()
+        .map(|socket| geo.locate(socket.address))
+        .collect();
+    (!geo.lacks_database()).then_some(places)
+}
+
+/// Byte rates from the change in each socket's counters since the previous scan, and `places`,
+/// where each of them is when the locations were read.
 fn remotes(
     sockets: &[platform::Remote],
     previous: &mut HashMap<u64, (Instant, u64, u64)>,
-    mut geo: Option<&mut geo::Geo>,
+    places: Option<&[Option<Place>]>,
 ) -> Vec<Remote> {
     let now = Instant::now();
     let mut next = HashMap::new();
     let found = sockets
         .iter()
-        .map(|socket| {
+        .enumerate()
+        .map(|(index, socket)| {
             let rate = |now_bytes: u64, then_bytes: u64, dt: f32| {
                 now_bytes
                     .checked_sub(then_bytes)
@@ -835,7 +964,7 @@ fn remotes(
                 rtt: socket.rtt as f32 / 1000.0,
                 up,
                 down,
-                place: geo.as_mut().and_then(|geo| geo.locate(socket.address)),
+                place: places.and_then(|places| places[index].clone()),
             }
         })
         .collect();
@@ -919,7 +1048,7 @@ impl Collector {
             origin: Instant::now(),
             background: None,
             wanted: Arc::new(Mutex::new(HashSet::new())),
-            locating: Arc::new(AtomicBool::new(false)),
+            demand: Arc::new(Mutex::new(Demand::default())),
             identities: Arc::new(Mutex::new(HashMap::new())),
             geoip,
             home: geo::home(home),
@@ -927,9 +1056,12 @@ impl Collector {
         }
     }
 
-    /// Turns locating remote addresses on or off for the following samples.
-    pub fn locate(&self, on: bool) {
-        self.locating.store(on, Ordering::Relaxed);
+    /// Sets the optional sources the background thread reads from its next cycle on. `main` calls
+    /// it with the shown view's sources at startup and on every view change.
+    pub fn demand(&self, demand: Demand) {
+        if let Ok(mut current) = self.demand.lock() {
+            *current = demand;
+        }
     }
 
     pub fn sample(&mut self) -> std::io::Result<Snapshot> {
@@ -981,7 +1113,7 @@ impl Collector {
             self.background = background(
                 self.geoip.clone(),
                 Arc::clone(&self.wanted),
-                Arc::clone(&self.locating),
+                Arc::clone(&self.demand),
                 Arc::clone(&self.identities),
             );
         }
@@ -1116,10 +1248,34 @@ fn demo_cpu_integral(time: f64, index: usize) -> f64 {
             + (4.0 * theta).sin() / 32.0
     };
     let start = index as f64 * 1.71;
-    let scale = 20.0 + (index % 9) as f64 * 24.0;
-    let bonus = if index.is_multiple_of(47) { 110.0 } else { 0.0 };
+    let (scale, bonus) = demo_cpu_shape(index);
     scale / 16.0 * (antiderivative(RATE * time + start) - antiderivative(start)) / RATE
         + bonus * time
+}
+
+/// The two numbers that shape demo process `index`'s CPU use: the `scale` of its swing and the
+/// `bonus` that a few processes add on top. Its peak CPU use, in percent, is `scale + bonus`.
+fn demo_cpu_shape(index: usize) -> (f64, f64) {
+    let scale = 20.0 + (index % 9) as f64 * 24.0;
+    let bonus = if index.is_multiple_of(47) { 110.0 } else { 0.0 };
+    (scale, bonus)
+}
+
+/// The CPU use in percent of demo process `index` at `time`, in `f64`: the function that
+/// `demo_cpu_integral` integrates. Base processes compute the same value in `f32` inside `demo`.
+fn demo_cpu_percent(time: f64, index: usize) -> f64 {
+    let (scale, bonus) = demo_cpu_shape(index);
+    let phase = 0.55 * time + 1.71 * index as f64;
+    (phase.sin() * 0.5 + 0.5).powi(4) * scale + bonus
+}
+
+/// The CPU time in seconds of demo process `index` at `time` when `DemoOptions::exact_cpu_time`
+/// is on: the integral of its CPU use from time 0 (`demo_cpu_integral`, in percent-seconds,
+/// divided by 100), plus the head start of `3.7 * index` seconds that `demo` gives each process.
+/// It never decreases as `time` grows, because the CPU use is never negative. Before time 0 the
+/// integral runs backwards, so the value can be negative there.
+pub fn demo_cpu_seconds(time: f64, index: usize) -> f64 {
+    demo_cpu_integral(time, index) / 100.0 + index as f64 * 3.7
 }
 
 /// The share of a demo process's I/O that is writes.
@@ -1226,8 +1382,520 @@ fn demo_files(index: usize, kind: Kind) -> (platform::Files, u32, Option<usize>)
     (files, held, waiting)
 }
 
+/// What the demo workload synthesizes for a view beyond what `demo` gives every view. A view asks
+/// for it on its registry row (`ViewInfo::demo`); the default is `demo` exactly, so a view that
+/// asks for nothing gets today's frames, field for field.
+///
+/// Both options are pure functions of `time`, with no state, so a call at any time, in any order
+/// and including negative times, gives the same snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DemoOptions {
+    /// Adds transient processes after the base population, so base indices, pids and links stay
+    /// as they are. There is one family per 16 base processes, and each family repeats a cycle
+    /// of 24, 26, 28 or 30 seconds (by family number, staggered): a parent forks 1 to 6 children
+    /// over 2 to 4 seconds, each child runs for 3 to 12 seconds and exits, and the parent exits
+    /// 0.4 s after its last child. Some exits leave a `'Z'` entry for `DEMO_ZOMBIE_SECONDS`, one
+    /// sample at the default rate. Once per 90 seconds, 60 s into its cycle, one more transient
+    /// that grew above 1 GiB is killed with signal 9 (the out-of-memory case). Every transient
+    /// lives inside its own cycle, so cycles never overlap, and pids come from a fixed pool
+    /// above `1000 + count` and are reused with a new `Identity::start`. A transient's
+    /// `cpu_time` is the integral of its own `cpu` since birth, and `demo_life` lists their forks
+    /// and exits.
+    pub churn: bool,
+    /// Gives base processes the CPU time `demo_cpu_seconds` computes, the exact integral of
+    /// their `cpu`, and enough threads for the cores they use: `threads >= ceil(peak cpu / 100)`,
+    /// so a single-threaded process never exceeds one core. Off, `cpu_time` and `threads` are
+    /// the unrelated values `demo` has always had.
+    pub exact_cpu_time: bool,
+}
+
+/// One transient family per this many base processes.
+const DEMO_FAMILY_SIZE: usize = 16;
+
+/// The most children a family's parent forks in one cycle.
+const DEMO_MAX_CHILDREN: usize = 6;
+
+/// Seconds that a process which leaves a zombie stays listed as `'Z'` after it exited: one sample
+/// at the default `--sample-ms`.
+pub const DEMO_ZOMBIE_SECONDS: f64 = 1.0;
+
+/// Seconds between the out-of-memory kills.
+const DEMO_OOM_PERIOD: f64 = 90.0;
+
+/// Added to a transient's birth in 1/100 s ticks to make `Identity::start`, which puts it above
+/// every base `start` (those count processes from 1).
+const DEMO_TRANSIENT_START: i64 = 1 << 40;
+
+/// Seeds the generator of a (family, epoch) cycle, apart from other uses of the same identity.
+const DEMO_CHURN_SALT: u64 = 0x5334_c4a2_d3e1;
+
+/// The part a transient plays in its cycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Forks the children of the cycle and waits for them.
+    Parent,
+    /// One of the parent's children.
+    Child,
+    /// The process that grows until the out-of-memory killer ends it.
+    Victim,
+}
+
+/// One transient process of one cycle: when it is listed and everything else fixed about it.
+#[derive(Clone, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only demo_life reads the exit status, for B3 (#30)"
+    )
+)]
+struct Transient {
+    id: Identity,
+    /// Its parent: the cycle's parent for a child, a base process otherwise.
+    parent: Identity,
+    family: usize,
+    role: Role,
+    /// The base process whose district it lives in.
+    anchor: usize,
+    /// Stands for the process index in the demo's CPU, memory and I/O formulas.
+    shape: usize,
+    /// It is listed from `birth` (inclusive) to `end` (exclusive), in demo seconds.
+    birth: f64,
+    /// When it exited. A zombie stays listed from `exit` until `end`; otherwise `end == exit`.
+    exit: f64,
+    end: f64,
+    code: i32,
+    signal: Option<i32>,
+    /// The bytes the victim holds when it is killed; None follows the usual formula.
+    peak_memory: Option<f64>,
+}
+
+/// The number of transient families for `count` base processes. The victim is family number
+/// `families`.
+fn demo_families(count: usize) -> usize {
+    count.div_ceil(DEMO_FAMILY_SIZE)
+}
+
+/// The length of a family's cycle in seconds.
+fn demo_cycle_period(family: usize, families: usize) -> f64 {
+    if family == families {
+        DEMO_OOM_PERIOD
+    } else {
+        24.0 + 2.0 * (family % 4) as f64
+    }
+}
+
+/// When a family's cycle number 0 starts, in demo seconds. Staggered, so families do not fork in
+/// step.
+fn demo_cycle_offset(family: usize) -> f64 {
+    5.9 * family as f64
+}
+
+/// The number of the cycle of `family` that `time` falls in; negative before the first.
+fn demo_epoch(time: f64, family: usize, families: usize) -> i64 {
+    ((time - demo_cycle_offset(family)) / demo_cycle_period(family, families)).floor() as i64
+}
+
+/// The identity of the transient in pool slot `slot`. The pid is above every base pid, and the
+/// start is the birth in 1/100 s ticks, so a reused pid gets a new identity.
+fn demo_transient_identity(count: usize, slot: usize, birth: f64) -> Identity {
+    let ticks = (birth * 100.0).floor() as i64;
+    Identity {
+        pid: 1001 + (count + slot) as u32,
+        start: (DEMO_TRANSIENT_START + ticks) as u64,
+    }
+}
+
+/// The identity of base process `index`.
+fn demo_base_identity(index: usize) -> Identity {
+    Identity {
+        pid: 1000 + index as u32,
+        start: index as u64 + 1,
+    }
+}
+
+/// Every transient of `family`'s cycle number `epoch`, the parent first. All of them are listed
+/// inside the cycle, whatever the draws: a parent is born less than a second in, forks until at
+/// most 4.2 s after that, its children run for at most 12 s, and the last zombie window ends
+/// 1.4 s after the last of them, so under 19 s of the shortest cycle's 24. The victim lives 35
+/// to 55 s, is killed 60 s into its cycle and is a zombie for a second after, inside the 90.
+fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
+    let families = demo_families(count);
+    if count == 0 || family > families {
+        return Vec::new();
+    }
+    let start = demo_cycle_offset(family) + epoch as f64 * demo_cycle_period(family, families);
+    let mut rng = Rng::new(hash_identity(
+        Identity {
+            pid: family as u32,
+            start: epoch as u64,
+        },
+        DEMO_CHURN_SALT,
+    ));
+    // Any district but a kernel thread's, which fork nothing here.
+    let mut district = (rng.next_u64() % families as u64) as usize;
+    if district % 4 == 3 {
+        district -= 1;
+    }
+    let anchor = (district * DEMO_FAMILY_SIZE + 1 + (rng.next_u64() % 15) as usize).min(count - 1);
+    let anchor_id = demo_base_identity(anchor);
+    let shape = |rng: &mut Rng| 1 + (rng.next_u64() % 4000) as usize;
+    let slot = family * (DEMO_MAX_CHILDREN + 1);
+    if family == families {
+        // Killed 60 s into every cycle, so the kills are exactly one period apart.
+        let exit = start + 60.0;
+        let birth = exit - 35.0 - 20.0 * f64::from(rng.unit());
+        return vec![Transient {
+            id: demo_transient_identity(count, slot, birth),
+            parent: anchor_id,
+            family,
+            role: Role::Victim,
+            anchor,
+            shape: shape(&mut rng),
+            birth,
+            exit,
+            end: exit + DEMO_ZOMBIE_SECONDS,
+            code: 0,
+            signal: Some(9),
+            peak_memory: Some((1.1 + 0.5 * f64::from(rng.unit())) * 1073741824.0),
+        }];
+    }
+    let parent_birth = start + f64::from(rng.unit());
+    let children = 1 + (rng.next_u64() % DEMO_MAX_CHILDREN as u64) as usize;
+    let span = 2.0 + 2.0 * f64::from(rng.unit());
+    let parent_id = demo_transient_identity(count, slot, parent_birth);
+    let parent_shape = shape(&mut rng);
+    let mut cycle = Vec::with_capacity(children + 1);
+    let mut last_exit = parent_birth;
+    for child in 1..=children {
+        let birth = parent_birth
+            + 0.2
+            + span * ((child - 1) as f64 + f64::from(rng.unit())) / children as f64;
+        let exit = birth + 3.0 + 9.0 * f64::from(rng.unit());
+        let zombie = rng.unit() < 0.35;
+        let code = i32::from(rng.unit() < 0.15);
+        last_exit = last_exit.max(exit);
+        cycle.push(Transient {
+            id: demo_transient_identity(count, slot + child, birth),
+            parent: parent_id,
+            family,
+            role: Role::Child,
+            anchor,
+            shape: shape(&mut rng),
+            birth,
+            exit,
+            end: exit + if zombie { DEMO_ZOMBIE_SECONDS } else { 0.0 },
+            code,
+            signal: None,
+            peak_memory: None,
+        });
+    }
+    let exit = last_exit + 0.4;
+    let zombie = rng.unit() < 0.5;
+    cycle.insert(
+        0,
+        Transient {
+            id: parent_id,
+            parent: anchor_id,
+            family,
+            role: Role::Parent,
+            anchor,
+            shape: parent_shape,
+            birth: parent_birth,
+            exit,
+            end: exit + if zombie { DEMO_ZOMBIE_SECONDS } else { 0.0 },
+            code: 0,
+            signal: None,
+            peak_memory: None,
+        },
+    );
+    cycle
+}
+
+/// The transients listed at `time`, family by family with the parent of a cycle before its
+/// children: those born at or before `time` and not yet gone. A cycle holds its transients
+/// inside itself, so only the cycle that `time` falls in can have any.
+fn demo_listed(time: f64, count: usize) -> Vec<Transient> {
+    let families = demo_families(count);
+    (0..=families)
+        .flat_map(|family| demo_cycle(count, family, demo_epoch(time, family, families)))
+        .filter(|transient| transient.birth <= time && time < transient.end)
+        .collect()
+}
+
+impl Transient {
+    /// Whether it has exited by `time`; a zombie is listed from then on.
+    fn exited(&self, time: f64) -> bool {
+        time >= self.exit
+    }
+
+    /// The percent-seconds of CPU it has used by `time`: the exact integral of its CPU use since
+    /// birth, which stops growing at the exit.
+    fn cpu_integral(&self, time: f64) -> f64 {
+        let until = time.min(self.exit);
+        demo_cpu_integral(until, self.shape) - demo_cpu_integral(self.birth, self.shape)
+    }
+
+    /// The bytes it holds while running at `time`. A new process starts at 30% of its usual size
+    /// and reaches that in 3 s; the victim leaks from 300 MiB to its peak with the square of its
+    /// age.
+    fn running_memory(&self, time: f64) -> f64 {
+        let age = time.min(self.exit) - self.birth;
+        if let Some(peak) = self.peak_memory {
+            let grown = (age / (self.exit - self.birth)).clamp(0.0, 1.0);
+            return 300.0 * 1048576.0 + (peak - 300.0 * 1048576.0) * grown * grown;
+        }
+        let phase = (0.55 * time + 1.71 * self.shape as f64) as f32;
+        let usual =
+            (12.0 + (self.shape * 71 % 900) as f32 * (0.8 + 0.2 * (phase * 0.2).sin())) * 1048576.0;
+        f64::from(usual) * (0.3 + 0.7 * (age / 3.0).clamp(0.0, 1.0))
+    }
+
+    /// The `Process` listed at `time`, which is between `birth` and `end`, among `count` base
+    /// processes. Once it has exited it is a zombie: no CPU, no memory, no readable descriptor
+    /// table, and no rate, because there is nothing running to measure one on.
+    fn process(&self, time: f64, count: usize) -> Process {
+        let index = self.shape;
+        let running = !self.exited(time);
+        let phase = (0.55 * time + 1.71 * index as f64) as f32;
+        let cpu = if running {
+            demo_cpu_percent(time, index) as f32
+        } else {
+            0.0
+        };
+        let family = self.anchor / DEMO_FAMILY_SIZE;
+        let kind = [Kind::System, Kind::Session, Kind::Container, Kind::Kernel][family % 4];
+        let group = format!("district-{:02}.service", family);
+        let cgroup = demo_slice(kind).map_or_else(String::new, |slice| format!("{slice}/{group}"));
+        let stem = match self.role {
+            Role::Parent => ["make", "cargo", "ninja", "pytest"][self.family % 4],
+            Role::Child => ["cc1", "rustc", "ld", "test"][index % 4],
+            Role::Victim => "leak",
+        };
+        let (priority, nice) = demo_priority(index, kind);
+        let io_rate = if index.is_multiple_of(7) {
+            cpu * 65536.0
+        } else {
+            0.0
+        };
+        let write_rate = io_rate * demo_write_share(index);
+        // Written bytes are the integral of write_rate, as in `demo`, counted from birth.
+        let written = if index.is_multiple_of(7) {
+            (self.cpu_integral(time) * 65536.0 * demo_write_share(index) as f64) as u64
+        } else {
+            0
+        };
+        let core = ((index * 7 + (time / (5.0 + (index % 5) as f64)) as usize) % 16) as u32;
+        // Exhaustive on purpose: a new field must be decided here.
+        Process {
+            id: self.id,
+            parent: self.parent.pid,
+            name: format!("{stem}-{}", self.id.pid),
+            command: format!("{stem} --demo --job {}", self.id.pid),
+            cgroup,
+            group,
+            kind,
+            state: if !running {
+                'Z'
+            } else if cpu > 30.0 {
+                'R'
+            } else {
+                'S'
+            },
+            cpu,
+            memory: if running {
+                self.running_memory(time) as u64
+            } else {
+                0
+            },
+            io_rate: running.then_some(io_rate),
+            read_rate: running.then_some(io_rate - write_rate),
+            write_rate: running.then_some(write_rate),
+            written: Some(written),
+            priority,
+            nice,
+            threads: demo_threads(index, true),
+            gpu_memory: None,
+            core: Some(core),
+            cpu_time: (self.cpu_integral(time) / 100.0) as f32,
+            performance_share: (cpu > 0.0).then(|| {
+                let mixing = 0.15 * (0.5 + 0.5 * (phase * 0.37).sin());
+                if core < 8 { 1.0 - mixing } else { mixing }
+            }),
+            waiting: Some(1.5 * bounded(cpu, 80.0) * (0.6 + 0.4 * (phase * 0.8).cos())),
+            files: if running {
+                Measured::Known(platform::Files {
+                    open: 3 + (index % 12) as u32,
+                    deleted: Vec::new(),
+                    partial: false,
+                })
+            } else {
+                Measured::Unreadable
+            },
+            locks_held: Measured::Known(0),
+            blocked_on: None,
+            system_share: (cpu > 0.0).then(|| demo_system_share(self.family, kind, phase)),
+            policy: demo_policy(index, priority, nice),
+            syscall_io: running.then(|| demo_syscall_io(index, io_rate, write_rate)),
+            major_faults: running.then(|| demo_major_faults(index, phase)),
+            // Demo time 0 is the instant after the last base process started.
+            started: DEMO_BOOT_TIME + (count as u64 + 1) as f64 * DEMO_START_SPACING + self.birth,
+        }
+    }
+}
+
+/// What happened to a transient process, for the event stream of `demo_life`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "B3 (#30) builds its demo event stream from demo_life"
+    )
+)]
+pub enum DemoLifeKind {
+    Fork,
+    Exit,
+}
+
+/// One fork or exit of a transient process.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "B3 (#30) builds its demo event stream from demo_life"
+    )
+)]
+pub struct DemoLife {
+    pub kind: DemoLifeKind,
+    pub id: Identity,
+    pub parent: Identity,
+    /// Demo seconds: the birth for a fork; for an exit, the moment the process stops being
+    /// listed, which is `DEMO_ZOMBIE_SECONDS` after it died when it left a zombie.
+    pub time: f64,
+    /// The bytes it holds: at the fork, and at the moment it died for an exit.
+    pub memory: u64,
+    /// The CPU seconds it has used: 0 at the fork, its whole life at the exit.
+    pub cpu_seconds: f64,
+    pub threads: u32,
+    /// The exit status; 0 for a fork, and for a process a signal ended.
+    pub code: i32,
+    /// The signal that killed it; None for a fork and for a normal exit.
+    pub signal: Option<i32>,
+}
+
+/// The forks and exits of the transient processes (`DemoOptions::churn`) among `count` base
+/// processes whose time falls in `(from, to]`, ordered by time. A transient is listed from its
+/// fork to its exit, so with `a` the sample at `from` and `b` the one at `to`:
+///
+/// - a fork without an exit of the same identity is a process listed at `b` and not at `a`;
+/// - an exit without a fork is one listed at `a` and not at `b`;
+/// - a process that both forked and exited in the interval is in neither sample and has both
+///   events, so splitting an interval anywhere gives the same events in total.
+///
+/// An interval shorter than 3 s, the shortest a process is listed, has no such pair, and its
+/// events are exactly the difference between the two populations. The cycles are 24 to 30 s long
+/// (90 s for the one process that outgrows 1 GiB and is killed with signal 9), so an interval of
+/// that length or more holds every kind of event.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "B3 (#30) builds its demo event stream from demo_life"
+    )
+)]
+pub fn demo_life(from: f64, to: f64, count: usize) -> Vec<DemoLife> {
+    let families = demo_families(count);
+    let mut events = Vec::new();
+    for family in 0..=families {
+        let epochs = demo_epoch(from, family, families)..=demo_epoch(to, family, families);
+        for transient in epochs.flat_map(|epoch| demo_cycle(count, family, epoch)) {
+            let event = |kind, time, running_at: f64, cpu_seconds| DemoLife {
+                kind,
+                id: transient.id,
+                parent: transient.parent,
+                time,
+                memory: transient.running_memory(running_at) as u64,
+                cpu_seconds,
+                threads: demo_threads(transient.shape, true),
+                code: if kind == DemoLifeKind::Exit {
+                    transient.code
+                } else {
+                    0
+                },
+                signal: if kind == DemoLifeKind::Exit {
+                    transient.signal
+                } else {
+                    None
+                },
+            };
+            if from < transient.birth && transient.birth <= to {
+                events.push(event(
+                    DemoLifeKind::Fork,
+                    transient.birth,
+                    transient.birth,
+                    0.0,
+                ));
+            }
+            if from < transient.end && transient.end <= to {
+                events.push(event(
+                    DemoLifeKind::Exit,
+                    transient.end,
+                    transient.exit,
+                    transient.cpu_integral(transient.exit) / 100.0,
+                ));
+            }
+        }
+    }
+    events.sort_by(|a, b| a.time.total_cmp(&b.time));
+    events
+}
+
+/// The thread count of demo process `index`: one, or a power of two times four for every fifth.
+/// With `exact` it is also at least one thread per 100% of the process's peak CPU use, so a
+/// process that never has two threads never uses more than one core.
+fn demo_threads(index: usize, exact: bool) -> u32 {
+    let threads = if index.is_multiple_of(5) {
+        4 << (index % 6)
+    } else {
+        1
+    };
+    if exact {
+        let (scale, bonus) = demo_cpu_shape(index);
+        threads.max(((scale + bonus) / 100.0).ceil() as u32)
+    } else {
+        threads
+    }
+}
+
+/// The scheduler priority and nice value of demo process `index` of `kind`.
+fn demo_priority(index: usize, kind: Kind) -> (i32, i32) {
+    if kind == Kind::Kernel && index.is_multiple_of(3) {
+        (0, -20)
+    } else if index % 61 == 17 {
+        (-51, 0)
+    } else if index % 6 == 4 {
+        (39, 19)
+    } else {
+        (20, 0)
+    }
+}
+
+/// The cgroup slice that districts of `kind` live under; kernel threads are in none.
+fn demo_slice(kind: Kind) -> Option<&'static str> {
+    match kind {
+        Kind::Kernel => None,
+        Kind::Session => Some("/user.slice/user-1000.slice/user@1000.service/app.slice"),
+        Kind::Container => Some("/machine.slice"),
+        Kind::System => Some("/system.slice"),
+    }
+}
+
+/// The demo workload at `time` for `count` base processes, with the extras `options` ask for.
+/// `DemoOptions::default()` gives the workload every view has always had.
 #[expect(clippy::too_many_lines, reason = "split in #90 (A31)")]
-pub fn demo(time: f64, count: usize) -> Snapshot {
+pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     let names = [
         "init",
         "shell",
@@ -1247,12 +1915,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         let memory = (12.0 + (i * 71 % 900) as f32 * (0.8 + 0.2 * (phase * 0.2).sin())) * 1048576.0;
         let kind = [Kind::System, Kind::Session, Kind::Container, Kind::Kernel][family % 4];
         let group = format!("district-{:02}.service", family);
-        let slice = match kind {
-            Kind::Kernel => None,
-            Kind::Session => Some("/user.slice/user-1000.slice/user@1000.service/app.slice"),
-            Kind::Container => Some("/machine.slice"),
-            Kind::System => Some("/system.slice"),
-        };
+        let slice = demo_slice(kind);
         let io_rate = if i % 7 == 0 { cpu * 65536.0 } else { 0.0 };
         let write_rate = io_rate * demo_write_share(i);
         // Written bytes are the integral of write_rate, which is the CPU integral scaled alike.
@@ -1261,15 +1924,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         } else {
             0
         };
-        let (priority, nice) = if kind == Kind::Kernel && i % 3 == 0 {
-            (0, -20)
-        } else if i % 61 == 17 {
-            (-51, 0)
-        } else if i % 6 == 4 {
-            (39, 19)
-        } else {
-            (20, 0)
-        };
+        let (priority, nice) = demo_priority(i, kind);
         let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
         let core = ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32;
         let (files, locks_held, waiting_for) = demo_files(i, kind);
@@ -1310,10 +1965,14 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             written: Some(written),
             priority,
             nice,
-            threads: if i % 5 == 0 { 4 << (i % 6) } else { 1 },
+            threads: demo_threads(i, options.exact_cpu_time),
             gpu_memory: (i % 37 == 5).then(|| GpuMemory::Bytes((300 + i as u64 * 7) << 20)),
             core: Some(core),
-            cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
+            cpu_time: if options.exact_cpu_time {
+                demo_cpu_seconds(time, i) as f32
+            } else {
+                (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7
+            },
             // Mostly on the kind of core it last ran on (0 to 7 are performance cores), with
             // some of its time on the other cluster; no share when it used no CPU.
             performance_share: (cpu > 0.0).then(|| {
@@ -1429,6 +2088,26 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             })
         })
         .collect();
+    if options.churn {
+        // The units keep the limits they were given from the base processes, and the transients
+        // add what they use, so a unit's pressure shows them.
+        let transients: Vec<Process> = demo_listed(time, count)
+            .iter()
+            .map(|transient| transient.process(time, count))
+            .collect();
+        for transient in &transients {
+            if let Some(unit) = units.get_mut(&transient.cgroup) {
+                unit.memory += transient.memory;
+                *unit.cpu.get_or_insert(0.0) += transient.cpu;
+                *unit.pids.get_or_insert(0) += 1;
+            }
+        }
+        for unit in units.values_mut() {
+            unit.throttled =
+                Some(unit.cpu_max.is_some() && unit.cpu.is_some_and(|cpu| cpu > 120.0));
+        }
+        processes.extend(transients);
+    }
     Snapshot {
         processes,
         memory_total: Some(32 * 1024_u64.pow(3)),
@@ -1445,6 +2124,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         remotes,
         unattributed_locks: 1,
         missing: Sources::default(),
+        sources: Sources::default(),
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
@@ -1461,6 +2141,12 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         }),
         geo: "demo locations".into(),
     }
+}
+
+/// The demo workload every view has always had: `demo_with` and no options.
+#[cfg(test)]
+pub fn demo(time: f64, count: usize) -> Snapshot {
+    demo_with(time, count, DemoOptions::default())
 }
 
 pub fn bytes(value: u64) -> String {
@@ -1588,6 +2274,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn resource_scale_is_monotonic_and_bounded_for_multicore_cpu() {
@@ -2589,5 +3276,947 @@ mod tests {
         assert_eq!((hub.id.pid, hub.kind), (7, Kind::System));
         assert_eq!(hub.files, Measured::Unreadable);
         assert_eq!(hub.locks_held, Measured::Unreadable);
+    }
+
+    /// A verbatim copy of `demo` as it was before `DemoOptions`, which the default options must
+    /// keep reproducing.
+    #[expect(clippy::too_many_lines, reason = "split in #90 (A31)")]
+    fn original_demo(time: f64, count: usize) -> Snapshot {
+        let names = [
+            "init",
+            "shell",
+            "compiler",
+            "browser",
+            "renderer",
+            "database",
+            "worker",
+            "language-server",
+        ];
+        let mut processes = Vec::with_capacity(count);
+        for i in 0..count {
+            let family = i / 16;
+            let phase = time as f32 * 0.55 + i as f32 * 1.71;
+            let cpu = ((phase.sin() * 0.5 + 0.5).powi(4) * (20.0 + (i % 9) as f32 * 24.0))
+                + if i % 47 == 0 { 110.0 } else { 0.0 };
+            let memory =
+                (12.0 + (i * 71 % 900) as f32 * (0.8 + 0.2 * (phase * 0.2).sin())) * 1048576.0;
+            let kind = [Kind::System, Kind::Session, Kind::Container, Kind::Kernel][family % 4];
+            let group = format!("district-{:02}.service", family);
+            let slice = match kind {
+                Kind::Kernel => None,
+                Kind::Session => Some("/user.slice/user-1000.slice/user@1000.service/app.slice"),
+                Kind::Container => Some("/machine.slice"),
+                Kind::System => Some("/system.slice"),
+            };
+            let io_rate = if i % 7 == 0 { cpu * 65536.0 } else { 0.0 };
+            let write_rate = io_rate * demo_write_share(i);
+            // Written bytes are the integral of write_rate, which is the CPU integral scaled alike.
+            let written = if i % 7 == 0 {
+                (demo_cpu_integral(time, i) * 65536.0 * demo_write_share(i) as f64) as u64
+            } else {
+                0
+            };
+            let (priority, nice) = if kind == Kind::Kernel && i % 3 == 0 {
+                (0, -20)
+            } else if i % 61 == 17 {
+                (-51, 0)
+            } else if i % 6 == 4 {
+                (39, 19)
+            } else {
+                (20, 0)
+            };
+            let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
+            let core = ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32;
+            let (files, locks_held, waiting_for) = demo_files(i, kind);
+            // Exhaustive on purpose: a new field must be decided here.
+            processes.push(Process {
+                id: Identity {
+                    pid: 1000 + i as u32,
+                    start: i as u64 + 1,
+                },
+                parent: if i == 0 {
+                    0
+                } else if i % 16 == 0 {
+                    1000
+                } else {
+                    1000 + (family * 16) as u32
+                },
+                name: format!("{}-{}", names[i % names.len()], i),
+                command: format!("{} --demo --instance {}", names[i % names.len()], i),
+                cgroup: slice.map_or_else(String::new, |slice| format!("{slice}/{group}")),
+                group,
+                kind,
+                state: if i % 41 == 0 {
+                    'Z'
+                } else if i == 9 {
+                    'T'
+                } else if i % 13 == 6 && kind != Kind::Kernel && cpu <= 30.0 && stalled {
+                    'D'
+                } else if cpu > 30.0 {
+                    'R'
+                } else {
+                    'S'
+                },
+                cpu,
+                memory: memory as u64,
+                io_rate: Some(io_rate),
+                read_rate: Some(io_rate - write_rate),
+                write_rate: Some(write_rate),
+                written: Some(written),
+                priority,
+                nice,
+                threads: if i % 5 == 0 { 4 << (i % 6) } else { 1 },
+                gpu_memory: (i % 37 == 5).then(|| GpuMemory::Bytes((300 + i as u64 * 7) << 20)),
+                core: Some(core),
+                cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
+                // Mostly on the kind of core it last ran on (0 to 7 are performance cores), with
+                // some of its time on the other cluster; no share when it used no CPU.
+                performance_share: (cpu > 0.0).then(|| {
+                    let mixing = 0.15 * (0.5 + 0.5 * (phase * 0.37).sin());
+                    if core < 8 { 1.0 - mixing } else { mixing }
+                }),
+                waiting: Some(1.5 * bounded(cpu, 80.0) * (0.6 + 0.4 * (phase * 0.8).cos())),
+                files: Measured::Known(files),
+                locks_held: Measured::Known(locks_held),
+                // Holders come before their waiters, so a waiter's holder always exists.
+                blocked_on: waiting_for.map(|holder| Blocker::Process(1000 + holder as u32)),
+                system_share: (cpu > 0.0).then(|| demo_system_share(family, kind, phase)),
+                policy: demo_policy(i, priority, nice),
+                syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
+                major_faults: Some(demo_major_faults(i, phase)),
+                started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
+            });
+        }
+        let id = |i: usize| processes[i % count].id;
+        let links = (1..count)
+            .filter(|i| i % 3 == 0)
+            .map(|i| (id(i), id(i * 7 + 16), 1 + (i % 4) as u32))
+            .collect();
+        // Every third link is silent, a few carry megabytes, the rest kilobytes.
+        let link_traffic = (1..count)
+            .filter(|i| i % 3 == 0)
+            .map(|i| {
+                let pulse = ((time * 0.9 + i as f64 * 0.7).sin() as f32) * 0.5 + 0.5;
+                let rate = match (i / 3) % 12 {
+                    0 | 3 | 6 | 9 => 0.0,
+                    7 => 1.0e6 * (1.0 + 2.0 * pulse),
+                    _ => 1024.0 * (1 + i % 5) as f32 * pulse,
+                };
+                ((id(i), id(i * 7 + 16)), rate)
+            })
+            .collect();
+        // Links of four sockets have a Unix socket among them, including some silent TCP ones.
+        let unix_links = (1..count)
+            .filter(|i| i % 3 == 0 && i % 4 == 3)
+            .map(|i| (id(i), id(i * 7 + 16)))
+            .collect();
+        let outside = (0..count)
+            .filter(|i| i % 11 == 0)
+            .map(|i| (id(i), 1 + (i % 3) as u32))
+            .collect();
+        let wave = |rate: f64, scale: f32| ((time * rate).sin() as f32).max(0.0) * scale;
+        let cpus = (0..16)
+            .map(|id| {
+                let load = (time as f32 * 0.4 + id as f32 * 0.9).sin() * 0.5 + 0.5;
+                Cpu {
+                    id,
+                    kind: if id < 8 {
+                        CoreKind::Performance
+                    } else {
+                        CoreKind::Efficiency
+                    },
+                    busy: Some(load * if id < 8 { 0.9 } else { 0.6 }),
+                    mhz: Some(if id < 8 {
+                        1400.0 + 3400.0 * load
+                    } else {
+                        1000.0 + 2200.0 * load
+                    }),
+                    wait: Some((load - 0.6).max(0.0) * 3.0),
+                }
+            })
+            .collect();
+        let mut units: HashMap<String, Unit> = HashMap::new();
+        for p in processes.iter().filter(|p| !p.cgroup.is_empty()) {
+            let unit = units.entry(p.cgroup.clone()).or_default();
+            unit.memory += p.memory;
+            *unit.cpu.get_or_insert(0.0) += p.cpu;
+            *unit.pids.get_or_insert(0) += 1;
+        }
+        for (k, (path, unit)) in units.iter_mut().enumerate() {
+            let family = path.trim_end_matches(".service").rsplit('-').next();
+            let family: usize = family.and_then(|f| f.parse().ok()).unwrap_or(k);
+            if family.is_multiple_of(3) {
+                unit.memory_max = Some(unit.memory * 3 / 2);
+            }
+            if family % 4 == 1 {
+                unit.cpu_max = Some(120.0);
+            }
+            unit.throttled =
+                Some(unit.cpu_max.is_some() && unit.cpu.is_some_and(|cpu| cpu > 120.0));
+            unit.pressure = [
+                Some(wave(0.3 + family as f64 * 0.05, 40.0)),
+                Some(wave(0.2, 10.0)),
+                Some(0.0),
+            ];
+            unit.oom_kills = Some(if family == 4 { (time / 23.0) as u64 } else { 0 });
+        }
+        let remotes = processes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 11 == 0)
+            .flat_map(|(i, p)| {
+                (0..1 + i % 3).map(move |k| {
+                    let (code, latitude, longitude, name) =
+                        COUNTRIES[(i * 37 + k * 101) % COUNTRIES.len()];
+                    let pulse = ((time * 0.7 + i as f64 + k as f64) as f32).sin().max(0.0);
+                    Remote {
+                        id: p.id,
+                        address: IpAddr::from([203, 0, 113, (i + k) as u8]),
+                        port: [443, 22, 5432][k % 3],
+                        rtt: 20.0 + (i * 13 % 180) as f32,
+                        up: Some(2048.0 * pulse),
+                        down: Some(65536.0 * pulse * pulse),
+                        place: (k < 2).then(|| Place {
+                            latitude,
+                            longitude,
+                            name: format!("{name} ({code})"),
+                        }),
+                    }
+                })
+            })
+            .collect();
+        Snapshot {
+            processes,
+            memory_total: Some(32 * 1024_u64.pow(3)),
+            memory_available: Some(12 * 1024_u64.pow(3)),
+            cores: 16,
+            elapsed: time,
+            pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
+            links,
+            link_traffic,
+            unix_links,
+            outside,
+            cpus,
+            units,
+            remotes,
+            unattributed_locks: 1,
+            missing: Sources::default(),
+            sources: Sources::default(),
+            unreadable: 0,
+            per_cluster: Sources::default(),
+            shadows: Vec::new(),
+            sampler: SamplerHealth {
+                running: true,
+                last_cycle: Some(Duration::ZERO),
+                quiet: Duration::ZERO,
+                scan_latency: Vec::new(),
+            },
+            home: Some(Place {
+                latitude: 52.37,
+                longitude: 4.9,
+                name: "Amsterdam".into(),
+            }),
+            geo: "demo locations".into(),
+        }
+    }
+
+    /// Every field of `snapshot` as text. The maps and sets are sorted, so two equal snapshots give
+    /// the same text, and a changed bit in any float shows. Exhaustive on purpose: a new
+    /// `Snapshot` field must be decided here.
+    fn fingerprint(snapshot: &Snapshot) -> String {
+        let Snapshot {
+            processes,
+            memory_total,
+            memory_available,
+            cores,
+            elapsed,
+            pressure,
+            links,
+            link_traffic,
+            unix_links,
+            outside,
+            cpus,
+            units,
+            remotes,
+            home,
+            geo,
+            unattributed_locks,
+            missing,
+            sources,
+            unreadable,
+            per_cluster,
+            shadows,
+            sampler,
+        } = snapshot;
+        let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
+        let unix_links: BTreeSet<_> = unix_links.iter().collect();
+        let outside: BTreeMap<_, _> = outside.iter().collect();
+        let units: BTreeMap<_, _> = units.iter().collect();
+        format!(
+            "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {pressure:?}\n\
+             {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
+             {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
+             {per_cluster:?}\n{shadows:?}\n{sampler:?}"
+        )
+    }
+
+    const CHURN: DemoOptions = DemoOptions {
+        churn: true,
+        exact_cpu_time: false,
+    };
+    const EXACT: DemoOptions = DemoOptions {
+        churn: false,
+        exact_cpu_time: true,
+    };
+    const BOTH: DemoOptions = DemoOptions {
+        churn: true,
+        exact_cpu_time: true,
+    };
+
+    /// The transients of `snapshot`, which come after the `count` base processes.
+    fn transients(snapshot: &Snapshot, count: usize) -> &[Process] {
+        &snapshot.processes[count..]
+    }
+
+    #[test]
+    fn default_options_reproduce_the_existing_demo() {
+        for count in [16, 192, 1000] {
+            for time in [-75.5, -1.0, 0.0, 0.25, 12.0, 61.7, 300.0, 5000.0] {
+                let before = original_demo(time, count);
+                assert_eq!(
+                    fingerprint(&demo_with(time, count, DemoOptions::default())),
+                    fingerprint(&before),
+                    "demo_with at {time} for {count}"
+                );
+                assert_eq!(
+                    fingerprint(&demo(time, count)),
+                    fingerprint(&before),
+                    "demo at {time} for {count}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn churn_is_a_pure_function_of_time() {
+        let times = [95.5, -10.0, 12.0, 0.0, -300.25, 12.0, 7001.0, 95.5];
+        let first: Vec<String> = times
+            .iter()
+            .map(|&time| fingerprint(&demo_with(time, 192, BOTH)))
+            .collect();
+        let backwards: Vec<String> = times
+            .iter()
+            .rev()
+            .map(|&time| fingerprint(&demo_with(time, 192, BOTH)))
+            .collect();
+        let mut reversed = backwards;
+        reversed.reverse();
+        assert_eq!(first, reversed);
+        assert_eq!(first[2], first[5], "the same time gives the same snapshot");
+        assert!(demo_with(5.0, 0, BOTH).processes.is_empty());
+    }
+
+    #[test]
+    fn churn_keeps_base_indices_pids_and_links() {
+        for count in [16, 192, 1000] {
+            for time in [-40.0, 3.0, 12.0, 61.0, 100.0] {
+                let plain = demo_with(time, count, DemoOptions::default());
+                let busy = demo_with(time, count, CHURN);
+                let kept = plain.processes.len();
+                assert_eq!(kept, count);
+                assert_eq!(
+                    format!("{:?}", &busy.processes[..kept]),
+                    format!("{:?}", plain.processes),
+                    "base processes at {time} for {count}"
+                );
+                assert_eq!(busy.links, plain.links);
+                assert_eq!(busy.unix_links, plain.unix_links);
+                assert_eq!(busy.outside, plain.outside);
+                assert_eq!(busy.link_traffic, plain.link_traffic);
+                assert_eq!(
+                    format!("{:?}", busy.remotes),
+                    format!("{:?}", plain.remotes)
+                );
+                assert!(
+                    transients(&busy, count)
+                        .iter()
+                        .all(|process| process.id.pid >= 1000 + count as u32
+                            && process.id.start > count as u64),
+                    "transients have pids above the base ones and starts above theirs"
+                );
+                for (path, unit) in &plain.units {
+                    let (with, without) = (&busy.units[path], unit);
+                    assert_eq!(with.memory_max, without.memory_max, "limits stay put");
+                    assert_eq!(with.cpu_max, without.cpu_max);
+                }
+            }
+        }
+        let busy = demo_with(12.0, 192, CHURN);
+        assert!(!transients(&busy, 192).is_empty(), "something is running");
+    }
+
+    #[test]
+    fn churn_runs_families_of_one_to_six_children_with_zombies_and_a_victim() {
+        let count = 192;
+        let mut children_seen = BTreeSet::new();
+        let (mut zombies, mut victims) = (0, 0);
+        for second in 0..400 {
+            let snapshot = demo_with(f64::from(second), count, CHURN);
+            let listed = transients(&snapshot, count);
+            let mut children: HashMap<u32, usize> = HashMap::new();
+            for process in listed {
+                if listed.iter().any(|other| other.id.pid == process.parent) {
+                    *children.entry(process.parent).or_default() += 1;
+                }
+                zombies += usize::from(process.state == 'Z');
+                victims += usize::from(process.name.starts_with("leak"));
+            }
+            children_seen.extend(children.values().copied());
+        }
+        assert!(zombies > 0 && victims > 0);
+        assert!(
+            children_seen.contains(&1) && children_seen.iter().all(|&n| (1..=6).contains(&n)),
+            "{children_seen:?}"
+        );
+        assert!(children_seen.iter().max() >= Some(&4), "{children_seen:?}");
+    }
+
+    #[test]
+    fn zombies_stay_listed_for_one_sample_and_hold_nothing() {
+        let count = 192;
+        let mut runs: HashMap<Identity, usize> = HashMap::new();
+        for second in 0..300 {
+            let snapshot = demo_with(f64::from(second), count, CHURN);
+            for process in transients(&snapshot, count) {
+                if process.state != 'Z' {
+                    continue;
+                }
+                *runs.entry(process.id).or_default() += 1;
+                assert_eq!((process.memory, process.cpu), (0, 0.0));
+                assert_eq!(process.files, Measured::Unreadable);
+                assert_eq!(process.io_rate, None);
+                assert_eq!(process.major_faults, None);
+                assert_eq!(process.system_share, None);
+            }
+        }
+        assert!(!runs.is_empty());
+        assert!(runs.values().all(|&samples| samples == 1), "{runs:?}");
+    }
+
+    #[test]
+    fn demo_life_matches_population_differences_between_two_times() {
+        let count = 192;
+        let population = |time: f64| -> BTreeSet<Identity> {
+            let snapshot = demo_with(time, count, CHURN);
+            transients(&snapshot, count)
+                .iter()
+                .map(|process| process.id)
+                .collect()
+        };
+        for from in [-61.5, 0.0, 7.3, 20.0, 96.25, 311.0] {
+            for length in [0.4, 1.0, 2.9, 5.5, 20.0, 75.0, 200.0] {
+                let to = from + length;
+                let events = demo_life(from, to, count);
+                assert!(
+                    events.windows(2).all(|pair| pair[0].time <= pair[1].time),
+                    "ordered by time"
+                );
+                assert!(events.iter().all(|e| from < e.time && e.time <= to));
+                let ids = |kind| -> BTreeSet<Identity> {
+                    events
+                        .iter()
+                        .filter(|event| event.kind == kind)
+                        .map(|event| event.id)
+                        .collect()
+                };
+                let (forks, exits) = (ids(DemoLifeKind::Fork), ids(DemoLifeKind::Exit));
+                let (before, after) = (population(from), population(to));
+                let entered: BTreeSet<_> = after.difference(&before).copied().collect();
+                let left: BTreeSet<_> = before.difference(&after).copied().collect();
+                let both: BTreeSet<_> = forks.intersection(&exits).copied().collect();
+                assert_eq!(
+                    forks.difference(&both).copied().collect::<BTreeSet<_>>(),
+                    entered,
+                    "forks from {from} for {length}"
+                );
+                assert_eq!(
+                    exits.difference(&both).copied().collect::<BTreeSet<_>>(),
+                    left,
+                    "exits from {from} for {length}"
+                );
+                assert!(
+                    both.iter()
+                        .all(|id| !before.contains(id) && !after.contains(id)),
+                    "a process that forked and exited in the interval is in neither sample"
+                );
+                if length < 3.0 {
+                    assert!(both.is_empty(), "no process lives under 3 s");
+                }
+                assert_eq!(
+                    events.len(),
+                    forks.len() + exits.len(),
+                    "one fork, one exit"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn demo_life_over_split_intervals_equals_one_long_interval() {
+        for count in [16, 192] {
+            for (from, middle, to) in [(-50.0, 13.7, 120.0), (0.0, 61.0, 400.0), (31.0, 31.5, 33.0)]
+            {
+                let whole = demo_life(from, to, count);
+                let mut parts = demo_life(from, middle, count);
+                parts.extend(demo_life(middle, to, count));
+                assert_eq!(whole, parts, "{from}..{middle}..{to} for {count}");
+                assert!(!whole.is_empty() || to - from < 5.0);
+            }
+        }
+        let thirds: Vec<DemoLife> = (0..300)
+            .flat_map(|second| demo_life(f64::from(second), f64::from(second + 1), 192))
+            .collect();
+        assert_eq!(thirds, demo_life(0.0, 300.0, 192));
+    }
+
+    #[test]
+    fn a_reused_transient_pid_gets_a_new_start() {
+        let count = 192;
+        let families = demo_families(count);
+        let mut starts: HashMap<u32, BTreeSet<u64>> = HashMap::new();
+        for second in 0..400 {
+            let snapshot = demo_with(f64::from(second), count, CHURN);
+            for process in transients(&snapshot, count) {
+                starts
+                    .entry(process.id.pid)
+                    .or_default()
+                    .insert(process.id.start);
+            }
+        }
+        let pool = 1001 + count as u32..1001 + (count + 7 * (families + 1)) as u32;
+        assert!(starts.keys().all(|pid| pool.contains(pid)), "{starts:?}");
+        let reused = starts.values().filter(|set| set.len() > 1).count();
+        assert!(reused > starts.len() / 2, "{reused} of {}", starts.len());
+        // Within a pid, consecutive cycles never overlap in time.
+        for family in 0..=families {
+            let parents: Vec<_> = (0..5)
+                .map(|epoch| demo_cycle(count, family, epoch)[0].clone())
+                .collect();
+            assert!(
+                parents
+                    .windows(2)
+                    .all(|pair| pair[0].id.pid == pair[1].id.pid
+                        && pair[0].id.start != pair[1].id.start
+                        && pair[0].end <= pair[1].birth)
+            );
+        }
+    }
+
+    #[test]
+    fn a_large_transient_exits_every_ninety_seconds() {
+        let count = 192;
+        let families = demo_families(count);
+        let kills: Vec<DemoLife> = demo_life(-500.0, 1000.0, count)
+            .into_iter()
+            .filter(|event| event.kind == DemoLifeKind::Exit && event.signal == Some(9))
+            .collect();
+        assert!(kills.len() >= 16, "{}", kills.len());
+        for pair in kills.windows(2) {
+            assert!(
+                (pair[1].time - pair[0].time - 90.0).abs() < 1e-6,
+                "{pair:?}"
+            );
+        }
+        for kill in &kills {
+            assert!(kill.memory > 1 << 30, "{} bytes", kill.memory);
+            assert_eq!(kill.code, 0);
+            // It was a real process for most of the half minute before, growing as it went.
+            let just_before = demo_with(kill.time - DEMO_ZOMBIE_SECONDS - 0.01, count, CHURN);
+            let victim = transients(&just_before, count)
+                .iter()
+                .find(|process| process.id == kill.id)
+                .expect("listed until it is killed");
+            assert!(victim.memory > 1 << 30 && victim.state != 'Z');
+            let earlier = demo_with(kill.time - 40.0, count, CHURN);
+            let young = transients(&earlier, count)
+                .iter()
+                .find(|process| process.id == kill.id);
+            assert!(young.is_none_or(|process| process.memory < victim.memory));
+        }
+        assert_eq!(
+            demo_life(0.0, 90.0 * 10.0, count)
+                .iter()
+                .filter(|event| event.signal == Some(9))
+                .count()
+                .abs_diff(10),
+            0,
+            "ten kills in ten periods ({families} families)"
+        );
+    }
+
+    #[test]
+    fn exact_cpu_time_is_monotone_and_integrates_cpu() {
+        let count = 100;
+        let indices = [0, 1, 5, 47, 94, 99];
+        let mut previous = [f32::NEG_INFINITY; 6];
+        for step in 0..=1200 {
+            let time = f64::from(step) * 0.05;
+            let snapshot = demo_with(time, count, EXACT);
+            for (slot, &index) in indices.iter().enumerate() {
+                let cpu_time = snapshot.processes[index].cpu_time;
+                assert!(cpu_time >= previous[slot], "process {index} at {time}");
+                previous[slot] = cpu_time;
+                assert!(
+                    (f64::from(cpu_time) - demo_cpu_seconds(time, index)).abs() < 1e-3,
+                    "{index} at {time}"
+                );
+            }
+        }
+        // Simpson's rule over the sampled CPU use against the change in CPU time.
+        let intervals = 400;
+        let width = 20.0 / f64::from(intervals);
+        let cpu_at =
+            |time: f64, index: usize| f64::from(demo_with(time, count, EXACT).processes[index].cpu);
+        for index in indices {
+            let mut sum = cpu_at(0.0, index) + cpu_at(20.0, index);
+            for step in 1..intervals {
+                let weight = if step % 2 == 1 { 4.0 } else { 2.0 };
+                sum += weight * cpu_at(f64::from(step) * width, index);
+            }
+            let integral = sum * width / 3.0 / 100.0;
+            let gained = demo_cpu_seconds(20.0, index) - demo_cpu_seconds(0.0, index);
+            assert!(
+                (integral - gained).abs() < 2e-3 * gained.max(1.0),
+                "process {index}: quadrature {integral}, cpu time {gained}"
+            );
+        }
+        let plain = demo_with(20.0, count, DemoOptions::default());
+        assert_ne!(
+            plain.processes[47].cpu_time,
+            demo_with(20.0, count, EXACT).processes[47].cpu_time
+        );
+    }
+
+    #[test]
+    fn a_transients_cpu_time_integrates_its_own_cpu_since_birth() {
+        let count = 192;
+        let start = 12.0;
+        let first = demo_with(start, count, CHURN);
+        let mut checked = 0;
+        for tracked in transients(&first, count).iter().filter(|p| p.state != 'Z') {
+            let intervals = 100;
+            let width = 1.0 / f64::from(intervals);
+            let series: Vec<Option<Process>> = (0..=intervals)
+                .map(|step| {
+                    demo_with(start + f64::from(step) * width, count, CHURN)
+                        .processes
+                        .into_iter()
+                        .find(|process| process.id == tracked.id && process.state != 'Z')
+                })
+                .collect();
+            if series.iter().any(Option::is_none) {
+                continue;
+            }
+            let cpu: Vec<f64> = series
+                .iter()
+                .map(|p| f64::from(p.as_ref().unwrap().cpu))
+                .collect();
+            let mut sum = cpu[0] + cpu[intervals as usize];
+            for (step, &value) in cpu.iter().enumerate().take(intervals as usize).skip(1) {
+                sum += if step % 2 == 1 { 4.0 } else { 2.0 } * value;
+            }
+            let integral = sum * width / 3.0 / 100.0;
+            let gained = f64::from(series[intervals as usize].as_ref().unwrap().cpu_time)
+                - f64::from(series[0].as_ref().unwrap().cpu_time);
+            assert!(
+                (integral - gained).abs() < 1e-3,
+                "{integral} against {gained}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2, "only {checked} transients to follow");
+        let born = demo_life(-1.0, 100.0, count)
+            .into_iter()
+            .find(|event| event.kind == DemoLifeKind::Fork)
+            .expect("something forks");
+        assert_eq!(born.cpu_seconds, 0.0);
+        let just_born = demo_with(born.time, count, CHURN);
+        let process = just_born
+            .processes
+            .iter()
+            .find(|p| p.id == born.id)
+            .unwrap();
+        assert_eq!((process.cpu_time, process.written.unwrap_or(0)), (0.0, 0));
+        assert_eq!(process.memory, born.memory);
+    }
+
+    #[test]
+    fn no_single_threaded_demo_process_exceeds_one_core() {
+        for options in [EXACT, BOTH] {
+            for count in [16, 192, 1000] {
+                for time in [-20.0, 0.0, 3.3, 12.0, 77.0, 160.0] {
+                    let snapshot = demo_with(time, count, options);
+                    for (index, process) in snapshot.processes.iter().enumerate() {
+                        if process.threads == 1 {
+                            assert!(
+                                process.cpu <= 100.0 + 1e-3,
+                                "{index} at {time}: {}",
+                                process.cpu
+                            );
+                        }
+                        if index < count {
+                            let (scale, bonus) = demo_cpu_shape(index);
+                            assert!(
+                                f64::from(process.threads) >= ((scale + bonus) / 100.0).ceil(),
+                                "{index}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let overloaded = (0..600).any(|step| {
+            demo_with(f64::from(step), 100, DemoOptions::default())
+                .processes
+                .iter()
+                .any(|process| process.threads == 1 && process.cpu > 100.0)
+        });
+        assert!(
+            overloaded,
+            "the default demo keeps the threads it always had"
+        );
+    }
+
+    /// What one background cycle would do with the collector's current demand: read
+    /// `Source::SyscallIo` through `Reads` and say how often the closure ran.
+    fn cycle(collector: &Collector, readable: bool) -> (u32, Reads) {
+        let mut reads = Reads::new(*collector.demand.lock().unwrap());
+        let mut calls = 0;
+        reads.read(Source::SyscallIo, || {
+            calls += 1;
+            readable.then_some(calls)
+        });
+        (calls, reads)
+    }
+
+    #[test]
+    fn the_background_thread_reads_an_optional_source_only_while_demanded() {
+        let collector = Collector::new(None, None);
+        let reads_this_cycle = || {
+            let (calls, reads) = cycle(&collector, true);
+            assert_eq!(reads.active.contains(Source::SyscallIo), calls == 1);
+            assert!(reads.missing.is_empty());
+            calls
+        };
+        assert_eq!(reads_this_cycle(), 0);
+        collector.demand(Demand::from(Sources::from(Source::SyscallIo)));
+        assert_eq!(reads_this_cycle(), 1);
+        assert_eq!(reads_this_cycle(), 1);
+        collector.demand(Demand::default());
+        assert_eq!(reads_this_cycle(), 0);
+        assert_eq!(reads_this_cycle(), 0);
+        collector.demand(Demand::from(Sources::from([
+            Source::SyscallIo,
+            Source::Journal,
+        ])));
+        assert_eq!(reads_this_cycle(), 1);
+    }
+
+    #[test]
+    fn a_demanded_source_that_cannot_be_read_is_missing_and_one_nobody_asked_for_is_not() {
+        let collector = Collector::new(None, None);
+        let (calls, reads) = cycle(&collector, false);
+        assert_eq!(
+            (calls, reads.active, reads.missing),
+            (0, Sources::default(), Sources::default())
+        );
+        collector.demand(Demand::from(Sources::from(Source::SyscallIo)));
+        let (calls, reads) = cycle(&collector, false);
+        assert_eq!(calls, 1);
+        assert_eq!(reads.active, Sources::default());
+        assert_eq!(reads.missing, Sources::from(Source::SyscallIo));
+    }
+
+    #[test]
+    fn an_empty_demand_reads_no_optional_source() {
+        let mut reads = Reads::new(Demand::default());
+        assert!(Demand::default().is_empty());
+        let mut calls = 0;
+        for source in Source::ALL {
+            assert_eq!(
+                Demand::default().read_if(source, || {
+                    calls += 1;
+                }),
+                None
+            );
+            assert_eq!(
+                reads.read(source, || {
+                    calls += 1;
+                    Some(())
+                }),
+                None
+            );
+        }
+        assert_eq!(calls, 0);
+        assert!(reads.active.is_empty() && reads.missing.is_empty());
+
+        // The real thread, started with nothing demanded, reports no optional source.
+        let thread = background(
+            None,
+            Arc::new(Mutex::new(HashSet::new())),
+            Arc::new(Mutex::new(Demand::default())),
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+        .expect("the sampler thread starts");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while thread.extras().finished.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let extras = thread.extras();
+        assert!(extras.finished.is_some(), "the first cycle finished");
+        assert!(extras.sources.is_empty());
+        assert_eq!(
+            extras.geo, "loading the GeoIP database",
+            "no lookup, so the database was never opened"
+        );
+        assert!(
+            extras
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::Locations),
+            "no location scan ran"
+        );
+    }
+
+    #[test]
+    fn remotes_carry_the_places_that_were_read_and_none_when_locations_were_not() {
+        let place = Place {
+            latitude: 35.7,
+            longitude: 139.7,
+            name: "Tokyo, JP".into(),
+        };
+        let sockets = [socket(5, 0, 0), socket(6, 0, 0)];
+        let located = remotes(
+            &sockets,
+            &mut HashMap::new(),
+            Some(&[None, Some(place.clone())]),
+        );
+        assert_eq!(
+            located.iter().map(|r| r.place.clone()).collect::<Vec<_>>(),
+            [None, Some(place)]
+        );
+        let unlocated = remotes(&sockets, &mut HashMap::new(), None);
+        assert!(unlocated.iter().all(|remote| remote.place.is_none()));
+    }
+
+    #[test]
+    fn locations_are_missing_only_when_demanded_and_no_database_can_be_read() {
+        let public = platform::Remote {
+            address: IpAddr::from([8, 8, 8, 8]),
+            ..socket(5, 0, 0)
+        };
+        let mut geo = geo::Geo::open(Some(std::path::Path::new("/nonexistent/none.mmdb")));
+        assert!(!geo.lacks_database(), "nothing was looked up yet");
+        // Not demanded: the database is not touched and the source is neither active nor missing.
+        let mut idle = Reads::new(Demand::default());
+        assert!(
+            idle.read(Source::Locations, || located(
+                &mut geo,
+                std::slice::from_ref(&public)
+            ))
+            .is_none()
+        );
+        assert!(idle.active.is_empty() && idle.missing.is_empty());
+        assert!(!geo.lacks_database());
+        // Demanded: active when a database answers, missing when none could be read. Which of
+        // the two depends on the machine; the pair always agrees with what the database says.
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::Locations)));
+        let places = reads.read(Source::Locations, || {
+            located(&mut geo, std::slice::from_ref(&public))
+        });
+        let absent = geo.source == "no GeoIP database (see --geoip)";
+        assert_eq!(places.is_none(), absent, "{}", geo.source);
+        assert_eq!(reads.missing.contains(Source::Locations), absent);
+        assert_eq!(reads.active.contains(Source::Locations), !absent);
+    }
+
+    #[test]
+    fn demand_is_a_set_of_sources_and_read_if_runs_only_for_members() {
+        let mut demand = Demand::default();
+        assert!(demand.is_empty() && !demand.contains(Source::Journal));
+        demand.insert(Source::Journal);
+        demand.insert(Source::Journal);
+        assert!(!demand.is_empty() && demand.contains(Source::Journal));
+        assert!(!demand.contains(Source::Locations));
+        assert_eq!(demand.read_if(Source::Journal, || 5), Some(5));
+        assert_eq!(demand.read_if(Source::Locations, || 5), None);
+        assert_eq!(demand, Demand::from(Sources::from(Source::Journal)));
+    }
+
+    #[test]
+    fn a_merged_sample_lists_the_sources_the_cycle_read() {
+        let extras = Extras {
+            sources: Sources::from([Source::Locations, Source::Journal]),
+            missing: Source::SyscallIo.into(),
+            ..Extras::default()
+        };
+        let mut snapshot = Snapshot::default();
+        merge(&mut snapshot, &extras);
+        assert_eq!(snapshot.sources, extras.sources);
+        assert_eq!(snapshot.missing, Sources::from(Source::SyscallIo));
+        assert_eq!(
+            demo(1.0, 16).sources,
+            Sources::default(),
+            "no thread in --demo"
+        );
+    }
+
+    fn numbered(pid: u32, start: u64) -> Process {
+        Process {
+            id: Identity { pid, start },
+            ..testing::process(pid, 1)
+        }
+    }
+
+    #[test]
+    fn top_n_breaks_ties_by_identity_and_is_stable_between_samples() {
+        let keys = [
+            (5, 3.0),
+            (2, 3.0),
+            (9, 7.5),
+            (4, f64::NAN),
+            (1, 3.0),
+            (3, f64::NAN),
+            (8, -1.0),
+        ];
+        let key = |process: &Process| {
+            keys.iter()
+                .find(|(pid, _)| *pid == process.id.pid)
+                .map_or(0.0, |(_, key)| *key)
+        };
+        let ids = |picked: Vec<&Process>| picked.iter().map(|p| p.id.pid).collect::<Vec<_>>();
+        let processes: Vec<Process> = keys.iter().map(|&(pid, _)| numbered(pid, 1)).collect();
+        let all = ids(top_n(&processes, 99, key));
+        // Largest first; the three 3.0s by ascending identity; -1.0; the NaNs last, also by
+        // identity.
+        assert_eq!(all, [9, 1, 2, 5, 8, 3, 4]);
+        assert_eq!(ids(top_n(&processes, 4, key)), all[..4]);
+        assert_eq!(
+            ids(top_n(&processes, 2, key)),
+            all[..2],
+            "the tie at the cut is the same"
+        );
+        assert!(top_n(&processes, 0, key).is_empty());
+        // The same keys in another input order, as another sample would list them.
+        let mut shuffled = processes;
+        shuffled.reverse();
+        shuffled.swap(1, 4);
+        for n in [1, 3, 4, 7] {
+            assert_eq!(ids(top_n(&shuffled, n, key)), all[..n]);
+        }
+        // A restarted process under a reused pid is a different identity.
+        let restarted = [numbered(6, 2), numbered(6, 1)];
+        let picked = top_n(&restarted, 1, |_| 1.0);
+        assert_eq!(picked[0].id, Identity { pid: 6, start: 1 });
     }
 }
