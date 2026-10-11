@@ -527,8 +527,8 @@ Any key or mouse movement ends the tour.
 | `t` | Toggle top-down and isometric |
 | Home | Fit scene |
 | `r` | Reset camera and fit; on the globe, also lets a turned earth spin again |
-| Hover | Name and description of the process under the pointer |
-| Left click | Select the nearest process and open its inspector popup |
+| Hover | Name and description of the process under the pointer, or the title of a thing a view draws |
+| Left click | Select the nearest process, or thing, and open its inspector popup |
 | Left click on empty space | Close the popup |
 | Left drag | Pan (on the globe too) |
 | `l` | Toggle labels |
@@ -583,7 +583,11 @@ Kitty do), hover and clicks are pixel-precise; otherwise clicks pick the nearest
 object within about a cell. The popup inspector follows the selected process and
 reports exact values, threads, NVIDIA GPU memory, the memory of the system a
 body anchors, socket counts, command line, parent, and cgroup. Process identity
-combines PID and start time to distinguish PID reuse.
+combines PID and start time to distinguish PID reuse. Some views also draw things
+that are not processes (interrupt lines, files, graves); clicking one opens the
+card the view writes for it, and the card says so when the view no longer shows
+the thing. Esc closes a thing's card first; switching views closes it too.
+Search, focus, links and the tour work on processes only.
 
 ## Headless rendering and performance
 
@@ -609,7 +613,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-29,906 lines of Rust (19,115 production, 10,791 test) in 38 files, 389 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+30,691 lines of Rust (19,362 production, 11,329 test) in 38 files, 400 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

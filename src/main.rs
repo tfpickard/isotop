@@ -46,7 +46,8 @@ use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, de
 use picker::{Entry, Picker, Toggle};
 use platform::Source;
 use render::{
-    Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, label_name,
+    Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target, Thing,
+    label_name,
 };
 use terminal::{Label, Popup, Terminal, Tone};
 use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
@@ -326,6 +327,8 @@ struct App {
     rendered: Camera,
     view: View,
     selected: Option<Identity>,
+    /// The selected thing; never Some while a process is selected.
+    thing: Option<Thing>,
     focus: Option<Identity>,
     history: VecDeque<Snapshot>,
     paused: bool,
@@ -344,6 +347,9 @@ struct App {
     labels: bool,
     hover: Option<Pointer>,
     hovered: Option<Identity>,
+    /// The thing under the pointer in the last frame, which the view highlights while no thing
+    /// is selected.
+    hovered_thing: Option<Thing>,
     dragging: Option<(MouseButton, [f32; 2])>,
     dismiss: bool,
     animation: f32,
@@ -376,6 +382,7 @@ impl App {
             rendered: Camera::default(),
             view,
             selected: None,
+            thing: None,
             focus: None,
             history: VecDeque::from([snapshot]),
             paused: false,
@@ -392,6 +399,7 @@ impl App {
             labels: true,
             hover: None,
             hovered: None,
+            hovered_thing: None,
             dragging: None,
             dismiss: false,
             animation: 0.0,
@@ -496,10 +504,13 @@ impl App {
         place_panel(lines, None, layout, false, 40)
     }
 
-    /// Shows `view`, framed, at its row's pitch if it has one.
+    /// Shows `view`, framed, at its row's pitch if it has one. Things belong to the view that
+    /// drew them, so a selected or hovered one is let go.
     fn switch(&mut self, view: View) {
         self.view = view;
         self.fit = true;
+        self.thing = None;
+        self.hovered_thing = None;
         if let Some(pitch) = self.row().pitch {
             self.goal.pitch = pitch;
         }
@@ -585,6 +596,7 @@ impl App {
             width,
             height,
             selected: self.selected,
+            thing: self.thing.or(self.hovered_thing),
             time,
             limit,
             focus: self.focus,
@@ -640,6 +652,7 @@ impl App {
     fn select_match(&mut self) {
         if let Some(&id) = self.matches.get(self.match_index) {
             self.selected = Some(id);
+            self.thing = None;
             if let Some(&p) = self.scene.positions.get(&id) {
                 self.goal.center = [p[0], p[1]];
                 self.face(p);
@@ -777,6 +790,7 @@ impl App {
         });
         if self.tour.is_some() {
             self.selected = None;
+            self.thing = None;
             self.goal.zoom = self.fit_zoom * 2.2;
         }
     }
@@ -878,6 +892,18 @@ impl App {
         lines
     }
 
+    /// Notes the process or thing under the pointer in `frame`, for the next frame to highlight.
+    fn hover_over(&mut self, frame: &Frame, radius: f32) {
+        let target = self
+            .hover
+            .and_then(|h| frame.target_near(h.frame[0], h.frame[1], radius));
+        (self.hovered, self.hovered_thing) = match target {
+            Some(Target::Process(id)) => (Some(id), None),
+            Some(Target::Thing(thing)) => (None, Some(thing)),
+            None => (None, None),
+        };
+    }
+
     fn screen(&self, frame: &Frame, id: Identity) -> Option<[f32; 2]> {
         let &p = self.scene.positions.get(&id)?;
         frame.locate(&self.camera, p)
@@ -890,7 +916,31 @@ impl App {
             .filter(|_| self.scene.inspector_line(self.view).is_none())
     }
 
+    /// The selected thing's popup: its card's title and lines beside the point the card names,
+    /// or a note that the view no longer shows it.
+    fn thing_popup(&self, thing: Thing, frame: &Frame, layout: &Layout) -> Option<Popup> {
+        let (lines, anchor) = match self.scene.card(self.view, thing, self.snapshot()) {
+            Some(card) => {
+                let mut lines = vec![card.title];
+                lines.extend(card.lines);
+                lines.push("Esc close".into());
+                (lines, frame.locate(&self.camera, card.at))
+            }
+            None => (
+                vec![
+                    format!("{} no longer shown", thing.kind),
+                    "Esc close".into(),
+                ],
+                None,
+            ),
+        };
+        place_panel(lines, anchor.map(|a| layout.cell_of(a)), layout, false, 32)
+    }
+
     fn popup(&self, frame: &Frame, layout: &Layout) -> Option<Popup> {
+        if let Some(thing) = self.thing {
+            return self.thing_popup(thing, frame, layout);
+        }
         let id = self.inspected()?;
         let snapshot = self.snapshot();
         let lines = match snapshot.processes.iter().find(|p| p.id == id) {
@@ -1052,13 +1102,27 @@ impl App {
                 panels.push(panel);
             }
         }
-        if let Some(hover) = self.hover
-            && let Some(id) = frame.pick_near(hover.frame[0], hover.frame[1], radius)
-            && Some(id) != self.selected
-            && self.tour.as_ref().is_none_or(|tour| tour.target != id)
-            && let Some(p) = lookup.get(&id)
+        let tag = match self
+            .hover
+            .and_then(|hover| frame.target_near(hover.frame[0], hover.frame[1], radius))
         {
-            let text = format!(" {} - {} ", p.name, describe(p));
+            Some(Target::Process(id))
+                if Some(id) != self.selected
+                    && self.tour.as_ref().is_none_or(|tour| tour.target != id) =>
+            {
+                lookup
+                    .get(&id)
+                    .map(|p| format!(" {} - {} ", p.name, describe(p)))
+            }
+            Some(Target::Thing(thing)) if Some(thing) != self.thing => self
+                .scene
+                .card(self.view, thing, snapshot)
+                .map(|card| format!(" {} ", card.title)),
+            _ => None,
+        };
+        if let Some(hover) = self.hover
+            && let Some(text) = tag
+        {
             let width = text.chars().count() as u16;
             let column = (hover.cell.0 + 2).min(layout.columns.saturating_sub(width));
             let row = hover.cell.1.saturating_sub(1);
@@ -1179,6 +1243,9 @@ impl App {
                 }
                 _ => {}
             }
+            return false;
+        }
+        if code == KeyCode::Esc && self.thing.take().is_some() {
             return false;
         }
         if let Some(key) = view_key(code) {
@@ -1347,15 +1414,17 @@ impl App {
             MouseEventKind::Down(MouseButton::Left)
                 if in_scene && !panels.iter().any(|p| p.contains(column, row)) =>
             {
-                let picked = frame.pick_near(
+                let picked = frame.target_near(
                     pointer.frame[0],
                     pointer.frame[1],
                     layout.pick_radius(pixels),
                 );
                 // Clicking empty space closes the popup, unless the press turns into a drag.
                 self.dismiss = picked.is_none();
-                if picked.is_some() {
-                    self.selected = picked;
+                match picked {
+                    Some(Target::Process(id)) => (self.selected, self.thing) = (Some(id), None),
+                    Some(Target::Thing(thing)) => (self.selected, self.thing) = (None, Some(thing)),
+                    None => {}
                 }
                 self.dragging = Some((MouseButton::Left, pointer.frame));
             }
@@ -1384,6 +1453,7 @@ impl App {
                 self.dragging = None;
                 if button == MouseButton::Left && std::mem::take(&mut self.dismiss) {
                     self.selected = None;
+                    self.thing = None;
                 }
             }
             _ => {}
@@ -1718,9 +1788,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
         let mut frame = app.render(layout.width, layout.height, limit);
         let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         let pixels = terminal.pixel_mouse && layout.cell.is_some();
-        app.hovered = app
-            .hover
-            .and_then(|h| frame.pick_near(h.frame[0], h.frame[1], layout.pick_radius(pixels)));
+        app.hover_over(&frame, layout.pick_radius(pixels));
         let (labels, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(pixels));
         let transport = if terminal.shared_memory {
             "shared memory".to_owned()
@@ -1924,7 +1992,7 @@ mod tests {
     use super::*;
     use crate::model::DemoOptions;
     use crate::simulation::hash::fnv1a_64_bytes as fnv1a;
-    use crate::views::view;
+    use crate::views::{testing, view};
 
     /// Every registered view available, as on Linux and macOS today.
     fn all_available() -> Vec<bool> {
@@ -3634,6 +3702,182 @@ mod tests {
             "q filters and does not quit"
         );
         assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/11");
+    }
+
+    /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
+    const THING_LAYOUT: Layout = Layout {
+        columns: 200,
+        rows: 56,
+        width: 1600,
+        height: 896,
+        cell: Some([8.0, 16.0]),
+    };
+
+    /// An app on the lantern view of `testing::THINGS`, and its first frame.
+    fn lantern_app() -> (App, Frame) {
+        let scene = Scene::with_rows(testing::THINGS);
+        let mut app = App::with_scene(scene, View::at(0), model::demo(1.0, 16), vec![true; 2]);
+        let frame = app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        (app, frame)
+    }
+
+    /// Where lantern `index` is drawn in `frame`.
+    fn lantern_at(app: &App, frame: &Frame, index: usize) -> [f32; 2] {
+        frame
+            .locate(&app.camera, testing::Lanterns::position(index))
+            .expect("the lantern is on screen")
+    }
+
+    /// A left click at frame pixel `at`, pressed and released in place.
+    fn click(app: &mut App, frame: &Frame, at: [f32; 2]) {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            let event = MouseEvent {
+                kind,
+                column: at[0] as u16,
+                row: at[1] as u16,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.mouse(event, &THING_LAYOUT, frame, &[], true);
+        }
+    }
+
+    /// The text of the open popup, if one is open.
+    fn popup_lines(app: &App, frame: &mut Frame) -> Option<Vec<String>> {
+        let radius = THING_LAYOUT.pick_radius(true);
+        let (_, panels) = app.overlay(frame, &THING_LAYOUT, radius);
+        panels.first().map(|panel| panel.lines.clone())
+    }
+
+    #[test]
+    fn a_selected_thing_opens_its_card_and_esc_closes_it() {
+        let (mut app, mut frame) = lantern_app();
+        assert_eq!(frame.things.len(), 3);
+        let hovered = lantern_at(&app, &frame, 1);
+        app.hover = Some(Pointer {
+            frame: hovered,
+            cell: THING_LAYOUT.cell_of(hovered),
+        });
+        let radius = THING_LAYOUT.pick_radius(true);
+        let (labels, _) = app.overlay(&mut frame, &THING_LAYOUT, radius);
+        let tags: Vec<String> = labels
+            .into_iter()
+            .filter(|label| label.tone == Tone::Tag)
+            .map(|label| label.text)
+            .collect();
+        assert_eq!(
+            tags,
+            [format!(" {} ", testing::lantern_title(101))],
+            "a hovered thing shows its title"
+        );
+        app.hover = None;
+        let lantern = Thing {
+            kind: testing::LANTERN,
+            key: 100,
+        };
+        let spot = lantern_at(&app, &frame, 0);
+        click(&mut app, &frame, spot);
+        assert_eq!((app.thing, app.selected), (Some(lantern), None));
+        assert_eq!(
+            popup_lines(&app, &mut frame).expect("the card is open"),
+            [
+                testing::lantern_title(100).as_str(),
+                testing::WICK,
+                "Esc close"
+            ]
+        );
+        app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        assert_eq!(
+            app.scene.legend(app.view, app.snapshot()),
+            " lanterns | highlighted 100",
+            "the view highlights the selected thing"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.thing, None);
+        assert_eq!(popup_lines(&app, &mut frame), None);
+        app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        assert_eq!(app.scene.legend(app.view, app.snapshot()), " lanterns");
+        let spot = lantern_at(&app, &frame, 0);
+        click(&mut app, &frame, spot);
+        let process = app.snapshot().processes[0].id;
+        let at = app
+            .screen(&frame, process)
+            .expect("the process is on screen");
+        click(&mut app, &frame, at);
+        assert_eq!(
+            (app.thing, app.selected),
+            (None, Some(process)),
+            "selecting a process lets the thing go"
+        );
+    }
+
+    #[test]
+    fn a_thing_that_vanishes_says_so() {
+        let (mut app, mut frame) = lantern_app();
+        let spot = lantern_at(&app, &frame, 2);
+        click(&mut app, &frame, spot);
+        assert_eq!(app.thing.map(|thing| thing.key), Some(102));
+        press(&mut app, KeyCode::Char('x'));
+        frame = app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        assert_eq!(frame.things.len(), 2, "the last lantern went out");
+        assert_eq!(
+            popup_lines(&app, &mut frame).expect("the popup stays open"),
+            ["lantern no longer shown", "Esc close"]
+        );
+    }
+
+    #[test]
+    fn switching_views_clears_the_selected_thing() {
+        let (mut app, frame) = lantern_app();
+        let spot = lantern_at(&app, &frame, 0);
+        click(&mut app, &frame, spot);
+        assert!(app.thing.is_some());
+        press(&mut app, KeyCode::Tab);
+        assert_eq!((app.view, app.thing), (View::at(1), None));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!((app.view, app.thing), (View::at(0), None));
+    }
+
+    #[test]
+    fn thing_card_text_cannot_inject_terminal_controls() {
+        let (mut app, mut frame) = lantern_app();
+        let radius = THING_LAYOUT.pick_radius(true);
+        let at = lantern_at(&app, &frame, 0);
+        app.hover = Some(Pointer {
+            frame: at,
+            cell: THING_LAYOUT.cell_of(at),
+        });
+        let (labels, _) = app.overlay(&mut frame, &THING_LAYOUT, radius);
+        click(&mut app, &frame, at);
+        app.hover = None;
+        let (_, panels) = app.overlay(&mut frame, &THING_LAYOUT, radius);
+        let tag = labels.iter().find(|label| label.tone == Tone::Tag);
+        assert!(tag.expect("the hover tag").text.contains('\x1b'));
+        assert!(panels[0].lines.iter().any(|line| line == testing::WICK));
+        let mut output = Vec::new();
+        for label in &labels {
+            terminal::draw_label(&mut output, label, THING_LAYOUT.columns).unwrap();
+        }
+        for panel in &panels {
+            terminal::draw_popup(&mut output, panel).unwrap();
+        }
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            output.contains("lantern 100?]0;flare?"),
+            "the tag: {output:?}"
+        );
+        assert!(
+            output.contains("wick ?[2J?lit"),
+            "the card's line: {output:?}"
+        );
+        for control in ["\x1b]0;", "\x1b[2J", "\x07"] {
+            assert!(
+                !output.contains(control),
+                "{control:?} reached the terminal"
+            );
+        }
     }
 
     #[test]

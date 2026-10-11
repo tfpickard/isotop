@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 38 | 29,904 | 618 | 1,718 |
+| Rust | 38 | 30,687 | 621 | 1,761 |
 | Python | 28 | 12,168 | 615 | 1,395 |
-| WebGPU Shader Language | 1 | 173 | 11 | 28 |
+| WebGPU Shader Language | 1 | 198 | 13 | 32 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,166 | 453 |
+| Markdown | 6 | 0 | 2,175 | 453 |
 | Plain Text | 1 | 0 | 12 | 0 |
-| **Total** | **78** | **42,311** | **3,423** | **3,605** |
+| **Total** | **78** | **43,119** | **3,437** | **3,652** |
 
 ## Rust by module
 
@@ -22,20 +22,20 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/render.rs` | 2,846 | 904 |
+| `src/render.rs` | 2,958 | 1,097 |
 | `src/coop.rs` | 2,706 | 1,363 |
 | `src/model.rs` | 1,747 | 1,819 |
-| `src/main.rs` | 1,653 | 1,698 |
+| `src/main.rs` | 1,713 | 1,860 |
 | `src/platform/macos/mod.rs` | 916 | 365 |
-| `src/gpu.rs` | 765 | 0 |
+| `src/gpu.rs` | 834 | 82 |
 | `src/simulation.rs` | 673 | 752 |
 | `src/platform/linux/mod.rs` | 573 | 370 |
-| `src/views.rs` | 568 | 299 |
+| `src/views.rs` | 571 | 389 |
 | `src/reef.rs` | 541 | 22 |
 | `src/platform/macos/ffi.rs` | 540 | 12 |
 | `src/cores.rs` | 481 | 235 |
 | `src/platform/macos/logic.rs` | 466 | 607 |
-| `src/terminal.rs` | 422 | 79 |
+| `src/terminal.rs` | 425 | 79 |
 | `src/cells.rs` | 408 | 71 |
 | `src/globe.rs` | 382 | 119 |
 | `src/matrix.rs` | 299 | 219 |
@@ -59,8 +59,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/palette.rs` | 67 | 58 |
 | `src/geometry.rs` | 50 | 15 |
 | `src/status.rs` | 20 | 43 |
-| `src/harness.rs` | 0 | 548 |
-| **Total** | **19,115** | **10,791** |
+| `src/harness.rs` | 0 | 559 |
+| **Total** | **19,362** | **11,329** |
 
 ## Largest files
 
@@ -68,16 +68,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
+| `src/render.rs` | 4,519 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
 | `src/model.rs` | 4,222 | over limit |
-| `src/render.rs` | 4,162 | over limit |
-| `src/main.rs` | 3,675 | over limit |
+| `src/main.rs` | 3,920 | over limit |
 | `src/simulation.rs` | 1,751 | over limit |
 | `src/platform/macos/mod.rs` | 1,581 | over limit |
 | `src/platform/macos/logic.rs` | 1,283 | over limit |
+| `src/views.rs` | 1,217 | over limit |
 | `src/platform/linux/mod.rs` | 1,101 |  |
-| `src/views.rs` | 1,099 |  |
-| `src/gpu.rs` | 821 |  |
+| `src/gpu.rs` | 982 |  |
 
 ## Debt counters
 
@@ -98,7 +98,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 389 |
+| `#[test]` functions | 400 |
 | Views in the registry | 11 |
 | Views with a README mapping table | 1 of 11 |
 | Direct crate dependencies | 10 |

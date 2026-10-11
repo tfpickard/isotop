@@ -12,7 +12,7 @@ use std::fmt;
 
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
-use crate::render::{Backdrop, Camera, Point, Scene, Stage};
+use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
 use crate::{cells, cores, globe};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -419,6 +419,14 @@ pub trait ViewModule {
     /// A line that replaces the inspector line, the second status line, and hides the inspector
     /// popup, for a view that draws no processes. It starts with a space.
     fn inspector_line(&self) -> Option<String> {
+        None
+    }
+
+    /// The inspector card of `thing`, one of the things the view drew with `Frame::thing_pick`,
+    /// or None once it no longer shows it. Called only for the selected or hovered thing, so
+    /// build the card here from the view's own state, never one per thing per frame. The
+    /// snapshot is the shown sample, for figures the view does not keep itself.
+    fn card(&self, _thing: Thing, _snapshot: &Snapshot) -> Option<Card> {
         None
     }
 }
@@ -1030,6 +1038,116 @@ pub mod testing {
                 Hooks::Module(|| Box::new(Quiet::default())),
             )
         },
+    ];
+
+    /// The kind of thing `Lanterns` draws.
+    pub const LANTERN: &str = "lantern";
+
+    /// A line the card of every lantern carries, with terminal controls in it, as untrusted
+    /// text can.
+    pub const WICK: &str = "wick \x1b[2J\x07lit";
+
+    /// The title of lantern `key`'s card, which ends in a terminal control as well.
+    pub fn lantern_title(key: u64) -> String {
+        format!("lantern {key}\x1b]0;flare\x07")
+    }
+
+    /// A module view that seats each process by its pid, so its seat never moves, and hangs a
+    /// lantern on a line in front of them for each of the first three, framing both: a thing drawn as a sphere with a pick-only halo around
+    /// it. `x` puts out the last lantern still lit. Its legend names the key of the thing
+    /// `Stage::thing` named last, and it builds a card for a lit lantern from what it keeps.
+    #[derive(Default)]
+    pub struct Lanterns {
+        lit: Vec<(u64, Point)>,
+        out: usize,
+        highlighted: Option<Thing>,
+    }
+
+    impl Lanterns {
+        /// Where lantern `index` hangs.
+        pub fn position(index: usize) -> Point {
+            [index as f32 * 4.0, -6.0, 0.0]
+        }
+    }
+
+    impl ViewModule for Lanterns {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            self.highlighted = stage.thing;
+            for (index, process) in processes.iter().enumerate() {
+                let pid = process.id.pid;
+                let position = [(pid % 32) as f32 * 3.0, (pid / 32 % 32) as f32 * 3.0, 0.0];
+                stage.positions.insert(process.id, position);
+                stage.bounds.push(position);
+                stage.frame.sphere(
+                    stage.camera,
+                    position,
+                    1.0,
+                    [200, 200, 200],
+                    index as u32,
+                    false,
+                );
+            }
+            stage.bounds.extend((0..3).map(Self::position));
+            let count = processes.len().min(3).saturating_sub(self.out);
+            self.lit = (0..count)
+                .map(|index| (100 + index as u64, Self::position(index)))
+                .collect();
+            for &(key, position) in &self.lit {
+                let pick = stage.frame.thing_pick(Thing { kind: LANTERN, key });
+                stage
+                    .frame
+                    .sphere(stage.camera, position, 0.5, [255, 200, 90], pick, false);
+                stage.frame.pick_disc(stage.camera, position, 12.0, pick);
+            }
+            processes.len()
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            match self.highlighted {
+                Some(thing) => format!(" lanterns | highlighted {}", thing.key),
+                None => " lanterns".into(),
+            }
+        }
+
+        fn key(&mut self, key: ViewKey) -> bool {
+            if key == ViewKey::Local('x') {
+                self.out += 1;
+            }
+            false
+        }
+
+        fn card(&self, thing: Thing, _snapshot: &Snapshot) -> Option<Card> {
+            let &(key, at) = self
+                .lit
+                .iter()
+                .find(|(key, _)| thing.kind == LANTERN && *key == thing.key)?;
+            Some(Card {
+                title: lantern_title(key),
+                lines: vec![WICK.into()],
+                at,
+            })
+        }
+    }
+
+    /// `lanterns`, then `probe` to switch to.
+    pub static THINGS: &[ViewInfo] = &[
+        ViewInfo::new(
+            "lanterns",
+            "LANTERNS",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Lanterns::default())),
+        ),
+        ViewInfo::new(
+            "probe",
+            "PROBE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        ),
     ];
 
     /// Two module views for the demo options: `plain`, which asks for nothing, then `demanding`,

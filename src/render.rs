@@ -18,6 +18,9 @@ pub mod shared;
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
 pub use shared::NONE;
+/// The pick-buffer bit that marks an index into `Frame::things` rather than `Frame::identities`.
+/// Process indices stay below it, and a thing index below `THING - 1`, so neither meets `NONE`.
+pub const THING: u32 = 1 << 31;
 /// Screen pixels per world unit at zoom 1: sqrt(3/2), the isometric foreshortening.
 pub(crate) const SCALE: f32 = 1.224_745;
 /// Elevation of a true isometric view, asin(1/sqrt(3)).
@@ -236,6 +239,32 @@ impl Sky {
     }
 }
 
+/// Something pickable that is not a process: an IRQ line, a file, a grave. `kind` is a short
+/// lowercase noun that the inspector names it by; `key` belongs to the view that draws it and
+/// stays the same from frame to frame (an IRQ number, a hash of device and inode, a serial).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Thing {
+    pub kind: &'static str,
+    pub key: u64,
+}
+
+/// What a pick names: a process, or a thing a view drew.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Process(Identity),
+    Thing(Thing),
+}
+
+/// The inspector popup of a thing, built on demand by the view that drew it. Its text is
+/// untrusted, like process text, and reaches the terminal only through `terminal::clean_text`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Card {
+    pub title: String,
+    pub lines: Vec<String>,
+    /// The world point the popup is placed beside.
+    pub at: Point,
+}
+
 /// Screen-space drawing primitives, recorded in order and rasterized by a backend.
 #[derive(Clone, Copy, Debug)]
 pub enum Item {
@@ -271,6 +300,17 @@ pub enum Item {
         bits: u128,
         color: Color,
     },
+    /// A disc that writes only the pick buffer, so blended or splatted content stays pickable:
+    /// no colour and no depth, depth-tested at `depth` as a sphere is. `pick` names a process or
+    /// a thing. Record it after the geometry it lies over: it writes no depth, so geometry
+    /// recorded later covers it wherever that geometry passes the depth test.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    Pick {
+        center: [f32; 2],
+        radius: f32,
+        depth: f32,
+        pick: u32,
+    },
 }
 
 /// A finished frame's allocations, handed to the next frame so steady-state rendering does not
@@ -292,6 +332,8 @@ pub struct Frame {
     depth: Vec<f32>,
     pub picks: Vec<u32>,
     pub identities: Vec<Identity>,
+    /// The things this frame's thing picks index, in `thing_pick` order.
+    pub things: Vec<Thing>,
     /// Pixel position of the selected process, if it was drawn.
     pub anchor: Option<[f32; 2]>,
 }
@@ -314,6 +356,7 @@ impl Frame {
             depth,
             picks,
             identities: Vec::new(),
+            things: Vec::new(),
             anchor: None,
         };
         if sky.backdrop == Backdrop::Space {
@@ -381,6 +424,12 @@ impl Frame {
                     bits,
                     color,
                 } => self.glyph(origin, scale, bits, color),
+                Item::Pick {
+                    center,
+                    radius,
+                    depth,
+                    pick,
+                } => self.splat(center, radius, depth, pick),
             }
         }
         self.items = items;
@@ -436,8 +485,57 @@ impl Frame {
         }
     }
 
-    /// Nearest pickable pixel within `radius` of (x, y); terminal mouse input is imprecise.
+    /// The pick value for `thing` in this frame. Call it once per thing per frame and give
+    /// every item of that thing the value it returns.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    pub fn thing_pick(&mut self, thing: Thing) -> u32 {
+        debug_assert!(
+            self.things.len() < (THING - 1) as usize,
+            "thing indices stay clear of NONE"
+        );
+        self.things.push(thing);
+        (self.things.len() - 1) as u32 | THING
+    }
+
+    /// What a pick-buffer value names, if anything.
+    pub fn target(&self, pick: u32) -> Option<Target> {
+        if pick == NONE {
+            None
+        } else if pick & THING != 0 {
+            let index = (pick & !THING) as usize;
+            self.things.get(index).copied().map(Target::Thing)
+        } else {
+            self.identities
+                .get(pick as usize)
+                .copied()
+                .map(Target::Process)
+        }
+    }
+
+    /// Nearest process pixel within `radius` of (x, y); terminal mouse input is imprecise.
+    /// Things are passed over: `target_near` finds them.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the app picks through target_near since B9; kept for process-only callers"
+        )
+    )]
     pub fn pick_near(&self, x: f32, y: f32, radius: f32) -> Option<Identity> {
+        self.nearest(x, y, radius, |pick| pick & THING == 0)
+            .and_then(|index| self.identities.get(index as usize).copied())
+    }
+
+    /// The process or thing at the nearest pickable pixel within `radius` of (x, y), by the
+    /// same search and tie rule as `pick_near`.
+    pub fn target_near(&self, x: f32, y: f32, radius: f32) -> Option<Target> {
+        self.nearest(x, y, radius, |pick| pick != NONE)
+            .and_then(|pick| self.target(pick))
+    }
+
+    /// The pick value of the nearest pixel within `radius` of (x, y) whose pick `accept`s; of
+    /// pixels equally near, the last in row order.
+    fn nearest(&self, x: f32, y: f32, radius: f32, accept: impl Fn(u32) -> bool) -> Option<u32> {
         if self.picks.is_empty() {
             return None;
         }
@@ -449,13 +547,13 @@ impl Frame {
             for px in (cx - reach).max(0)..=(cx + reach).min(self.width as i32 - 1) {
                 let pick = self.picks[py as usize * self.width as usize + px as usize];
                 let distance = (px as f32 + 0.5 - x).powi(2) + (py as f32 + 0.5 - y).powi(2);
-                if pick != NONE && distance <= best_distance {
+                if accept(pick) && distance <= best_distance {
                     best_distance = distance;
                     best = Some(pick);
                 }
             }
         }
-        best.and_then(|index| self.identities.get(index as usize).copied())
+        best
     }
 
     /// Frame pixel position of a world point, if it lands inside the frame.
@@ -558,6 +656,26 @@ impl Frame {
                 color,
                 NONE,
             );
+        }
+    }
+
+    /// Writes `pick` over a disc where `depth` is at least as near as what is drawn, as a
+    /// sphere's surface tests, leaving colour and depth alone. Samples at integer pixel
+    /// coordinates like `ball`.
+    fn splat(&mut self, center: [f32; 2], radius: f32, depth: f32, pick: u32) {
+        let x0 = (center[0] - radius).floor().max(0.0) as i32;
+        let x1 = (center[0] + radius).ceil().min(self.width as f32 - 1.0) as i32;
+        let y0 = (center[1] - radius).floor().max(0.0) as i32;
+        let y1 = (center[1] + radius).ceil().min(self.height as f32 - 1.0) as i32;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let nx = (x as f32 - center[0]) / radius;
+                let ny = (y as f32 - center[1]) / radius;
+                let i = y as usize * self.width as usize + x as usize;
+                if nx * nx + ny * ny <= 1.0 && depth >= self.depth[i] {
+                    self.picks[i] = pick;
+                }
+            }
         }
     }
 
@@ -706,6 +824,19 @@ impl Frame {
         });
     }
 
+    /// A pick-only disc of `radius` pixels at the projection of `position`, depth-tested there:
+    /// it keeps splatted or translucent content under it pickable.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    pub(crate) fn pick_disc(&mut self, camera: &Camera, position: Point, radius: f32, pick: u32) {
+        let center = self.project(camera, position);
+        self.items.push(Item::Pick {
+            center: [center[0], center[1]],
+            radius,
+            depth: center[2],
+            pick,
+        });
+    }
+
     /// The silhouette of a sphere `sphere` would draw, as a ring of lines facing the viewer with
     /// a fainter ring inside it: a body drawn hollow. Lines draw alike in both rasterizers and,
     /// like every line, leave nothing pickable.
@@ -773,6 +904,8 @@ pub struct RenderInput<'a> {
     pub width: u32,
     pub height: u32,
     pub selected: Option<Identity>,
+    /// The selected thing, or else the hovered one, for the view to highlight.
+    pub thing: Option<Thing>,
     /// Seconds on the animation clock, or the shown sample's `elapsed` while paused.
     pub time: f32,
     /// The most processes drawn; the rest of the PID order is left out, the selection kept.
@@ -795,6 +928,7 @@ impl<'a> RenderInput<'a> {
             width: 320,
             height: 180,
             selected: None,
+            thing: None,
             time,
             limit: 512,
             focus: None,
@@ -848,6 +982,10 @@ pub(crate) struct Stage<'a> {
     pub frame: &'a mut Frame,
     pub camera: &'a Camera,
     pub selected: Option<Identity>,
+    /// The selected thing, or the hovered one if none is selected, so the view can highlight
+    /// it. Never Some while a process is selected.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    pub thing: Option<Thing>,
     pub time: f32,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
     /// first frame, while paused, and when `time` went back (a rewind or a headless replay);
@@ -1170,6 +1308,15 @@ impl Scene {
         }
     }
 
+    /// The inspector card of `thing`, which `view`, the shown view, drew: built now from the
+    /// module's own state, or None once it no longer shows the thing. Built-in views draw no
+    /// things.
+    pub fn card(&self, view: View, thing: Thing, snapshot: &Snapshot) -> Option<Card> {
+        self.modules[view.index()]
+            .as_ref()
+            .and_then(|module| module.card(thing, snapshot))
+    }
+
     /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means. No
     /// built-in view takes keys.
     pub fn key(&mut self, view: View, key: ViewKey) -> bool {
@@ -1305,6 +1452,7 @@ impl Scene {
             width,
             height,
             selected,
+            thing: _,
             time,
             limit,
             focus,
@@ -1336,6 +1484,11 @@ impl Scene {
         };
         let mut frame = Frame::new(width, height, sky, std::mem::take(&mut self.spare));
         frame.identities = processes.iter().map(|p| p.id).collect();
+        frame.things.clear();
+        debug_assert!(
+            frame.identities.len() <= THING as usize,
+            "process indices stay below the thing bit"
+        );
         self.visible = processes.len();
         self.collapsed = 0;
         self.stars.clear();
@@ -1419,6 +1572,7 @@ impl Scene {
             view,
             camera,
             selected,
+            thing,
             time,
             focus,
             ..
@@ -1467,6 +1621,7 @@ impl Scene {
                     frame,
                     camera,
                     selected,
+                    thing,
                     time,
                     dt,
                     history: &self.history,
@@ -4017,7 +4172,7 @@ mod tests {
                 frame
                     .picks
                     .iter()
-                    .all(|&p| p == NONE || (p as usize) < frame.identities.len())
+                    .all(|&p| p == NONE || frame.target(p).is_some())
             );
             render(&mut Scene::new(), &Snapshot::default(), view, 0.0);
         }
@@ -4358,6 +4513,208 @@ mod tests {
         assert_eq!(frame.pick_near(20.5, 5.5, 0.5), None);
     }
 
+    /// A sphere item with `pick` at pixel (x, y), at depth 0.
+    fn dot_item(x: f32, y: f32, pick: u32) -> Item {
+        Item::Sphere {
+            center: [x, y, 0.0],
+            radius: 1.0,
+            depth: 1.0,
+            color: [255; 3],
+            pick,
+            selected: false,
+        }
+    }
+
+    #[test]
+    fn things_and_processes_share_the_pick_buffer_without_colliding() {
+        let mut frame = blank(30, 10);
+        let process = Identity { pid: 1, start: 1 };
+        frame.identities = vec![process];
+        let lamp = Thing {
+            kind: "irq",
+            key: 9,
+        };
+        let grave = Thing {
+            kind: "grave",
+            key: 9,
+        };
+        let lamp_pick = frame.thing_pick(lamp);
+        let grave_pick = frame.thing_pick(grave);
+        assert_eq!((lamp_pick, grave_pick), (THING, THING | 1));
+        assert!(![lamp_pick, grave_pick].contains(&NONE));
+        frame.items = vec![
+            dot_item(5.0, 5.0, 0),
+            dot_item(15.0, 5.0, lamp_pick),
+            dot_item(25.0, 5.0, grave_pick),
+        ];
+        frame.rasterize();
+        let at = |x: usize| frame.target(frame.picks[5 * 30 + x]);
+        assert_eq!(at(5), Some(Target::Process(process)));
+        assert_eq!(
+            at(15),
+            Some(Target::Thing(lamp)),
+            "thing 0 is not process 0"
+        );
+        assert_eq!(
+            at(25),
+            Some(Target::Thing(grave)),
+            "the same key of another kind"
+        );
+        assert_eq!(at(10), None);
+        assert_eq!(frame.target(THING | 2), None, "past the frame's things");
+        assert_eq!(frame.target(1), None, "past the frame's identities");
+    }
+
+    #[test]
+    fn pick_near_still_returns_only_processes() {
+        let mut frame = blank(40, 20);
+        let process = Identity { pid: 1, start: 1 };
+        frame.identities = vec![process];
+        let file = Thing {
+            kind: "file",
+            key: 3,
+        };
+        let thing = frame.thing_pick(file);
+        frame.pixel(10, 10, 0.0, [255; 3], 0);
+        frame.pixel(20, 10, 0.0, [255; 3], thing);
+        assert_eq!(
+            frame.pick_near(20.5, 10.5, 12.0),
+            Some(process),
+            "the nearer thing is passed over"
+        );
+        assert_eq!(frame.pick_near(20.5, 10.5, 3.0), None);
+        assert_eq!(
+            frame.target_near(20.5, 10.5, 3.0),
+            Some(Target::Thing(file))
+        );
+    }
+
+    #[test]
+    fn target_near_finds_the_nearest_thing_or_process() {
+        let mut frame = blank(40, 40);
+        let process = Identity { pid: 1, start: 1 };
+        frame.identities = vec![process];
+        let grave = Thing {
+            kind: "grave",
+            key: 7,
+        };
+        let thing = frame.thing_pick(grave);
+        frame.pixel(24, 20, 0.0, [255; 3], 0);
+        frame.pixel(10, 20, 0.0, [255; 3], thing);
+        assert_eq!(
+            frame.target_near(20.5, 20.5, 9.0),
+            Some(Target::Process(process))
+        );
+        assert_eq!(
+            frame.target_near(14.5, 20.5, 9.0),
+            Some(Target::Thing(grave))
+        );
+        assert_eq!(frame.target_near(20.5, 5.5, 9.0), None);
+        frame.pixel(16, 20, 0.0, [255; 3], thing);
+        assert_eq!(
+            frame.target_near(20.5, 20.5, 9.0),
+            Some(Target::Process(process)),
+            "of two equally near, the later in row order wins, as in pick_near"
+        );
+    }
+
+    #[test]
+    fn a_pick_splat_writes_picks_but_no_pixels_or_depth() {
+        let plain = blank(30, 30);
+        let mut frame = blank(30, 30);
+        let process = Identity { pid: 4, start: 4 };
+        frame.identities = vec![process];
+        let grave = Thing {
+            kind: "grave",
+            key: 1,
+        };
+        let thing = frame.thing_pick(grave);
+        frame.items = vec![
+            Item::Pick {
+                center: [10.0, 15.0],
+                radius: 5.0,
+                depth: 1.0,
+                pick: thing,
+            },
+            Item::Pick {
+                center: [25.0, 15.0],
+                radius: 2.0,
+                depth: 1.0,
+                pick: 0,
+            },
+        ];
+        frame.rasterize();
+        assert_eq!(frame.pixels, plain.pixels, "no colour");
+        assert!(
+            frame
+                .depth()
+                .iter()
+                .all(|&depth| depth == f32::NEG_INFINITY),
+            "no depth"
+        );
+        // The integer points within 5 of the centre: Gauss's circle count N(5).
+        assert_eq!(
+            frame.picks.iter().filter(|&&pick| pick == thing).count(),
+            81
+        );
+        assert_eq!(frame.picks[15 * 30 + 16], NONE, "outside the disc");
+        assert_eq!(
+            frame.target_near(10.5, 15.5, 1.0),
+            Some(Target::Thing(grave))
+        );
+        assert_eq!(
+            frame.target_near(25.5, 15.5, 1.0),
+            Some(Target::Process(process)),
+            "a splat picks processes too"
+        );
+    }
+
+    #[test]
+    fn a_pick_splat_behind_a_triangle_is_not_picked() {
+        let mut frame = blank(30, 30);
+        let wall = Identity { pid: 1, start: 1 };
+        frame.identities = vec![wall];
+        let behind = frame.thing_pick(Thing {
+            kind: "grave",
+            key: 1,
+        });
+        let front = frame.thing_pick(Thing {
+            kind: "grave",
+            key: 2,
+        });
+        let splat = |center: [f32; 2], radius: f32, depth: f32, pick: u32| Item::Pick {
+            center,
+            radius,
+            depth,
+            pick,
+        };
+        // The triangle covers the pixels with x + y below 30, at depth 5.
+        frame.items = vec![
+            Item::Triangle(
+                [[0.0, 0.0, 5.0], [30.0, 0.0, 5.0], [0.0, 30.0, 5.0]],
+                [90; 3],
+                0,
+            ),
+            splat([8.0, 8.0], 4.0, 2.0, behind),
+            splat([8.0, 8.0], 2.0, 9.0, front),
+            splat([24.0, 24.0], 3.0, 2.0, behind),
+        ];
+        frame.rasterize();
+        let pick = |x: usize, y: usize| frame.picks[y * 30 + x];
+        assert_eq!(
+            pick(8, 11),
+            0,
+            "behind the triangle, the triangle keeps the pick"
+        );
+        assert_eq!(pick(8, 8), front, "in front of it, the splat takes it");
+        assert_eq!(
+            pick(24, 24),
+            behind,
+            "with nothing in front, the splat takes it"
+        );
+        assert_eq!(&frame.pixels[(8 * 30 + 8) * 3..][..3], &[90; 3]);
+    }
+
     #[test]
     fn cell_sized_picking_selects_the_nearest_small_object() {
         let mut frame = blank(40, 40);
@@ -4418,7 +4775,7 @@ mod tests {
                 frame
                     .picks
                     .iter()
-                    .all(|&p| p == NONE || (p as usize) < frame.identities.len())
+                    .all(|&p| p == NONE || frame.target(p).is_some())
             );
             let [x, y] = frame
                 .locate(&camera, scene.positions[&star])

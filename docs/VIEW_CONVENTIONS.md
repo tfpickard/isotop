@@ -55,13 +55,12 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
    - tour participation
    - header-count override
    - view-local key hook
-   - card hook (from [B9 (#36)](https://github.com/tfpickard/isotop/issues/36))
    - `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27))
    - `demo` options (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25))
    - the harness `contract` (from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)): whether it draws processes, its stability tolerance, and anchors for creatures that wander
 3. Draw with the signature the module views already use (`cells.rs`, `cores.rs`, `strata.rs`, `reef.rs`, `coop.rs`):
    `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
-   The return value is the number of processes shown; the rest count as collapsed. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
+   The return value is the number of processes shown; the rest count as collapsed. The trait's other hooks, each with a default, are `record`, `key`, `inspector_line` and `card(&self, Thing, &Snapshot) -> Option<Card>` (the inspector card of a thing the view drew; see "Picking"). A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
 4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets).
 5. Add a smoke-test line, a README section and the key help. See "Tests", "README section" and "Keys".
 
@@ -155,9 +154,10 @@ Add a `### <Name>` section under `## Worlds`, modelled on `### Coop`:
 
 ## Picking
 
-- Process items carry an index into `frame.identities`. `NONE` means not pickable. Only triangles and spheres write picks; lines clear picking where they draw. Decorative strokes near bodies are therefore `Beam`s, or sit behind the body in depth.
-- Non-process things (IRQ lines, files, graves, core blocks) use `Thing { kind, key }` and `Frame::thing_pick` (from [B9 (#36)](https://github.com/tfpickard/isotop/issues/36)). The key stays the same across frames, and the card is built on demand through the card hook. Never mint a synthetic `Identity`.
-- Translucent or splatted content stays pickable through [B9 (#36)](https://github.com/tfpickard/isotop/issues/36)'s pick-only item.
+- Process items carry an index into `frame.identities`. `NONE` means not pickable. Only triangles, spheres and `Item::Pick` write picks; lines clear picking where they draw. Decorative strokes near bodies are therefore `Beam`s, or sit behind the body in depth.
+- Non-process things (IRQ lines, files, graves, core blocks) use `Thing { kind, key }` and `Frame::thing_pick`, which returns the thing's index in `frame.things` with the `THING` bit set. Call it once per thing per frame and give every item of the thing that value. `kind` is a short lowercase noun; the key stays the same across frames. Never mint a synthetic `Identity`. `Frame::target` and `Frame::target_near` resolve a pick to a `Target` (a process or a thing); `pick_near` still finds processes only.
+- The card of a thing is built on demand by `ViewModule::card`, from the view's own retained state, for the selected or hovered thing only; never build one per thing per frame. It returns None once the view no longer shows the thing, and the popup then says `<kind> no longer shown`. `Card { title, lines, at }` places the popup beside the world point `at`. Card text is untrusted (see "Untrusted text"). `stage.thing` is the selected thing, or else the hovered one, for the view to highlight.
+- Translucent or splatted content stays pickable through `Item::Pick` (`Frame::pick_disc`): a disc that writes only picks, depth-tested like a sphere, with no colour and no depth. Record it after the geometry it lies over.
 - Grid content picks through the [P3 (#19)](https://github.com/tfpickard/isotop/issues/19) owner grid. An absent owner grid gives `NONE`.
 - On the GPU, picks are read back only in a 160 px window around the pointer (`PICK_WINDOW` in `gpu.rs`). Any test that picks away from the pointer rasterizes on the CPU.
 

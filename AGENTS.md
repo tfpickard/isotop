@@ -51,7 +51,7 @@ The README covers usage. This file covers how to work on the code.
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
@@ -99,12 +99,14 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 **The view contract.** A view is one module plus one row of `views::REGISTRY`. The module owns
 a state struct and implements `views::ViewModule`:
 `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize` and
-`legend`, and where it needs them `record` (every sample, whichever view is shown), `key` and
-`inspector_line`. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back
-only through `Stage` outputs. `Stage` carries in the frame, camera, selection, time, `dt`, births
-and growth, and `history`, the shared per-process CPU and memory history (`history.rs`), which
-`Scene` fills on every sample whichever view is shown and a view reads from the shown snapshot's
-`elapsed` (`History::window`, `History::series`); what the platform could not measure is `snapshot.missing`, which `Stage` does not
+`legend`, and where it needs them `record` (every sample, whichever view is shown), `key`,
+`inspector_line` and `card` (the inspector card of a `Thing` it drew, built on demand). A view
+reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage`
+outputs. `Stage` carries in the frame, camera, selection (and `thing`, the selected or hovered
+thing), time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
+history (`history.rs`), which `Scene` fills on every sample whichever view is shown and a view
+reads from the shown snapshot's `elapsed` (`History::window`, `History::series`); what the
+platform could not measure is `snapshot.missing`, which `Stage` does not
 copy. `stage.dt` is the one step policy for new code, computed once per frame by `Scene`: 0 on
 the first frame, while paused and when time goes back (a rewind), otherwise the time since the
 last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulation with it or
@@ -149,9 +151,12 @@ onto `ViewModule`, so write new views the module way and never add an arm.
   Systems and districts are only re-placed when their structure outgrows the reservation, and
   tests enforce this: the view harness checks every registered view (`harness.rs`). Don't
   introduce a layout that reshuffles every sample.
-- **Picking.** A pickable item carries an index into `frame.identities`. `NONE` means "not
-  pickable", and lines clear picking where they draw. Mouse input is cell-coarse, so
-  `pick_near` searches a radius.
+- **Picking.** A pickable item carries an index into `frame.identities`, or a thing pick from
+  `Frame::thing_pick` (an index into `frame.things` with the `THING` bit set) for something that
+  is not a process. `NONE` means "not pickable", and lines clear picking where they draw.
+  `Item::Pick` writes picks only, for blended content. Mouse input is cell-coarse, so
+  `target_near` (and `pick_near`, processes only) searches a radius. Never mint a synthetic
+  `Identity` for a thing.
 - **Process and system sampling lives in `platform/`.** Nothing outside it reads `/proc` or
   `/sys` or spawns OS tools; terminal I/O (`terminal.rs`) and local lookups (`geo.rs`) are the
   exceptions. Both platforms provide the same names; a macOS build must compile without

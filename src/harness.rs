@@ -411,20 +411,22 @@ impl Runs {
     }
 }
 
-/// Every pick is `NONE` or an index into the frame's identities.
+/// Every pick is `NONE`, an index into the frame's identities or a thing pick naming one of its
+/// things.
 fn valid_picks(frame: &Frame) -> Outcome {
-    let identities = frame.identities.len();
     let invalid: Vec<u32> = frame
         .picks
         .iter()
         .copied()
-        .filter(|&pick| pick != NONE && pick as usize >= identities)
+        .filter(|&pick| pick != NONE && frame.target(pick).is_none())
         .collect();
     match invalid.first() {
         None => Outcome::Pass,
         Some(pick) => Outcome::Fail(format!(
-            "{} pixels pick past the frame's {identities} identities, such as {pick}",
-            invalid.len()
+            "{} pixels pick past the frame's {} identities and {} things, such as {pick:#x}",
+            invalid.len(),
+            frame.identities.len(),
+            frame.things.len()
         )),
     }
 }
@@ -550,6 +552,17 @@ mod tests {
             "views break the view contract:\n  {}",
             failures.join("\n  ")
         );
+    }
+
+    #[test]
+    fn a_view_that_draws_things_satisfies_the_view_contract() {
+        for (property, verdict) in check(testing::THINGS, View::at(0)) {
+            assert!(
+                matches!(verdict, Verdict::Pass | Verdict::Exempt),
+                "{}: {verdict:?}",
+                property.name()
+            );
+        }
     }
 
     #[test]
