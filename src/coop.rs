@@ -3065,31 +3065,18 @@ mod tests {
 
     fn process(pid: u32, cgroup: &str) -> Process {
         Process {
-            id: identity(pid),
-            parent: 1,
             name: format!("hen-{pid}"),
-            command: String::new(),
             group: cgroup.rsplit('/').next().unwrap_or("").into(),
-            kind: Kind::System,
-            state: 'S',
             cpu: 5.0,
             memory: 20 << 20,
             io_rate: Some(0.0),
             read_rate: Some(0.0),
             write_rate: Some(0.0),
             written: Some(0),
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
             cgroup: cgroup.into(),
-            performance_share: None,
-            waiting: None,
             files: Measured::Known(crate::platform::Files::default()),
             locks_held: Measured::Known(0),
-            blocked_on: None,
+            ..crate::model::testing::process(pid, 1)
         }
     }
 

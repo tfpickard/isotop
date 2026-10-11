@@ -135,10 +135,15 @@ match your own shell.
 - Use full-word names (`processes`, `snapshot`, `radius`), not abbreviations.
 - Tests live in a `tests` module at the bottom of each file. Name them as sentences about
   behaviour (`city_does_not_relocate_when_resources_or_population_change`). Rendering tests use
-  `model::demo` or the `process(pid, parent)` helper in `render.rs`.
-- When you add a field to `Process` or `Snapshot`, update `parse_stat` (in
-  `platform/linux/mod.rs`), `Sampler::process` (in `platform/macos/mod.rs`), `model::demo`
-  and the `render.rs` test helper.
+  `model::demo` or the shared `process(pid, parent)` helper in `model::testing`.
+- When you add a field to `Process`, decide it in the three exhaustive literals (no
+  `..Default::default()`, so the compiler insists): `parse_stat` in `platform/linux/mod.rs`,
+  `Sampler::process` in `platform/macos/mod.rs` and `model::demo`. Also set it in `Default for
+  Process` in `model.rs`, which `Process::placeholder`, `hub()` and the `model::testing::process`
+  test helper build on. Update `RawProcess` in `platform/mod.rs` if the platform supplies it. A
+  rate also needs `Counters` and `measure()`; a field filled on the background thread needs
+  `Extras`, `background()` and the merge in `Collector::sample` (all in `model.rs`). `Snapshot`
+  derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo`.
 - A new view needs: a `View` variant, a `next()` entry, the status-line name and legend in
   `App::text`, and a draw function called from `Scene::render`.
 - Prefer the standard library. Add a dependency only when it replaces substantial,

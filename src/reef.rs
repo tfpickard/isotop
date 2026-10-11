@@ -574,31 +574,12 @@ mod tests {
     #[test]
     fn same_named_units_of_different_cgroups_live_apart() {
         let unit = |kind: Kind, cgroup: &str| Process {
-            id: Identity { pid: 1, start: 1 },
-            parent: 0,
             name: "dbus-daemon".into(),
-            command: String::new(),
             group: "dbus.service".into(),
             kind,
-            state: 'S',
-            cpu: 0.0,
             memory: 0,
-            io_rate: None,
-            read_rate: None,
-            write_rate: None,
-            written: None,
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
             cgroup: cgroup.into(),
-            performance_share: None,
-            waiting: None,
-            files: crate::model::Measured::Pending,
-            locks_held: crate::model::Measured::Pending,
-            blocked_on: None,
+            ..crate::model::testing::process(1, 0)
         };
         let system = unit(Kind::System, "/system.slice/dbus.service");
         let session = unit(

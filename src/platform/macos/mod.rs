@@ -226,6 +226,7 @@ impl Sampler {
             &description.name,
         );
         let group = logic::group(&description.path, &description.name);
+        // Exhaustive on purpose: a new field must be decided here.
         let process = Process {
             id,
             parent: bsd.pbi_ppid,

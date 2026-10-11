@@ -420,6 +420,7 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
         Measured::Pending
     };
     Some((
+        // Exhaustive on purpose: a new field must be decided here.
         Process {
             id: Identity {
                 pid,

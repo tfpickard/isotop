@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
-use crate::model::{Identity, Kind, Measured, Process, Snapshot, bounded};
+use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::platform::Shadow;
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
@@ -2851,34 +2851,12 @@ pub fn is_hub(id: &Identity) -> bool {
 /// The stand-in for a parent isotop cannot read, with nothing measured.
 fn hub(shadow: &Shadow) -> Process {
     Process {
-        id: Identity {
-            pid: shadow.pid,
-            start: HUB_START,
-        },
         parent: shadow.pid,
         name: shadow.name.clone(),
-        command: String::new(),
-        group: String::new(),
-        kind: Kind::System,
-        state: 'S',
-        cpu: 0.0,
-        memory: 0,
-        io_rate: None,
-        read_rate: None,
-        write_rate: None,
-        written: None,
-        priority: 0,
-        nice: 0,
-        threads: 0,
-        gpu_memory: 0,
-        core: 0,
-        cpu_time: 0.0,
-        cgroup: String::new(),
-        performance_share: None,
-        waiting: None,
-        files: Measured::Unreadable,
-        locks_held: Measured::Unreadable,
-        blocked_on: None,
+        ..Process::placeholder(Identity {
+            pid: shadow.pid,
+            start: HUB_START,
+        })
     }
 }
 
@@ -3076,39 +3054,7 @@ pub fn descendants(snapshot: &Snapshot, root: Identity) -> HashSet<Identity> {
 mod tests {
     use super::*;
     use crate::model::demo;
-
-    fn process(pid: u32, parent: u32) -> Process {
-        Process {
-            id: Identity {
-                pid,
-                start: pid as u64,
-            },
-            parent,
-            name: format!("p{pid}"),
-            command: String::new(),
-            group: "g".into(),
-            kind: Kind::System,
-            state: 'S',
-            cpu: 0.0,
-            memory: 1 << 20,
-            io_rate: None,
-            read_rate: None,
-            write_rate: None,
-            written: None,
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
-            cgroup: "/system.slice/g.service".into(),
-            performance_share: None,
-            waiting: None,
-            files: crate::model::Measured::Pending,
-            locks_held: crate::model::Measured::Pending,
-            blocked_on: None,
-        }
-    }
+    use crate::model::testing::process;
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, view: View, time: f32) -> Frame {
         let mut frame = scene.render(
