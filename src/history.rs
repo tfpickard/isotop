@@ -24,7 +24,25 @@ pub struct Reading {
 pub struct Sample {
     /// `Snapshot::elapsed` of the snapshot this came from.
     pub elapsed: f64,
+    /// How many samples the history took in before this one: an absolute count that keeps
+    /// rising as the ring turns over, so a view can number samples across windows.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
+    pub sequence: u64,
     readings: Vec<(Identity, Reading)>,
+}
+
+/// A process that appeared in a sample, or was gone from it, against the sample before.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
+pub struct Change {
+    pub id: Identity,
+    /// `elapsed` of the first sample it was in, for a birth, or the first it was missing from,
+    /// for an exit.
+    pub elapsed: f64,
+    /// A birth when true, an exit when false.
+    pub born: bool,
+    /// Its first reading for a birth, its last for an exit.
+    pub reading: Reading,
 }
 
 impl Sample {
@@ -47,6 +65,8 @@ pub struct History {
     /// Scene time at which the newest sample arrived, so a view that scrolls can move smoothly
     /// between samples.
     arrived: f32,
+    /// Samples taken in so far, including those the ring has dropped.
+    recorded: u64,
 }
 
 impl History {
@@ -74,8 +94,10 @@ impl History {
         readings.sort_by_key(|&(id, _)| id);
         self.samples.push_back(Sample {
             elapsed: snapshot.elapsed,
+            sequence: self.recorded,
             readings,
         });
+        self.recorded += 1;
         self.arrived = time;
         while self.samples.len() > CAPACITY {
             self.samples.pop_front();
@@ -103,19 +125,82 @@ impl History {
         self.samples.range(start..end.max(start))
     }
 
-    /// The last `count` samples at or before `until`, oldest first: the process's reading in
-    /// each, or `None` where it was absent. Fewer than `count` entries when the history is
+    /// The last `count` samples at or before `until`, oldest first; fewer when the history is
     /// shorter.
-    #[cfg_attr(not(test), expect(dead_code, reason = "no view reads series yet"))]
-    pub fn series(&self, id: Identity, until: f64, count: usize) -> Vec<Option<Reading>> {
+    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
+    pub fn recent(&self, until: f64, count: usize) -> impl ExactSizeIterator<Item = &Sample> {
         let end = self
             .samples
             .partition_point(|sample| sample.elapsed <= until);
-        let start = end.saturating_sub(count);
-        self.samples
-            .range(start..end)
+        self.samples.range(end.saturating_sub(count)..end)
+    }
+
+    /// The last `count` samples at or before `until`, oldest first: the process's reading in
+    /// each, or `None` where it was absent. Fewer than `count` entries when the history is
+    /// shorter.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
+    pub fn series(&self, id: Identity, until: f64, count: usize) -> Vec<Option<Reading>> {
+        self.recent(until, count)
             .map(|sample| sample.reading(id))
             .collect()
+    }
+
+    /// The births and exits of the samples whose `elapsed` lies in `until - seconds..=until`,
+    /// each found against the sample before it, oldest first and by `Identity` within a sample.
+    /// The oldest sample the history holds has nothing to compare with, so it reports none: a
+    /// history that starts with a running machine does not count it as born.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
+    pub fn changes(&self, until: f64, seconds: f64) -> Vec<Change> {
+        let from = until - seconds;
+        let start = self.samples.partition_point(|sample| sample.elapsed < from);
+        let end = self
+            .samples
+            .partition_point(|sample| sample.elapsed <= until);
+        let mut changes = Vec::new();
+        for index in start.max(1)..end {
+            let (before, after) = (&self.samples[index - 1], &self.samples[index]);
+            let elapsed = after.elapsed;
+            let (mut old, mut new) = (
+                before.readings.iter().peekable(),
+                after.readings.iter().peekable(),
+            );
+            loop {
+                let change = match (old.peek(), new.peek()) {
+                    (None, None) => break,
+                    (Some(&&(id, reading)), None) => {
+                        old.next();
+                        (id, false, reading)
+                    }
+                    (None, Some(&&(id, reading))) => {
+                        new.next();
+                        (id, true, reading)
+                    }
+                    (Some(&&(gone, last)), Some(&&(came, first))) => match gone.cmp(&came) {
+                        std::cmp::Ordering::Less => {
+                            old.next();
+                            (gone, false, last)
+                        }
+                        std::cmp::Ordering::Greater => {
+                            new.next();
+                            (came, true, first)
+                        }
+                        std::cmp::Ordering::Equal => {
+                            old.next();
+                            new.next();
+                            continue;
+                        }
+                    },
+                };
+                let (id, born, reading) = change;
+                changes.push(Change {
+                    id,
+                    elapsed,
+                    born,
+                    reading,
+                });
+            }
+        }
+        changes
     }
 }
 
@@ -222,6 +307,58 @@ mod tests {
         );
         // Asking for more than there is returns what there is.
         assert_eq!(history.series(wanted, 4.0, SERIES).len(), 4);
+    }
+
+    #[test]
+    fn changes_list_births_and_exits_against_the_sample_before() {
+        let mut history = History::default();
+        let id = |pid| process(pid, 1).id;
+        history.record(
+            &snapshot(1.0, vec![busy(2, 1.0, 10), busy(3, 1.0, 30)]),
+            0.0,
+        );
+        history.record(
+            &snapshot(2.0, vec![busy(2, 1.0, 11), busy(3, 1.0, 31)]),
+            0.0,
+        );
+        history.record(
+            &snapshot(3.0, vec![busy(3, 1.0, 32), busy(4, 2.0, 40)]),
+            0.0,
+        );
+        history.record(&snapshot(4.0, vec![busy(4, 2.0, 41)]), 0.0);
+        let change = |pid, elapsed, born, memory, cpu| Change {
+            id: id(pid),
+            elapsed,
+            born,
+            reading: Reading { cpu, memory },
+        };
+        assert_eq!(
+            history.changes(4.0, 10.0),
+            [
+                change(2, 3.0, false, 11, 1.0),
+                change(4, 3.0, true, 40, 2.0),
+                change(3, 4.0, false, 32, 1.0),
+            ],
+            "the first sample has nothing to compare with, so 2 and 3 are not born"
+        );
+        assert_eq!(history.changes(4.0, 0.5), [change(3, 4.0, false, 32, 1.0)]);
+        assert_eq!(history.changes(2.0, 10.0), []);
+        let sequences: Vec<u64> = history.recent(4.0, 2).map(|s| s.sequence).collect();
+        assert_eq!(sequences, [2, 3]);
+    }
+
+    #[test]
+    fn sequences_keep_counting_when_the_ring_turns_over() {
+        let mut history = History::default();
+        for second in 0..CAPACITY + 5 {
+            history.record(&snapshot(second as f64, vec![]), 0.0);
+        }
+        let oldest = history
+            .recent(f64::INFINITY, CAPACITY)
+            .next()
+            .map(|s| s.sequence);
+        assert_eq!(oldest, Some(5));
+        assert_eq!(history.recent(f64::INFINITY, 1).len(), 1);
     }
 
     #[test]
