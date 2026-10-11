@@ -20,14 +20,18 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Child;
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Locks, Network, RawProcess, Shadow};
+use crate::model::{CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Process, Unit};
+use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources};
 
 pub use journal::{JOURNAL, journal};
 
 /// What `Process::memory` measures here: the physical footprint, which counts compressed and
 /// swapped dirty memory and leaves out clean shared pages, so it is not a resident size.
 pub const MEMORY_LABEL: &str = "memory footprint";
+
+/// macOS has no cgroups; a process's group is its outermost app bundle, or its user.
+pub const GROUP_LABEL: &str = "app or user group";
+pub const WITHOUT_CGROUPS: &str = "groups by app and user; macOS has no cgroups";
 
 /// `ARG_MAX` on macOS, used when `kern.argmax` cannot be read.
 const ARG_MAX: usize = 1 << 20;
@@ -38,7 +42,8 @@ pub struct Sampler {
     host: libc::mach_port_t,
     timebase: ffi::MachTimebaseInfo,
     page_size: u64,
-    memory_total: u64,
+    /// `hw.memsize`; None when the sysctl failed.
+    memory_total: Option<u64>,
     /// Whose processes count as the session.
     my_uid: u32,
     responsible: Option<ffi::Responsible>,
@@ -51,8 +56,9 @@ pub struct Sampler {
     clusters: bool,
     /// Each process's cluster counters at the previous `processes` call.
     counters: HashMap<Identity, logic::Counters>,
-    /// The cluster clocks over the last interval in MHz, as [performance, efficiency].
-    clocks: [f32; 2],
+    /// The cluster clocks over the last interval in MHz, as [performance, efficiency]; None for
+    /// a cluster with no reading.
+    clocks: [Option<f32>; 2],
     /// Whether the last `processes` call read any cycles; virtual machines count none.
     cycles: bool,
     /// Buffers reused by every `processes` call.
@@ -115,7 +121,7 @@ impl Sampler {
             timebase,
             // SAFETY: sysconf has no preconditions; _SC_PAGESIZE is positive on macOS.
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
-            memory_total: sysctl::<u64>(c"hw.memsize").unwrap_or(0),
+            memory_total: sysctl::<u64>(c"hw.memsize"),
             my_uid,
             responsible: ffi::responsible(),
             core_kinds,
@@ -123,7 +129,7 @@ impl Sampler {
             rusage_version,
             clusters,
             counters: HashMap::new(),
-            clocks: [0.0; 2],
+            clocks: [None; 2],
             cycles: false,
             pids: Vec::new(),
             arguments: vec![0; argmax],
@@ -249,8 +255,8 @@ impl Sampler {
             priority: logic::priority_from_mach(task.pti_priority),
             nice: bsd.pbi_nice,
             threads: task.pti_threadnum.max(0) as u32,
-            gpu_memory: 0,
-            core: 0,
+            gpu_memory: None,
+            core: None,
             cpu_time: 0.0,
             performance_share: None,
             waiting: None,
@@ -258,6 +264,11 @@ impl Sampler {
             files: Measured::Pending,
             locks_held: Measured::Pending,
             blocked_on: None,
+            system_share: None,
+            policy: logic::policy_from_mach(task.pti_policy),
+            syscall_io: None,
+            major_faults: None,
+            started: logic::start_seconds(bsd.pbi_start_tvsec, bsd.pbi_start_tvusec),
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -274,6 +285,8 @@ impl Sampler {
             task.pti_total_user.saturating_add(task.pti_total_system),
             |usage| usage.ri_user_time.saturating_add(usage.ri_system_time),
         ));
+        let system_ticks =
+            nanoseconds(usage.map_or(task.pti_total_system, |usage| usage.ri_system_time));
         let mut performance_ticks = None;
         let mut runnable_ticks = None;
         if let Some(usage) = usage.filter(|_| self.rusage_version >= libc::RUSAGE_INFO_V4) {
@@ -301,6 +314,10 @@ impl Sampler {
                 io,
                 performance_ticks,
                 runnable_ticks,
+                system_ticks,
+                syscalls: None,
+                // The kernel's page-in count wraps as an i32.
+                major_faults: Some(u64::from(task.pti_pageins as u32)),
             },
             logic::Lineage {
                 pid: id.pid,
@@ -359,8 +376,8 @@ impl Sampler {
     }
 
     /// Total memory, and the bytes the kernel can hand out without paging out application
-    /// memory (free and inactive pages); 0 when unreadable.
-    pub fn memory(&self) -> (u64, u64) {
+    /// memory (free and inactive pages); each None when it could not be read.
+    pub fn memory(&self) -> (Option<u64>, Option<u64>) {
         let mut statistics = ffi::VmStatistics64::default();
         let mut count = ffi::HOST_VM_INFO64_COUNT;
         // SAFETY: the buffer holds `count` integer_t values, which is what the kernel may
@@ -373,26 +390,22 @@ impl Sampler {
                 &mut count,
             )
         };
-        let available = if status == libc::KERN_SUCCESS {
-            logic::available(
+        let available = (status == libc::KERN_SUCCESS).then(|| {
+            let available = logic::available(
                 statistics.free_count,
                 statistics.inactive_count,
                 self.page_size,
-            )
-            .min(self.memory_total)
-        } else {
-            0
-        };
+            );
+            self.memory_total
+                .map_or(available, |total| available.min(total))
+        });
         (self.memory_total, available)
     }
 
-    /// The memory pressure level in the memory slot, and whether the level could be read.
-    /// macOS has no CPU or I/O stall accounting.
-    pub fn pressure(&self) -> ([f32; 3], bool) {
-        match sysctl::<c_int>(c"kern.memorystatus_vm_pressure_level") {
-            Some(level) => ([0.0, logic::pressure_from_level(level), 0.0], true),
-            None => ([0.0; 3], false),
-        }
+    /// The memory pressure level in the memory slot, and the pressures missing: CPU and I/O
+    /// always, as macOS has no stall accounting for them, and memory when the level is unreadable.
+    pub fn pressure(&self) -> ([f32; 3], Sources) {
+        logic::pressure(sysctl::<c_int>(c"kern.memorystatus_vm_pressure_level"))
     }
 
     /// Per-CPU use since the previous call, and each CPU's cluster clock over the interval of
@@ -415,13 +428,13 @@ impl Sampler {
                     busy: self
                         .cpu_previous
                         .get(index)
-                        .map_or(0.0, |&before| logic::busy(before, now)),
+                        .and_then(|&before| logic::busy(before, now)),
                     mhz: match kind {
                         CoreKind::Performance => self.clocks[0],
                         CoreKind::Efficiency => self.clocks[1],
-                        CoreKind::Unknown => 0.0,
+                        CoreKind::Unknown => None,
                     },
-                    wait: 0.0,
+                    wait: None,
                 }
             })
             .collect();
@@ -429,31 +442,18 @@ impl Sampler {
         cpus
     }
 
-    /// Sources macOS does not have at all, by the names `Snapshot::missing` uses. The clock is
-    /// missing only when it cannot be measured per cluster either.
-    pub fn missing(&self) -> Vec<&'static str> {
-        let mut missing = vec![
-            "cpu pressure",
-            "io pressure",
-            "last cpu",
-            "cpu clock",
-            "run queue",
-            "cgroups",
-            "socket traffic",
-            "file locks",
-        ];
-        if self.clocked() {
-            missing.retain(|&name| name != "cpu clock");
-        }
-        missing
+    /// Sources macOS does not have at all. The clock is missing only when it cannot be
+    /// measured per cluster either.
+    pub fn missing(&self) -> Sources {
+        logic::missing(self.clocked(), !self.core_kinds.is_empty())
     }
 
-    /// Sources measured per cluster, by the names `Snapshot::per_cluster` uses.
-    pub fn per_cluster(&self) -> Vec<&'static str> {
+    /// Sources measured per cluster.
+    pub fn per_cluster(&self) -> Sources {
         if self.clocked() {
-            vec!["cpu clock"]
+            Source::CpuClock.into()
         } else {
-            Vec::new()
+            Sources::default()
         }
     }
 
@@ -985,7 +985,7 @@ fn own_addresses() -> HashSet<IpAddr> {
 /// macOS has no cgroups to account.
 pub fn account(
     _paths: &HashSet<String>,
-    _previous: &mut HashMap<String, (Instant, u64, u64)>,
+    _previous: &mut HashMap<String, (Instant, Option<u64>, Option<u64>)>,
 ) -> HashMap<String, Unit> {
     HashMap::new()
 }
@@ -1015,8 +1015,6 @@ pub struct FileScan {
     bounds: Bounds,
     /// The last pid scanned, so the next scan starts after it.
     after: u32,
-    /// The last result for each pid: None for an unreadable table.
-    known: HashMap<u32, Option<Files>>,
     /// Buffers reused by every scan.
     pids: Vec<c_int>,
     descriptors: Vec<libc::proc_fdinfo>,
@@ -1027,19 +1025,16 @@ impl FileScan {
         Self {
             bounds: BOUNDS,
             after: 0,
-            known: HashMap::new(),
             pids: Vec::new(),
             descriptors: Vec::new(),
         }
     }
 
-    /// Open files per pid; None for a table that could not be read. A pid the scan has not
-    /// reached yet, this time or ever, is absent unless it keeps a previous result (a pid
-    /// reused within those few seconds briefly shows its predecessor's files); so is one that
-    /// exited during the scan.
+    /// Open files per pid read by this scan; None for a table that could not be read. The scan is
+    /// bounded, so a pid it did not reach this time is absent, and so is one that exited during
+    /// it. The collector keeps earlier tables, by process identity, until the scan comes round.
     pub fn sample(&mut self) -> HashMap<u32, Option<Files>> {
         if list_pids(&mut self.pids).is_err() {
-            self.known.clear();
             return HashMap::new();
         }
         let mut pids: Vec<u32> = self
@@ -1068,12 +1063,6 @@ impl FileScan {
                 }
             }
         }
-        for pid in pids {
-            if let Some(previous) = self.known.get(&pid) {
-                found.entry(pid).or_insert_with(|| previous.clone());
-            }
-        }
-        self.known = found.clone();
         found
     }
 }
@@ -1185,7 +1174,7 @@ impl Gpu {
         None
     }
 
-    pub fn sample(&self) -> HashMap<u32, u64> {
+    pub fn sample(&self) -> HashMap<u32, GpuMemory> {
         HashMap::new()
     }
 }
@@ -1216,6 +1205,21 @@ mod tests {
         let process = &raw.process;
         assert!(process.memory > 1 << 20, "memory {}", process.memory);
         assert!(raw.ticks > 0);
+        assert!(
+            raw.system_ticks <= raw.ticks,
+            "kernel time is part of the CPU time"
+        );
+        assert!(raw.syscalls.is_none() && raw.major_faults.is_some());
+        assert_eq!(process.policy, crate::model::Policy::Normal);
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        assert!(
+            (0.0..3600.0).contains(&(seconds - process.started)),
+            "started {}",
+            process.started
+        );
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1248,13 +1252,18 @@ mod tests {
         );
         let missing = sampler.missing();
         assert!(
-            ["last cpu", "run queue", "cgroups"]
-                .iter()
-                .all(|name| missing.contains(name))
+            [
+                Source::LastCpu,
+                Source::RunQueue,
+                Source::Cgroups,
+                Source::GpuMemory
+            ]
+            .iter()
+            .all(|&source| missing.contains(source))
         );
         assert_eq!(
-            missing.contains(&"cpu clock"),
-            !sampler.per_cluster().contains(&"cpu clock")
+            missing.contains(Source::CpuClock),
+            !sampler.per_cluster().contains(Source::CpuClock)
         );
         assert!(processes.len() + sampler.unreadable() <= sampler.pids.len());
     }
@@ -1291,7 +1300,10 @@ mod tests {
             assert_eq!(raw.performance_ticks, None);
         }
         let cpus = sampler.cpus(0.2);
-        assert!(cpus.iter().all(|cpu| cpu.mhz >= 0.0 && cpu.mhz < 10_000.0));
+        assert!(
+            cpus.iter()
+                .all(|cpu| cpu.mhz.is_none_or(|mhz| mhz > 0.0 && mhz < 10_000.0))
+        );
         assert_eq!(sampler.per_cluster().is_empty(), !sampler.clocked());
     }
 
@@ -1351,13 +1363,18 @@ mod tests {
     #[test]
     fn cpus_report_busy_shares_between_zero_and_one() {
         let mut sampler = Sampler::new();
-        assert!(sampler.cpus(0.1).iter().all(|cpu| cpu.busy == 0.0));
+        assert!(sampler.cpus(0.1).iter().all(|cpu| cpu.busy.is_none()));
         std::thread::sleep(Duration::from_millis(100));
         let cpus = sampler.cpus(0.1);
         assert!(!cpus.is_empty());
-        assert!(cpus.iter().all(|cpu| (0.0..=1.0).contains(&cpu.busy)));
+        assert!(
+            cpus.iter()
+                .all(|cpu| cpu.busy.is_none_or(|busy| (0.0..=1.0).contains(&busy)))
+        );
         assert!(cpus.windows(2).all(|pair| pair[0].id < pair[1].id));
-        let (total, available) = sampler.memory();
+        let (Some(total), Some(available)) = sampler.memory() else {
+            panic!("this machine reports its memory");
+        };
         assert!(total > 0);
         assert!(
             available > 0 && available <= total,

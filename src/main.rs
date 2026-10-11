@@ -34,11 +34,15 @@ use crossterm::event::{
 };
 
 use journal::Journal;
-use model::{Collector, Identity, Process, Snapshot, bytes, describe};
+use model::{Collector, GpuMemory, Identity, Process, Snapshot, bytes, describe};
+use platform::Source;
 use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
+/// How long the journal follower keeps running after Matrix was last shown, so a look at another
+/// view does not restart it, and with it the rain's backlog.
+const JOURNAL_LINGER: Duration = Duration::from_secs(30);
 /// Terminal rows of the status panel under the scene.
 const PANEL_ROWS: u16 = 5;
 
@@ -311,6 +315,8 @@ struct App {
     gpu: Option<gpu::Gpu>,
     /// Which rasterizer drew the last frame, for the status strip.
     renderer: String,
+    /// When Matrix was last shown; None while it never has been.
+    matrix_shown: Option<Instant>,
 }
 
 impl App {
@@ -344,7 +350,18 @@ impl App {
             tour: None,
             gpu: None,
             renderer: "cpu".into(),
+            matrix_shown: None,
         }
+    }
+
+    /// Whether the journal follower should run at `now`: while Matrix is shown and for
+    /// `JOURNAL_LINGER` after it was last shown.
+    fn journal_wanted(&mut self, now: Instant) -> bool {
+        if self.view == View::Matrix {
+            self.matrix_shown = Some(now);
+        }
+        self.matrix_shown
+            .is_some_and(|shown| now.saturating_duration_since(shown) < JOURNAL_LINGER)
     }
 
     fn choose_renderer(&mut self, renderer: Renderer, power: Power) -> Result<(), String> {
@@ -585,15 +602,20 @@ impl App {
             (false, None) => "LIVE",
         };
         let mut lines = vec![format!(
-            " ISOTOP / {view} / {mode}   {} processes{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
+            " ISOTOP / {view} / {mode}   {} processes{}{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
             s.processes.len(),
             unreadable_text(s),
+            sampler_text(s),
             self.scene.visible,
             self.scene.collapsed,
             s.processes.iter().map(|p| p.cpu).sum::<f32>() / 100.0,
             s.cores,
-            bytes(s.memory_total.saturating_sub(s.memory_available)),
-            bytes(s.memory_total)
+            known_bytes(
+                s.memory_total
+                    .zip(s.memory_available)
+                    .map(|(total, available)| total.saturating_sub(available))
+            ),
+            known_bytes(s.memory_total)
         )];
         let inspector = if let Some(id) = self.inspected() {
             if let Some(p) = s.processes.iter().find(|p| p.id == id) {
@@ -630,7 +652,7 @@ impl App {
         lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
                 View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
-                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(&self.scene)),
+                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU{} | cyan arcs = sockets, pink = outside{}", gpu_note(s), hub_note(&self.scene)),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
                 View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(&self.scene)),
                 View::Cores => cores::legend(s),
@@ -710,9 +732,13 @@ impl App {
                     ),
                 ];
                 match p.gpu_memory {
-                    0 => {}
-                    1 => lines.push("NVIDIA GPU in use (memory not reported)".into()),
-                    gpu => lines.push(format!("NVIDIA GPU memory {}", bytes(gpu))),
+                    None => {}
+                    Some(GpuMemory::Unreported) => {
+                        lines.push("NVIDIA GPU in use (memory not reported)".into());
+                    }
+                    Some(GpuMemory::Bytes(gpu)) => {
+                        lines.push(format!("NVIDIA GPU memory {}", bytes(gpu)));
+                    }
                 }
                 if let Some(&(total, count)) = self.scene.mass.get(&id) {
                     lines.push(format!(
@@ -1169,14 +1195,16 @@ fn place_panel(
     })
 }
 
+/// A byte count for the status line, `n/a` when it was not measured.
+fn known_bytes(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".to_owned(), bytes)
+}
+
 /// The pressure readings for the status line, `n/a` for each one the platform cannot measure.
 fn pressure_text(snapshot: &Snapshot) -> String {
     let [cpu, memory, io] = snapshot.pressure;
-    let reading = |name: &str, value: f32| {
-        if snapshot
-            .missing
-            .contains(&format!("{name} pressure").as_str())
-        {
+    let reading = |source: Source, value: f32| {
+        if snapshot.missing.contains(source) {
             "n/a".to_owned()
         } else {
             format!("{value:.0}%")
@@ -1184,10 +1212,19 @@ fn pressure_text(snapshot: &Snapshot) -> String {
     };
     format!(
         "pressure cpu {} mem {} io {}",
-        reading("cpu", cpu),
-        reading("memory", memory),
-        reading("io", io)
+        reading(Source::CpuPressure, cpu),
+        reading(Source::MemoryPressure, memory),
+        reading(Source::IoPressure, io)
     )
+}
+
+/// The Orbit legend's GPU entry, left out where per-process GPU memory is not measured.
+fn gpu_note(snapshot: &Snapshot) -> &'static str {
+    if snapshot.missing.contains(Source::GpuMemory) {
+        ""
+    } else {
+        " | green = NVIDIA GPU"
+    }
 }
 
 /// A short note beside the process count for processes of other users that could not be
@@ -1197,6 +1234,20 @@ fn unreadable_text(snapshot: &Snapshot) -> String {
     match snapshot.unreadable {
         0 => String::new(),
         count => format!(" (+{count} unreadable: run with sudo)"),
+    }
+}
+
+/// A short note beside the process count when the background sampler has stopped or stalled:
+/// sockets, GPU memory, cgroups, open files and locks then keep what it measured last.
+fn sampler_text(snapshot: &Snapshot) -> String {
+    let sampler = &snapshot.sampler;
+    if !sampler.running {
+        " (background sampler stopped: links, files and cgroups frozen)".into()
+    } else if sampler.stalled() {
+        let seconds = sampler.quiet.as_secs();
+        format!(" (background sampler stalled {seconds}s)")
+    } else {
+        String::new()
     }
 }
 
@@ -1333,10 +1384,15 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
         }
         let goal = app.goal.clone();
-        if app.view == View::Matrix {
-            if !options.demo && journal.is_none() {
+        if !options.demo {
+            if !app.journal_wanted(Instant::now()) {
+                // Dropping it stops the follower and its reader.
+                journal = None;
+            } else if journal.is_none() {
                 journal = Some(Journal::start());
             }
+        }
+        if app.view == View::Matrix {
             let now = origin.elapsed().as_secs_f64();
             // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
             if !app.paused {
@@ -1809,25 +1865,26 @@ mod tests {
         );
     }
 
-    /// The macOS gaps, as the collector reports them.
-    const MACOS: [&str; 8] = [
-        "cpu pressure",
-        "io pressure",
-        "last cpu",
-        "cpu clock",
-        "run queue",
-        "cgroups",
-        "socket traffic",
-        "file locks",
+    /// The macOS gaps, as the collector reports them on a Mac without cluster clocks.
+    const MACOS: [Source; 9] = [
+        Source::CpuPressure,
+        Source::IoPressure,
+        Source::LastCpu,
+        Source::CpuClock,
+        Source::RunQueue,
+        Source::Cgroups,
+        Source::SocketTraffic,
+        Source::FileLocks,
+        Source::GpuMemory,
     ];
 
     /// The status text of `view` over the demo workload with the given gaps, after one frame so
     /// views that learn the gaps while drawing have seen them.
-    fn lines_with(view: View, missing: &[&'static str], unreadable: usize) -> Vec<String> {
+    fn lines_with(view: View, missing: &[Source], unreadable: usize) -> Vec<String> {
         let mut snapshot = model::demo(1.0, 16);
-        snapshot.missing = missing.to_vec();
+        snapshot.missing = missing.iter().copied().collect();
         snapshot.unreadable = unreadable;
-        if missing.contains(&"last cpu") {
+        if missing.contains(&Source::LastCpu) {
             // A Mac without the rusage counters that place marbles by cluster: no share of
             // performance-core time and no waiting threads.
             for process in &mut snapshot.processes {
@@ -1835,7 +1892,7 @@ mod tests {
                 process.waiting = None;
             }
         }
-        if missing.contains(&"file locks") {
+        if missing.contains(&Source::FileLocks) {
             // No lock table: every process's locks are unreadable and none waits on one.
             for process in &mut snapshot.processes {
                 process.locks_held = model::Measured::Unreadable;
@@ -1846,6 +1903,29 @@ mod tests {
         let mut app = App::new(view, snapshot);
         app.render(320, 180, 512);
         app.text(0.0, "test", 20, 512)
+    }
+
+    #[test]
+    fn status_line_shows_n_a_for_memory_it_could_not_read() {
+        let status = |total: Option<u64>, available: Option<u64>| {
+            let mut snapshot = model::demo(1.0, 16);
+            (snapshot.memory_total, snapshot.memory_available) = (total, available);
+            let mut app = App::new(View::City, snapshot);
+            app.render(320, 180, 512);
+            app.text(0.0, "test", 20, 512).swap_remove(0)
+        };
+        let line = status(Some(3 << 30), Some(1 << 30));
+        assert!(
+            line.ends_with(&format!("RAM {} / {}", bytes(2 << 30), bytes(3 << 30))),
+            "{line}"
+        );
+        let line = status(Some(3 << 30), None);
+        assert!(
+            line.ends_with(&format!("RAM n/a / {}", bytes(3 << 30))),
+            "{line}"
+        );
+        let line = status(None, None);
+        assert!(line.ends_with("RAM n/a / n/a"), "{line}");
     }
 
     #[test]
@@ -1867,7 +1947,11 @@ mod tests {
         );
         let none = lines_with(
             View::City,
-            &["cpu pressure", "memory pressure", "io pressure"],
+            &[
+                Source::CpuPressure,
+                Source::MemoryPressure,
+                Source::IoPressure,
+            ],
             0,
         );
         assert!(
@@ -1875,6 +1959,50 @@ mod tests {
             "{}",
             none[4]
         );
+    }
+
+    #[test]
+    fn status_line_says_when_the_background_sampler_stopped_or_stalled() {
+        let status = |sampler: model::SamplerHealth| {
+            let mut snapshot = model::demo(1.0, 16);
+            snapshot.sampler = sampler;
+            App::new(View::City, snapshot).text(0.0, "test", 20, 512)[0].clone()
+        };
+        let healthy = status(model::demo(1.0, 16).sampler);
+        assert!(!healthy.contains("sampler"), "{healthy}");
+        let stopped = status(model::SamplerHealth::default());
+        assert!(
+            stopped.contains(" processes (background sampler stopped: "),
+            "{stopped}"
+        );
+        let stalled = status(model::SamplerHealth {
+            running: true,
+            last_cycle: Some(Duration::from_secs(95)),
+            quiet: Duration::from_secs(95),
+            scan_latency: Vec::new(),
+        });
+        assert!(
+            stalled.contains("(background sampler stalled 95s)"),
+            "{stalled}"
+        );
+    }
+
+    #[test]
+    fn the_journal_stops_after_matrix_has_been_hidden_for_a_while() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut app = App::new(View::City, model::demo(1.0, 16));
+        assert!(!app.journal_wanted(at(0)), "Matrix was never shown");
+        app.view = View::Matrix;
+        assert!(app.journal_wanted(at(10)));
+        assert!(app.journal_wanted(at(500)), "shown all along");
+        app.view = View::Globe;
+        assert!(app.journal_wanted(at(501)));
+        assert!(app.journal_wanted(at(529)), "a look at another view");
+        assert!(!app.journal_wanted(at(530)));
+        assert!(!app.journal_wanted(at(900)));
+        app.view = View::Matrix;
+        assert!(app.journal_wanted(at(901)), "back on Matrix");
     }
 
     #[test]
@@ -1917,10 +2045,16 @@ mod tests {
         assert!(!cores.contains("marble ="), "{cores}");
         let cells = lines_with(View::Cells, &MACOS, 0)[2].clone();
         assert!(
-            cells.contains(
-                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
-            ),
+            cells.contains(&format!(
+                "{}, so no limits, quotas or pressure",
+                platform::WITHOUT_CGROUPS
+            )),
             "{cells}"
+        );
+        let orbit = lines_with(View::Orbit, &MACOS, 0)[2].clone();
+        assert!(
+            orbit.contains("glow + trail = CPU | cyan arcs") && !orbit.contains("NVIDIA"),
+            "{orbit}"
         );
         let globe = lines_with(View::Globe, &MACOS, 0)[2].clone();
         assert!(
@@ -1938,7 +2072,10 @@ mod tests {
     #[test]
     fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
         let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
-        assert!(mac.contains("flock = app or user group"), "{mac}");
+        assert!(
+            mac.contains(&format!("flock = {} | ", platform::GROUP_LABEL)),
+            "{mac}"
+        );
         assert!(
             mac.contains("dust = reads | eyes = memory pressure"),
             "{mac}"
@@ -1988,6 +2125,7 @@ mod tests {
         );
         assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
         assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
+        assert!(text(View::Orbit).contains("glow + trail = CPU | green = NVIDIA GPU | cyan arcs"));
         assert!(!text(View::Coop).contains("share one trough"));
     }
 

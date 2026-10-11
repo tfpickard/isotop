@@ -14,6 +14,7 @@ use std::f32::consts::{PI, TAU};
 
 use crate::model::{CoreKind, Cpu, Identity, Process, Snapshot, bounded};
 use crate::palette::{core_color, core_name, kind_color, tint};
+use crate::platform::Source;
 use crate::render::{Camera, Color, Frame, NONE, Point, Stage, WARM, mass_radius, ring_bounds};
 
 /// Seconds of CPU time per lap, so a process using one full core laps every LAP seconds.
@@ -112,9 +113,9 @@ impl Track {
                 .map(|id| Cpu {
                     id,
                     kind: CoreKind::Unknown,
-                    busy: 0.0,
-                    mhz: 0.0,
-                    wait: 0.0,
+                    busy: None,
+                    mhz: None,
+                    wait: None,
                 })
                 .collect();
         }
@@ -170,15 +171,14 @@ impl Track {
         }
         // Without a last CPU per process a marble cannot be placed on a lane, and the running and
         // idle counts would all fall on one of them, so neither is drawn.
-        let placed = !snapshot.missing.contains(&"last cpu");
+        let placed = !snapshot.missing.contains(Source::LastCpu);
         let mut racing: HashMap<u32, usize> = HashMap::new();
         let mut parked: HashMap<u32, usize> = HashMap::new();
         for process in processes.iter().filter(|_| placed) {
-            let core = if lanes.contains_key(&process.core) {
-                process.core
-            } else {
-                cpus[0].id
-            };
+            let core = process
+                .core
+                .filter(|core| lanes.contains_key(core))
+                .unwrap_or(cpus[0].id);
             if active(process) {
                 *racing.entry(core).or_default() += 1;
             } else {
@@ -188,7 +188,8 @@ impl Track {
         for cpu in &cpus {
             let r = lane_radius(cpu.id);
             let base = core_color(cpu.kind);
-            let surface = tint(base, 0.10 + 0.45 * cpu.busy);
+            let busy = cpu.busy.unwrap_or(0.0);
+            let surface = tint(base, 0.10 + 0.45 * busy);
             let (inside, outside) = (r - LANE * 0.5 + 0.08, r + LANE * 0.5 - 0.08);
             for k in 0..SEGMENTS {
                 let a = k as f32 / SEGMENTS as f32 * TAU;
@@ -207,8 +208,8 @@ impl Track {
             }
             // Chevrons lap at 0.1 rad/s per GHz: a 4 GHz core turns its pattern about every 16 s.
             let phase = self.chevrons.entry(cpu.id).or_insert(cpu.id as f32 * 1.9);
-            *phase = (*phase + dt * 0.1 * cpu.mhz / 1000.0).rem_euclid(TAU);
-            let mark = tint(base, 0.55 + 0.8 * cpu.busy);
+            *phase = (*phase + dt * 0.1 * cpu.mhz.unwrap_or(0.0) / 1000.0).rem_euclid(TAU);
+            let mark = tint(base, 0.55 + 0.8 * busy);
             for k in 0..12 {
                 let tip = k as f32 / 12.0 * TAU + *phase;
                 let tail = tip - 0.6 / r;
@@ -216,7 +217,7 @@ impl Track {
                     frame.line(camera, ring(tail, r + side, 0.02), ring(tip, r, 0.02), mark);
                 }
             }
-            let waiting = cpu.wait.min(6.0);
+            let waiting = cpu.wait.unwrap_or(0.0).min(6.0);
             if waiting > 0.05 {
                 frame.glow(
                     camera,
@@ -235,11 +236,9 @@ impl Track {
                 CoreKind::Efficiency => "E",
                 CoreKind::Unknown => "",
             };
-            let clock = if cpu.mhz > 0.0 {
-                format!(" {:.1}GHz", cpu.mhz / 1000.0)
-            } else {
-                String::new()
-            };
+            let clock = cpu
+                .mhz
+                .map_or_else(String::new, |mhz| format!(" {:.1}GHz", mhz / 1000.0));
             let occupants = if placed {
                 format!(
                     " | {} running, {} idle",
@@ -251,11 +250,7 @@ impl Track {
             };
             stage.places.push((
                 ring(-0.05, r, 0.0),
-                format!(
-                    "cpu{}{kind}{clock} {:.0}%{occupants}",
-                    cpu.id,
-                    cpu.busy * 100.0
-                ),
+                format!("cpu{}{kind}{clock} {:.0}%{occupants}", cpu.id, busy * 100.0),
             ));
         }
         frame.line(
@@ -308,7 +303,7 @@ impl Track {
                     (Entry::Occupied(entry), _) => entry.into_mut(),
                     (Entry::Vacant(entry), Some(share)) => entry.insert(Marble {
                         angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
-                        core: process.core,
+                        core: process.core.unwrap_or(0),
                         hop: None,
                         hops: 0,
                         level: if share >= FIRST_LEVEL {
@@ -404,11 +399,10 @@ impl Track {
                 shown += 1;
                 continue;
             }
-            let core = if lanes.contains_key(&process.core) {
-                process.core
-            } else {
-                cpus[0].id
-            };
+            let core = process
+                .core
+                .filter(|core| lanes.contains_key(core))
+                .unwrap_or(cpus[0].id);
             let marble = self.marbles.entry(process.id).or_insert_with(|| Marble {
                 angle: (TAU * process.cpu_time / LAP).rem_euclid(TAU),
                 core,
@@ -484,24 +478,28 @@ impl Track {
 
 /// The status legend, saying what the snapshot's platform leaves out or measures per cluster.
 pub fn legend(snapshot: &Snapshot) -> String {
-    let lacks = |name| snapshot.missing.contains(&name);
+    let lacks = |source| snapshot.missing.contains(source);
     let clustered = by_cluster(snapshot);
-    let mut line = " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned();
-    line.push_str(if snapshot.per_cluster.contains(&"cpu clock") {
+    let mut line = if lacks(Source::CoreKinds) {
+        " Lane = CPU (no core kinds reported) | brightness = busy".to_owned()
+    } else {
+        " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned()
+    };
+    line.push_str(if snapshot.per_cluster.contains(Source::CpuClock) {
         " | chevrons = cluster clock (cycles per CPU second)"
-    } else if lacks("cpu clock") {
+    } else if lacks(Source::CpuClock) {
         " | no clock readings"
     } else {
         " | chevrons = clock"
     });
-    line.push_str(if !lacks("run queue") {
+    line.push_str(if !lacks(Source::RunQueue) {
         " | red queue = waiting tasks"
     } else if clustered && snapshot.processes.iter().any(|p| p.waiting.is_some()) {
         " | red beads = threads waiting to run"
     } else {
         " | no run queue readings"
     });
-    line.push_str(if !lacks("last cpu") {
+    line.push_str(if !lacks(Source::LastCpu) {
         " | marble = running process, one lap per 10 s of CPU, hops = migrations"
     } else if clustered {
         " | marble = running process, one lap per 10 s of CPU; it rides the band it mostly ran on \
@@ -515,7 +513,7 @@ pub fn legend(snapshot: &Snapshot) -> String {
 /// Whether marbles ride by cluster: the platform reports no last CPU per process but does
 /// split CPU time between performance and efficiency cores, and the track has lanes of both.
 fn by_cluster(snapshot: &Snapshot) -> bool {
-    snapshot.missing.contains(&"last cpu")
+    snapshot.missing.contains(Source::LastCpu)
         && snapshot
             .processes
             .iter()
@@ -557,19 +555,19 @@ mod tests {
         scene.positions.len()
     }
 
-    fn demo_missing(missing: &[&'static str]) -> Snapshot {
+    fn demo_missing<const N: usize>(missing: [Source; N]) -> Snapshot {
         let mut snapshot = demo(12.0, 64);
-        snapshot.missing = missing.to_vec();
+        snapshot.missing = missing.into();
         snapshot
     }
 
     /// The demo as macOS reports it: no last CPU, but each process's share of performance-core
     /// time, and the clock per cluster.
     fn by_cluster() -> Snapshot {
-        let mut snapshot = demo_missing(&["last cpu", "run queue"]);
-        snapshot.per_cluster = vec!["cpu clock"];
+        let mut snapshot = demo_missing([Source::LastCpu, Source::RunQueue]);
+        snapshot.per_cluster = Source::CpuClock.into();
         for cpu in &mut snapshot.cpus {
-            cpu.wait = 0.0;
+            cpu.wait = None;
         }
         snapshot
     }
@@ -593,16 +591,16 @@ mod tests {
     #[test]
     fn marbles_are_not_drawn_without_a_last_cpu_or_a_share_per_cluster() {
         assert!(
-            marbles(&demo_missing(&[])) > 0,
+            marbles(&demo_missing([])) > 0,
             "the demo has running processes"
         );
-        let mut snapshot = demo_missing(&["last cpu"]);
+        let mut snapshot = demo_missing([Source::LastCpu]);
         for process in &mut snapshot.processes {
             process.performance_share = None;
         }
         assert_eq!(marbles(&snapshot), 0);
         assert!(
-            marbles(&demo_missing(&["cpu clock", "run queue"])) > 0,
+            marbles(&demo_missing([Source::CpuClock, Source::RunQueue])) > 0,
             "other gaps keep the marbles"
         );
     }
@@ -753,14 +751,22 @@ mod tests {
              clock | red queue = waiting tasks | marble = running process, one lap per 10 s of \
              CPU, hops = migrations"
         );
-        snapshot.missing = vec!["last cpu"];
+        snapshot.missing = Source::LastCpu.into();
         for process in &mut snapshot.processes {
             process.performance_share = None;
         }
         assert!(legend(&snapshot).contains("lanes = load; macOS reports no last CPU per process"));
-        snapshot.missing = vec!["cpu clock"];
+        snapshot.missing = Source::CpuClock.into();
         let clockless = legend(&snapshot);
         assert!(clockless.contains("no clock readings") && !clockless.contains("chevrons"));
+        snapshot.missing = [Source::CpuClock, Source::RunQueue, Source::CoreKinds].into();
+        assert_eq!(
+            legend(&snapshot),
+            " Lane = CPU (no core kinds reported) | brightness = busy | no clock readings | no \
+             run queue readings | marble = running process, one lap per 10 s of CPU, hops = \
+             migrations",
+            "a Linux machine without cpufreq, schedstat or hybrid cores"
+        );
     }
 
     #[test]
@@ -774,8 +780,8 @@ mod tests {
              hops when that changes (macOS reports the cluster, not the core)"
         );
         let mut unclocked = by_cluster();
-        unclocked.per_cluster.clear();
-        unclocked.missing.push("cpu clock");
+        unclocked.per_cluster = Default::default();
+        unclocked.missing.insert(Source::CpuClock);
         assert!(legend(&unclocked).contains("| no clock readings | red beads"));
         let mut unmeasured = by_cluster();
         for process in &mut unmeasured.processes {

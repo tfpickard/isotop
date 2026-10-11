@@ -12,7 +12,11 @@ The README covers usage. This file covers how to work on the code.
    `Snapshot`. Slow sources (sockets in `platform/linux/net.rs`, open files and file locks in
    `platform/linux/files.rs`, cgroup accounting, NVIDIA memory in `platform/linux/nvml.rs`;
    on macOS sockets and open files only, as it has no lock table) run on a background thread
-   every 2 s and are merged in, so the frame loop never waits on them.
+   every `model::BACKGROUND_PERIOD` (2 s) and are merged in by `Identity`, against the pids the
+   cycle scanned, so the frame loop never waits on them and a reused pid inherits nothing.
+   `Snapshot.sampler` reports whether that thread is alive and how long its scans took. On Linux
+   the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
+   exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
@@ -26,10 +30,10 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark, and `warm_up`, which settles a headless frame (the golden render test calls it too) |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), main loop, headless PNG and benchmark, and `warm_up`, which settles a headless frame (the golden render test calls it too) |
 | `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
-| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`) and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
-| `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
+| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
+| `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `platform/linux/files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
@@ -41,7 +45,7 @@ The README covers usage. This file covers how to work on the code.
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
 | `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
 | `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
-| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries, the seeded `Rng`, hashes, and the `growth`, `sprout` and `smoothing` easing |
+| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, hashes, and the `growth`, `sprout` and `smoothing` easing |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
@@ -50,7 +54,7 @@ The README covers usage. This file covers how to work on the code.
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
 | `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, the bounded open-file scan (`FileScan`, one `proc_pidfdinfo` per vnode), and what it reports through `missing`, `per_cluster` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
-| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
+| `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, the Mach scheduling policy, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
 | `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
 
 `agents_file_table_lists_every_source_file` fails when a `.rs` file under `src/` has no row. Name
@@ -69,7 +73,9 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 - `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
   `Color`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
-- `render` and `coop` read `platform` types (`Shadow`, `Files`, `DeletedFile`).
+- `render` and the views read `platform` types (`Shadow`, `Files`, `DeletedFile`, and `Source`
+  and `Sources` from `Snapshot::missing`), and Cells and the coop its `GROUP_LABEL` and
+  `WITHOUT_CGROUPS`.
 
 **The view contract.** A module view owns a state struct and implements
 `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
@@ -82,9 +88,10 @@ and Matrix is a special arm in `Scene::render`. They are being moved onto `Stage
 views the module way.
 
 **Shared helpers live in one place each.** Don't write a second copy:
-- `simulation`: `SpatialHash`, `Rng` (seeded per identity), `XorShift32`, `simulation::hash`
-  (`fnv1a_64_bytes` and the rest), `hash_identity`, and the `growth`, `sprout` and `smoothing`
-  easing.
+- `simulation`: `SpatialHash` and `SpatialHash3`, `Rng` (seeded per identity, `normal` for a
+  Gaussian), `XorShift32`, `Complex` with `dft`, `fft` and `inverse_fft` (forward sign
+  `exp(-2*pi*i*k*n/N)`), `simulation::hash` (`fnv1a_64_bytes` and the rest), `hash_identity`, and
+  the `growth`, `sprout` and `smoothing` easing.
 - `palette`: every colour table, `mix`, `tint`, `kind_color`. `geometry`: vector maths and
   `cuboid`. `layout`: `Seats`, `Discs`, the golden-angle `spiral`.
 - `render::shared`: constants the CPU rasterizer and the WGSL shader share.
@@ -107,6 +114,9 @@ views the module way.
   `/sys` or spawns OS tools; terminal I/O (`terminal.rs`) and local lookups (`geo.rs`) are the
   exceptions. Both platforms provide the same names; a macOS build must compile without
   warnings (`cargo clippy --target aarch64-apple-darwin`).
+- **Unknown is not zero.** A reading that was not taken (the first sample of a rate, a counter
+  that went backwards, an unreadable file) is `None` in the model, not 0. A view converts it at
+  its own boundary (`unwrap_or(0.0)`) only to draw what it drew before.
 - **Sampling stays off the frame loop.** Anything slower than a `/proc/<pid>/stat` read belongs
   on the background thread.
 - **Process text is untrusted.** Names and command lines are sanitized before they reach the

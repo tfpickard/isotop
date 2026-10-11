@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::geo;
 use crate::places::COUNTRIES;
-use crate::platform::{self, RawProcess};
+use crate::platform::{self, RawProcess, Source, Sources};
 use crate::simulation::smoothing;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -26,6 +26,13 @@ pub enum Kind {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "policy and started are read by the views that come after P5 (#21)"
+    )
+)]
 pub struct Process {
     pub id: Identity,
     pub parent: u32,
@@ -50,10 +57,13 @@ pub struct Process {
     /// Nice value, -20 (favoured) to 19 (background); /proc/<pid>/stat field 19.
     pub nice: i32,
     pub threads: u32,
-    /// NVIDIA GPU memory in bytes; 1 means in use with unreported memory.
-    pub gpu_memory: u64,
-    /// The CPU it last ran on, and its total CPU time in seconds.
-    pub core: u32,
+    /// NVIDIA GPU memory; None when the process is not using a GPU, or no GPU source has
+    /// reported it yet.
+    pub gpu_memory: Option<GpuMemory>,
+    /// The CPU it last ran on; None where the platform does not report it (macOS) or the
+    /// field could not be read.
+    pub core: Option<u32>,
+    /// Its total CPU time in seconds.
     pub cpu_time: f32,
     /// Full cgroup v2 path, such as /system.slice/cron.service.
     pub cgroup: String,
@@ -70,9 +80,60 @@ pub struct Process {
     pub files: Measured<platform::Files>,
     /// File locks and leases held. OFD locks name no process and are not counted.
     pub locks_held: Measured<u32>,
-    /// The pid holding the file lock this process is waiting for, or `platform::UNNAMED` when no
-    /// process can be named for it (an OFD lock, or a holder in another pid namespace).
-    pub blocked_on: Option<u32>,
+    /// The holder of the file lock this process is waiting for; None when it waits for none.
+    pub blocked_on: Option<Blocker>,
+    /// Share of its CPU time since the previous sample that ran in kernel mode, 0 to 1; the
+    /// rest ran in user mode. None on the first sample and when no CPU time elapsed.
+    pub system_share: Option<f32>,
+    /// The scheduling policy of its main thread; `Policy::Unknown` where the platform does not
+    /// say. On macOS only timesharing, round-robin and FIFO exist.
+    pub policy: Policy,
+    /// Syscall-level I/O per second, counting bytes that never reached storage (page cache,
+    /// pipes, sockets) too. None until a second reading exists, after an exec or a counter that
+    /// went backwards, when /proc/<pid>/io is unreadable, and always on macOS
+    /// (`Source::SyscallIo`).
+    pub syscall_io: Option<SyscallIo>,
+    /// Major page faults per second: faults that had to read from storage. macOS counts the
+    /// pages paged in instead (`pti_pageins`), which includes pages brought in ahead of faults.
+    /// None until a second reading exists, and after an exec or a counter that went backwards.
+    pub major_faults: Option<f32>,
+    /// When it started, in seconds since the Unix epoch; 0 when the platform cannot tell (Linux
+    /// without `btime` in /proc/stat).
+    pub started: f64,
+}
+
+/// The scheduling class of a process's main thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    target_os = "macos",
+    expect(dead_code, reason = "macOS has no deadline policy to report")
+)]
+pub enum Policy {
+    /// The default time-sharing policy (`SCHED_OTHER`; macOS timeshare).
+    Normal,
+    /// For batch work that should not preempt interactive tasks (`SCHED_BATCH`).
+    Batch,
+    /// Runs only when nothing else wants the CPU (`SCHED_IDLE`).
+    Idle,
+    /// Real time, first in first out (`SCHED_FIFO`).
+    Fifo,
+    /// Real time, round robin (`SCHED_RR`).
+    RoundRobin,
+    /// Real time, earliest deadline first (`SCHED_DEADLINE`).
+    Deadline,
+    /// Not read, or a policy this table does not know.
+    #[default]
+    Unknown,
+}
+
+/// Syscall-level I/O rates of a process: bytes per second passed through `read` and `write`
+/// style calls, and the calls per second.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SyscallIo {
+    pub read_chars: f32,
+    pub write_chars: f32,
+    pub reads: f32,
+    pub writes: f32,
 }
 
 impl Default for Process {
@@ -96,8 +157,8 @@ impl Default for Process {
             priority: 0,
             nice: 0,
             threads: 0,
-            gpu_memory: 0,
-            core: 0,
+            gpu_memory: None,
+            core: None,
             cpu_time: 0.0,
             cgroup: String::new(),
             performance_share: None,
@@ -105,6 +166,11 @@ impl Default for Process {
             files: Measured::Pending,
             locks_held: Measured::Pending,
             blocked_on: None,
+            system_share: None,
+            policy: Policy::Unknown,
+            syscall_io: None,
+            major_faults: None,
+            started: 0.0,
         }
     }
 }
@@ -120,6 +186,57 @@ impl Process {
             ..Process::default()
         }
     }
+}
+
+/// A process's GPU memory, as far as the driver says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuMemory {
+    Bytes(u64),
+    /// The process uses the GPU but the driver does not report how much.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only the NVML reader on Linux produces it")
+    )]
+    Unreported,
+}
+
+impl GpuMemory {
+    /// The bytes reported; 0 for `Unreported`, which a view that sizes by memory draws as the
+    /// smallest in use.
+    pub fn bytes(self) -> u64 {
+        match self {
+            GpuMemory::Bytes(bytes) => bytes,
+            GpuMemory::Unreported => 0,
+        }
+    }
+
+    /// Adds one driver reading (`None` for a process whose memory the driver does not report) to
+    /// what is known of `pid`. A reported figure outweighs an unreported one, which adds nothing.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only the NVML reader on Linux calls it")
+    )]
+    pub fn accumulate(usage: &mut HashMap<u32, GpuMemory>, pid: u32, reported: Option<u64>) {
+        let entry = usage.entry(pid).or_insert(GpuMemory::Unreported);
+        *entry = match (*entry, reported) {
+            (GpuMemory::Bytes(total), Some(bytes)) => GpuMemory::Bytes(total.saturating_add(bytes)),
+            (GpuMemory::Unreported, Some(bytes)) => GpuMemory::Bytes(bytes),
+            (known, None) => known,
+        };
+    }
+}
+
+/// The holder of a file lock that blocks a process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocker {
+    Process(u32),
+    /// No process can be named: an OFD lock, which belongs to an open file, or a holder in
+    /// another pid namespace.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only the Linux lock table produces it")
+    )]
+    Unnamed,
 }
 
 /// A measurement taken on the background thread, which may not have reached a process yet.
@@ -161,11 +278,14 @@ pub enum CoreKind {
 pub struct Cpu {
     pub id: u32,
     pub kind: CoreKind,
-    /// Share of the last interval spent busy, 0 to 1.
-    pub busy: f32,
-    pub mhz: f32,
-    /// Average number of tasks that were runnable but waiting for this CPU.
-    pub wait: f32,
+    /// Share of the last interval spent busy, 0 to 1; None on the first reading and when no time
+    /// passed on the CPU's counters.
+    pub busy: Option<f32>,
+    /// The clock in MHz; None when the platform has no reading for it (see `Source::CpuClock`).
+    pub mhz: Option<f32>,
+    /// Average number of tasks that were runnable but waiting for this CPU; None on the first
+    /// reading and where the platform does not measure it (see `Source::RunQueue`).
+    pub wait: Option<f32>,
 }
 
 /// Resource accounting of one cgroup.
@@ -173,15 +293,20 @@ pub struct Cpu {
 pub struct Unit {
     pub memory: u64,
     pub memory_max: Option<u64>,
-    /// CPU use and quota in percent of one core.
-    pub cpu: f32,
+    /// CPU use in percent of one core, and its quota; the use is None on the first reading,
+    /// when its counter is unreadable, and when it went backwards.
+    pub cpu: Option<f32>,
     pub cpu_max: Option<f32>,
-    /// The CPU quota throttled it since the previous reading.
-    pub throttled: bool,
-    /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
-    pub pressure: [f32; 3],
-    pub oom_kills: u64,
-    pub pids: u64,
+    /// Whether the CPU quota throttled it since the previous reading; None on the first reading
+    /// and when the counter is unreadable.
+    pub throttled: Option<bool>,
+    /// Pressure stall percentages (10 s average) for CPU, memory and I/O; None for a file that
+    /// could not be read.
+    pub pressure: [Option<f32>; 3],
+    /// OOM kills since the cgroup was created; None when `memory.events` is unreadable.
+    pub oom_kills: Option<u64>,
+    /// Processes in the cgroup; None when `pids.current` is unreadable.
+    pub pids: Option<u64>,
     pub pids_max: Option<u64>,
 }
 
@@ -193,17 +318,19 @@ pub struct Remote {
     pub port: u16,
     /// Smoothed round-trip time in milliseconds.
     pub rtt: f32,
-    /// Bytes per second sent and received.
-    pub up: f32,
-    pub down: f32,
+    /// Bytes per second sent and received since the previous scan; None until the connection has
+    /// been seen twice, and when its counters went backwards.
+    pub up: Option<f32>,
+    pub down: Option<f32>,
     pub place: Option<Place>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub processes: Vec<Process>,
-    pub memory_total: u64,
-    pub memory_available: u64,
+    /// None when the platform could not read them.
+    pub memory_total: Option<u64>,
+    pub memory_available: Option<u64>,
     pub cores: usize,
     pub elapsed: f64,
     /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
@@ -230,17 +357,52 @@ pub struct Snapshot {
     /// pid -1.
     pub unattributed_locks: u32,
     /// System-wide sources that could not be read this sample or that the platform never has:
-    /// "cpu pressure", "memory pressure" and "io pressure" when pressure stall information is
-    /// unreadable, then the platform's permanent gaps (`Sampler::missing`).
-    pub missing: Vec<&'static str>,
+    /// the pressures `Sampler::pressure` could not read, the platform's gaps
+    /// (`Sampler::missing`), and the lock table and GPU memory once the background thread has
+    /// found them absent.
+    pub missing: Sources,
     /// Processes the platform could see but not measure because they belong to another user.
     pub unreadable: usize,
     /// Sources the platform measures per CPU cluster rather than per CPU (`Sampler::per_cluster`):
-    /// "cpu clock" when every CPU's `mhz` is the average clock of the cluster of its kind.
-    pub per_cluster: Vec<&'static str>,
+    /// `Source::CpuClock` when every CPU's `mhz` is the average clock of the cluster of its kind.
+    pub per_cluster: Sources,
     /// The processes counted in `unreadable`, as far as anyone may read them (`Sampler::shadows`),
     /// so that what they started can still be drawn under them.
     pub shadows: Vec<platform::Shadow>,
+    /// How the background thread that measures the slow sources is doing.
+    pub sampler: SamplerHealth,
+}
+
+/// How often the background thread runs its scans: sockets, GPU memory, cgroups, open files, file
+/// locks and remote locations. What it measured reaches a sample up to this long plus one cycle
+/// after it was read.
+pub const BACKGROUND_PERIOD: Duration = Duration::from_secs(2);
+
+/// Periods without a finished cycle after which a running background thread counts as stalled:
+/// one of its scans is stuck, normally on a read that does not return.
+const STALLED_PERIODS: u32 = 10;
+
+/// The state of the background thread, as of one sample.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SamplerHealth {
+    /// The thread is alive. False when it could not be spawned, panicked, or ended because its
+    /// shared state was poisoned; the slow sources then keep what it measured last.
+    pub running: bool,
+    /// How long ago its last cycle finished; None before the first.
+    pub last_cycle: Option<Duration>,
+    /// How long it has gone without finishing a cycle: since the last one finished, or since the
+    /// thread started while the first is still running. `stalled` judges this, so a first cycle
+    /// that never finishes counts too.
+    pub quiet: Duration,
+    /// How long each scan of that cycle took, by the source it reads, in the order they ran.
+    pub scan_latency: Vec<(Source, Duration)>,
+}
+
+impl SamplerHealth {
+    /// Alive, but no cycle has finished for `STALLED_PERIODS` periods.
+    pub fn stalled(&self) -> bool {
+        self.running && self.quiet > BACKGROUND_PERIOD * STALLED_PERIODS
+    }
 }
 
 /// What the collector keeps of a process between samples.
@@ -255,6 +417,9 @@ struct Counters {
     waited: Option<i128>,
     runnable_ticks: Option<u64>,
     threads: u32,
+    system_ticks: u64,
+    syscalls: Option<SyscallCounts>,
+    major_faults: Option<u64>,
 }
 
 /// Cumulative bytes a process has read from and written to storage.
@@ -269,22 +434,52 @@ impl IoBytes {
         self.read.saturating_add(self.write)
     }
 
-    /// Bytes per second of read and write combined, read, and write over `dt` seconds.
-    fn rates(self, before: Self, dt: f32) -> [f32; 3] {
-        [
-            self.total().saturating_sub(before.total()),
-            self.read.saturating_sub(before.read),
-            self.write.saturating_sub(before.write),
-        ]
-        .map(|bytes| bytes as f32 / dt)
+    /// Bytes per second of read and write combined, read, and write over `dt` seconds. None when
+    /// a counter went backwards (a recycled pid starts again from zero), since the change is
+    /// then unknown.
+    fn rates(self, before: Self, dt: f32) -> Option<[f32; 3]> {
+        Some(
+            [
+                self.total().checked_sub(before.total())?,
+                self.read.checked_sub(before.read)?,
+                self.write.checked_sub(before.write)?,
+            ]
+            .map(|bytes| bytes as f32 / dt),
+        )
     }
 }
 
-/// Slow measurements gathered off the frame loop.
+/// Cumulative syscall-level I/O of a process: bytes and call counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyscallCounts {
+    pub read_chars: u64,
+    pub write_chars: u64,
+    pub reads: u64,
+    pub writes: u64,
+}
+
+impl SyscallCounts {
+    /// Per-second rates over `dt` seconds; None when a counter went backwards.
+    fn rates(self, before: Self, dt: f32) -> Option<SyscallIo> {
+        let rate = |now: u64, then: u64| Some(now.checked_sub(then)? as f32 / dt);
+        Some(SyscallIo {
+            read_chars: rate(self.read_chars, before.read_chars)?,
+            write_chars: rate(self.write_chars, before.write_chars)?,
+            reads: rate(self.reads, before.reads)?,
+            writes: rate(self.writes, before.writes)?,
+        })
+    }
+}
+
+/// Slow measurements gathered off the frame loop, keyed by the pids of `identities`.
 #[derive(Default)]
 struct Extras {
+    /// The processes the frame loop had last sampled when this cycle began, by pid. Every scan
+    /// read after that, so a pid in the scans is the process named here or one that took its pid
+    /// since; `merge` keeps only the pids that still name the same process.
+    identities: HashMap<u32, Identity>,
     network: platform::Network,
-    gpu: HashMap<u32, u64>,
+    gpu: HashMap<u32, GpuMemory>,
     units: HashMap<String, Unit>,
     /// Remote connections with the owning pid in `id.pid`.
     remotes: Vec<Remote>,
@@ -293,7 +488,94 @@ struct Extras {
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<platform::Files>>,
     locks: Measured<platform::Locks>,
+    /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table.
+    missing: Sources,
     geo: String,
+    /// How long each scan took, by the source it reads.
+    latency: Vec<(Source, Duration)>,
+    /// When the cycle that measured all this finished; None before the first.
+    finished: Option<Instant>,
+}
+
+/// The background thread, as the frame loop sees it: what it measured last and whether it is
+/// still alive.
+struct Background {
+    extras: Arc<Mutex<Extras>>,
+    alive: Arc<AtomicBool>,
+    started: Instant,
+}
+
+/// Clears the background thread's alive flag when the thread ends, by returning or by a panic.
+struct Alive(Arc<AtomicBool>);
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+impl Background {
+    /// Starts the background thread. It calls `start` once to set up its scans, then runs the
+    /// cycle that returns every `BACKGROUND_PERIOD` and publishes what it measured, until the
+    /// `Background` is dropped. None when no thread can be spawned.
+    fn spawn<Cycle: FnMut() -> Extras>(
+        start: impl FnOnce() -> Cycle + Send + 'static,
+    ) -> Option<Background> {
+        let extras = Arc::new(Mutex::new(Extras::default()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let writer = Arc::clone(&extras);
+        let guard = Alive(Arc::clone(&alive));
+        let started = Instant::now();
+        std::thread::Builder::new()
+            .name("isotop-sampler".into())
+            .spawn(move || {
+                let _guard = guard;
+                let mut cycle = start();
+                while Arc::strong_count(&writer) > 1 {
+                    let mut measured = cycle();
+                    measured.finished = Some(Instant::now());
+                    match writer.lock() {
+                        Ok(mut slot) => *slot = measured,
+                        Err(_) => return,
+                    }
+                    std::thread::sleep(BACKGROUND_PERIOD);
+                }
+            })
+            .ok()?;
+        Some(Background {
+            extras,
+            alive,
+            started,
+        })
+    }
+
+    /// What it measured last. A poisoned lock still holds the last complete cycle: `slot` is
+    /// replaced whole, never written in parts.
+    fn extras(&self) -> MutexGuard<'_, Extras> {
+        self.extras.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The thread's health at `now`. A poisoned lock ends the thread at its next publish, so it
+    /// counts as stopped already.
+    fn health(&self, now: Instant) -> SamplerHealth {
+        let extras = self.extras();
+        SamplerHealth {
+            running: self.alive.load(Ordering::Relaxed) && !self.extras.is_poisoned(),
+            last_cycle: extras
+                .finished
+                .map(|finished| now.saturating_duration_since(finished)),
+            quiet: now.saturating_duration_since(extras.finished.unwrap_or(self.started)),
+            scan_latency: extras.latency.clone(),
+        }
+    }
+}
+
+/// Runs one scan and records how long it took under the `source` it reads.
+fn timed<T>(latency: &mut Vec<(Source, Duration)>, source: Source, scan: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let value = scan();
+    latency.push((source, start.elapsed()));
+    value
 }
 
 pub struct Collector {
@@ -301,88 +583,218 @@ pub struct Collector {
     previous: HashMap<Identity, Counters>,
     last: Instant,
     origin: Instant,
-    extras: Option<Arc<Mutex<Extras>>>,
+    background: Option<Background>,
     /// Cgroup paths the background thread should account, and whether to locate remote
     /// addresses (only the globe shows them, and the first lookup loads the GeoIP database).
     wanted: Arc<Mutex<HashSet<String>>>,
     locating: Arc<AtomicBool>,
+    /// The processes of the latest sample by pid, which the background scans are joined against.
+    identities: Arc<Mutex<HashMap<u32, Identity>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
 }
 
-/// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every two
-/// seconds on a background thread; the thread stops once the collector is gone. Returns None
-/// when no thread can be spawned.
+/// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every
+/// `BACKGROUND_PERIOD` on a background thread; the thread stops once the collector is gone.
+/// Returns None when no thread can be spawned.
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
     locating: Arc<AtomicBool>,
-) -> Option<Arc<Mutex<Extras>>> {
-    let shared = Arc::new(Mutex::new(Extras::default()));
-    let writer = Arc::clone(&shared);
-    std::thread::Builder::new()
-        .name("isotop-sampler".into())
-        .spawn(move || {
-            let gpu = platform::Gpu::load();
-            let mut geo = geo::Geo::open(geoip.as_deref());
-            let mut units = HashMap::new();
-            let mut sockets = HashMap::new();
-            let mut loopback = LoopbackScan::default();
-            let mut retained = HashSet::new();
-            let mut scan = platform::FileScan::new();
-            while Arc::strong_count(&writer) > 1 {
-                let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
-                let paths = accounted(wanted_now, &mut retained);
-                let network = platform::network();
-                let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
-                let remotes = remotes(&network.remotes, &mut sockets, locator);
-                let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
-                let extras = Extras {
-                    network,
-                    gpu: gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default(),
-                    units: platform::account(&paths, &mut units),
-                    remotes,
-                    traffic,
-                    files: scan.sample(),
-                    locks: platform::locks().map_or(Measured::Unreadable, Measured::Known),
-                    geo: geo.source.clone(),
-                };
-                match writer.lock() {
-                    Ok(mut slot) => *slot = extras,
-                    Err(_) => return,
-                }
-                std::thread::sleep(Duration::from_secs(2));
+    identities: Arc<Mutex<HashMap<u32, Identity>>>,
+) -> Option<Background> {
+    Background::spawn(move || {
+        let gpu = platform::Gpu::load();
+        let mut geo = geo::Geo::open(geoip.as_deref());
+        let mut units = HashMap::new();
+        let mut sockets = HashMap::new();
+        let mut loopback = LoopbackScan::default();
+        let mut retained = HashSet::new();
+        let mut files = platform::FileScan::new();
+        let mut kept = KeptFiles::default();
+        move || {
+            // Taken before any scan reads, so that every pid the scans find is either the
+            // process named here or one that took its pid since.
+            let identities = identities.lock().map(|map| map.clone()).unwrap_or_default();
+            let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
+            let paths = accounted(wanted_now, &mut retained);
+            let mut latency = Vec::new();
+            let network = timed(&mut latency, Source::Sockets, platform::network);
+            let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
+            let remotes = timed(&mut latency, Source::Locations, || {
+                remotes(&network.remotes, &mut sockets, locator)
+            });
+            let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
+            let gpu_memory = timed(&mut latency, Source::GpuMemory, || {
+                gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default()
+            });
+            let units = timed(&mut latency, Source::Cgroups, || {
+                platform::account(&paths, &mut units)
+            });
+            let files = timed(&mut latency, Source::OpenFiles, || files.sample());
+            let files = kept.update(files, &identities);
+            let locks = timed(&mut latency, Source::FileLocks, || {
+                platform::locks().map_or(Measured::Unreadable, Measured::Known)
+            });
+            let missing = background_gaps(gpu.is_some(), &locks);
+            Extras {
+                identities,
+                network,
+                gpu: gpu_memory,
+                units,
+                remotes,
+                traffic,
+                files,
+                locks,
+                missing,
+                geo: geo.source.clone(),
+                latency,
+                finished: None,
             }
+        }
+    })
+}
+
+/// Open-file tables kept between background cycles, each with the process it was read for. The
+/// file scan is bounded and reaches every pid only over several cycles, so a table read earlier
+/// stands in until the scan comes round again, but only while its pid still names that process:
+/// a reused pid starts out unscanned instead of showing its predecessor's files.
+#[derive(Default)]
+struct KeptFiles(HashMap<u32, (Identity, Option<platform::Files>)>);
+
+impl KeptFiles {
+    /// Takes the tables this cycle's scan read, against `identities` (the processes by pid when
+    /// the cycle began), and returns every table that still belongs to the process its pid names
+    /// there.
+    fn update(
+        &mut self,
+        scanned: HashMap<u32, Option<platform::Files>>,
+        identities: &HashMap<u32, Identity>,
+    ) -> HashMap<u32, Option<platform::Files>> {
+        self.0
+            .retain(|pid, (id, _)| identities.get(pid) == Some(id));
+        for (pid, files) in scanned {
+            match identities.get(&pid) {
+                Some(&id) => {
+                    self.0.insert(pid, (id, files));
+                }
+                // Born since the cycle began, so it is not joined this cycle; its next scan
+                // will have an identity to keep it under.
+                None => {
+                    self.0.remove(&pid);
+                }
+            }
+        }
+        self.0
+            .iter()
+            .map(|(&pid, (_, files))| (pid, files.clone()))
+            .collect()
+    }
+}
+
+/// Joins the background measurements onto a sample. They were scanned against
+/// `extras.identities`, so a pid counts only while it still names the same process: data for a
+/// process that has exited since is dropped, and a process that took its pid since is not
+/// measured until the next cycle instead of inheriting what its predecessor had.
+fn merge(snapshot: &mut Snapshot, extras: &Extras) {
+    let current: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+    let id = |pid: &u32| {
+        extras
+            .identities
+            .get(pid)
+            .filter(|id| current.contains(id))
+            .copied()
+    };
+    for process in &mut snapshot.processes {
+        let scanned = extras.identities.get(&process.id.pid) == Some(&process.id);
+        process.gpu_memory = extras.gpu.get(&process.id.pid).filter(|_| scanned).copied();
+        merge_files(process, &extras.files, &extras.locks, scanned);
+        // A holder that has exited since released its locks, so nothing waits on it any more.
+        process.blocked_on = process.blocked_on.filter(|blocker| match blocker {
+            Blocker::Process(holder) => id(holder).is_some(),
+            Blocker::Unnamed => true,
+        });
+    }
+    snapshot.unattributed_locks = extras.locks.known().map_or(0, |locks| locks.unattributed);
+    snapshot.links = extras
+        .network
+        .links
+        .iter()
+        .filter_map(|(&(a, b), &count)| Some((id(&a)?, id(&b)?, count)))
+        .collect();
+    snapshot.outside = extras
+        .network
+        .outside
+        .iter()
+        .filter_map(|(pid, &count)| Some((id(pid)?, count)))
+        .collect();
+    snapshot.link_traffic = extras
+        .traffic
+        .iter()
+        .filter_map(|(&(a, b), &rate)| Some(((id(&a)?, id(&b)?), rate)))
+        .collect();
+    snapshot.unix_links = extras
+        .network
+        .unix
+        .iter()
+        .filter_map(|(a, b)| Some((id(a)?, id(b)?)))
+        .collect();
+    snapshot.units = extras.units.clone();
+    snapshot.remotes = extras
+        .remotes
+        .iter()
+        .filter_map(|remote| {
+            Some(Remote {
+                id: id(&remote.id.pid)?,
+                ..remote.clone()
+            })
         })
-        .ok()
-        .map(|_| shared)
+        .collect();
+    snapshot.geo = extras.geo.clone();
+    snapshot.missing = snapshot.missing.union(extras.missing);
+}
+
+/// The slow sources a background pass found absent: GPU memory when no GPU library loaded, and
+/// file locks when the lock table could not be read.
+fn background_gaps(gpu: bool, locks: &Measured<platform::Locks>) -> Sources {
+    let mut missing = Sources::default();
+    if !gpu {
+        missing.insert(Source::GpuMemory);
+    }
+    if matches!(locks, Measured::Unreadable) {
+        missing.insert(Source::FileLocks);
+    }
+    missing
 }
 
 /// Sets a process's open files and locks from the background scans: absent from the file scan
-/// means not read yet, not unreadable. Kernel threads keep the empty table the platform gave
-/// them (Linux); a kernel process the platform leaves to the scan (kernel_task on macOS, which
-/// has a descriptor table like any process) takes what the scan found.
+/// means not read yet, not unreadable, and so does a process the scans did not run against
+/// (`scanned` false: born since, or holding a pid that belonged to another process then). Kernel
+/// threads keep the empty table the platform gave them (Linux); a kernel process the platform
+/// leaves to the scan (kernel_task on macOS, which has a descriptor table like any process)
+/// takes what the scan found.
 fn merge_files(
     process: &mut Process,
     files: &HashMap<u32, Option<platform::Files>>,
     locks: &Measured<platform::Locks>,
+    scanned: bool,
 ) {
     let pid = process.id.pid;
     if process.kind != Kind::Kernel || process.files == Measured::Pending {
-        process.files = match files.get(&pid) {
+        process.files = match files.get(&pid).filter(|_| scanned) {
             Some(Some(found)) => Measured::Known(found.clone()),
             Some(None) => Measured::Unreadable,
             None => Measured::Pending,
         };
     }
     (process.locks_held, process.blocked_on) = match locks {
-        Measured::Known(locks) => (
+        Measured::Known(locks) if scanned => (
             Measured::Known(locks.held.get(&pid).copied().unwrap_or(0)),
             locks.blocked.get(&pid).copied(),
         ),
+        Measured::Known(_) | Measured::Pending => (Measured::Pending, None),
         Measured::Unreadable => (Measured::Unreadable, None),
-        Measured::Pending => (Measured::Pending, None),
     };
 }
 
@@ -397,14 +809,19 @@ fn remotes(
     let found = sockets
         .iter()
         .map(|socket| {
+            let rate = |now_bytes: u64, then_bytes: u64, dt: f32| {
+                now_bytes
+                    .checked_sub(then_bytes)
+                    .map(|bytes| bytes as f32 / dt)
+            };
             let (up, down) =
                 previous
                     .get(&socket.inode)
-                    .map_or((0.0, 0.0), |&(then, sent, received)| {
+                    .map_or((None, None), |&(then, sent, received)| {
                         let dt = now.duration_since(then).as_secs_f32().max(0.1);
                         (
-                            socket.sent.saturating_sub(sent) as f32 / dt,
-                            socket.received.saturating_sub(received) as f32 / dt,
+                            rate(socket.sent, sent, dt),
+                            rate(socket.received, received, dt),
                         )
                     });
             next.insert(socket.inode, (now, socket.sent, socket.received));
@@ -500,9 +917,10 @@ impl Collector {
             previous: HashMap::new(),
             last: Instant::now(),
             origin: Instant::now(),
-            extras: None,
+            background: None,
             wanted: Arc::new(Mutex::new(HashSet::new())),
             locating: Arc::new(AtomicBool::new(false)),
+            identities: Arc::new(Mutex::new(HashMap::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -515,16 +933,9 @@ impl Collector {
     }
 
     pub fn sample(&mut self) -> std::io::Result<Snapshot> {
-        if !std::mem::replace(&mut self.started, true) {
-            self.extras = background(
-                self.geoip.clone(),
-                Arc::clone(&self.wanted),
-                Arc::clone(&self.locating),
-            );
-        }
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().max(0.001);
-        let (pressure, pressure_readable) = self.sampler.pressure();
+        let (pressure, pressure_missing) = self.sampler.pressure();
         let mut snapshot = Snapshot {
             cores: std::thread::available_parallelism().map_or(1, usize::from),
             elapsed: now.duration_since(self.origin).as_secs_f64(),
@@ -544,7 +955,7 @@ impl Collector {
         // After the processes, which a platform may derive CPU readings from (the macOS
         // cluster clocks come from the processes' cycle counters).
         snapshot.cpus = self.sampler.cpus(dt);
-        snapshot.missing = missing(pressure_readable, self.sampler.missing());
+        snapshot.missing = pressure_missing.union(self.sampler.missing());
         snapshot.per_cluster = self.sampler.per_cluster();
         snapshot.unreadable = self.sampler.unreadable();
         snapshot.shadows = self.sampler.shadows();
@@ -557,55 +968,26 @@ impl Collector {
                 .map(|p| p.cgroup.clone())
                 .collect();
         }
-        if let Some(shared) = &self.extras
-            && let Ok(extras) = shared.lock()
-        {
-            let ids: HashMap<u32, Identity> = snapshot
+        if let Ok(mut identities) = self.identities.lock() {
+            *identities = snapshot
                 .processes
                 .iter()
                 .map(|p| (p.id.pid, p.id))
                 .collect();
-            for process in &mut snapshot.processes {
-                process.gpu_memory = extras.gpu.get(&process.id.pid).copied().unwrap_or(0);
-                merge_files(process, &extras.files, &extras.locks);
-            }
-            snapshot.unattributed_locks =
-                extras.locks.known().map_or(0, |locks| locks.unattributed);
-            snapshot.links = extras
-                .network
-                .links
-                .iter()
-                .filter_map(|(&(a, b), &count)| Some((*ids.get(&a)?, *ids.get(&b)?, count)))
-                .collect();
-            snapshot.outside = extras
-                .network
-                .outside
-                .iter()
-                .filter_map(|(pid, &count)| Some((*ids.get(pid)?, count)))
-                .collect();
-            snapshot.link_traffic = extras
-                .traffic
-                .iter()
-                .filter_map(|(&(a, b), &rate)| Some(((*ids.get(&a)?, *ids.get(&b)?), rate)))
-                .collect();
-            snapshot.unix_links = extras
-                .network
-                .unix
-                .iter()
-                .filter_map(|&(a, b)| Some((*ids.get(&a)?, *ids.get(&b)?)))
-                .collect();
-            snapshot.units = extras.units.clone();
-            snapshot.remotes = extras
-                .remotes
-                .iter()
-                .filter_map(|remote| {
-                    Some(Remote {
-                        id: *ids.get(&remote.id.pid)?,
-                        ..remote.clone()
-                    })
-                })
-                .collect();
-            snapshot.geo = extras.geo.clone();
+        }
+        // Started once the first sample has published what to scan, so its first cycle has the
+        // processes to join against and the cgroups to account.
+        if !std::mem::replace(&mut self.started, true) {
+            self.background = background(
+                self.geoip.clone(),
+                Arc::clone(&self.wanted),
+                Arc::clone(&self.locating),
+                Arc::clone(&self.identities),
+            );
+        }
+        if let Some(background) = &self.background {
+            snapshot.sampler = background.health(Instant::now());
+            merge(&mut snapshot, &background.extras());
         }
         self.previous = next;
         self.last = now;
@@ -622,6 +1004,9 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         io,
         performance_ticks,
         runnable_ticks,
+        system_ticks,
+        syscalls,
+        major_faults,
     } = raw;
     process.cpu_time = ticks as f32 / hz;
     // Runnable time counts running time too, so what remains after the CPU time is waiting.
@@ -632,12 +1017,31 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         process.cpu = previous.cpu + alpha * (raw - previous.cpu);
         if let Some([total, read, write]) = io
             .zip(previous.io)
-            .map(|(current, before)| current.rates(before, dt))
+            .and_then(|(current, before)| current.rates(before, dt))
         {
             process.io_rate = Some(total);
             process.read_rate = Some(read);
             process.write_rate = Some(write);
         }
+        let reset = restarted(ticks, runnable_ticks, system_ticks, previous);
+        // The kernel-mode part of the CPU time that elapsed; none when no time elapsed or the
+        // counters went back.
+        process.system_share = ticks
+            .checked_sub(previous.ticks)
+            .zip(system_ticks.checked_sub(previous.system_ticks))
+            .filter(|&(elapsed, _)| elapsed > 0 && !reset)
+            .map(|(elapsed, system)| (system as f32 / elapsed as f32).min(1.0));
+        // After a reset (exec or wraparound) the old counters say nothing about the interval,
+        // so the rates are unknown until the next reading, never zero or negative.
+        process.syscall_io = syscalls
+            .zip(previous.syscalls)
+            .filter(|_| !reset)
+            .and_then(|(now, before)| now.rates(before, dt));
+        process.major_faults = major_faults
+            .zip(previous.major_faults)
+            .filter(|_| !reset)
+            .and_then(|(now, before)| now.checked_sub(before))
+            .map(|faults| faults as f32 / dt);
         // A counter that went backwards (a reused pid) gives no reading rather than a wrong one.
         process.performance_share = performance_ticks
             .zip(previous.performance_ticks)
@@ -652,11 +1056,13 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         let threads = process.threads.max(previous.threads) as f32;
         process.waiting = waited
             .zip(previous.waited)
-            .filter(|_| !restarted(ticks, runnable_ticks, previous))
+            .filter(|_| !reset)
             .map(|(now, highest)| ((now - highest).max(0) as f32 / hz / dt).min(threads));
     }
     let highest = match (waited, previous) {
-        (Some(now), Some(previous)) if !restarted(ticks, runnable_ticks, previous) => {
+        (Some(now), Some(previous))
+            if !restarted(ticks, runnable_ticks, system_ticks, previous) =>
+        {
             Some(previous.waited.map_or(now, |highest| now.max(highest)))
         }
         (now, _) => now,
@@ -669,34 +1075,28 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         waited: highest,
         runnable_ticks,
         threads: process.threads,
+        system_ticks,
+        syscalls,
+        major_faults,
     };
     (process, counters)
 }
 
-/// Whether a process's CPU or runnable total went backwards since the previous reading. On
-/// macOS exec gives the process a new task that keeps only the exec'ing thread's counters, so
-/// the old high-water mark of its waiting no longer applies.
-fn restarted(ticks: u64, runnable_ticks: Option<u64>, previous: &Counters) -> bool {
+/// Whether a process's CPU, kernel-mode or runnable total went backwards since the previous
+/// reading. On macOS exec gives the process a new task that keeps only the exec'ing thread's
+/// counters, so the old high-water mark of its waiting no longer applies, and no rate derived
+/// from the old counters does either.
+fn restarted(
+    ticks: u64,
+    runnable_ticks: Option<u64>,
+    system_ticks: u64,
+    previous: &Counters,
+) -> bool {
     ticks < previous.ticks
+        || system_ticks < previous.system_ticks
         || runnable_ticks
             .zip(previous.runnable_ticks)
             .is_some_and(|(now, before)| now < before)
-}
-
-/// The names for `Snapshot::missing`: the three pressure sources when pressure could not be read
-/// at all, then the platform's permanent gaps, each name once.
-fn missing(pressure_readable: bool, permanent: Vec<&'static str>) -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = if pressure_readable {
-        Vec::new()
-    } else {
-        vec!["cpu pressure", "memory pressure", "io pressure"]
-    };
-    for name in permanent {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names
 }
 
 pub fn bounded(value: f32, knee: f32) -> f32 {
@@ -725,6 +1125,65 @@ fn demo_cpu_integral(time: f64, index: usize) -> f64 {
 /// The share of a demo process's I/O that is writes.
 fn demo_write_share(index: usize) -> f32 {
     (1 + index % 3) as f32 / 4.0
+}
+
+/// When the demo machine booted, in seconds since the Unix epoch.
+const DEMO_BOOT_TIME: f64 = 1_760_000_000.0;
+
+/// Seconds between the starts of consecutive demo processes (`Identity::start` counts them).
+const DEMO_START_SPACING: f64 = 30.0;
+
+/// The kernel-mode share of a demo process's CPU time: kernel threads spend nearly all of it
+/// there, and each family leans a different way, drifting a little over time.
+fn demo_system_share(family: usize, kind: Kind, phase: f32) -> f32 {
+    if kind == Kind::Kernel {
+        0.97
+    } else {
+        (0.08 + 0.14 * (family % 5) as f32 + 0.06 * (phase * 0.3).sin()).clamp(0.0, 1.0)
+    }
+}
+
+/// The scheduling policy of demo process `index`: real time where its priority is -51, batch or
+/// idle where its nice is 19, normal for the rest.
+fn demo_policy(index: usize, priority: i32, nice: i32) -> Policy {
+    if priority == -51 {
+        Policy::Fifo
+    } else if nice == 19 {
+        if index % 12 == 10 {
+            Policy::Idle
+        } else {
+            Policy::Batch
+        }
+    } else {
+        Policy::Normal
+    }
+}
+
+/// Syscall I/O of demo process `index`, on the processes that do storage I/O (`io_rate`, of
+/// which `write_rate` is writes): the bytes passed through read and write calls are at least
+/// the bytes that reached storage, because the page cache absorbs some.
+fn demo_syscall_io(index: usize, io_rate: f32, write_rate: f32) -> SyscallIo {
+    if !index.is_multiple_of(7) {
+        return SyscallIo::default();
+    }
+    let read_chars = (io_rate - write_rate) * (1.25 + 0.25 * (index % 4) as f32);
+    let write_chars = write_rate * (1.1 + 0.1 * (index % 3) as f32);
+    let call_size = 4096.0 * (1 + index % 8) as f32;
+    SyscallIo {
+        read_chars,
+        write_chars,
+        reads: read_chars / call_size,
+        writes: write_chars / call_size,
+    }
+}
+
+/// Major faults per second of demo process `index`: a few processes page in from storage.
+fn demo_major_faults(index: usize, phase: f32) -> f32 {
+    if index % 23 == 5 {
+        4.0 * (1.1 + (phase * 0.7).sin())
+    } else {
+        0.0
+    }
 }
 
 /// Demo open files, deleted-but-open files and file locks of process `index`, fixed for the whole
@@ -852,12 +1311,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             priority,
             nice,
             threads: if i % 5 == 0 { 4 << (i % 6) } else { 1 },
-            gpu_memory: if i % 37 == 5 {
-                (300 + i as u64 * 7) << 20
-            } else {
-                0
-            },
-            core,
+            gpu_memory: (i % 37 == 5).then(|| GpuMemory::Bytes((300 + i as u64 * 7) << 20)),
+            core: Some(core),
             cpu_time: (time as f32 + i as f32) * cpu / 100.0 + i as f32 * 3.7,
             // Mostly on the kind of core it last ran on (0 to 7 are performance cores), with
             // some of its time on the other cluster; no share when it used no CPU.
@@ -869,7 +1324,12 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
             files: Measured::Known(files),
             locks_held: Measured::Known(locks_held),
             // Holders come before their waiters, so a waiter's holder always exists.
-            blocked_on: waiting_for.map(|holder| 1000 + holder as u32),
+            blocked_on: waiting_for.map(|holder| Blocker::Process(1000 + holder as u32)),
+            system_share: (cpu > 0.0).then(|| demo_system_share(family, kind, phase)),
+            policy: demo_policy(i, priority, nice),
+            syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
+            major_faults: Some(demo_major_faults(i, phase)),
+            started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -910,13 +1370,13 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
                 } else {
                     CoreKind::Efficiency
                 },
-                busy: load * if id < 8 { 0.9 } else { 0.6 },
-                mhz: if id < 8 {
+                busy: Some(load * if id < 8 { 0.9 } else { 0.6 }),
+                mhz: Some(if id < 8 {
                     1400.0 + 3400.0 * load
                 } else {
                     1000.0 + 2200.0 * load
-                },
-                wait: (load - 0.6).max(0.0) * 3.0,
+                }),
+                wait: Some((load - 0.6).max(0.0) * 3.0),
             }
         })
         .collect();
@@ -924,8 +1384,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
     for p in processes.iter().filter(|p| !p.cgroup.is_empty()) {
         let unit = units.entry(p.cgroup.clone()).or_default();
         unit.memory += p.memory;
-        unit.cpu += p.cpu;
-        unit.pids += 1;
+        *unit.cpu.get_or_insert(0.0) += p.cpu;
+        *unit.pids.get_or_insert(0) += 1;
     }
     for (k, (path, unit)) in units.iter_mut().enumerate() {
         let family = path.trim_end_matches(".service").rsplit('-').next();
@@ -935,10 +1395,14 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         }
         if family % 4 == 1 {
             unit.cpu_max = Some(120.0);
-            unit.throttled = unit.cpu > 120.0;
         }
-        unit.pressure = [wave(0.3 + family as f64 * 0.05, 40.0), wave(0.2, 10.0), 0.0];
-        unit.oom_kills = if family == 4 { (time / 23.0) as u64 } else { 0 };
+        unit.throttled = Some(unit.cpu_max.is_some() && unit.cpu.is_some_and(|cpu| cpu > 120.0));
+        unit.pressure = [
+            Some(wave(0.3 + family as f64 * 0.05, 40.0)),
+            Some(wave(0.2, 10.0)),
+            Some(0.0),
+        ];
+        unit.oom_kills = Some(if family == 4 { (time / 23.0) as u64 } else { 0 });
     }
     let remotes = processes
         .iter()
@@ -954,8 +1418,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
                     address: IpAddr::from([203, 0, 113, (i + k) as u8]),
                     port: [443, 22, 5432][k % 3],
                     rtt: 20.0 + (i * 13 % 180) as f32,
-                    up: 2048.0 * pulse,
-                    down: 65536.0 * pulse * pulse,
+                    up: Some(2048.0 * pulse),
+                    down: Some(65536.0 * pulse * pulse),
                     place: (k < 2).then(|| Place {
                         latitude,
                         longitude,
@@ -967,8 +1431,8 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         .collect();
     Snapshot {
         processes,
-        memory_total: 32 * 1024_u64.pow(3),
-        memory_available: 12 * 1024_u64.pow(3),
+        memory_total: Some(32 * 1024_u64.pow(3)),
+        memory_available: Some(12 * 1024_u64.pow(3)),
         cores: 16,
         elapsed: time,
         pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
@@ -980,10 +1444,16 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         units,
         remotes,
         unattributed_locks: 1,
-        missing: Vec::new(),
+        missing: Sources::default(),
         unreadable: 0,
-        per_cluster: Vec::new(),
+        per_cluster: Sources::default(),
         shadows: Vec::new(),
+        sampler: SamplerHealth {
+            running: true,
+            last_cycle: Some(Duration::ZERO),
+            quiet: Duration::ZERO,
+            scan_latency: Vec::new(),
+        },
         home: Some(Place {
             latitude: 52.37,
             longitude: 4.9,
@@ -1154,9 +1624,7 @@ mod tests {
             read: 4096 + 6000,
             write: 1000 + 2000,
         };
-        assert_eq!(after.rates(before, 2.0), [4000.0, 3000.0, 1000.0]);
-        // A counter that went backwards (a recycled pid's reset) reads as no traffic.
-        assert_eq!(before.rates(after, 2.0), [0.0, 0.0, 0.0]);
+        assert_eq!(after.rates(before, 2.0), Some([4000.0, 3000.0, 1000.0]));
     }
 
     fn loopback(inode: u64, pid: u32, peer: u32, received: u64) -> platform::Loopback {
@@ -1295,20 +1763,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_names_the_pressures_then_the_platform_gaps_once_each() {
-        assert!(missing(true, Vec::new()).is_empty());
+    fn background_reports_gpu_memory_and_file_locks_only_when_absent() {
+        let table = Measured::Known(platform::Locks::default());
+        assert!(background_gaps(true, &table).is_empty());
+        assert!(background_gaps(true, &Measured::Pending).is_empty());
+        assert_eq!(background_gaps(false, &table), Source::GpuMemory.into());
         assert_eq!(
-            missing(true, vec!["last cpu", "cgroups"]),
-            ["last cpu", "cgroups"]
-        );
-        assert_eq!(
-            missing(false, Vec::new()),
-            ["cpu pressure", "memory pressure", "io pressure"]
-        );
-        assert_eq!(
-            missing(false, vec!["cpu pressure", "io pressure", "last cpu"]),
-            ["cpu pressure", "memory pressure", "io pressure", "last cpu"],
-            "a name the platform repeats is listed once"
+            background_gaps(false, &Measured::Unreadable),
+            Sources::from([Source::GpuMemory, Source::FileLocks])
         );
     }
 
@@ -1323,11 +1785,14 @@ mod tests {
         let mut sampler = platform::Sampler::new();
         let _ = sampler.processes();
         let gaps = sampler.missing();
-        assert!(gaps.iter().all(|name| snapshot.missing.contains(name)));
+        assert!(gaps.iter().all(|source| snapshot.missing.contains(source)));
         assert_eq!(snapshot.per_cluster, sampler.per_cluster());
         if cfg!(target_os = "linux") {
-            assert!(gaps.is_empty() && snapshot.unreadable == 0);
-            assert!(snapshot.per_cluster.is_empty());
+            // Linux reads the last CPU and socket traffic everywhere; what else it lacks
+            // depends on the machine.
+            assert!(!snapshot.missing.contains(Source::LastCpu));
+            assert!(!snapshot.missing.contains(Source::SocketTraffic));
+            assert!(snapshot.unreadable == 0 && snapshot.per_cluster.is_empty());
         }
     }
 
@@ -1338,12 +1803,21 @@ mod tests {
             process: Process {
                 performance_share: None,
                 waiting: None,
+                io_rate: None,
+                read_rate: None,
+                write_rate: None,
+                system_share: None,
+                syscall_io: None,
+                major_faults: None,
                 ..demo(0.0, 1).processes[0].clone()
             },
             ticks,
             io: None,
             performance_ticks: performance,
             runnable_ticks: runnable,
+            system_ticks: 0,
+            syscalls: None,
+            major_faults: None,
         }
     }
 
@@ -1396,6 +1870,196 @@ mod tests {
         // of waiting; only the waiting counts.
         let (caught_up, _) = at(4 * SECOND, 8_500_000_000, Some(&third));
         assert_eq!(caught_up.waiting, Some(0.25));
+    }
+
+    /// `reading` with the kernel-mode time and the cumulative syscall and fault counters set.
+    fn counted(
+        ticks: u64,
+        system_ticks: u64,
+        syscalls: SyscallCounts,
+        major_faults: u64,
+    ) -> RawProcess {
+        RawProcess {
+            system_ticks,
+            syscalls: Some(syscalls),
+            major_faults: Some(major_faults),
+            ..reading(ticks, None, None)
+        }
+    }
+
+    fn calls(read_chars: u64, write_chars: u64, reads: u64, writes: u64) -> SyscallCounts {
+        SyscallCounts {
+            read_chars,
+            write_chars,
+            reads,
+            writes,
+        }
+    }
+
+    #[test]
+    fn syscall_io_and_major_fault_rates_come_from_counter_deltas() {
+        let (first, counters) = measure(
+            counted(SECOND, 0, calls(1000, 500, 10, 4), 20),
+            None,
+            1e9,
+            2.0,
+        );
+        assert_eq!((first.syscall_io, first.major_faults), (None, None));
+        let (second, _) = measure(
+            counted(2 * SECOND, 0, calls(5000, 1500, 30, 14), 26),
+            Some(&counters),
+            1e9,
+            2.0,
+        );
+        assert_eq!(
+            second.syscall_io,
+            Some(SyscallIo {
+                read_chars: 2000.0,
+                write_chars: 500.0,
+                reads: 10.0,
+                writes: 5.0
+            })
+        );
+        assert_eq!(second.major_faults, Some(3.0));
+    }
+
+    #[test]
+    fn counter_resets_read_as_unknown_rates_not_negative() {
+        let (_, before) = measure(
+            counted(10 * SECOND, 4 * SECOND, calls(9000, 9000, 90, 90), 50),
+            None,
+            1e9,
+            1.0,
+        );
+        // Exec: every counter went back.
+        let (exec, after) = measure(
+            counted(SECOND, SECOND / 2, calls(100, 100, 1, 1), 2),
+            Some(&before),
+            1e9,
+            1.0,
+        );
+        assert_eq!(exec.syscall_io, None);
+        assert_eq!(exec.major_faults, None);
+        assert_eq!(exec.system_share, None);
+        // A single counter that wrapped while the CPU time did not is unknown as well.
+        let (wrapped, _) = measure(
+            counted(2 * SECOND, SECOND, calls(50, 400, 0, 5), 1),
+            Some(&after),
+            1e9,
+            1.0,
+        );
+        assert_eq!(wrapped.syscall_io, None);
+        assert_eq!(wrapped.major_faults, None);
+        // Counters that only grew give rates again.
+        let (grown, _) = measure(
+            counted(3 * SECOND, SECOND, calls(150, 700, 2, 9), 4),
+            Some(&after),
+            1e9,
+            1.0,
+        );
+        let io = grown.syscall_io.unwrap();
+        assert_eq!((io.read_chars, io.write_chars), (50.0, 600.0));
+        assert_eq!((io.reads, io.writes), (1.0, 8.0));
+        assert_eq!(grown.major_faults, Some(2.0));
+    }
+
+    #[test]
+    fn system_share_is_the_kernel_part_of_the_intervals_cpu_time() {
+        let at = |ticks, system, previous: Option<&Counters>| {
+            measure(
+                counted(ticks, system, SyscallCounts::default(), 0),
+                previous,
+                1e9,
+                1.0,
+            )
+        };
+        let (_, first) = at(2 * SECOND, SECOND, None);
+        // 4 s of CPU time passed, 1 s of it in the kernel.
+        let (process, _) = at(6 * SECOND, 2 * SECOND, Some(&first));
+        assert_eq!(process.system_share, Some(0.25));
+        // Rounding in a unit conversion can put the kernel part above the total.
+        let (capped, _) = at(3 * SECOND, 4 * SECOND, Some(&first));
+        assert_eq!(capped.system_share, Some(1.0));
+    }
+
+    #[test]
+    fn system_share_is_none_until_cpu_time_elapses() {
+        let at = |ticks, system, previous: Option<&Counters>| {
+            measure(
+                counted(ticks, system, SyscallCounts::default(), 0),
+                previous,
+                1e9,
+                1.0,
+            )
+        };
+        let (first, counters) = at(2 * SECOND, SECOND, None);
+        assert_eq!(first.system_share, None, "no previous sample");
+        let (idle, _) = at(2 * SECOND, SECOND, Some(&counters));
+        assert_eq!(idle.system_share, None, "no CPU time elapsed");
+    }
+
+    #[test]
+    fn demo_fills_every_new_field() {
+        let snapshot = demo(12.0, 128);
+        let policies = |wanted: Policy| {
+            snapshot
+                .processes
+                .iter()
+                .filter(move |p| p.policy == wanted)
+        };
+        for process in &snapshot.processes {
+            assert!(process.syscall_io.is_some() && process.major_faults.is_some());
+            assert!(process.started >= DEMO_BOOT_TIME);
+            assert_eq!(
+                process.system_share.is_some(),
+                process.cpu > 0.0,
+                "{}",
+                process.name
+            );
+            if let Some(share) = process.system_share {
+                assert!((0.0..=1.0).contains(&share));
+            }
+            let io = process.syscall_io.unwrap();
+            assert!(
+                io.read_chars >= process.read_rate.unwrap(),
+                "{}",
+                process.name
+            );
+            assert!(io.write_chars >= process.write_rate.unwrap());
+            assert_eq!(process.policy == Policy::Fifo, process.priority == -51);
+            assert_eq!(
+                matches!(process.policy, Policy::Batch | Policy::Idle),
+                process.nice == 19
+            );
+        }
+        assert!(policies(Policy::Fifo).count() > 0);
+        assert!(policies(Policy::Batch).count() > 0 && policies(Policy::Idle).count() > 0);
+        assert!(policies(Policy::Normal).count() > 0);
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .any(|p| p.major_faults > Some(0.0))
+        );
+        let busy = |p: &&Process| p.syscall_io.is_some_and(|io| io.reads > 0.0);
+        assert!(snapshot.processes.iter().filter(busy).count() > 0);
+        let starts: Vec<f64> = snapshot.processes.iter().map(|p| p.started).collect();
+        assert!(starts.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(snapshot.missing.is_empty());
+    }
+
+    #[test]
+    fn the_demo_keeps_its_new_fields_to_closed_forms_of_time_and_index() {
+        // The same index at the same time reads the same however many processes surround it.
+        let small = demo(12.0, 20);
+        let large = demo(12.0, 128);
+        for (a, b) in small.processes.iter().zip(&large.processes) {
+            assert_eq!(a.policy, b.policy);
+            assert_eq!(a.system_share, b.system_share);
+            assert_eq!(a.syscall_io, b.syscall_io);
+            assert_eq!(a.major_faults, b.major_faults);
+            assert_eq!(a.started, b.started);
+        }
     }
 
     #[test]
@@ -1527,11 +2191,123 @@ mod tests {
         for waiter in waiters {
             let holder = processes
                 .iter()
-                .find(|p| Some(p.id.pid) == waiter.blocked_on)
+                .find(|p| waiter.blocked_on == Some(Blocker::Process(p.id.pid)))
                 .unwrap();
             assert!(holder.locks_held.known().is_some_and(|&held| held > 0));
             assert_ne!(holder.cgroup, waiter.cgroup, "waits in another flock");
         }
+    }
+
+    /// A raw reading of the demo's first process with cumulative I/O counters.
+    fn reading_with_io(ticks: u64, io: IoBytes) -> RawProcess {
+        RawProcess {
+            io: Some(io),
+            ..reading(ticks, None, None)
+        }
+    }
+
+    fn socket(inode: u64, sent: u64, received: u64) -> platform::Remote {
+        platform::Remote {
+            pid: 1000,
+            inode,
+            address: IpAddr::from([203, 0, 113, 7]),
+            port: 443,
+            rtt: 20_000,
+            sent,
+            received,
+        }
+    }
+
+    #[test]
+    fn first_sample_rates_are_unknown_not_zero() {
+        let counters = IoBytes {
+            read: 4096,
+            write: 8192,
+        };
+        let (first, kept) = measure(reading_with_io(SECOND, counters), None, 1e9, 1.0);
+        assert_eq!(
+            (first.io_rate, first.read_rate, first.write_rate),
+            (None, None, None),
+            "a process seen for the first time has no I/O rate yet"
+        );
+        let more = IoBytes {
+            read: 4096,
+            write: 8192 + 2048,
+        };
+        let (second, _) = measure(reading_with_io(2 * SECOND, more), Some(&kept), 1e9, 1.0);
+        assert_eq!(second.io_rate, Some(2048.0));
+        assert_eq!(second.read_rate, Some(0.0), "idle is a measured zero");
+        // A connection seen for the first time has no byte rate either; the second scan has.
+        let mut scans = HashMap::new();
+        let first = remotes(&[socket(5, 1000, 4000)], &mut scans, None);
+        assert_eq!((first[0].up, first[0].down), (None, None));
+        let second = remotes(&[socket(5, 1000, 4500)], &mut scans, None);
+        assert_eq!(second[0].up, Some(0.0));
+        assert!(second[0].down.is_some_and(|rate| rate > 0.0));
+        let fresh = remotes(&[socket(5, 1000, 4500), socket(6, 0, 0)], &mut scans, None);
+        assert_eq!((fresh[1].up, fresh[1].down), (None, None), "a new socket");
+    }
+
+    #[test]
+    fn counter_reversal_reads_as_unknown() {
+        let before = IoBytes {
+            read: 4096,
+            write: 1000,
+        };
+        let after = IoBytes {
+            read: 4096 + 6000,
+            write: 1000 + 2000,
+        };
+        assert_eq!(before.rates(after, 2.0), None, "a recycled pid's reset");
+        // Only one counter going back leaves the others unmeasurable too: the total is wrong.
+        let write_reset = IoBytes {
+            read: 4096 + 6000,
+            write: 0,
+        };
+        assert_eq!(write_reset.rates(after, 2.0), None);
+        let (_, kept) = measure(reading_with_io(SECOND, after), None, 1e9, 1.0);
+        let (process, _) = measure(reading_with_io(2 * SECOND, before), Some(&kept), 1e9, 1.0);
+        assert_eq!(
+            (process.io_rate, process.read_rate, process.write_rate),
+            (None, None, None)
+        );
+        // A socket whose counters went back reads as unknown in that direction only.
+        let mut scans = HashMap::new();
+        remotes(&[socket(5, 9000, 4000)], &mut scans, None);
+        let next = remotes(&[socket(5, 100, 4800)], &mut scans, None);
+        assert_eq!(next[0].up, None);
+        assert!(next[0].down.is_some());
+    }
+
+    #[test]
+    fn gpu_memory_distinguishes_unreported_from_absent() {
+        let mut usage = HashMap::new();
+        GpuMemory::accumulate(&mut usage, 10, None);
+        GpuMemory::accumulate(&mut usage, 20, Some(4096));
+        GpuMemory::accumulate(&mut usage, 20, None);
+        GpuMemory::accumulate(&mut usage, 30, None);
+        GpuMemory::accumulate(&mut usage, 30, Some(1 << 20));
+        GpuMemory::accumulate(&mut usage, 30, Some(1 << 20));
+        GpuMemory::accumulate(&mut usage, 40, Some(0));
+        assert_eq!(usage.get(&10), Some(&GpuMemory::Unreported));
+        assert_eq!(usage.get(&20), Some(&GpuMemory::Bytes(4096)));
+        assert_eq!(usage.get(&30), Some(&GpuMemory::Bytes(2 << 20)));
+        assert_eq!(usage.get(&40), Some(&GpuMemory::Bytes(0)));
+        assert_eq!(usage.get(&50), None, "a process the driver never listed");
+        assert_eq!(GpuMemory::Unreported.bytes(), 0);
+        // The demo lists some processes and leaves the rest absent.
+        let demo = demo(1.0, 64);
+        let using: Vec<_> = demo
+            .processes
+            .iter()
+            .filter(|p| p.gpu_memory.is_some())
+            .collect();
+        assert!(!using.is_empty() && using.len() < demo.processes.len());
+        assert!(
+            using
+                .iter()
+                .all(|p| matches!(p.gpu_memory, Some(GpuMemory::Bytes(bytes)) if bytes > 0))
+        );
     }
 
     #[test]
@@ -1546,7 +2322,7 @@ mod tests {
             ..platform::Files::default()
         };
         let mut found = HashMap::new();
-        merge_files(&mut process, &found, &Measured::Pending);
+        merge_files(&mut process, &found, &Measured::Pending, true);
         assert_eq!(process.files, Measured::Pending, "not reached");
         assert_eq!(
             process.locks_held,
@@ -1554,11 +2330,11 @@ mod tests {
             "before the first pass"
         );
         found.insert(1001, None);
-        merge_files(&mut process, &found, &Measured::Unreadable);
+        merge_files(&mut process, &found, &Measured::Unreadable, true);
         assert_eq!(process.files, Measured::Unreadable);
         assert_eq!(process.locks_held, Measured::Unreadable);
         found.insert(1001, Some(scanned.clone()));
-        merge_files(&mut process, &found, &locks);
+        merge_files(&mut process, &found, &locks, true);
         assert_eq!(process.files, Measured::Known(scanned));
         assert_eq!(process.locks_held, Measured::Known(2));
     }
@@ -1574,17 +2350,230 @@ mod tests {
         thread.kind = Kind::Kernel;
         thread.id.pid = 2;
         thread.files = Measured::Known(platform::Files::default());
-        merge_files(&mut thread, &found, &Measured::Pending);
+        merge_files(&mut thread, &found, &Measured::Pending, true);
         assert_eq!(thread.files, Measured::Known(platform::Files::default()));
         // kernel_task on macOS comes from the sampler not read yet, like every process there.
         let mut task = thread.clone();
         task.id.pid = 0;
         task.files = Measured::Pending;
-        merge_files(&mut task, &found, &Measured::Pending);
+        merge_files(&mut task, &found, &Measured::Pending, true);
         assert_eq!(task.files, Measured::Known(scanned));
         task.files = Measured::Pending;
-        merge_files(&mut task, &HashMap::from([(0, None)]), &Measured::Pending);
+        merge_files(
+            &mut task,
+            &HashMap::from([(0, None)]),
+            &Measured::Pending,
+            true,
+        );
         assert_eq!(task.files, Measured::Unreadable, "without root");
+    }
+
+    #[test]
+    fn background_data_is_not_inherited_by_a_reused_pid() {
+        let open = |count| {
+            Some(platform::Files {
+                open: count,
+                ..platform::Files::default()
+            })
+        };
+        // The cycle scanned against pid 7 as the process that started at 70, and pid 8.
+        let extras = Extras {
+            identities: HashMap::from([
+                (7, Identity { pid: 7, start: 70 }),
+                (8, Identity { pid: 8, start: 8 }),
+            ]),
+            network: platform::Network {
+                links: HashMap::from([((7, 8), 1)]),
+                unix: HashSet::from([(7, 8)]),
+                outside: HashMap::from([(7, 2), (8, 1)]),
+                ..platform::Network::default()
+            },
+            gpu: HashMap::from([(7, GpuMemory::Bytes(500)), (8, GpuMemory::Bytes(600))]),
+            remotes: [7, 8]
+                .map(|pid| Remote {
+                    id: Identity { pid, start: 0 },
+                    address: IpAddr::from([203, 0, 113, 1]),
+                    port: 443,
+                    rtt: 10.0,
+                    up: Some(1.0),
+                    down: Some(1.0),
+                    place: None,
+                })
+                .into(),
+            traffic: HashMap::from([((7, 8), 100.0)]),
+            files: HashMap::from([(7, open(4)), (8, open(2))]),
+            locks: Measured::Known(platform::Locks {
+                held: HashMap::from([(7, 1)]),
+                blocked: HashMap::from([(8, Blocker::Process(7))]),
+                unattributed: 0,
+            }),
+            ..Extras::default()
+        };
+        let sample = |start_of_7| {
+            let mut snapshot = Snapshot {
+                processes: vec![
+                    Process {
+                        id: Identity {
+                            pid: 7,
+                            start: start_of_7,
+                        },
+                        ..testing::process(7, 1)
+                    },
+                    testing::process(8, 1),
+                ],
+                ..Snapshot::default()
+            };
+            merge(&mut snapshot, &extras);
+            snapshot
+        };
+        // Pid 7 now belongs to a process that started at 71.
+        let reused = sample(71);
+        let (newcomer, survivor) = (&reused.processes[0], &reused.processes[1]);
+        assert_eq!(newcomer.gpu_memory, None);
+        assert_eq!(newcomer.files, Measured::Pending);
+        assert_eq!(newcomer.locks_held, Measured::Pending);
+        assert_eq!(survivor.gpu_memory, Some(GpuMemory::Bytes(600)));
+        assert_eq!(survivor.files, Measured::Known(open(2).unwrap()));
+        assert_eq!(survivor.blocked_on, None, "its lock's holder has exited");
+        assert!(reused.links.is_empty() && reused.unix_links.is_empty());
+        assert!(reused.link_traffic.is_empty());
+        assert_eq!(
+            reused.outside,
+            HashMap::from([(survivor.id, 1)]),
+            "the old owner's connections are dropped"
+        );
+        assert_eq!(
+            reused.remotes.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [survivor.id]
+        );
+        // The process the cycle scanned is still there: everything joins.
+        let same = sample(70);
+        let (scanned, other) = (&same.processes[0], &same.processes[1]);
+        assert_eq!(scanned.gpu_memory, Some(GpuMemory::Bytes(500)));
+        assert_eq!(scanned.files, Measured::Known(open(4).unwrap()));
+        assert_eq!(scanned.locks_held, Measured::Known(1));
+        assert_eq!(other.blocked_on, Some(Blocker::Process(7)));
+        assert_eq!(same.links, [(scanned.id, other.id, 1)]);
+        assert_eq!(same.link_traffic.len(), 1);
+        assert_eq!(same.remotes.len(), 2);
+    }
+
+    #[test]
+    fn a_reused_pid_does_not_keep_its_predecessors_open_files() {
+        let table = |open| {
+            Some(platform::Files {
+                open,
+                ..platform::Files::default()
+            })
+        };
+        let first = HashMap::from([
+            (7, Identity { pid: 7, start: 70 }),
+            (8, Identity { pid: 8, start: 8 }),
+        ]);
+        let mut kept = KeptFiles::default();
+        let files = kept.update(HashMap::from([(7, table(4)), (8, table(2))]), &first);
+        assert_eq!(files.len(), 2);
+        // The scan did not reach either pid this cycle; pid 7 now names a process that started
+        // at 71, pid 8 the same process as before.
+        let second = HashMap::from([
+            (7, Identity { pid: 7, start: 71 }),
+            (8, Identity { pid: 8, start: 8 }),
+        ]);
+        let files = kept.update(HashMap::new(), &second);
+        assert_eq!(files.get(&7), None, "the predecessor's table is dropped");
+        assert_eq!(
+            files.get(&8),
+            Some(&table(2)),
+            "kept until the scan comes round"
+        );
+        // A table scanned for a pid the cycle had no identity for is not kept.
+        let files = kept.update(HashMap::from([(9, table(1))]), &second);
+        assert_eq!(files.get(&9), None);
+        let files = kept.update(HashMap::from([(7, table(5))]), &second);
+        assert_eq!(files.get(&7), Some(&table(5)));
+    }
+
+    /// The health of `background` once its thread has had `within` to end.
+    fn settled(background: &Background, within: Duration) -> SamplerHealth {
+        let deadline = Instant::now() + within;
+        while background.alive.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        background.health(Instant::now())
+    }
+
+    #[test]
+    fn a_dead_sampler_thread_is_reported() {
+        let healthy = Background::spawn(|| {
+            || Extras {
+                latency: vec![(Source::Sockets, Duration::from_millis(3))],
+                ..Extras::default()
+            }
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut health = healthy.health(Instant::now());
+        while health.last_cycle.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            health = healthy.health(Instant::now());
+        }
+        assert!(health.running && !health.stalled());
+        assert!(health.last_cycle.is_some_and(|age| age < BACKGROUND_PERIOD));
+        assert_eq!(
+            health.scan_latency,
+            [(Source::Sockets, Duration::from_millis(3))]
+        );
+
+        // A scan that panics ends the thread.
+        let panicked = Background::spawn(|| || -> Extras { panic!("a scan failed") }).unwrap();
+        let health = settled(&panicked, Duration::from_secs(5));
+        assert!(!health.running);
+        assert_eq!(health.last_cycle, None);
+
+        // A poisoned lock stops it too, and reads as stopped at once.
+        let poisoned = Arc::clone(&healthy.extras);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoned.lock();
+            panic!("poisoned while publishing");
+        })
+        .join();
+        let frozen = healthy.health(Instant::now());
+        assert!(!frozen.running);
+        assert_eq!(
+            frozen.scan_latency,
+            [(Source::Sockets, Duration::from_millis(3))],
+            "what it measured last is kept"
+        );
+
+        // A collector whose thread could not be spawned has no background and reports so.
+        assert!(!SamplerHealth::default().running);
+
+        let stuck = SamplerHealth {
+            running: true,
+            last_cycle: Some(BACKGROUND_PERIOD * (STALLED_PERIODS + 1)),
+            quiet: BACKGROUND_PERIOD * (STALLED_PERIODS + 1),
+            scan_latency: Vec::new(),
+        };
+        assert!(stuck.stalled());
+    }
+
+    #[test]
+    fn a_first_cycle_that_never_finishes_counts_as_stalled() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let hung = Background::spawn(move || {
+            move || {
+                let _ = blocked.recv();
+                Extras::default()
+            }
+        })
+        .unwrap();
+        let soon = hung.health(Instant::now());
+        assert!(soon.running && !soon.stalled());
+        assert_eq!(soon.last_cycle, None);
+        let later = hung.health(hung.started + BACKGROUND_PERIOD * (STALLED_PERIODS + 1));
+        assert_eq!(later.last_cycle, None, "no cycle has finished");
+        assert!(later.stalled(), "{later:?}");
+        drop(release);
     }
 
     #[test]

@@ -35,10 +35,26 @@ startup and fails fast when it is missing. `--force-graphics` bypasses that quer
 
 The scene renders at the window's native resolution up to 1920 pixels wide
 (`--width` lowers the cap) and animation targets 10 FPS (`--fps` raises it, at a cost in CPU). Process data is sampled
-once per second; sockets, cgroup accounting and NVIDIA GPU usage every two
-seconds on a background thread. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
+once per second; sockets, cgroup accounting, open files, file locks and NVIDIA GPU
+usage every two seconds on a background thread. If that thread stops or a scan hangs,
+the first status line says so (`background sampler stopped` or `stalled`), since what
+it measured last then no longer changes. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
 fully occupied CPU core. Sizes ease toward each sample over 0.3 seconds;
 inspector values remain the sampled measurements.
+
+**What a Linux machine may lack.** isotop says what it cannot read rather than
+drawing zeros, as it does on macOS (below). On Linux the gaps depend on the
+machine: without `cpufreq` (common in virtual machines) the Cores legend says "no
+clock readings"; without a readable `/proc/schedstat` that counts waiting, "no run
+queue readings"; without the hybrid `cpu_core`/`cpu_atom` sysfs (any CPU that is not
+a hybrid Intel one, ARM big.LITTLE included) its lanes read "no core kinds
+reported". Each pressure file under `/proc/pressure` is judged on its own, and the
+status line prints `n/a` for one that cannot be read. Without cgroup v2 with a
+memory controller, or when no process sits in a cgroup below the root (inside a
+container, say), Cells and the coop group processes by service and draw no limits,
+quotas, pressure or OOM kills. An unreadable `/proc/locks` means no brooding or
+queueing in the coop, and without NVML the Orbit legend leaves out its green NVIDIA
+entry.
 
 ## Rendering
 
@@ -95,7 +111,10 @@ with their count, instead of each standing alone.
 Monitor shows. Available memory is free plus inactive pages. CPU time comes from
 Mach absolute time converted to nanoseconds. I/O is the disk bytes each process has
 read and written. Priority is `51 - Mach priority`, so an ordinary application (31)
-reads as 20 and a lower number runs first, as on Linux. Process state is R when a
+reads as 20 and a lower number runs first, as on Linux. The scheduling policy is
+`pti_policy` (timeshare, round robin or FIFO), the kernel-mode share of CPU time comes
+from the system and user times of `proc_pid_rusage` (`PROC_PIDTASKINFO` when that is
+unreadable), and the start time from `pbi_start_tvsec` and `pbi_start_tvusec`. Process state is R when a
 thread is running, S otherwise, T for stopped and Z for zombies. The performance and
 efficiency cores come from the IORegistry (`cluster-type`); if that cannot be read,
 the lanes have no kind and are not guessed.
@@ -130,7 +149,9 @@ cache is stale.
 | Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
-| GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos |
+| GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
+| Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -393,7 +414,8 @@ The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) 
 The systemd journal decoded out of digital rain (on macOS, the unified log; see
 [macOS](#macos)). `journalctl -f` runs on a
 background thread from the moment the view is first shown, starting with the
-last 200 entries. The screen is a log of `source[pid]: message` lines written
+last 200 entries, and stops 30 seconds after you leave the view; coming back
+starts it again with the last 200 entries. The screen is a log of `source[pid]: message` lines written
 horizontally, newest at the bottom, coloured by severity: red for errors and
 worse, amber for warnings, green for notices and information, teal for debug.
 Each character resolves only when a falling stream of rain passes over it,

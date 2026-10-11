@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::ffi::{CStr, c_int, c_uint, c_void};
 use std::fs;
 
+use crate::model::GpuMemory;
+
 /// Reported when the driver cannot attribute memory to a process (NVML_VALUE_NOT_AVAILABLE).
 const NOT_AVAILABLE: u64 = u64::MAX;
 
@@ -79,8 +81,9 @@ impl Nvml {
         bound
     }
 
-    /// GPU memory per pid; 1 byte marks a process whose usage the driver does not report.
-    pub fn sample(&self) -> HashMap<u32, u64> {
+    /// GPU memory per pid; `GpuMemory::Unreported` marks a process whose usage the driver does
+    /// not report.
+    pub fn sample(&self) -> HashMap<u32, GpuMemory> {
         let mut usage = HashMap::new();
         if !awake() {
             return usage;
@@ -105,11 +108,9 @@ impl Nvml {
                             continue;
                         }
                         for info in &infos[..(count as usize).min(infos.len())] {
-                            let bytes = match info.used_gpu_memory {
-                                NOT_AVAILABLE => 1,
-                                bytes => bytes.max(1),
-                            };
-                            *usage.entry(info.pid).or_default() += bytes;
+                            let reported = (info.used_gpu_memory != NOT_AVAILABLE)
+                                .then_some(info.used_gpu_memory);
+                            GpuMemory::accumulate(&mut usage, info.pid, reported);
                         }
                     }
                 }
