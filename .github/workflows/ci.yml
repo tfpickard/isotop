@@ -105,6 +105,39 @@ jobs:
           name: renders-gpu-${{ runner.os }}
           path: coop-gpu-${{ runner.os }}.png
 
+      # Every view, CPU against GPU, with the tolerance in docs/VIEW_CONVENTIONS.md. The script
+      # exits 1 on a miss; the step still uploads what it measured and never blocks the job.
+      - name: CPU/GPU parity for every view
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir parity
+          : > parity.txt
+          status=0
+          for view in $(./target/release/isotop --list-views); do
+            for renderer in cpu gpu; do
+              ./target/release/isotop --demo --view "$view" --renderer "$renderer" \
+                --width 960 --time 12 --output "parity/$view-$renderer.png" || status=1
+            done
+            line=$(python3 scripts/compare_png.py "parity/$view-cpu.png" "parity/$view-gpu.png") \
+              || status=1
+            echo "$view: $line" | tee -a parity.txt
+          done
+          exit $status
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && runner.os == 'macOS'
+        continue-on-error: true
+        with:
+          name: parity-${{ runner.os }}
+          path: |
+            parity.txt
+            parity/*.png
+          if-no-files-found: ignore
+
+      - name: Self-test the PNG comparison script
+        run: python3 scripts/compare_png.py --self-test
+
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -139,7 +139,8 @@ onto `ViewModule`, so write new views the module way and never add an arm.
   rasterized (sky, sphere shading, glow falloff, depth mapping), change `render.rs` and
   `shaders.wgsl` together. Shared constants live in `render::shared`; never write them in WGSL
   directly. To check, render the same view with `--renderer cpu` and
-  `--renderer gpu` and compare the PNGs.
+  `--renderer gpu` and compare the PNGs with `scripts/compare_png.py` against the tolerance in
+  `docs/VIEW_CONVENTIONS.md` (`CPU/GPU parity`).
 - **Layouts are stable.** A process keeps its place when CPU, memory or the population changes.
   Systems and districts are only re-placed when their structure outgrows the reservation, and
   tests enforce this: the view harness checks every registered view (`harness.rs`). Don't

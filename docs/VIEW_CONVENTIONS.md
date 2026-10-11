@@ -184,19 +184,37 @@ Render the same frame twice and compare the two files:
 ```sh
 ./target/release/isotop --demo --view <name> --time <T> --width 960 --renderer cpu --output cpu.png
 ./target/release/isotop --demo --view <name> --time <T> --width 960 --renderer gpu --output gpu.png
-python3 scripts/compare_png.py cpu.png gpu.png      # from [S1 (#22)](https://github.com/tfpickard/isotop/issues/22)
+python3 scripts/compare_png.py cpu.png gpu.png
 ```
 
-**Tolerance.** [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) records the tolerance in this section. Two limits apply: the per-channel mean absolute difference, and the share of pixels with any channel more than 2 levels off.
+**Tolerance.** Two limits apply: the per-channel mean absolute difference, and the share of pixels with any channel more than 2 levels off (`--levels 2`). `scripts/compare_png.py` uses the default limits unless told otherwise, and prints one line.
 
 | Limit | Mean | Share | Views |
 |---|---|---|---|
-| Default | ≤ 0.25 | ≤ 0.25 % | all |
-| Line-dominant (only if [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) records it) | ≤ 0.5 | ≤ 1.0 % | named by [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) |
+| Default | ≤ 0.25 | ≤ 0.25 % | every view not named below, including every new view |
+| Line-dominant | ≤ 0.5 | ≤ 1.0 % | city, ripple, cores, cells, globe |
 
-These values are provisional until [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) replaces them with measured numbers. A view PR never loosens them.
+The line-dominant limit exists because hardware line rasterization (the diamond-exit rule for `Line` and `Beam`) differs from the CPU DDA. A view on that row passes with `--max-mean 0.5 --max-share 1.0`. No new view may use it. A view PR never loosens these numbers.
 
-- `Gpu::new` refuses software adapters, and CI has no hardware GPU on Linux. Without a GPU, take both PNGs from the `parity-macOS` CI artifact (from [S1 (#22)](https://github.com/tfpickard/isotop/issues/22)) and say so in the PR.
+Measured on an Apple GPU (Metal), `--demo --time 12 --width 960`:
+
+| View | Mean | Share % | Max | Limit |
+|---|---|---|---|---|
+| city | 0.1194 | 0.7413 | 160 | line-dominant |
+| orbit | 0.3914 | 1.2724 | 235 | exceeds both (share) |
+| ripple | 0.1891 | 0.9053 | 113 | line-dominant |
+| flow | 2.9492 | 10.7836 | 225 | exceeds both |
+| cores | 0.1900 | 0.2905 | 231 | line-dominant |
+| cells | 0.2216 | 0.2602 | 238 | line-dominant |
+| strata | 0.5268 | 0.5766 | 241 | exceeds both (mean) |
+| globe | 0.3366 | 0.4558 | 185 | line-dominant |
+| reef | 0.0485 | 0.1524 | 123 | default |
+| matrix | 0.0335 | 0.0000 | 2 | default |
+| coop | 0.0149 | 0.0237 | 192 | default |
+
+Orbit, flow and strata exceed even the line-dominant limit. They are known parity debt of the older views, not a tolerance to copy; fixing them belongs to the rasterizer, not to a view PR.
+
+- `Gpu::new` refuses software adapters, and CI has no hardware GPU on Linux. Without a GPU, take both PNGs from the `parity-macOS` CI artifact; its `parity.txt` has one line per view and say so in the PR.
 - Attach both PNGs and the script output to the PR.
 
 ## Performance budget
