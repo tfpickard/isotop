@@ -25,3 +25,6 @@ rustc-ice-*.txt
 
 # Headless renders and screenshots
 *.png
+
+# Mockup generator output (docs/mockups/code)
+docs/mockups/out/
