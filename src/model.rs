@@ -932,7 +932,7 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         .collect();
     snapshot.geo = extras.geo.clone();
     snapshot.missing = snapshot.missing.union(extras.missing);
-    snapshot.sources = extras.sources;
+    snapshot.sources = snapshot.sources.union(extras.sources);
 }
 
 /// The slow sources a background pass found absent: GPU memory when no GPU library loaded, and
