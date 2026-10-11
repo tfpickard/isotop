@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 
 use crate::glyphs::{self, HEIGHT, WIDTH};
 use crate::journal::Line;
+use crate::palette::mix;
 use crate::render::{Color, Frame, Item};
 use crate::simulation::{Rng, hash};
 
@@ -36,10 +37,6 @@ fn level(priority: u8) -> Color {
         5 | 6 => [80, 255, 95],
         _ => [70, 160, 150],
     }
-}
-
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t) as u8)
 }
 
 /// One screen row of the log: a journal line, or a wrapped continuation of one.

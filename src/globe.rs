@@ -7,12 +7,11 @@ use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
+use crate::geometry::{dot, normalize};
+use crate::layout::{GOLDEN_ANGLE, Seats, spiral};
 use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
-use crate::pack::Seats;
-use crate::render::{
-    Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
-    mass_radius, normalize, tint,
-};
+use crate::palette::{kind_color, tint};
+use crate::render::{Camera, Color, LOWEST_PITCH, NONE, Point, SCALE, Stage, mass_radius};
 use crate::simulation::hash;
 
 const RADIUS: f32 = 20.0;
@@ -263,8 +262,7 @@ impl Globe {
         for id in &talkers {
             let process = processes[index[id]];
             let k = self.seats.seat(*id).unwrap_or(0);
-            let distance = 0.9 * (k as f32 + 0.5).sqrt();
-            let angle = k as f32 * GOLDEN_ANGLE;
+            let (distance, angle) = spiral(0.9, 0.5, k as f32, 0.0);
             let offset =
                 [0, 1, 2].map(|i| (east[i] * angle.cos() + north[i] * angle.sin()) * distance);
             let base = at(up, RADIUS + 2.5);

@@ -5,7 +5,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::render::{Point, Stage, kind_color, label_name, tint};
+use crate::palette::{kind_color, tint};
+use crate::render::{Point, Stage, label_name};
 
 const WINDOW: f64 = 60.0;
 const SAMPLES: usize = 240;

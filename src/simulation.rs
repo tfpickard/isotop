@@ -11,6 +11,32 @@ use std::collections::HashMap;
 
 use crate::model::Identity;
 
+/// Seconds a process takes to finish growing in after it appears.
+pub const GROW_SECONDS: f32 = 0.9;
+
+/// Spawn animation progress, 0 to 1, a cubic ease-out over [`GROW_SECONDS`] after a process
+/// appears. A process with no recorded birth, or one born in the future, counts as fully grown.
+pub fn growth(births: &HashMap<Identity, f32>, id: Identity, time: f32) -> f32 {
+    let born = births.get(&id).copied().unwrap_or(f32::NEG_INFINITY);
+    if time < born {
+        return 1.0;
+    }
+    let t = ((time - born) / GROW_SECONDS).min(1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// A size scale that starts at 0.3 and reaches 1 as `growth` does, so a newborn is small but
+/// never a speck.
+pub fn sprout(growth: f32) -> f32 {
+    0.3 + 0.7 * growth
+}
+
+/// The weight of one exponential-smoothing step over `dt` seconds with time constant `tau`:
+/// `value += smoothing(dt, tau) * (target - value)`.
+pub fn smoothing(dt: f32, tau: f32) -> f32 {
+    1.0 - (-dt / tau).exp()
+}
+
 /// A uniform grid for neighbour queries over 2D points.
 ///
 /// Cost model: `rebuild` is O(n log n) (one sort of point indices by cell key) and, once the
@@ -139,7 +165,7 @@ const SPLITMIX_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
 pub const GOLDEN_RATIO_32: u32 = 0x9e37_79b9;
 
 /// The splitmix64 output finaliser, a bijection that scrambles every input bit.
-fn mix(mut value: u64) -> u64 {
+fn splitmix_finalizer(mut value: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
@@ -149,7 +175,7 @@ fn mix(mut value: u64) -> u64 {
 /// splitmix64 finaliser. Consecutive pids are unrelated, and a reused pid differs from its
 /// predecessor because the start time differs. This is the entry point for new views.
 pub fn hash_identity(id: Identity, salt: u64) -> u64 {
-    mix(mix(mix(u64::from(id.pid)) ^ id.start) ^ salt)
+    splitmix_finalizer(splitmix_finalizer(splitmix_finalizer(u64::from(id.pid)) ^ id.start) ^ salt)
 }
 
 impl Rng {
@@ -168,7 +194,7 @@ impl Rng {
     /// The next 64 random bits.
     pub fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(SPLITMIX_GAMMA);
-        mix(self.state)
+        splitmix_finalizer(self.state)
     }
 
     /// Uniform in [0, 1). Uses 24 bits, the width of an `f32` mantissa, so 1.0 cannot occur.
@@ -273,6 +299,35 @@ pub mod hash {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn easing_and_smoothing_keep_the_arithmetic_of_the_copies_they_replaced() {
+        let id = Identity { pid: 1, start: 1 };
+        let births = HashMap::from([(id, 10.0)]);
+        assert_eq!(
+            growth(&births, id, 9.0),
+            1.0,
+            "born in the future counts as grown"
+        );
+        assert_eq!(growth(&births, id, 10.0), 0.0);
+        assert_eq!(growth(&births, id, 10.0 + GROW_SECONDS), 1.0);
+        let t = (10.3_f32 - 10.0) / GROW_SECONDS;
+        assert_eq!(
+            growth(&births, id, 10.3).to_bits(),
+            (1.0 - (1.0 - t).powi(3)).to_bits()
+        );
+        assert_eq!(growth(&HashMap::new(), id, 0.0), 1.0);
+        assert_eq!(sprout(0.0), 0.3);
+        assert_eq!(sprout(0.5).to_bits(), (0.3_f32 + 0.7 * 0.5).to_bits());
+        for dt in [0.0_f32, 0.016, 0.1, 1.0 / 3.0] {
+            for tau in [0.2_f32, 0.3, 1.5] {
+                assert_eq!(
+                    smoothing(dt, tau).to_bits(),
+                    (1.0 - (-dt / tau).exp()).to_bits()
+                );
+            }
+        }
+    }
 
     fn brute_force(points: &[[f32; 2]], point: [f32; 2], radius: f32) -> Vec<usize> {
         (0..points.len())

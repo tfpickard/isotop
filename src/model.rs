@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{self, RawProcess};
+use crate::simulation::smoothing;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -627,7 +628,7 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
     let waited = runnable_ticks.map(|runnable| i128::from(runnable) - i128::from(ticks));
     if let Some(previous) = previous {
         let raw = ticks.saturating_sub(previous.ticks) as f32 / hz / dt * 100.0;
-        let alpha = 1.0 - (-dt / 1.5).exp();
+        let alpha = smoothing(dt, 1.5);
         process.cpu = previous.cpu + alpha * (raw - previous.cpu);
         if let Some([total, read, write]) = io
             .zip(previous.io)

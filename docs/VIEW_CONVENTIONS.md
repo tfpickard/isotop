@@ -288,7 +288,7 @@ Assignments:
 | Hershey stroke text | [B10 (#37)](https://github.com/tfpickard/isotop/issues/37) |
 | Persistent view state | [B11 (#38)](https://github.com/tfpickard/isotop/issues/38) |
 | Thermal sensors, topology, throttle counts, package power | [B12 (#39)](https://github.com/tfpickard/isotop/issues/39) |
-| Stable seats and group discs | `pack::Seats`, `pack::Discs` (today) |
+| Stable seats and group discs | `layout::Seats`, `layout::Discs` (today) |
 | Sunflower placement | `render::vacant`, `render::GOLDEN_ANGLE` (today) |
 | 2D neighbour queries, seeded RNG | `simulation::SpatialHash`, `simulation::Rng` (today) |
 | Grid placement in world space | `medium::Grid` (today) |

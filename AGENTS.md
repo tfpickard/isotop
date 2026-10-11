@@ -37,7 +37,10 @@ The README covers usage. This file covers how to work on the code.
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
 | `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
-| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries and the seeded `Rng` |
+| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries, the seeded `Rng`, hashes, and the `growth`, `sprout` and `smoothing` easing |
+| `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
+| `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
+| `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |

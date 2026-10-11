@@ -2,10 +2,13 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
+use crate::geometry::{dot, normalize};
+use crate::layout::{spin, spiral, vacant};
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
-use crate::model::{Identity, Kind, Process, Snapshot, bounded};
+use crate::model::{Identity, Process, Snapshot, bounded};
+use crate::palette::{DISTRICTS, kind_color, process_color, tint};
 use crate::platform::Shadow;
-use crate::simulation::hash;
+use crate::simulation::{growth, hash, smoothing};
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
 pub mod shared;
@@ -13,16 +16,6 @@ pub mod shared;
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
 pub use shared::NONE;
-const PALETTE: [Color; 8] = [
-    [72, 183, 199],
-    [122, 145, 229],
-    [190, 135, 215],
-    [211, 159, 91],
-    [98, 185, 149],
-    [212, 116, 140],
-    [149, 171, 213],
-    [166, 185, 104],
-];
 /// Screen pixels per world unit at zoom 1: sqrt(3/2), the isometric foreshortening.
 pub(crate) const SCALE: f32 = 1.224_745;
 /// Elevation of a true isometric view, asin(1/sqrt(3)).
@@ -34,7 +27,6 @@ pub const ORIGIN_Y: f32 = 0.57;
 /// Depth assigned to background stars, below every scene object.
 pub const BACKGROUND: f32 = -10000.0;
 pub(crate) const MIN_BODY_PX: f32 = 3.5;
-const GROW_SECONDS: f32 = 0.9;
 const FADE_SECONDS: f32 = 1.2;
 pub(crate) const WARM: Color = [255, 190, 110];
 pub(crate) const NVIDIA: Color = [118, 214, 60];
@@ -787,16 +779,6 @@ impl Frame {
     }
 }
 
-/// Spawn animation progress, 0 to 1, easing out over GROW_SECONDS after a process appears.
-fn growth(births: &HashMap<Identity, f32>, id: Identity, time: f32) -> f32 {
-    let born = births.get(&id).copied().unwrap_or(f32::NEG_INFINITY);
-    if time < born {
-        return 1.0;
-    }
-    let t = ((time - born) / GROW_SECONDS).min(1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
 /// What a view module draws with and reports back to the scene.
 pub(crate) struct Stage<'a> {
     pub frame: &'a mut Frame,
@@ -858,35 +840,6 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
     let mut cut: String = name.chars().take(LABEL_NAME_CELLS - 2).collect();
     cut.push_str("..");
     Cow::Owned(cut)
-}
-
-pub fn tint(color: Color, scale: f32) -> Color {
-    color.map(|v| (v as f32 * scale).clamp(0.0, 255.0) as u8)
-}
-
-fn process_color(process: &Process, group: usize) -> Color {
-    match process.state {
-        'Z' => [213, 97, 126],
-        'T' | 't' => [225, 161, 75],
-        'D' => [222, 94, 73],
-        _ => PALETTE[group % PALETTE.len()],
-    }
-}
-
-/// Orbit colours by role: slate kernel, teal system, amber session, violet containers.
-pub(crate) fn kind_color(process: &Process) -> Color {
-    let base = match (process.state, process.kind) {
-        ('Z', _) => return [213, 97, 126],
-        ('T' | 't', _) => return [225, 161, 75],
-        ('D', _) => return [222, 94, 73],
-        (_, Kind::Kernel) => [104, 122, 156],
-        (_, Kind::System) => [72, 183, 199],
-        (_, Kind::Session) => [236, 178, 92],
-        (_, Kind::Container) => [178, 136, 232],
-    };
-    // pid only: kept for pixel stability, see A33
-    let jitter = (hash::knuth(process.id.pid) >> 24) as f32 / 255.0;
-    tint(base, 0.86 + 0.24 * jitter)
 }
 
 #[derive(Clone, Copy)]
@@ -1180,7 +1133,7 @@ impl Scene {
             self.resources.clear();
         }
         self.last_time = Some(time);
-        let alpha = 1.0 - (-dt.max(0.0) / 0.3).exp();
+        let alpha = smoothing(dt.max(0.0), 0.3);
         let alive: HashSet<_> = snapshot.processes.iter().map(|p| p.id).collect();
         self.resources.retain(|id, _| alive.contains(id));
         self.births.retain(|id, _| alive.contains(id));
@@ -1445,7 +1398,7 @@ impl Scene {
                 [18, 29, 43],
                 NONE,
             );
-            let color = tint(PALETTE[district % 8], 0.35);
+            let color = tint(DISTRICTS[district % 8], 0.35);
             for i in 0..=4 {
                 let offset = i as f32 * 4.0;
                 frame.line(
@@ -2499,8 +2452,7 @@ impl Scene {
             let (group, slot) = &self.pebbles[&process.id];
             let cluster = &self.clusters[group];
             let k = *slot as f32;
-            let distance = cluster.spacing * (k + 0.5).sqrt();
-            let angle = k * GOLDEN_ANGLE + spin(group);
+            let (distance, angle) = spiral(cluster.spacing, 0.5, k, spin(group));
             // pid only: kept for pixel stability, see A33
             let hash = hash::knuth(process.id.pid);
             let jitter = cluster.spacing * 0.1 * (hash & 0xffff) as f32 / 65536.0;
@@ -2746,24 +2698,6 @@ impl Scene {
     }
 }
 
-/// The first point on a golden-angle spiral out from the origin where a disc of `radius` clears
-/// every placed (centre, radius) disc.
-pub(crate) fn vacant(placed: &[([f32; 2], f32)], radius: f32) -> [f32; 2] {
-    let step = (radius * 0.4).max(1.0);
-    (0_u32..)
-        .map(|k| {
-            let distance = step * (k as f32).sqrt();
-            let angle = k as f32 * GOLDEN_ANGLE;
-            [distance * angle.cos(), distance * angle.sin()]
-        })
-        .find(|c| {
-            placed
-                .iter()
-                .all(|(o, r)| (c[0] - o[0]).hypot(c[1] - o[1]) >= radius + r)
-        })
-        .expect("the spiral eventually clears every placed disc")
-}
-
 /// One cgroup's processes on the ripple pond: pebbles on a sunflower spiral around the centre,
 /// slot k at sqrt(k + 1/2) spacings out and k golden angles round.
 #[derive(Default)]
@@ -2775,12 +2709,6 @@ struct Cluster {
     /// Radius of open water reserved around the centre; zero until placed.
     reserved: f32,
     slots: HashMap<usize, Identity>,
-}
-
-/// A stable angle per name, so clusters don't all share one spiral orientation.
-pub(crate) fn spin(name: &str) -> f32 {
-    let hash = hash::fnv1a_32(name);
-    (hash >> 8) as f32 / 16_777_216.0 * TAU
 }
 
 /// A socket link as a two-lane river in the flow field.
@@ -2835,19 +2763,9 @@ fn territories(grid: &Grid, bodies: &[Body], located: &[[f32; 2]], radii: &[f32]
     owners
 }
 
-pub(crate) fn dot(a: Point, b: Point) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn normalize(a: Point) -> Point {
-    let length = dot(a, a).sqrt().max(1e-6);
-    a.map(|v| v / length)
-}
-
 const MAX_DEPTH: usize = 3;
 const ORBIT_GAP: f32 = 0.6;
 const SYSTEM_GAP: f32 = 2.5;
-pub(crate) const GOLDEN_ANGLE: f32 = 2.399_963;
 /// Clearance between neighbouring ripple pebbles, and open water around each cluster.
 const PEBBLE_GAP: f32 = 1.0;
 const POND_GAP: f32 = 3.0;
@@ -3073,8 +2991,9 @@ pub fn descendants(snapshot: &Snapshot, root: Identity) -> HashSet<Identity> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::demo;
     use crate::model::testing::process;
+    use crate::model::{Kind, demo};
+    use crate::simulation::GROW_SECONDS;
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, view: View, time: f32) -> Frame {
         let mut frame = scene.render(
@@ -3852,18 +3771,6 @@ mod tests {
             );
             assert!(!shown.contains('?'), "{shown}");
             assert!(shown.chars().count() <= LABEL_NAME_CELLS);
-        }
-    }
-
-    #[test]
-    fn spin_returns_the_angles_it_returned_before_hashing_moved() {
-        for (name, bits) in [
-            ("", 1_078_644_461),
-            ("a", 1_085_479_852),
-            ("dbus.service", 1_084_250_095),
-            ("System /system.slice Ünï", 1_085_165_909),
-        ] {
-            assert_eq!(spin(name).to_bits(), bits, "spin({name:?})");
         }
     }
 }

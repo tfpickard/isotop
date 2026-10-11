@@ -5,10 +5,12 @@
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
+use crate::geometry::normalize;
+use crate::layout::{Discs, Seats, spin, spiral};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::pack::{Discs, Seats};
-use crate::render::{Color, GOLDEN_ANGLE, NONE, Point, Stage, normalize, spin, tint};
-use crate::simulation::hash;
+use crate::palette::{CONTAINER, tint};
+use crate::render::{Color, NONE, Point, Stage};
+use crate::simulation::{hash, sprout};
 
 /// Height of the water surface above the sand.
 const DEPTH: f32 = 14.0;
@@ -27,7 +29,6 @@ const FISH: [Color; 6] = [
     [240, 120, 170],
     [150, 160, 255],
 ];
-const CRAB: Color = [178, 136, 232];
 const ZOMBIE: Color = [150, 150, 150];
 
 #[derive(Default)]
@@ -355,8 +356,8 @@ impl Reef {
                 [0.0, 0.0, 1.0]
             };
             let grow = stage.growth(process.id);
-            let length = (1.0 + 2.2 * bounded(process.memory as f32 / 1048576.0, 300.0))
-                * (0.3 + 0.7 * grow);
+            let length =
+                (1.0 + 2.2 * bounded(process.memory as f32 / 1048576.0, 300.0)) * sprout(grow);
             let girth = length * 0.26;
             let body = if zombie { ZOMBIE } else { color };
             let p = fish.position;
@@ -424,20 +425,19 @@ impl Reef {
         let process = processes[index];
         let time = stage.time;
         let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-        let angle = seat * GOLDEN_ANGLE + spin(group);
-        let distance = 1.3 * (seat + 0.5).sqrt();
+        let (distance, angle) = spiral(1.3, 0.5, seat, spin(group));
         let pace = 0.4 + 2.0 * bounded(process.cpu, 40.0);
         let stride = (time * pace + seat).sin() * 0.9;
         let heading = angle + std::f32::consts::FRAC_PI_2;
         let size = (0.35 + 0.5 * bounded(process.memory as f32 / 1048576.0, 200.0))
-            * (0.3 + 0.7 * stage.growth(process.id));
+            * sprout(stage.growth(process.id));
         let center = [
             home[0] + distance * angle.cos() + stride * heading.cos(),
             home[1] + distance * angle.sin() + stride * heading.sin(),
             size * 0.7,
         ];
         let zombie = process.state == 'Z';
-        let shell = if zombie { ZOMBIE } else { CRAB };
+        let shell = if zombie { ZOMBIE } else { CONTAINER };
         let pick = index as u32;
         let (s, c) = heading.sin_cos();
         let local = |forward: f32, across: f32, z: f32| -> Point {
@@ -505,8 +505,7 @@ impl Reef {
         let process = processes[index];
         let time = stage.time;
         let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-        let distance = 1.6 * (seat + 0.5).sqrt();
-        let angle = seat * GOLDEN_ANGLE + spin(group);
+        let (distance, angle) = spiral(1.6, 0.5, seat, spin(group));
         let tall = 1.5 + 5.0 * (1.0 - distance / room.max(1.0)).max(0.0);
         let sway = (time * 0.6 + seat).sin() * 0.15;
         let top = [
@@ -533,7 +532,7 @@ impl Reef {
         };
         let size = (0.18 + 0.32 * crate::render::mass_radius(process.memory as f32)).min(0.75)
             * breathe
-            * (0.3 + 0.7 * stage.growth(process.id));
+            * sprout(stage.growth(process.id));
         if process.cpu > 1.0 {
             stage.frame.glow(
                 stage.camera,

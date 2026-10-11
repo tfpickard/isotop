@@ -2,14 +2,16 @@ mod cells;
 mod coop;
 mod cores;
 mod geo;
+mod geometry;
 mod globe;
 mod glyphs;
 mod gpu;
 mod journal;
+mod layout;
 mod matrix;
 mod medium;
 mod model;
-mod pack;
+mod palette;
 mod places;
 mod platform;
 mod reef;
@@ -1342,7 +1344,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 fed = now;
             }
         }
-        app.camera.approach(&goal, 1.0 - (-elapsed / 0.2).exp());
+        app.camera
+            .approach(&goal, simulation::smoothing(elapsed, 0.2));
         app.update_tour(tour_after);
         let mut frame = app.render(layout.width, layout.height, limit);
         let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;

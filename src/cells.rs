@@ -7,17 +7,18 @@
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
+use crate::layout::{Discs, Seats, spin, spiral};
 use crate::model::{Kind, Process, Snapshot, Unit, bounded, bytes};
-use crate::pack::{Discs, Seats};
+use crate::palette::{CONTAINER, SESSION, SYSTEM, kind_color, mix, tint};
 use crate::render::{
-    Color, GOLDEN_ANGLE, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, spin,
-    tint, without_apple_prefix,
+    Color, NONE, Point, Stage, WARM, mass_radius, ring_bounds, without_apple_prefix,
 };
+use crate::simulation::sprout;
 
 const DISHES: [(Kind, &str, Color); 3] = [
-    (Kind::System, "system services", [72, 183, 199]),
-    (Kind::Session, "your session", [236, 178, 92]),
-    (Kind::Container, "containers", [178, 136, 232]),
+    (Kind::System, "system services", SYSTEM),
+    (Kind::Session, "your session", SESSION),
+    (Kind::Container, "containers", CONTAINER),
 ];
 const SEAT: f32 = 0.75;
 /// Widest a memory limit ring is drawn, as a multiple of the cell radius.
@@ -297,8 +298,7 @@ impl Dishes {
                 ([x, y, 0.4], core)
             } else {
                 let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-                let distance = spacing * (seat + 1.0).sqrt();
-                let angle = seat * GOLDEN_ANGLE + phase;
+                let (distance, angle) = spiral(spacing, 1.0, seat, phase);
                 let position = at(angle, distance.min(r - 0.4), 0.3);
                 stage
                     .frame
@@ -308,7 +308,7 @@ impl Dishes {
                     (0.8 * mass_radius(process.memory as f32)).min(spacing * 0.42),
                 )
             };
-            let grown = size * (0.3 + 0.7 * stage.growth(process.id));
+            let grown = size * sprout(stage.growth(process.id));
             if process.cpu > 1.0 {
                 stage.frame.glow(
                     camera,
@@ -410,10 +410,6 @@ fn describe(cell: &Cell, processes: &[&Process], nucleus: bool) -> Vec<String> {
     }
     lines.push(status);
     lines
-}
-
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t) as u8)
 }
 
 /// The status legend, saying what the snapshot's platform leaves out.
