@@ -31,10 +31,6 @@ pub fn sources_note(snapshot: &Snapshot) -> Option<String> {
 /// ` | <what> unreadable for <count>` when `count` processes could not be measured for `what`,
 /// a per-process gap such as I/O that the kernel refuses for other users' processes; None when
 /// every process was measured.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no legend uses it until the first new view")
-)]
 pub fn unreadable_note(what: &str, count: usize) -> Option<String> {
     (count > 0).then(|| format!(" | {what} unreadable for {count}"))
 }

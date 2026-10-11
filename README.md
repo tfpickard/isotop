@@ -1,11 +1,12 @@
 # isotop
 
-A living picture of your machine inside the terminal, in twelve views: a process
+A living picture of your machine inside the terminal, in thirteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
-cosmos of Fourier epicycles, and the system
-log (the systemd journal, or the unified log on macOS) as Matrix rain. Written in
+cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
+macOS) as Matrix rain, and a minute of process worldlines in a tesseract whose fourth
+axis is time. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -27,7 +28,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -204,9 +205,9 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the twelve views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop and ptolemy are reached with Tab, Shift+Tab, the `v`
-picker or `--view`.
+the thirteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy and the tesseract are reached with Tab, Shift+Tab,
+the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
@@ -491,6 +492,40 @@ A geocentric sky seen from above: isotop itself is Earth at the centre, the seve
 
 **What cannot be measured.** Ptolemy reads only per-process CPU and memory and isotop's own row, so it has no optional sources to lose. If isotop's own process was not read, Earth has no figures and is labelled `isotop`. The demo synthesizes Earth outside the processes (pid 999), so there it cannot be clicked. The pressure haze is off: trail strokes are opaque and blended against the plain sky, which a haze would show through. On macOS memory is the physical footprint; the picture is otherwise the same.
 
+### Tesseract
+
+![Tesseract: worldlines of the last minute in a Schlegel-projected tesseract, superluminal processes leaving through the +x cell in Cherenkov blue](docs/media/tesseract.webp)
+
+Each process is a worldline through four dimensions over the last 60 seconds, drawn inside a wireframe tesseract in Schlegel projection: the outer cube is now, the inner cube a minute ago.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| w (outer cube to inner cube) | Wall-clock time of each sample (`elapsed`) | w = 1 + (t − now) / 30 s: +1 now, −1 sixty seconds ago; between samples the window scrolls on by up to one sampling interval |
+| x | CPU time (`cpu_time`, user plus system) | x = −1 + (CPU-seconds since the window opened) / 30, the start interpolated at the window's left edge (or the first sample of a later process); a falling counter counts as no growth. x and w share a scale, so the slope dx/dw is the CPU use in cores |
+| y (up) | Memory (RSS; the physical footprint on macOS) | y = −1 + 2 √(MiB / (MiB + 220)) |
+| z | Seat | Four bands, kernel, system, session, containers, share −0.9 to 0.9 in proportion to their capacities; a newcomer takes the lowest free seat in its band (newcomers of one sample by cgroup, then start); a seat is held until the worldline has left the window; a band holds a power of two of at least 16 seats (the first sample reserves twice what it fills) and doubles when full, never shrinking |
+| Head sphere | A process alive in the drawn sample | At w = +1, its last segment extended to now; radius ∝ the perspective factor and 0.6 + 0.3 (y + 1); colour by kind, darker the further back in w it sits; a newborn grows in |
+| Worldline | The process's samples in the window | At most one sample per 1 s bin; runs whose slopes differ by less than 0.02 (with memory within 0.002) merge into one segment, so an idle process is one line |
+| Blue segment | CPU above one core | Slope > 1.05: only a multithreaded process can, since one thread's CPU time cannot outrun wall time |
+| Cherenkov glow and cone | A superluminal head | β = slope over the last 5 s; 12 hairlines on a cone of half-angle acos(1/β) trailing the head |
+| Dashed diagonal, "c = one core" | Exactly one core | The line x = w on the x-w face at y = z = +1 |
+| Fork vertex and curve | A process first seen after the first recorded sample whose parent was a recorded live process | The child starts at its parent's (x, y, z) and smoothsteps y and z to its own over 2 s; a small glow marks the vertex |
+| Exited worldline | A process no longer listed | Kept, without a head, until it slides out of the window 60 s later; drawn only without subtree focus, newest exits first, within `--limit` |
+| Cyan marks on a worldline | Disk I/O (`io_rate` > 0) at that sample | A 2.4-pixel-wide stretch of the worldline 0.4 s either side of the sample, one per sample with I/O, at most 2000 a frame, newest first |
+| Links | Sockets between processes | The shared link code between heads; `c` cycles them |
+
+**Decorative:** the wireframe tesseract itself (a frame of reference: the now cell brighter, the past cell dimmer), the drift and the 4D orientation (camera only), and the dim tilted cube drawn while boosted (the lab frame's now cell seen from the boosted frame).
+
+**Frames of reference.** The 4D rotation is camera only: it composes rotations in the XW, YW and ZW planes from the canonical angles (0.12, 0.10, −0.08), eased with a 0.2 s time constant, and drifts a full turn in XW every 120 s (a function of the clock, so `--time` repeats it). Points are compressed beyond ±1 in x and w to 1 + 0.6 tanh((|v| − 1) / 0.6), then divided along w from an eye at w = 3.5. A quarter turn in XW makes time the horizontal axis and CPU the depth along w: the only orientation in which the view reads like a chart is a quarter turn away from the default, and there CPU is the distance from you along a direction you cannot see. A boost is physics, not camera: `b` applies a Lorentz boost in the (w, x) plane about the selected head, with β the chord slope of its visible worldline and the rapidity eased with a 0.4 s time constant, so its worldline stands vertical and the others tilt. A process at or above β = 0.999 has no rest frame, and the legend says so. The guided tour boosts into each process it visits; one without a rest frame stays in the lab frame and its callout says "no rest frame".
+
+**History.** The view keeps its own recorder (cumulative CPU seconds need another cadence than the shared history): at most one sample every 0.25 s per process, kept for 180 s so a rewound frame still has its minute, recorded whichever view is shown. Pause and rewind draw the minute that ends at the shown sample. Headless demo runs replay 60 s of samples at `--sample-ms` first; a live headless run starts with its two samples, so its window is short, and the legend says `window Ns` until it holds a minute.
+
+**What cannot be measured.** A process whose I/O counters are unreadable (other users' processes without privileges) has no I/O marks, and the legend counts them (`I/O unreadable for N`). A rewound frame older than the seat release can show an exited worldline on a seat that has since been given to a newcomer.
+
+On macOS, forks branch from the responsible app rather than the Unix parent, because `parent` is the responsible process there.
+
+Keys while the tesseract is shown: `,` and `.` turn a quarter turn back and forward in the current plane, `;` cycles the plane (XW, YW, ZW), `b` boosts into the selected process's rest frame and `b` again or Esc returns to the lab frame (the next Esc has its usual meaning), and Home and `r` also restore the canonical orientation, the lab frame and the drift. Any of `,` `.` `;` stops the drift.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -581,7 +616,7 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -594,8 +629,8 @@ Any key or mouse movement ends the tour.
 | `Q` / `e` | Rotate a quarter turn counterclockwise / clockwise |
 | PgUp / PgDn | Tilt up / down |
 | `t` | Toggle top-down and isometric |
-| Home | Fit scene |
-| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again |
+| Home | Fit scene (in the tesseract, also the canonical 4D orientation, the lab frame and the drift) |
+| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again; in the tesseract, as Home |
 | Hover | Name and description of the process under the pointer, or the title of a thing a view draws |
 | Left click | Select the nearest process, or thing, and open its inspector popup |
 | Left click on empty space | Close the popup |
@@ -611,7 +646,10 @@ Any key or mouse movement ends the tour.
 | Esc | Leave search, close the popup, or clear subtree focus |
 | Space | Pause / resume |
 | `[` / `]` | Previous / next retained snapshot |
-| `?` | Toggle help |
+| `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
+| `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
+| `b` | Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame |
+| `?` | Toggle help; the second line leads with the shown view's own keys |
 | `q` / Ctrl-C | Quit |
 
 On the globe, scrolling follows your fingers the way panning moves the other
@@ -671,7 +709,8 @@ Search, focus, links and the tour work on processes only.
 uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
 the media and creatures have settled, demo strata replays a minute of
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
-`--time 300`), and demo coop replays 30 seconds of samples for CPU variation. Live headless output takes two samples to measure CPU, so live strata
+`--time 300`), demo coop replays 30 seconds of samples for CPU variation, and demo tesseract
+replays a minute of samples at `--sample-ms` (before `--benchmark` too). Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -683,7 +722,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-34,728 lines of Rust (21,748 production, 12,980 test) in 41 files, 436 tests, 12 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+36,692 lines of Rust (22,922 production, 13,770 test) in 42 files, 459 tests, 13 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

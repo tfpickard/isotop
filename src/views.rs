@@ -13,7 +13,7 @@ use std::fmt;
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
-use crate::{cells, cores, globe, ptolemy};
+use crate::{cells, cores, globe, ptolemy, tesseract};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -359,10 +359,6 @@ pub enum Phase {
     /// skipping those before 0, without rasterizing.
     Record { seconds: u32 },
     /// The same as `Record`, with the samples `--sample-ms` apart, as a live run takes them.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no view replays until the first new view")
-    )]
     Replay { seconds: u32 },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
@@ -382,10 +378,6 @@ pub enum When {
     Headless,
     /// `--demo` with `--output` or `--benchmark`: for a phase that replays demo samples, which
     /// a live run must not mix into its own.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no view replays until the first new view")
-    )]
     DemoHeadless,
 }
 
@@ -746,6 +738,27 @@ pub static REGISTRY: &[ViewInfo] = &[
             "PTOLEMY",
             Backdrop::Space,
             Hooks::Module(|| Box::new(ptolemy::Ptolemy::default())),
+        )
+    },
+    ViewInfo {
+        links: LinkRule::All,
+        link_strokes: true,
+        keys: ", . quarter turn | ; plane | b boost",
+        // A minute of worldlines, replayed as a live run would have recorded it.
+        warmup: &[Warmup {
+            phase: Phase::Replay { seconds: 60 },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: true,
+            observer: false,
+        },
+        ..ViewInfo::new(
+            "tesseract",
+            "TESSERACT",
+            Backdrop::Dusk,
+            Hooks::Module(|| Box::new(tesseract::Tesseract::default())),
         )
     },
 ];
@@ -1435,6 +1448,9 @@ mod tests {
             )),
             ["matrix"]
         );
-        assert_eq!(with(|hooks| matches!(hooks, Hooks::Module(_))), ["ptolemy"]);
+        assert_eq!(
+            with(|hooks| matches!(hooks, Hooks::Module(_))),
+            ["ptolemy", "tesseract"]
+        );
     }
 }

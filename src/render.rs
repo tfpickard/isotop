@@ -1037,27 +1037,12 @@ pub(crate) struct Stage<'a> {
     #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub thing: Option<Thing>,
     /// The process the tour is visiting, if a tour runs; the tour clears the selection.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view follows the tour until the first new view"
-        )
-    )]
     pub toured: Option<Identity>,
     /// The root of the focused subtree, if one is focused: the process slice holds only that
     /// subtree, so a view leaves out what it draws besides the processes (exited ones).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no view reads the focus until the first new view")
-    )]
     pub focus: Option<Identity>,
     /// `--limit`, the most processes a frame draws. The slice is already cut to it; a view that
     /// draws more than the slice (exited processes) keeps within it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no view reads the limit until the first new view")
-    )]
     pub limit: usize,
     pub time: f32,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
@@ -1066,10 +1051,6 @@ pub(crate) struct Stage<'a> {
     /// computes it once per frame whichever view is shown, so returning to a view never leaps.
     /// New views step with it, or with S2 (#23)'s `FixedStep` fed from `time`. The views that
     /// predate it keep their own clamps, because changing them changes pixels (A33 decides).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no view steps with it until the first new view")
-    )]
     pub dt: f32,
     /// Every process's CPU and memory over the last samples, as of this frame. The scene records
     /// each sample whichever view is shown; read the past with `History::window` and `series`,
@@ -1094,13 +1075,6 @@ pub(crate) struct Stage<'a> {
     pub popup: &'a mut Vec<(Identity, String)>,
     /// Lines for the tour's callout of a process, after its own figures and in the order pushed:
     /// what the view makes of the visit, such as a frame it cannot enter.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view adds callout lines until the first new view"
-        )
-    )]
     pub callout: &'a mut Vec<(Identity, String)>,
 }
 
