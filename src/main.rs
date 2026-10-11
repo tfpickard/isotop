@@ -17,6 +17,7 @@ mod platform;
 mod reef;
 mod render;
 mod simulation;
+mod status;
 mod strata;
 mod terminal;
 mod views;
@@ -36,7 +37,7 @@ use crossterm::event::{
 };
 
 use journal::Journal;
-use model::{Collector, GpuMemory, Identity, Process, Snapshot, bytes, describe};
+use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, describe};
 use platform::Source;
 use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, Scene, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
@@ -398,6 +399,11 @@ impl App {
         }
         self.journal_shown
             .is_some_and(|shown| now.saturating_duration_since(shown) < JOURNAL_LINGER)
+    }
+
+    /// The optional sources the shown view reads.
+    fn demand(&self) -> Demand {
+        Demand::from(self.row().sources)
     }
 
     /// The next available view after the shown one in Tab order, or before it when `forward` is
@@ -1419,6 +1425,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     }
     let sources = view.info().sources;
     let mut collector = Collector::new(options.geoip.clone(), options.home);
+    collector.demand(Demand::from(sources));
     collector.locate(sources.contains(Source::Locations));
     let mut journal = (sources.contains(Source::Journal) && !options.demo).then(Journal::start);
     let mut snapshot = if options.demo {
@@ -1491,6 +1498,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     let mut frames = 0_u64;
     let mut total_wire = 0_u64;
     let mut fed = 0.0;
+    let mut demanded = app.demand();
     while !quit {
         let frame_start = Instant::now();
         let elapsed = last_frame.elapsed().as_secs_f32();
@@ -1589,6 +1597,10 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
             if quit {
                 break;
             }
+        }
+        if app.demand() != demanded {
+            demanded = app.demand();
+            collector.demand(demanded);
         }
         if options
             .duration
@@ -2163,6 +2175,28 @@ mod tests {
         assert!(!app.journal_wanted(at(900)));
         app.view = view("matrix");
         assert!(app.journal_wanted(at(901)), "back on Matrix");
+    }
+
+    #[test]
+    fn changing_views_updates_the_demand() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        assert!(app.demand().is_empty(), "City reads no optional source");
+        app.switch(view("globe"));
+        assert!(app.demand().contains(Source::Locations));
+        assert!(!app.demand().contains(Source::Journal));
+        app.switch(view("matrix"));
+        assert!(app.demand().contains(Source::Journal));
+        assert!(
+            !app.demand().contains(Source::Locations),
+            "only the shown view"
+        );
+        app.switch(view("cores"));
+        assert!(app.demand().is_empty());
+        // Every view demands exactly what its registry row declares.
+        for (index, row) in REGISTRY.iter().enumerate() {
+            app.switch(View::at(index));
+            assert_eq!(app.demand(), Demand::from(row.sources));
+        }
     }
 
     #[test]

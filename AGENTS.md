@@ -14,7 +14,14 @@ The README covers usage. This file covers how to work on the code.
    on macOS sockets and open files only, as it has no lock table) run on a background thread
    every `model::BACKGROUND_PERIOD` (2 s) and are merged in by `Identity`, against the pids the
    cycle scanned, so the frame loop never waits on them and a reused pid inherits nothing.
-   `Snapshot.sampler` reports whether that thread is alive and how long its scans took. On Linux
+   `Snapshot.sampler` reports whether that thread is alive and how long its scans took.
+   Optional sources, the ones only some views draw, are read only while the shown view declares
+   them: `main.rs` hands `Collector::demand` the `sources` of the shown view's registry row at
+   startup and on every view change, the thread takes a copy of that `Demand` at the start of
+   each cycle, and reads an optional source through `Demand::read_if` (or `Reads::read`, which
+   also records it as active or, when it cannot be read, missing). `Snapshot.sources` lists the
+   optional sources read for the sample, and `Snapshot.missing` those demanded and unreadable;
+   one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there. On Linux
    the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
@@ -31,7 +38,7 @@ The README covers usage. This file covers how to work on the code.
 | File | Owns |
 |---|---|
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`), headless PNG and benchmark, and `warm_up`, which runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
@@ -47,6 +54,7 @@ The README covers usage. This file covers how to work on the code.
 | `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
 | `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, the `FixedStep` clock, hashes, and the `growth`, `sprout` and `smoothing` easing |
+| `status.rs` | The legend wording for optional sources, so every view says it alike: `missing_note` (` \| no <source>: <consequence>`) and `sources_note` (` \| sources: a, b`) |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
@@ -113,6 +121,8 @@ onto `ViewModule`, so write new views the module way and never add an arm.
   the `growth`, `sprout` and `smoothing` easing.
 - `palette`: every colour table, `mix`, `tint`, `kind_color`. `geometry`: vector maths and
   `cuboid`. `layout`: `Seats`, `Discs`, the golden-angle `spiral`.
+- `status`: `missing_note` and `sources_note`, the legend wording for missing and active optional
+  sources. `model::top_n` picks the processes a budgeted view draws.
 - `render::shared`: constants the CPU rasterizer and the WGSL shader share.
 - `model::testing::process` builds a `Process` in tests.
 

@@ -361,6 +361,11 @@ pub struct Snapshot {
     /// (`Sampler::missing`), and the lock table and GPU memory once the background thread has
     /// found them absent.
     pub missing: Sources,
+    /// The optional sources read for this sample: demanded by the shown view (`Demand`) and
+    /// readable. A source nobody demanded is in neither `sources` nor `missing`. It lists in
+    /// `Source` declaration order, not in the order the sources were read. Empty in `--demo`,
+    /// which starts no background thread.
+    pub sources: Sources,
     /// Processes the platform could see but not measure because they belong to another user.
     pub unreadable: usize,
     /// Sources the platform measures per CPU cluster rather than per CPU (`Sampler::per_cluster`):
@@ -371,6 +376,110 @@ pub struct Snapshot {
     pub shadows: Vec<platform::Shadow>,
     /// How the background thread that measures the slow sources is doing.
     pub sampler: SamplerHealth,
+}
+
+/// The optional sources the shown view wants read. The background thread reads an optional
+/// source only while it is demanded (`Demand::read_if`), so a source that no shown view draws
+/// costs nothing. `main` sets it from the shown view's registry row at startup and on every view
+/// change (`Collector::demand`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Demand(Sources);
+
+impl Demand {
+    pub fn contains(self, source: Source) -> bool {
+        self.0.contains(source)
+    }
+
+    /// Only tests ask; `main` builds a demand from a registry row's sources.
+    #[cfg(test)]
+    pub fn insert(&mut self, source: Source) {
+        self.0.insert(source);
+    }
+
+    /// Only tests ask.
+    #[cfg(test)]
+    pub fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Runs `read` and returns what it read when `source` is demanded; None, without running
+    /// it, when it is not. Every optional background source reads through this.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no optional source reads through it yet")
+    )]
+    pub fn read_if<T>(self, source: Source, read: impl FnOnce() -> T) -> Option<T> {
+        self.contains(source).then(read)
+    }
+}
+
+impl From<Sources> for Demand {
+    fn from(sources: Sources) -> Self {
+        Demand(sources)
+    }
+}
+
+/// The optional sources one background cycle reads: what is demanded at its start, and what
+/// came of each source it was asked for.
+struct Reads {
+    demand: Demand,
+    /// Demanded and read.
+    active: Sources,
+    /// Demanded and not readable.
+    missing: Sources,
+}
+
+impl Reads {
+    fn new(demand: Demand) -> Self {
+        Reads {
+            demand,
+            active: Sources::default(),
+            missing: Sources::default(),
+        }
+    }
+
+    /// Reads `source` through `Demand::read_if` and records the outcome: `read` returns None
+    /// when the source cannot be read (permissions, kernel, hardware, platform), which makes it
+    /// missing instead of active. A source that is not demanded is neither.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no optional source reads through it yet")
+    )]
+    fn read<T>(&mut self, source: Source, read: impl FnOnce() -> Option<T>) -> Option<T> {
+        let value = self.demand.read_if(source, read)?;
+        match value {
+            Some(_) => self.active.insert(source),
+            None => self.missing.insert(source),
+        }
+        value
+    }
+}
+
+/// The `n` processes with the largest `key`, largest first. Ties go to the smaller `Identity`,
+/// and a NaN key sorts after every number, so the choice is the same in every sample that has
+/// the same keys.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "no budgeted selection uses it yet")
+)]
+pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
+    let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
+    let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
+        (true, true) => a.1.id.cmp(&b.1.id),
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.id.cmp(&b.1.id))
+        }
+    };
+    if n < keyed.len() {
+        keyed.select_nth_unstable_by(n, order);
+        keyed.truncate(n);
+    }
+    keyed.sort_by(order);
+    keyed.into_iter().map(|(_, process)| process).collect()
 }
 
 /// How often the background thread runs its scans: sockets, GPU memory, cgroups, open files, file
@@ -488,8 +597,11 @@ struct Extras {
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<platform::Files>>,
     locks: Measured<platform::Locks>,
-    /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table.
+    /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table,
+    /// and the demanded optional sources that could not be read.
     missing: Sources,
+    /// The optional sources this cycle read, because they were demanded when it began.
+    sources: Sources,
     geo: String,
     /// How long each scan took, by the source it reads.
     latency: Vec<(Source, Duration)>,
@@ -584,10 +696,11 @@ pub struct Collector {
     last: Instant,
     origin: Instant,
     background: Option<Background>,
-    /// Cgroup paths the background thread should account, and whether to locate remote
-    /// addresses (only the globe shows them, and the first lookup loads the GeoIP database).
+    /// Cgroup paths the background thread should account, and the optional sources it should
+    /// read (`Collector::demand`).
     wanted: Arc<Mutex<HashSet<String>>>,
     locating: Arc<AtomicBool>,
+    demand: Arc<Mutex<Demand>>,
     /// The processes of the latest sample by pid, which the background scans are joined against.
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
     geoip: Option<PathBuf>,
@@ -602,6 +715,7 @@ fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
     locating: Arc<AtomicBool>,
+    demand: Arc<Mutex<Demand>>,
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
@@ -618,6 +732,13 @@ fn background(
             // process named here or one that took its pid since.
             let identities = identities.lock().map(|map| map.clone()).unwrap_or_default();
             let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
+            // Once per cycle, so a view change takes effect at the next cycle and no source is
+            // half read.
+            let reads = Reads::new(
+                demand
+                    .lock()
+                    .map_or_else(|error| *error.into_inner(), |d| *d),
+            );
             let paths = accounted(wanted_now, &mut retained);
             let mut latency = Vec::new();
             let network = timed(&mut latency, Source::Sockets, platform::network);
@@ -637,7 +758,7 @@ fn background(
             let locks = timed(&mut latency, Source::FileLocks, || {
                 platform::locks().map_or(Measured::Unreadable, Measured::Known)
             });
-            let missing = background_gaps(gpu.is_some(), &locks);
+            let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
                 network,
@@ -648,6 +769,7 @@ fn background(
                 files,
                 locks,
                 missing,
+                sources: reads.active,
                 geo: geo.source.clone(),
                 latency,
                 finished: None,
@@ -753,6 +875,7 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         .collect();
     snapshot.geo = extras.geo.clone();
     snapshot.missing = snapshot.missing.union(extras.missing);
+    snapshot.sources = extras.sources;
 }
 
 /// The slow sources a background pass found absent: GPU memory when no GPU library loaded, and
@@ -920,6 +1043,7 @@ impl Collector {
             background: None,
             wanted: Arc::new(Mutex::new(HashSet::new())),
             locating: Arc::new(AtomicBool::new(false)),
+            demand: Arc::new(Mutex::new(Demand::default())),
             identities: Arc::new(Mutex::new(HashMap::new())),
             geoip,
             home: geo::home(home),
@@ -930,6 +1054,14 @@ impl Collector {
     /// Turns locating remote addresses on or off for the following samples.
     pub fn locate(&self, on: bool) {
         self.locating.store(on, Ordering::Relaxed);
+    }
+
+    /// Sets the optional sources the background thread reads from its next cycle on. `main` calls
+    /// it with the shown view's sources at startup and on every view change.
+    pub fn demand(&self, demand: Demand) {
+        if let Ok(mut current) = self.demand.lock() {
+            *current = demand;
+        }
     }
 
     pub fn sample(&mut self) -> std::io::Result<Snapshot> {
@@ -982,6 +1114,7 @@ impl Collector {
                 self.geoip.clone(),
                 Arc::clone(&self.wanted),
                 Arc::clone(&self.locating),
+                Arc::clone(&self.demand),
                 Arc::clone(&self.identities),
             );
         }
@@ -1992,6 +2125,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         remotes,
         unattributed_locks: 1,
         missing: Sources::default(),
+        sources: Sources::default(),
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
@@ -3368,6 +3502,7 @@ mod tests {
             remotes,
             unattributed_locks: 1,
             missing: Sources::default(),
+            sources: Sources::default(),
             unreadable: 0,
             per_cluster: Sources::default(),
             shadows: Vec::new(),
@@ -3408,6 +3543,7 @@ mod tests {
             geo,
             unattributed_locks,
             missing,
+            sources,
             unreadable,
             per_cluster,
             shadows,
@@ -3420,7 +3556,7 @@ mod tests {
         format!(
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {pressure:?}\n\
              {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
-             {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {unreadable} \
+             {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}"
         )
     }
@@ -3850,5 +3986,176 @@ mod tests {
             overloaded,
             "the default demo keeps the threads it always had"
         );
+    }
+
+    /// What one background cycle would do with the collector's current demand: read
+    /// `Source::SyscallIo` through `Reads` and say how often the closure ran.
+    fn cycle(collector: &Collector, readable: bool) -> (u32, Reads) {
+        let mut reads = Reads::new(*collector.demand.lock().unwrap());
+        let mut calls = 0;
+        reads.read(Source::SyscallIo, || {
+            calls += 1;
+            readable.then_some(calls)
+        });
+        (calls, reads)
+    }
+
+    #[test]
+    fn the_background_thread_reads_an_optional_source_only_while_demanded() {
+        let collector = Collector::new(None, None);
+        let reads_this_cycle = || {
+            let (calls, reads) = cycle(&collector, true);
+            assert_eq!(reads.active.contains(Source::SyscallIo), calls == 1);
+            assert!(reads.missing.is_empty());
+            calls
+        };
+        assert_eq!(reads_this_cycle(), 0);
+        collector.demand(Demand::from(Sources::from(Source::SyscallIo)));
+        assert_eq!(reads_this_cycle(), 1);
+        assert_eq!(reads_this_cycle(), 1);
+        collector.demand(Demand::default());
+        assert_eq!(reads_this_cycle(), 0);
+        assert_eq!(reads_this_cycle(), 0);
+        collector.demand(Demand::from(Sources::from([
+            Source::SyscallIo,
+            Source::Journal,
+        ])));
+        assert_eq!(reads_this_cycle(), 1);
+    }
+
+    #[test]
+    fn a_demanded_source_that_cannot_be_read_is_missing_and_one_nobody_asked_for_is_not() {
+        let collector = Collector::new(None, None);
+        let (calls, reads) = cycle(&collector, false);
+        assert_eq!(
+            (calls, reads.active, reads.missing),
+            (0, Sources::default(), Sources::default())
+        );
+        collector.demand(Demand::from(Sources::from(Source::SyscallIo)));
+        let (calls, reads) = cycle(&collector, false);
+        assert_eq!(calls, 1);
+        assert_eq!(reads.active, Sources::default());
+        assert_eq!(reads.missing, Sources::from(Source::SyscallIo));
+    }
+
+    #[test]
+    fn an_empty_demand_reads_no_optional_source() {
+        let mut reads = Reads::new(Demand::default());
+        assert!(Demand::default().is_empty());
+        let mut calls = 0;
+        for source in Source::ALL {
+            assert_eq!(
+                Demand::default().read_if(source, || {
+                    calls += 1;
+                }),
+                None
+            );
+            assert_eq!(
+                reads.read(source, || {
+                    calls += 1;
+                    Some(())
+                }),
+                None
+            );
+        }
+        assert_eq!(calls, 0);
+        assert!(reads.active.is_empty() && reads.missing.is_empty());
+
+        // The real thread, started with nothing demanded, reports no optional source.
+        let thread = background(
+            None,
+            Arc::new(Mutex::new(HashSet::new())),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(Demand::default())),
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+        .expect("the sampler thread starts");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while thread.extras().finished.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let extras = thread.extras();
+        assert!(extras.finished.is_some(), "the first cycle finished");
+        assert!(extras.sources.is_empty());
+    }
+
+    #[test]
+    fn demand_is_a_set_of_sources_and_read_if_runs_only_for_members() {
+        let mut demand = Demand::default();
+        assert!(demand.is_empty() && !demand.contains(Source::Journal));
+        demand.insert(Source::Journal);
+        demand.insert(Source::Journal);
+        assert!(!demand.is_empty() && demand.contains(Source::Journal));
+        assert!(!demand.contains(Source::Locations));
+        assert_eq!(demand.read_if(Source::Journal, || 5), Some(5));
+        assert_eq!(demand.read_if(Source::Locations, || 5), None);
+        assert_eq!(demand, Demand::from(Sources::from(Source::Journal)));
+    }
+
+    #[test]
+    fn a_merged_sample_lists_the_sources_the_cycle_read() {
+        let extras = Extras {
+            sources: Sources::from([Source::Locations, Source::Journal]),
+            missing: Source::SyscallIo.into(),
+            ..Extras::default()
+        };
+        let mut snapshot = Snapshot::default();
+        merge(&mut snapshot, &extras);
+        assert_eq!(snapshot.sources, extras.sources);
+        assert_eq!(snapshot.missing, Sources::from(Source::SyscallIo));
+        assert_eq!(
+            demo(1.0, 16).sources,
+            Sources::default(),
+            "no thread in --demo"
+        );
+    }
+
+    fn numbered(pid: u32, start: u64) -> Process {
+        Process {
+            id: Identity { pid, start },
+            ..testing::process(pid, 1)
+        }
+    }
+
+    #[test]
+    fn top_n_breaks_ties_by_identity_and_is_stable_between_samples() {
+        let keys = [
+            (5, 3.0),
+            (2, 3.0),
+            (9, 7.5),
+            (4, f64::NAN),
+            (1, 3.0),
+            (3, f64::NAN),
+            (8, -1.0),
+        ];
+        let key = |process: &Process| {
+            keys.iter()
+                .find(|(pid, _)| *pid == process.id.pid)
+                .map_or(0.0, |(_, key)| *key)
+        };
+        let ids = |picked: Vec<&Process>| picked.iter().map(|p| p.id.pid).collect::<Vec<_>>();
+        let processes: Vec<Process> = keys.iter().map(|&(pid, _)| numbered(pid, 1)).collect();
+        let all = ids(top_n(&processes, 99, key));
+        // Largest first; the three 3.0s by ascending identity; -1.0; the NaNs last, also by
+        // identity.
+        assert_eq!(all, [9, 1, 2, 5, 8, 3, 4]);
+        assert_eq!(ids(top_n(&processes, 4, key)), all[..4]);
+        assert_eq!(
+            ids(top_n(&processes, 2, key)),
+            all[..2],
+            "the tie at the cut is the same"
+        );
+        assert!(top_n(&processes, 0, key).is_empty());
+        // The same keys in another input order, as another sample would list them.
+        let mut shuffled = processes;
+        shuffled.reverse();
+        shuffled.swap(1, 4);
+        for n in [1, 3, 4, 7] {
+            assert_eq!(ids(top_n(&shuffled, n, key)), all[..n]);
+        }
+        // A restarted process under a reused pid is a different identity.
+        let restarted = [numbered(6, 2), numbered(6, 1)];
+        let picked = top_n(&restarted, 1, |_| 1.0);
+        assert_eq!(picked[0].id, Identity { pid: 6, start: 1 });
     }
 }
