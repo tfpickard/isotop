@@ -18,6 +18,7 @@ mod palette;
 mod picker;
 mod places;
 mod platform;
+mod ptolemy;
 mod reef;
 mod render;
 mod simulation;
@@ -2645,6 +2646,7 @@ mod tests {
         let asked = DemoOptions {
             churn: true,
             exact_cpu_time: true,
+            observer: false,
         };
         let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
         app.scene = Scene::with_rows(rows);
@@ -3462,7 +3464,7 @@ mod tests {
         );
         press(&mut app, KeyCode::Backspace);
         type_text(&mut app, "eef");
-        assert_eq!(picker_lines(&app, 31)[1].trim_end(), "> *  9 reef   REEF");
+        assert_eq!(picker_lines(&app, 31)[1].trim_end(), "> *  9 reef    REEF");
         assert_eq!(app.view, view("city"), "typing never switches");
     }
 
@@ -3730,7 +3732,7 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/11");
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/12");
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -3965,7 +3967,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("coop"))
+                .any(|line| line.starts_with("> ") && line.contains("ptolemy"))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -3980,7 +3982,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("coop"))
+                .any(|line| line.starts_with("> ") && line.contains("ptolemy"))
         );
     }
 

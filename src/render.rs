@@ -1014,18 +1014,10 @@ pub(crate) struct Stage<'a> {
     /// Extra lines for a process's inspector popup, after its sockets.
     pub notes: &'a mut HashMap<Identity, Vec<String>>,
     /// Processes the tour should visit; a hub is passed over, since it has no callout.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Orbit and Flow report through it in #74 (A15)")
-    )]
     pub tour: &'a mut Vec<TourTarget>,
     /// Lines for a process's inspector popup, right after its own figures and in the order
     /// pushed: what the view knows about it beyond the sample, such as the memory of the
     /// subtree it anchors.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Orbit and Flow report through it in #74 (A15)")
-    )]
     pub popup: &'a mut Vec<(Identity, String)>,
 }
 

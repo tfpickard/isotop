@@ -13,7 +13,7 @@ use std::fmt;
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
-use crate::{cells, cores, globe};
+use crate::{cells, cores, globe, ptolemy};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -163,6 +163,7 @@ impl ViewInfo {
             demo: DemoOptions {
                 churn: false,
                 exact_cpu_time: false,
+                observer: false,
             },
             contract: Contract::DEFAULT,
         }
@@ -292,13 +293,6 @@ pub enum Hooks {
     },
     /// A view drawn through `ViewModule`. The scene builds one with this function when it is
     /// created and owns it from then on; nothing outside the module reaches into its state.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view is a module view until the first new view"
-        )
-    )]
     Module(fn() -> Box<dyn ViewModule>),
 }
 
@@ -708,6 +702,28 @@ pub static REGISTRY: &[ViewInfo] = &[
                 record: Some(|scene, snapshot, _| scene.coop.record(snapshot)),
                 inspector_line: None,
             },
+        )
+    },
+    ViewInfo {
+        // Stars flash their own novae and fades.
+        flash: false,
+        // Trail strokes are opaque, blended against the plain space sky.
+        haze: false,
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: false,
+            observer: true,
+        },
+        // The window of 60 samples is full only after a minute.
+        contract: Contract {
+            time: 300.0,
+            ..Contract::DEFAULT
+        },
+        ..ViewInfo::new(
+            "ptolemy",
+            "PTOLEMY",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(ptolemy::Ptolemy::default())),
         )
     },
 ];
@@ -1235,6 +1251,7 @@ pub mod testing {
             demo: DemoOptions {
                 churn: true,
                 exact_cpu_time: true,
+                observer: false,
             },
             ..ViewInfo::new(
                 "demanding",
@@ -1292,6 +1309,6 @@ mod tests {
             )),
             ["matrix"]
         );
-        assert!(with(|hooks| matches!(hooks, Hooks::Module(_))).is_empty());
+        assert_eq!(with(|hooks| matches!(hooks, Hooks::Module(_))), ["ptolemy"]);
     }
 }

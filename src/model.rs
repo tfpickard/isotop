@@ -409,6 +409,10 @@ pub struct Snapshot {
     /// The events the event thread's queue dropped since the previous sample because it was
     /// full.
     pub life_dropped: u32,
+    /// isotop's own process, the observer every reading is taken from: a copy of its row in
+    /// `processes`, or None when it was not read. The demo synthesizes one only when the shown
+    /// view asks (`DemoOptions::observer`), outside `processes`.
+    pub observer: Option<Process>,
 }
 
 /// The optional sources the shown view wants read. The background thread reads an optional
@@ -1588,6 +1592,11 @@ impl Collector {
             snapshot.sampler = background.health(Instant::now());
             merge(&mut snapshot, &background.extras());
         }
+        snapshot.observer = snapshot
+            .processes
+            .iter()
+            .find(|process| process.id.pid == std::process::id())
+            .cloned();
         let demand = self
             .demand
             .lock()
@@ -1908,6 +1917,10 @@ pub struct DemoOptions {
     /// so a single-threaded process never exceeds one core. Off, `cpu_time` and `threads` are
     /// the unrelated values `demo` has always had.
     pub exact_cpu_time: bool,
+    /// Synthesizes `Snapshot::observer`, isotop itself, outside the processes: pid 999, below
+    /// every demo pid, started at 0 and called `isotop`, using 40 +/- 10% CPU and 96 +/- 4 MiB.
+    /// Off, the observer is None.
+    pub observer: bool,
 }
 
 /// One transient family per this many base processes.
@@ -2713,6 +2726,25 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             name: "Amsterdam".into(),
         }),
         geo: "demo locations".into(),
+        observer: options.observer.then(|| demo_observer(time)),
+    }
+}
+
+/// isotop itself in the demo, the observer `DemoOptions::observer` asks for: outside the
+/// processes, with a pid below every demo pid.
+fn demo_observer(time: f64) -> Process {
+    let phase = time as f32;
+    Process {
+        id: Identity { pid: 999, start: 0 },
+        parent: 1000,
+        name: "isotop".into(),
+        command: "isotop --demo".into(),
+        kind: Kind::Session,
+        state: 'R',
+        cpu: 40.0 + 10.0 * (0.3 * phase).sin(),
+        memory: ((96.0 + 4.0 * (0.17 * phase).sin()) * 1048576.0) as u64,
+        threads: 4,
+        ..Process::default()
     }
 }
 
@@ -4183,6 +4215,7 @@ mod tests {
                 name: "Amsterdam".into(),
             }),
             geo: "demo locations".into(),
+            observer: None,
         }
     }
 
@@ -4215,6 +4248,7 @@ mod tests {
             sampler,
             life,
             life_dropped,
+            observer,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
         let unix_links: BTreeSet<_> = unix_links.iter().collect();
@@ -4224,21 +4258,24 @@ mod tests {
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {pressure:?}\n\
              {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
-             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}"
+             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}"
         )
     }
 
     const CHURN: DemoOptions = DemoOptions {
         churn: true,
         exact_cpu_time: false,
+        observer: false,
     };
     const EXACT: DemoOptions = DemoOptions {
         churn: false,
         exact_cpu_time: true,
+        observer: false,
     };
     const BOTH: DemoOptions = DemoOptions {
         churn: true,
         exact_cpu_time: true,
+        observer: false,
     };
 
     /// The transients of `snapshot`, which come after the `count` base processes.

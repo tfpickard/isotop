@@ -1,9 +1,10 @@
 # isotop
 
-A living picture of your machine inside the terminal, in eleven views: a process
+A living picture of your machine inside the terminal, in twelve views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, a chicken yard, and the system
+history, a globe of network connections, a coral reef, a chicken yard, a geocentric
+cosmos of Fourier epicycles, and the system
 log (the systemd journal, or the unified log on macOS) as Matrix rain. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
@@ -26,7 +27,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -203,8 +204,9 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the eleven views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop is reached with Tab, Shift+Tab or `--view coop`.
+the twelve views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop and ptolemy are reached with Tab, Shift+Tab, the `v`
+picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
@@ -450,6 +452,45 @@ Decorative: the grass grid and the dirt band under the feeders, the hedge, the f
 
 The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) with its four bugs fixed: it updated headings in place instead of synchronously, its alignment readout summed speed magnitudes so it was always 1, it stepped once per frame instead of by time, and it searched neighbours in O(N²).
 
+### Ptolemy
+
+![Ptolemy: Earth at the centre, planets on deferents with epicycle chains and looping trails, fixed stars on the outer ring](docs/media/ptolemy.webp)
+
+A geocentric sky seen from above: isotop itself is Earth at the centre, the seven processes whose CPU and memory varied most over the last minute are planets on deferents and epicycles, and every other process is a fixed star.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Earth | isotop's own process | At the centre, labelled `isotop (pid N)` and `X cores \| Y MiB` (CPU / 100, memory in MiB); clickable when isotop is among the drawn processes |
+| Planet (a wanderer) | The seven drawn processes with the highest score over their last 60 samples of the shared history | Score = variance of CPU in cores (cpu / 100) + variance of memory in doublings (log2 of MiB, floored at 1 MiB); a planet needs at least 30 samples and a score above 0. An incumbent keeps its sphere while it is alive and ranks tenth or better; an empty sphere takes the best of the rest |
+| Sphere | Mean CPU over the window | When the membership changes, the seven are sorted busiest innermost: Moon, Mercury, Venus, Sun, Mars, Jupiter, Saturn, at 0.245, 0.33, 0.415, 0.5, 0.585, 0.67 and 0.755 of the sky radius (40 units). A planet that changes sphere eases there over 1.5 s. Labelled `Sphere of Mars: name` |
+| Deferent and its circle | Sphere radius | Period 1200 s × (r / r_Saturn)^1.5 (Kepler's third law); the starting angle comes from the identity hash |
+| Epicycle chain | CPU in cores + i × memory in doublings, minus their means, over the last 60 samples | A direct 60-point DFT; the 12 largest terms without the mean, drawn largest first from the point on the deferent, whose tip is the planet. Samples before a process's first are held at its first reading. Coefficients ease to each new sample with a smoothstep over the measured sample interval, clamped to 0.1 to 10 s. Epicycles under 1.5 pixels across are not drawn |
+| Chain length | The sum of a chain's coefficient magnitudes | One global gain: gain = K L tanh(T / L) / T with T = K Σ\|c\|, K = 0.085 × 40 = 3.4 units per core or doubling and L = 0.19 × 40 = 7.6 units, so no chain is longer than 7.6 units however wild the process |
+| Planet size | Memory | 0.34 + 0.105 × log2(max(memory / 64 MiB, 1)) units, at most 1.2 |
+| Planet and trail colour | Kind and state | The same colours as the other views |
+| Trail | The planet's path | Positions from the current coefficients and the deferent over the last min(240 s, 0.8 × deferent period), on a 0.25 s grid aligned to multiples of 0.25 s; the oldest 45 % fades out |
+| Red trail and red glow | Retrograde: the apparent longitude seen from Earth falling | d lambda / dt = Im(conj(p) p') / \|p\|² < 0, from the position p and its analytic derivative |
+| Dashed red sight line and marker | A planet in retrograde now | From Earth out to the ecliptic scale, the marker pointing back |
+| Fixed star | Every other drawn process | Angle and radius (0.935 + 0.06 u) × 40 units from the identity hash, on a ring that turns once a minute |
+| Star brightness | Memory (RSS; the physical footprint on macOS) | m = -2.5 log10(memory / 1 GiB), floored at 1 MiB; core and halo from the shared point-spread |
+| Nova | A process that appeared since the sample before | Brightens by 4 magnitudes over 0.3 s, then decays with an e-folding time of 2 s, for 6 s |
+| Fade | A process that exited | Dims out over 1.5 s at its place on the ring |
+| Legend lead | Samples in the window, planets in retrograde | `the heavens are still forming: N of 30 samples` until 30 samples exist, then `compiler-90 is in retrograde` (or `A and B are in retrograde`) |
+
+**Decorative:** the armillary rings (the outer sphere, the two ecliptic hoops and the two tilted hoops), the ecliptic degree scale and its labels, the faint spokes from Earth to each deferent point, the dot on the deferent, the colours of the epicycle circles and the chain arm, and Earth's continents.
+
+**The replay.** Each chain replays its process's last minute once a minute, at any `--sample-ms`. The chain at time t is Σ c'_k e^{2πi f_k t / 60}, and each coefficient c'_k = c_k e^{-2πi f_k s0 / 60} is turned back by its phase at the absolute number s0 of the oldest sample, so the coefficients barely change when the window slides on by a sample. A process that swings about a steady mean draws a closed loop on top of its steady revolution, as Ptolemy's planets did.
+
+**Retrograde.** A planet runs backwards against the stars when the process's swings outrun its steady revolution: when its epicycles carry it across the line of sight faster than its deferent carries it forward. The stretch of trail where that happened turns red, and the status line names the planets doing it now.
+
+**The trail is deterministic.** It is computed every frame from the current coefficients and the deferent, not recorded, so it needs no warm-up and is the same at any frame rate: it shows where the planet would have gone with the epicycles it has now.
+
+**Births and exits** come from the shared history, which compares each sample with the one before, so a new process flares as a nova and an exited one fades even in a headless frame. A process that was a planet when it exited does not fade on the ring.
+
+**Caps.** Seven planets, 12 epicycles each (a few more while terms trade places after a sample), and trails of at most 961 points; every other drawn process is a star, up to `--limit`. The selection and the DFTs run once per sample; scoring is 60 readings per process.
+
+**What cannot be measured.** Ptolemy reads only per-process CPU and memory and isotop's own row, so it has no optional sources to lose. If isotop's own process was not read, Earth has no figures and is labelled `isotop`. The demo synthesizes Earth outside the processes (pid 999), so there it cannot be clicked. The pressure haze is off: trail strokes are opaque and blended against the plain sky, which a haze would show through. On macOS memory is the physical footprint; the picture is otherwise the same.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -540,7 +581,7 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -581,7 +622,7 @@ Scrolling at all stops the earth's own turn, and a turned globe holds still unti
 stands the earth upright on the match.
 
 **View picker.** `v` lists the views this platform supports, one row each, such as
-`> * 11 coop   COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
+`> * 11 coop    COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
 the number the view's place in the list. The picker takes every key until it closes:
 
 | Key | Action |
@@ -629,7 +670,8 @@ Search, focus, links and the tour work on processes only.
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
 uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
 the media and creatures have settled, demo strata replays a minute of
-history, and demo coop replays 30 seconds of samples for CPU variation. Live headless output takes two samples to measure CPU, so live strata
+history (ptolemy does too, but its planets need 30 samples, so its reference renders use
+`--time 300`), and demo coop replays 30 seconds of samples for CPU variation. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -641,7 +683,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-33,115 lines of Rust (20,665 production, 12,450 test) in 40 files, 421 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+34,728 lines of Rust (21,748 production, 12,980 test) in 41 files, 436 tests, 12 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

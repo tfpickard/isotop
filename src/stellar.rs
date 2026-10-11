@@ -40,7 +40,6 @@ const SUPERNOVA_DURATION_SECONDS: f32 = 8.0;
 /// The apparent magnitude of a process holding `memory` bytes: `-2.5 log10(memory / 1 GiB)`, so
 /// 1 GiB is 0 and 10 MiB is about +5. Memory is floored at 1 MiB (+7.5) so rows with none, such
 /// as kernel threads, get a finite and faint magnitude. A smaller number is brighter.
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub fn magnitude(memory: u64) -> f32 {
     let ratio = memory.max(MEBIBYTE) as f64 / GIBIBYTE as f64;
     (-2.5 * ratio.log10()) as f32
@@ -48,7 +47,6 @@ pub fn magnitude(memory: u64) -> f32 {
 
 /// The size and strength of a star's two layers, in pixels of a frame of a given height.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub struct Spread {
     /// Radius of the sharp core in pixels.
     pub core_px: f32,
@@ -64,7 +62,6 @@ pub struct Spread {
 /// `L = 10^(-0.4 (magnitude - 7))`, the core and halo radii grow as about `L^0.2` and the halo
 /// strength as `L^0.42`. Sizes scale with the frame height, and a brighter star is never
 /// smaller or weaker than a fainter one.
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub fn spread(magnitude: f32, frame_height: u32) -> Spread {
     let scale = frame_height as f32 / REFERENCE_HEIGHT;
     let flux = 10.0_f32.powf(-0.4 * (magnitude - FLUX_ONE_MAGNITUDE));
@@ -92,7 +89,6 @@ impl Frame {
     /// Draws a star at `position`: one pickable sphere sized in pixels, so zoom does not change
     /// it, with a whitened and brightened `color`, and one glow in `color` when the spread has a
     /// halo.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
     pub(crate) fn star(
         &mut self,
         camera: &Camera,
@@ -147,7 +143,6 @@ pub fn exit_flash(memory: u64) -> Flash {
 
 /// One instant of a flash.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub struct FlashState {
     /// Magnitudes to add to the star's own; negative is brighter.
     pub magnitude_offset: f32,
@@ -159,7 +154,6 @@ pub struct FlashState {
 
 /// A supernova's shell. The caller chooses the world or pixel scale for `radius`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub struct Shell {
     /// Fraction of the final radius, 0 to 1.
     pub radius: f32,
@@ -176,7 +170,6 @@ pub struct Shell {
 /// is over after 6 s. A fade loses opacity linearly over 1.5 s. A supernova flashes to -6
 /// magnitudes in 0.5 s and then the star is gone, while its shell grows as `1 - e^(-t / 1.1)`,
 /// fades as `e^(-t / 1.6)` and is fully red at 1.5 s; it is over after 8 s.
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub fn flash(kind: Flash, age_seconds: f32) -> Option<FlashState> {
     let age = age_seconds.max(0.0);
     match kind {

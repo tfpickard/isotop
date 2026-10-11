@@ -41,21 +41,20 @@ pub fn smoothing(dt: f32, tau: f32) -> f32 {
     1.0 - (-dt / tau).exp()
 }
 
+/// The smoothstep ease, `3x^2 - 2x^3`, of `x` clamped to 0..1: 0 and 1 at the ends, with no
+/// speed at either.
+pub fn smoothstep(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
 /// A complex number with `f32` parts.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 pub struct Complex {
     pub re: f32,
     pub im: f32,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 impl Complex {
     pub fn new(re: f32, im: f32) -> Self {
         Self { re, im }
@@ -69,6 +68,17 @@ impl Complex {
     /// The complex conjugate, `re - i*im`.
     pub fn conj(self) -> Self {
         Self::new(self.re, -self.im)
+    }
+
+    /// The unit number at `angle` radians, `exp(i*angle)`.
+    pub fn from_angle(angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        Self::new(cos, sin)
+    }
+
+    /// Both parts multiplied by `factor`.
+    pub fn scale(self, factor: f32) -> Self {
+        Self::new(self.re * factor, self.im * factor)
     }
 }
 
@@ -104,10 +114,6 @@ impl std::ops::Mul for Complex {
 /// Forward sign: `X[k] = sum over n of x[n] * exp(-2*pi*i*k*n/N)`, with no scaling, the same as
 /// [`fft`]. Twiddles and sums are `f64`; only the result is rounded to `f32`, so this is the
 /// reference the fast transform is tested against.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 pub fn dft(input: &[Complex]) -> Vec<Complex> {
     let length = input.len();
     (0..length)

@@ -26,14 +26,12 @@ pub struct Sample {
     pub elapsed: f64,
     /// How many samples the history took in before this one: an absolute count that keeps
     /// rising as the ring turns over, so a view can number samples across windows.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
     pub sequence: u64,
     readings: Vec<(Identity, Reading)>,
 }
 
 /// A process that appeared in a sample, or was gone from it, against the sample before.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
 pub struct Change {
     pub id: Identity,
     /// `elapsed` of the first sample it was in, for a birth, or the first it was missing from,
@@ -127,7 +125,6 @@ impl History {
 
     /// The last `count` samples at or before `until`, oldest first; fewer when the history is
     /// shorter.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
     pub fn recent(&self, until: f64, count: usize) -> impl ExactSizeIterator<Item = &Sample> {
         let end = self
             .samples
@@ -138,7 +135,7 @@ impl History {
     /// The last `count` samples at or before `until`, oldest first: the process's reading in
     /// each, or `None` where it was absent. Fewer than `count` entries when the history is
     /// shorter.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "no view reads series yet"))]
     pub fn series(&self, id: Identity, until: f64, count: usize) -> Vec<Option<Reading>> {
         self.recent(until, count)
             .map(|sample| sample.reading(id))
@@ -149,7 +146,6 @@ impl History {
     /// each found against the sample before it, oldest first and by `Identity` within a sample.
     /// The oldest sample the history holds has nothing to compare with, so it reports none: a
     /// history that starts with a running machine does not count it as born.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first read by ptolemy (#40)"))]
     pub fn changes(&self, until: f64, seconds: f64) -> Vec<Change> {
         let from = until - seconds;
         let start = self.samples.partition_point(|sample| sample.elapsed < from);
