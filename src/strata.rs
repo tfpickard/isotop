@@ -85,22 +85,44 @@ impl Strata {
                 .filter_map(|(_, sample)| sample.get(id).copied())
                 .fold(0.0_f32, f32::max)
         };
+        // Rows are given to every sampled process, drawn or not, so focusing a subtree, or the
+        // process limit (and a selection swapped across it) hiding some, frees none of their
+        // rows: clearing it brings every ridge back to the row it had. Drawn processes come
+        // first, though: they are offered rows before hidden ones, and when every row is taken
+        // a drawn one takes the row of the least busy hidden holder. Only drawn ridges are
+        // drawn below.
+        let mut kinds: HashMap<Identity, Kind> =
+            snapshot.processes.iter().map(|p| (p.id, p.kind)).collect();
+        kinds.extend(processes.iter().map(|p| (p.id, p.kind)));
         self.rows
-            .retain(|id, _| index.contains_key(id) && peak(id) >= BUSY);
-        let mut candidates: Vec<(f32, Identity)> = processes
-            .iter()
-            .filter(|p| !self.rows.contains_key(&p.id))
-            .map(|p| (peak(&p.id), p.id))
-            .filter(|&(value, _)| value >= BUSY)
+            .retain(|id, _| kinds.contains_key(id) && peak(id) >= BUSY);
+        let mut candidates: Vec<(bool, f32, Identity)> = kinds
+            .keys()
+            .filter(|id| !self.rows.contains_key(id))
+            .map(|&id| (!index.contains_key(&id), peak(&id), id))
+            .filter(|&(_, value, _)| value >= BUSY)
             .collect();
-        candidates.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        for (_, id) in candidates {
+        candidates.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+        for (hidden, _, id) in candidates {
             if self.rows.len() >= ROWS {
-                break;
+                if hidden {
+                    break;
+                }
+                let Some(holder) = self
+                    .rows
+                    .keys()
+                    .filter(|held| !index.contains_key(held))
+                    .map(|&held| (peak(&held), held))
+                    .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                    .map(|(_, held)| held)
+                else {
+                    break;
+                };
+                self.rows.remove(&holder);
             }
             // Each kind owns a quarter of the floor, back to front; a newcomer takes the free row
             // nearest the middle of its kind's quarter, spilling into neighbours when it is full.
-            let rank = match processes[index[&id]].kind {
+            let rank = match kinds[&id] {
                 Kind::Kernel => 0,
                 Kind::System => 1,
                 Kind::Session => 2,
@@ -145,9 +167,14 @@ impl Strata {
             };
             stage.places.push(([x, depth + 2.5, 0.0], text));
         }
+        let mut shown = 0;
         for (id, &row) in &self.rows {
-            let process = processes[index[id]];
-            let pick = index[id] as u32;
+            let Some(&pick) = index.get(id) else {
+                continue;
+            };
+            shown += 1;
+            let process = processes[pick];
+            let pick = pick as u32;
             let y = row as f32 * SPACING;
             let mut profile: Vec<[f32; 2]> = window
                 .iter()
@@ -204,7 +231,7 @@ impl Strata {
                 )],
             );
         }
-        if self.rows.is_empty() {
+        if shown == 0 {
             stage.places.push((
                 [-width * 0.5, depth * 0.5, 0.0],
                 "no process has used CPU yet".into(),
@@ -216,6 +243,61 @@ impl Strata {
                 .flat_map(|x| [-SPACING, depth + 2.5].map(|y| [x, y]))
                 .flat_map(|[x, y]| [[x, y, 0.0], [x, y, PEAK * 0.7]]),
         );
-        self.rows.len()
+        shown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::{Identity, Snapshot, demo};
+    use crate::render::{Scene, View, hiding};
+
+    /// Few enough processes that every busy one gets one of the forty rows. With more, a drawn
+    /// process takes a hidden one's row, and the hidden one finds none free when it is back.
+    fn sample() -> Snapshot {
+        let sample = demo(30.0, 60);
+        let busy = sample.processes.iter().filter(|p| p.cpu >= super::BUSY);
+        assert!(busy.count() <= super::ROWS);
+        sample
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_ridge_in_its_row() {
+        hiding::focus_and_clear(View::Strata, &sample());
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_strata_row() {
+        hiding::limit_and_lift(View::Strata, &sample());
+    }
+
+    /// With more busy processes than rows, the ones still drawn under a focus or a limit get
+    /// rows ahead of the hidden ones, so as many ridges show as on a fresh landscape.
+    #[test]
+    fn hidden_processes_do_not_keep_drawn_busy_ones_from_a_row() {
+        let sample = demo(30.0, 160);
+        let busy = sample
+            .processes
+            .iter()
+            .filter(|p| p.cpu >= super::BUSY)
+            .count();
+        assert!(busy > super::ROWS);
+        let (mut scene, time, _) = hiding::settled(View::Strata, &sample);
+        let drawn = |scene: &mut Scene, limit: usize, focus: Option<Identity>| {
+            hiding::place(scene, &sample, View::Strata, time, limit, None, focus).len()
+        };
+        let hides = sample
+            .processes
+            .iter()
+            .filter(|p| p.id.pid >= 1016 && p.id.pid % 16 == 0)
+            .map(|p| (4096, Some(p.id)))
+            .chain([(80, None)]);
+        let mut shown = 0;
+        for (limit, focus) in hides {
+            let fresh = drawn(&mut Scene::new(), limit, focus);
+            shown += fresh;
+            assert_eq!(drawn(&mut scene, limit, focus), fresh, "{limit} {focus:?}");
+        }
+        assert!(shown > super::ROWS);
     }
 }

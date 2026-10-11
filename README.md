@@ -483,7 +483,8 @@ Any key or mouse movement ends the tour.
 Terminals deliver touchpad scrolling as wheel events but do not forward pinch or
 rotate gestures, so Ctrl-scroll and Alt-scroll stand in for them. Camera moves
 from keys, fitting, focusing, search, and the tour ease into place; direct mouse
-gestures apply immediately.
+gestures apply immediately. Focus and `--limit` only hide processes: every view keeps
+the places of the hidden ones, so clearing the focus puts everything back where it was.
 
 Pause freezes collection and animation; up to 120 snapshots are retained by
 default. When the terminal supports SGR-Pixels mouse reporting (Ghostty and

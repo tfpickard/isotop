@@ -2,7 +2,7 @@
 //! a polyp per process; your session's apps swim in schools; containers are crabs on the sand;
 //! kernel threads drift as plankton. I/O rises as bubbles and zombies float belly-up.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::f32::consts::TAU;
 
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
@@ -44,26 +44,47 @@ struct Swimmer {
 }
 
 impl Reef {
-    pub fn draw(&mut self, stage: &mut Stage, processes: &[&Process], _: &Snapshot) -> usize {
+    pub fn draw(
+        &mut self,
+        stage: &mut Stage,
+        processes: &[&Process],
+        snapshot: &Snapshot,
+    ) -> usize {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1));
         self.last = Some(time);
+        // Each drawn colony, school or gang and its drawn members.
         let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
         for (index, process) in processes.iter().enumerate() {
             if process.kind != Kind::Kernel {
                 groups.entry(habitat(process)).or_default().push(index);
             }
         }
-        self.seats.assign(
-            groups.iter().flat_map(|(name, members)| {
-                members.iter().map(|&i| (processes[i].id, name.as_str()))
-            }),
-        );
-        let needs: Vec<(String, f32)> = groups
-            .keys()
+        // Seats and homes are reserved for every sampled process, drawn or not, so focusing a
+        // subtree, or the process limit (and a selection swapped across it) hiding some, frees
+        // neither their seats nor their group's home: clearing it brings everyone back to where
+        // they were. Only the drawn groups are drawn below.
+        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        let members: Vec<(Identity, String)> = snapshot
+            .processes
+            .iter()
+            .chain(
+                processes
+                    .iter()
+                    .copied()
+                    .filter(|p| !sampled.contains(&p.id)),
+            )
+            .filter(|process| process.kind != Kind::Kernel)
+            .map(|process| (process.id, habitat(process)))
+            .collect();
+        self.seats
+            .assign(members.iter().map(|(id, name)| (*id, name.as_str())));
+        let names: BTreeSet<&str> = members.iter().map(|(_, name)| name.as_str()).collect();
+        let needs: Vec<(String, f32)> = names
+            .into_iter()
             .map(|name| {
                 let span = self.seats.span(name) as f32;
-                (name.clone(), 1.6 * span.sqrt() + 2.0)
+                (name.to_owned(), 1.6 * span.sqrt() + 2.0)
             })
             .collect();
         let homes = self.homes.arrange(&needs);
@@ -74,7 +95,10 @@ impl Reef {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
-        self.fish.retain(|id, _| alive.contains_key(id));
+        // A fish that is not drawn while its process is still sampled waits where it was, and
+        // swims on from there when it is drawn again.
+        self.fish
+            .retain(|id, _| alive.contains_key(id) || sampled.contains(id));
         let mut shown = 0;
         let mut names: Vec<&String> = groups.keys().collect();
         names.sort();
@@ -570,6 +594,8 @@ fn hash(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::demo;
+    use crate::render::{View, hiding};
 
     #[test]
     fn same_named_units_of_different_cgroups_live_apart() {
@@ -607,5 +633,15 @@ mod tests {
         );
         assert_ne!(habitat(&system), habitat(&session));
         assert_eq!(habitat(&system), habitat(&system.clone()));
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_reef_cluster_in_place() {
+        hiding::focus_and_clear(View::Reef, &demo(30.0, 160));
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_reef_place() {
+        hiding::limit_and_lift(View::Reef, &demo(30.0, 160));
     }
 }
