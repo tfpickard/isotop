@@ -21,6 +21,7 @@ mod reef;
 mod render;
 mod simulation;
 mod status;
+mod stellar;
 mod strata;
 mod terminal;
 mod views;
