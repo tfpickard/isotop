@@ -2569,21 +2569,21 @@ impl Scene {
             .iter()
             .map(|&root| (processes[root].id, extents[root] + SYSTEM_GAP))
             .collect();
-        // A system whose root is still sampled but not drawn, hidden by focus or the process
-        // limit (or a hub whose shadow remains), keeps its place and turns on with the others,
-        // so clearing the focus brings it back where it would be. One whose root is drawn but
-        // no longer a root, or left the snapshot, gives its place up.
-        let drawn: HashSet<Identity> = processes.iter().map(|p| p.id).collect();
-        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
-        let shadows: HashSet<u32> = snapshot.shadows.iter().map(|s| s.pid).collect();
-        let hidden = |id: &Identity| {
-            !drawn.contains(id) && (sampled.contains(id) || is_hub(id) && shadows.contains(&id.pid))
+        // A system whose root focus or the process limit hides keeps its place and turns on with
+        // the others, so clearing the focus brings it back where it was, but only if its root
+        // would head a system with every sampled process drawn (a hub counts, as long as a leaf
+        // still orbits it). A system that only a focus, or a selection swapped across the limit,
+        // made, or whose root left the snapshot, gives its place up.
+        let whole = if self.systems.keys().all(|id| needed.contains_key(id)) {
+            HashSet::new()
+        } else {
+            whole_roots(snapshot)
         };
         let before = self.systems.len();
         self.systems
             .retain(|id, (_, reserved)| match needed.get(id) {
                 Some(&need) => need <= *reserved,
-                None => hidden(id),
+                None => whole.contains(id),
             });
         let mut pending: Vec<_> = needed
             .iter()
@@ -2878,6 +2878,53 @@ const RIPPLE_SHINE: f32 = 0.6;
 /// five times as wide as a 6 MiB one and idle kernel threads stay specks.
 pub(crate) fn mass_radius(bytes: f32) -> f32 {
     (0.24 * (bytes / 1048576.0).max(0.0).cbrt()).clamp(0.25, 4.5)
+}
+
+/// The roots of the systems the Orbit and Flow layouts would make with every sampled process
+/// drawn and nothing focused, hubs included, by the rules of `Scene::layout` and `Scene::hubs`.
+fn whole_roots(snapshot: &Snapshot) -> HashSet<Identity> {
+    let processes = &snapshot.processes;
+    let by_pid: HashMap<u32, usize> = processes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.pid, i))
+        .collect();
+    let parents: Vec<Option<usize>> = processes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| by_pid.get(&p.parent).copied().filter(|&parent| parent != i))
+        .collect();
+    let mut child_counts = vec![0; processes.len()];
+    for &parent in parents.iter().flatten() {
+        child_counts[parent] += 1;
+    }
+    let shadows: HashSet<u32> = snapshot
+        .shadows
+        .iter()
+        .map(|shadow| shadow.pid)
+        .filter(|pid| !by_pid.contains_key(pid))
+        .collect();
+    let mut roots = HashSet::new();
+    for (i, process) in processes.iter().enumerate() {
+        let leaf = child_counts[i] == 0;
+        match parents[i] {
+            Some(parent) if leaf || parents[parent].is_some() => {}
+            // A leaf under a shadow orbits the shadow's hub, which is the root instead.
+            None if leaf
+                && process.parent != process.id.pid
+                && shadows.contains(&process.parent) =>
+            {
+                roots.insert(Identity {
+                    pid: process.parent,
+                    start: HUB_START,
+                });
+            }
+            _ => {
+                roots.insert(process.id);
+            }
+        }
+    }
+    roots
 }
 
 /// Whether an identity is a hub's rather than a process's.
@@ -3513,6 +3560,71 @@ mod tests {
     #[test]
     fn focusing_and_clearing_focus_keeps_every_orbit_system_in_place() {
         hiding::focus_and_clear(View::Orbit, &demo(30.0, 160));
+    }
+
+    /// The systems of `scene` after each hiding in `hides` (limit, selection, focus), which
+    /// must be exactly the whole tree's plus those the hiding itself makes drawn systems, as a
+    /// fresh scene shows; lifting the hiding leaves the whole tree's and puts them back.
+    fn systems_follow_the_hiding(
+        view: View,
+        hides: impl Fn(
+            &Snapshot,
+            &HashMap<Identity, Point>,
+        ) -> Vec<(usize, Option<Identity>, Option<Identity>)>,
+    ) {
+        let sample = demo(30.0, 160);
+        let keys = |scene: &Scene| -> std::collections::BTreeSet<Identity> {
+            scene.systems.keys().copied().collect()
+        };
+        let (mut scene, time, before) = hiding::settled(view, &sample);
+        let whole = keys(&scene);
+        for (limit, selected, focus) in hides(&sample, &before) {
+            hiding::place(&mut scene, &sample, view, time, limit, selected, focus);
+            let mut fresh = Scene::new();
+            hiding::place(&mut fresh, &sample, view, time, limit, selected, focus);
+            let expected: std::collections::BTreeSet<Identity> =
+                whole.union(&keys(&fresh)).copied().collect();
+            assert_eq!(
+                keys(&scene),
+                expected,
+                "{view:?} {limit} {selected:?} {focus:?}"
+            );
+        }
+        let lifted = hiding::place(&mut scene, &sample, view, time, 4096, None, None);
+        assert_eq!(lifted, before, "{view:?}");
+        assert_eq!(keys(&scene), whole, "{view:?}");
+    }
+
+    /// Fails if a hidden system is kept merely because its root is sampled: focusing each
+    /// process in turn leaves one system behind for every root a focus made.
+    #[test]
+    fn focusing_one_process_after_another_leaves_no_orbit_or_flow_system_behind() {
+        for view in [View::Orbit, View::Flow] {
+            systems_follow_the_hiding(view, |sample, _| {
+                sample
+                    .processes
+                    .iter()
+                    .map(|process| (4096, None, Some(process.id)))
+                    .collect()
+            });
+        }
+    }
+
+    /// Fails if a hidden system is kept merely because its root is sampled: a selection
+    /// swapped across the limit is drawn as a system of its own, which it gives up on
+    /// deselection, when it is beyond the limit and not a root of the whole tree.
+    #[test]
+    fn a_selection_swapped_across_the_limit_leaves_no_orbit_or_flow_system_behind() {
+        for view in [View::Orbit, View::Flow] {
+            systems_follow_the_hiding(view, |_, before| {
+                let mut selected: Vec<_> = before.keys().filter(|id| id.pid >= 1080).collect();
+                selected.sort();
+                selected
+                    .into_iter()
+                    .flat_map(|&id| [(80, Some(id), None), (80, None, None)])
+                    .collect()
+            });
+        }
     }
 
     #[test]
