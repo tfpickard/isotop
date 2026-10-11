@@ -9,6 +9,7 @@ use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::{DISTRICTS, kind_color, process_color, tint};
 use crate::platform::Shadow;
 use crate::simulation::{growth, hash, smoothing};
+use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
 pub mod shared;
@@ -38,57 +39,6 @@ const HUB: Color = [168, 182, 210];
 /// `Identity::start` of a hub. No process starts at the end of time, so a hub's identity never
 /// equals a process's, even when it has the pid of the parent it stands for.
 pub const HUB_START: u64 = u64::MAX;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum View {
-    City,
-    Orbit,
-    Ripple,
-    Flow,
-    Cores,
-    Cells,
-    Strata,
-    Globe,
-    Reef,
-    Matrix,
-    Coop,
-}
-
-impl View {
-    /// Every view in Tab order; number keys 1 to 9, then 0, pick from this list.
-    pub const ALL: [View; 11] = [
-        Self::City,
-        Self::Orbit,
-        Self::Ripple,
-        Self::Flow,
-        Self::Cores,
-        Self::Cells,
-        Self::Strata,
-        Self::Globe,
-        Self::Reef,
-        Self::Matrix,
-        Self::Coop,
-    ];
-
-    pub fn next(&mut self) {
-        let index = Self::ALL.iter().position(|v| v == self).unwrap_or(0);
-        *self = Self::ALL[(index + 1) % Self::ALL.len()];
-    }
-
-    pub fn previous(&mut self) {
-        let index = Self::ALL.iter().position(|v| v == self).unwrap_or(0);
-        *self = Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()];
-    }
-
-    fn backdrop(self) -> Backdrop {
-        match self {
-            Self::City | Self::Cells | Self::Strata | Self::Coop => Backdrop::Dusk,
-            Self::Reef => Backdrop::Sea,
-            Self::Matrix => Backdrop::Void,
-            Self::Orbit | Self::Ripple | Self::Flow | Self::Cores | Self::Globe => Backdrop::Space,
-        }
-    }
-}
 
 /// The sky behind a view. The GPU shader receives the discriminant as `globals.sky.x`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -950,11 +900,15 @@ pub struct Scene {
     pub notes: HashMap<Identity, Vec<String>>,
     pub(crate) cores: cores::Track,
     cells: cells::Dishes,
-    strata: strata::Strata,
+    pub(crate) strata: strata::Strata,
     globe: globe::Globe,
     reef: reef::Reef,
     pub coop: coop::Coop,
     pub matrix: matrix::Rain,
+    /// The views this scene draws, one row each: `REGISTRY`, unless a test brings its own.
+    rows: &'static [ViewInfo],
+    /// The state of each module view, in its row's slot; built-in rows have None.
+    modules: Vec<Option<Box<dyn ViewModule>>>,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
     pub visible: usize,
@@ -963,6 +917,11 @@ pub struct Scene {
 
 impl Scene {
     pub fn new() -> Self {
+        Self::with_rows(REGISTRY)
+    }
+
+    /// A scene that draws the views of `rows`, building each module view's state.
+    pub(crate) fn with_rows(rows: &'static [ViewInfo]) -> Self {
         Self {
             plots: HashMap::new(),
             groups: HashMap::new(),
@@ -1004,10 +963,52 @@ impl Scene {
             reef: reef::Reef::default(),
             coop: coop::Coop::default(),
             matrix: matrix::Rain::default(),
+            rows,
+            modules: rows
+                .iter()
+                .map(|row| match row.hooks {
+                    Hooks::BuiltIn { .. } => None,
+                    Hooks::Module(build) => Some(build()),
+                })
+                .collect(),
             spare: Buffers::default(),
             visible: 0,
             collapsed: 0,
         }
+    }
+
+    /// The row of `view` in the table this scene draws from.
+    pub fn row(&self, view: View) -> &'static ViewInfo {
+        &self.rows[view.index()]
+    }
+
+    /// The third status line for `view` while no process is inspected.
+    pub fn legend(&self, view: View, snapshot: &Snapshot) -> String {
+        match self.row(view).hooks {
+            Hooks::BuiltIn { legend, .. } => legend(self, snapshot),
+            Hooks::Module(_) => self.modules[view.index()]
+                .as_ref()
+                .map(|module| module.legend(snapshot))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The line `view` shows in place of the inspector, if it draws no processes to inspect.
+    pub fn inspector_line(&self, view: View) -> Option<String> {
+        match self.row(view).hooks {
+            Hooks::BuiltIn { inspector_line, .. } => inspector_line.map(|line| line(self)),
+            Hooks::Module(_) => self.modules[view.index()]
+                .as_ref()
+                .and_then(|module| module.inspector_line()),
+        }
+    }
+
+    /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means. No
+    /// built-in view takes keys.
+    pub fn key(&mut self, view: View, key: ViewKey) -> bool {
+        self.modules[view.index()]
+            .as_mut()
+            .is_some_and(|module| module.key(key))
     }
 
     fn growth(&self, id: Identity, time: f32) -> f32 {
@@ -1019,10 +1020,24 @@ impl Scene {
         !self.bounds.is_empty()
     }
 
-    /// Feeds a new sample to views that keep their own history, whichever view is shown.
+    /// Feeds a new sample to every view's record hook in registry order, whichever view is
+    /// shown, so views that keep their own history have it when they open.
     pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
-        self.strata.record(snapshot, time);
-        self.coop.record(snapshot);
+        let rows = self.rows;
+        for (index, row) in rows.iter().enumerate() {
+            match row.hooks {
+                Hooks::BuiltIn {
+                    record: Some(record),
+                    ..
+                } => record(self, snapshot, time),
+                Hooks::BuiltIn { record: None, .. } => {}
+                Hooks::Module(_) => {
+                    if let Some(module) = self.modules[index].as_mut() {
+                        module.record(snapshot, time);
+                    }
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1183,14 +1198,15 @@ impl Scene {
             }
             processes.truncate(limit);
         }
+        let row = self.row(view);
         let [cpu, memory, io] = snapshot.pressure;
-        let (c, m, i) = if view == View::Matrix {
-            (0.0, 0.0, 0.0)
-        } else {
+        let (c, m, i) = if row.haze {
             (bounded(cpu, 20.0), bounded(memory, 10.0), bounded(io, 20.0))
+        } else {
+            (0.0, 0.0, 0.0)
         };
         let sky = Sky {
-            backdrop: view.backdrop(),
+            backdrop: row.backdrop,
             haze: [
                 c * 110.0 + m * 140.0 + i * 30.0,
                 c * 70.0 + m * 20.0 + i * 50.0,
@@ -1208,37 +1224,71 @@ impl Scene {
         self.places.clear();
         self.bounds.clear();
         self.notes.clear();
-        if view != View::City {
-            self.tallest = 0.0;
-        }
-        match view {
-            View::City => {
-                self.city_positions(&processes, snapshot);
-                self.draw_city(&mut frame, &processes, camera, selected, time);
-            }
-            View::Orbit => {
-                let hubs = self.hubs(&processes, snapshot, focus);
-                let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
-                self.draw_orbits(&mut frame, &processes, camera, selected, time)
-            }
-            View::Ripple => {
-                let stir = bounded(cpu + io, 20.0);
-                self.draw_ripples(&mut frame, &processes, camera, selected, time, stir)
-            }
-            View::Flow => {
-                let stir = bounded(cpu + memory + io, 25.0);
-                let hubs = self.hubs(&processes, snapshot, focus);
-                let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
-                self.draw_flow(
-                    &mut frame, &processes, camera, selected, time, snapshot, stir,
-                )
-            }
-            View::Matrix => {
-                self.positions.clear();
-                self.matrix.draw(&mut frame, time);
-                self.visible = 0;
-            }
-            View::Cores | View::Cells | View::Strata | View::Globe | View::Reef | View::Coop => {
+        // Only the city draws buildings, and it measures them again every frame it is shown.
+        self.tallest = 0.0;
+        // Links rise above the city's rooftops and lie on the ground elsewhere.
+        let mut lift = 0.0;
+        match row.hooks {
+            Hooks::BuiltIn { arm, .. } => match arm {
+                BuiltIn::City => {
+                    self.city_positions(&processes, snapshot);
+                    self.draw_city(&mut frame, &processes, camera, selected, time);
+                    lift = 1.5;
+                }
+                BuiltIn::Orbit => {
+                    let hubs = self.hubs(&processes, snapshot, focus);
+                    let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
+                    self.draw_orbits(&mut frame, &processes, camera, selected, time)
+                }
+                BuiltIn::Ripple => {
+                    let stir = bounded(cpu + io, 20.0);
+                    self.draw_ripples(&mut frame, &processes, camera, selected, time, stir)
+                }
+                BuiltIn::Flow => {
+                    let stir = bounded(cpu + memory + io, 25.0);
+                    let hubs = self.hubs(&processes, snapshot, focus);
+                    let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
+                    self.draw_flow(
+                        &mut frame, &processes, camera, selected, time, snapshot, stir,
+                    )
+                }
+                BuiltIn::Matrix => {
+                    self.positions.clear();
+                    self.matrix.draw(&mut frame, time);
+                    self.visible = 0;
+                }
+                BuiltIn::Cores
+                | BuiltIn::Cells
+                | BuiltIn::Strata
+                | BuiltIn::Globe
+                | BuiltIn::Reef
+                | BuiltIn::Coop => {
+                    self.positions.clear();
+                    let mut stage = Stage {
+                        frame: &mut frame,
+                        camera,
+                        selected,
+                        time,
+                        births: &self.births,
+                        positions: &mut self.positions,
+                        places: &mut self.places,
+                        bounds: &mut self.bounds,
+                        notes: &mut self.notes,
+                    };
+                    let shown = match arm {
+                        BuiltIn::Cores => self.cores.draw(&mut stage, &processes, snapshot),
+                        BuiltIn::Cells => self.cells.draw(&mut stage, &processes, snapshot),
+                        BuiltIn::Strata => self.strata.draw(&mut stage, &processes, snapshot),
+                        BuiltIn::Globe => self.globe.draw(&mut stage, &processes, snapshot),
+                        BuiltIn::Reef => self.reef.draw(&mut stage, &processes, snapshot),
+                        BuiltIn::Coop => self.coop.draw(&mut stage, &processes, snapshot),
+                        _ => unreachable!(),
+                    };
+                    self.visible = shown;
+                    self.collapsed = processes.len().saturating_sub(shown);
+                }
+            },
+            Hooks::Module(_) => {
                 self.positions.clear();
                 let mut stage = Stage {
                     frame: &mut frame,
@@ -1251,25 +1301,20 @@ impl Scene {
                     bounds: &mut self.bounds,
                     notes: &mut self.notes,
                 };
-                let shown = match view {
-                    View::Cores => self.cores.draw(&mut stage, &processes, snapshot),
-                    View::Cells => self.cells.draw(&mut stage, &processes, snapshot),
-                    View::Strata => self.strata.draw(&mut stage, &processes, snapshot),
-                    View::Globe => self.globe.draw(&mut stage, &processes, snapshot),
-                    View::Reef => self.reef.draw(&mut stage, &processes, snapshot),
-                    View::Coop => self.coop.draw(&mut stage, &processes, snapshot),
-                    _ => unreachable!(),
-                };
+                let shown = self.modules[view.index()]
+                    .as_mut()
+                    .map_or(0, |module| module.draw(&mut stage, &processes, snapshot));
                 self.visible = shown;
                 self.collapsed = processes.len().saturating_sub(shown);
             }
         }
         self.splashes.clear();
         self.newborn.clear();
-        let lift = if view == View::City { 1.5 } else { 0.0 };
-        // Only the city and orbit draw every link; elsewhere arcs remain for highlighted processes.
-        let quiet = !matches!(view, View::City | View::Orbit | View::Ripple);
-        self.draw_links(&mut frame, camera, snapshot, time, lift, quiet);
+        match row.links {
+            LinkRule::All => self.draw_links(&mut frame, camera, snapshot, time, lift, false),
+            LinkRule::Quiet => self.draw_links(&mut frame, camera, snapshot, time, lift, true),
+            LinkRule::DrawnByView => {}
+        }
         for (id, &point) in &self.previous {
             // A hub is no process, so it neither dies nor splashes when it is no longer drawn.
             if !alive.contains(id) && !is_hub(id) {
@@ -1280,7 +1325,8 @@ impl Scene {
         self.previous = self.positions.clone();
         self.deaths
             .retain(|&(_, died)| (0.0..FADE_SECONDS).contains(&(time - died)));
-        for &(point, died) in &self.deaths {
+        let flashes: &[(Point, f32)] = if row.flash { &self.deaths } else { &[] };
+        for &(point, died) in flashes {
             let age = (time - died) / FADE_SECONDS;
             let ring = Orbit {
                 center: point,
@@ -2996,6 +3042,7 @@ mod tests {
     use crate::model::testing::process;
     use crate::model::{Kind, demo};
     use crate::simulation::GROW_SECONDS;
+    use crate::views::{testing, view};
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, view: View, time: f32) -> Frame {
         let mut frame = scene.render(
@@ -3090,7 +3137,7 @@ mod tests {
             ..Default::default()
         };
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Orbit, 0.0);
+        render(&mut scene, &snapshot, view("orbit"), 0.0);
         let id = snapshot.processes[1].id;
         assert_eq!(scene.mass[&id], ((2 << 30) + (1 << 20), 2));
     }
@@ -3100,18 +3147,23 @@ mod tests {
         let snapshot = demo(1.0, 32);
         let mut scene = Scene::new();
         scene.intro = true;
-        render(&mut scene, &snapshot, View::Orbit, 10.0);
+        render(&mut scene, &snapshot, view("orbit"), 10.0);
         let id = snapshot.processes[3].id;
         assert!(scene.growth(id, 10.0) < 0.01);
         assert!(scene.growth(id, 10.0 + GROW_SECONDS) > 0.99);
         let mut fewer = snapshot.clone();
         fewer.processes.remove(3);
-        render(&mut scene, &fewer, View::Orbit, 10.5);
+        render(&mut scene, &fewer, view("orbit"), 10.5);
         assert_eq!(scene.deaths.len(), 1);
-        render(&mut scene, &fewer, View::Orbit, 10.5 + FADE_SECONDS + 0.01);
+        render(
+            &mut scene,
+            &fewer,
+            view("orbit"),
+            10.5 + FADE_SECONDS + 0.01,
+        );
         assert!(scene.deaths.is_empty());
         let mut quiet = Scene::new();
-        render(&mut quiet, &snapshot, View::City, 10.0);
+        render(&mut quiet, &snapshot, view("city"), 10.0);
         assert_eq!(
             quiet.growth(id, 10.0),
             1.0,
@@ -3126,7 +3178,7 @@ mod tests {
         let beams = |scene: &mut Scene| {
             let frame = scene.render(
                 &snapshot,
-                View::Orbit,
+                view("orbit"),
                 &Camera::default(),
                 320,
                 180,
@@ -3156,9 +3208,9 @@ mod tests {
     fn pressure_tints_the_sky() {
         let mut snapshot = demo(1.0, 16);
         snapshot.pressure = [0.0; 3];
-        let calm = render(&mut Scene::new(), &snapshot, View::Orbit, 1.0);
+        let calm = render(&mut Scene::new(), &snapshot, view("orbit"), 1.0);
         snapshot.pressure = [0.0, 60.0, 0.0];
-        let stressed = render(&mut Scene::new(), &snapshot, View::Orbit, 1.0);
+        let stressed = render(&mut Scene::new(), &snapshot, view("orbit"), 1.0);
         let red = |frame: &Frame| {
             frame
                 .pixels
@@ -3183,13 +3235,13 @@ mod tests {
             }
             scene
         };
-        let calm = run(&snapshot, View::Ripple);
+        let calm = run(&snapshot, view("ripple"));
         assert_eq!(calm.wave.as_ref().unwrap().energy(), 0.0);
         snapshot.processes[1].cpu = 80.0;
-        let busy = run(&snapshot, View::Ripple);
+        let busy = run(&snapshot, view("ripple"));
         assert!(busy.wave.as_ref().unwrap().energy() > 1.0);
         assert_eq!(busy.positions.len(), busy.visible);
-        let flow = run(&snapshot, View::Flow);
+        let flow = run(&snapshot, view("flow"));
         let particles = &flow.flow.as_ref().unwrap().particles;
         assert!(
             particles.iter().any(|p| p.bright),
@@ -3205,7 +3257,7 @@ mod tests {
     fn pebbles_cluster_by_cgroup_without_touching_and_stay_put() {
         let mut snapshot = demo(1.0, 64);
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Ripple, 1.0);
+        render(&mut scene, &snapshot, view("ripple"), 1.0);
         assert_eq!(scene.clusters.len(), 4);
         let flat = |scene: &Scene, id: &Identity| {
             let p = scene.positions[id];
@@ -3235,7 +3287,7 @@ mod tests {
         snapshot.processes.remove(20);
         snapshot.processes[30].memory += snapshot.processes[30].memory / 20;
         snapshot.processes[31].cpu = 400.0;
-        render(&mut scene, &snapshot, View::Ripple, 1.1);
+        render(&mut scene, &snapshot, view("ripple"), 1.1);
         for p in &snapshot.processes {
             assert_eq!(flat(&scene, &p.id), before[&p.id], "{} moved", p.name);
         }
@@ -3249,12 +3301,12 @@ mod tests {
             p.cpu = 400.0;
         }
         let mut scene = Scene::new();
-        let mut frame = render(&mut scene, &snapshot, View::Ripple, 0.0);
+        let mut frame = render(&mut scene, &snapshot, view("ripple"), 0.0);
         for k in 1..80 {
             if k % 10 == 0 {
                 scene.splashes.push([0.0; 3]);
             }
-            frame = render(&mut scene, &snapshot, View::Ripple, k as f32 * 0.05);
+            frame = render(&mut scene, &snapshot, view("ripple"), k as f32 * 0.05);
         }
         assert!(scene.wave.as_ref().unwrap().energy() > 1.0);
         let brightest = frame
@@ -3273,7 +3325,7 @@ mod tests {
     fn every_view_renders_the_demo_and_an_empty_machine() {
         let snapshot = demo(30.0, 128);
         // The matrix draws the journal, not processes; its own tests cover it.
-        for view in View::ALL.into_iter().filter(|&view| view != View::Matrix) {
+        for view in View::all().filter(|&shown| shown != view("matrix")) {
             let mut scene = Scene::new();
             for k in 0..4 {
                 render(&mut scene, &snapshot, view, 30.0 + k as f32 * 0.1);
@@ -3297,6 +3349,107 @@ mod tests {
     }
 
     #[test]
+    fn a_module_view_draws_records_and_legends_through_the_trait() {
+        let snapshot = demo(10.0, 32);
+        let (probe, quiet) = (View::at(0), View::at(1));
+        let mut scene = Scene::with_rows(testing::ROWS);
+        assert_eq!(
+            scene.legend(probe, &snapshot),
+            " probe: 0 draws | 0 records | keys []"
+        );
+        let frame = render(&mut scene, &snapshot, probe, 10.0);
+        assert_eq!(
+            (scene.visible, scene.collapsed),
+            (16, 16),
+            "the processes the module did not show are collapsed"
+        );
+        assert_eq!(scene.positions.len(), 16);
+        assert!(frame.picks.iter().any(|&pick| pick != NONE));
+        assert_eq!(frame.sky.backdrop, Backdrop::Space, "the row's backdrop");
+        scene.record(&snapshot, 10.0);
+        assert_eq!(
+            scene.legend(probe, &snapshot),
+            " probe: 1 draws | 1 records | keys []"
+        );
+        assert_eq!(scene.inspector_line(probe), None);
+        assert_eq!(scene.inspector_line(quiet).as_deref(), Some(" > quiet"));
+        render(&mut scene, &snapshot, quiet, 10.1);
+        assert_eq!(scene.positions.len(), 16, "each module keeps its own state");
+        assert_eq!(
+            scene.legend(quiet, &snapshot),
+            " probe: 1 draws | 1 records | keys []"
+        );
+    }
+
+    #[test]
+    fn rows_switch_the_haze_the_exit_flash_and_the_links_off() {
+        let snapshot = demo(10.0, 32);
+        let mut fewer = snapshot.clone();
+        fewer.processes.truncate(8);
+        let count = |frame: &Frame, beams: bool| {
+            frame
+                .items
+                .iter()
+                .filter(|item| match item {
+                    Item::Beam(..) => beams,
+                    Item::Glow { .. } => !beams,
+                    _ => false,
+                })
+                .count()
+        };
+        // Each row draws the full machine, then loses most of it, with every process highlighted.
+        let draw = |view: View| {
+            let mut scene = Scene::with_rows(testing::ROWS);
+            scene.highlight = snapshot.processes.iter().map(|p| p.id).collect();
+            let full = render(&mut scene, &snapshot, view, 10.0);
+            let exits = render(&mut scene, &fewer, view, 10.1);
+            (full.sky.haze, count(&full, true), count(&exits, false))
+        };
+        let (haze, beams, flashes) = draw(View::at(0));
+        assert!(haze.iter().any(|&channel| channel > 0.0), "{haze:?}");
+        assert!(beams > 0, "highlighted links are drawn");
+        assert!(flashes > 0, "exits flash");
+        assert_eq!(draw(View::at(1)), ([0.0; 3], 0, 0));
+    }
+
+    #[test]
+    fn record_hooks_run_for_every_view_whichever_is_shown() {
+        let (probe, quiet) = (View::at(0), View::at(1));
+        let mut scene = Scene::with_rows(testing::ROWS);
+        for step in 0..3 {
+            let snapshot = demo(step as f64, 16);
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, probe, step as f32);
+        }
+        let snapshot = demo(3.0, 16);
+        assert_eq!(
+            scene.legend(probe, &snapshot),
+            " probe: 3 draws | 3 records | keys []"
+        );
+        assert_eq!(
+            scene.legend(quiet, &snapshot),
+            " probe: 0 draws | 3 records | keys []",
+            "a hidden view records too"
+        );
+        // The built-in hooks: Strata keeps a history while the city is shown.
+        let mut scene = Scene::new();
+        for step in 0..=10 {
+            let snapshot = demo(step as f64, 64);
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, view("city"), step as f32);
+        }
+        render(&mut scene, &demo(10.0, 64), view("strata"), 10.0);
+        assert!(
+            scene
+                .notes
+                .values()
+                .any(|notes| notes[0].ends_with("over the last 10 s")),
+            "{:?}",
+            scene.notes.values().next()
+        );
+    }
+
+    #[test]
     fn marbles_hop_lanes_when_the_scheduler_moves_them() {
         let mut snapshot = demo(1.0, 16);
         for p in &mut snapshot.processes {
@@ -3307,14 +3460,14 @@ mod tests {
         snapshot.processes[3].core = Some(0);
         let id = snapshot.processes[3].id;
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Cores, 1.0);
+        render(&mut scene, &snapshot, view("cores"), 1.0);
         let resting = scene.positions[&id][2];
         snapshot.processes[3].core = Some(12);
-        render(&mut scene, &snapshot, View::Cores, 1.1);
-        render(&mut scene, &snapshot, View::Cores, 1.4);
+        render(&mut scene, &snapshot, view("cores"), 1.1);
+        render(&mut scene, &snapshot, view("cores"), 1.4);
         assert!(scene.positions[&id][2] > resting + 0.5, "airborne mid-hop");
         assert!(scene.notes[&id][0].contains("cpu12") && scene.notes[&id][0].contains("1 hop "));
-        render(&mut scene, &snapshot, View::Cores, 2.0);
+        render(&mut scene, &snapshot, view("cores"), 2.0);
         let landed = scene.positions[&id];
         assert!(
             landed[0].hypot(landed[1]) > 20.0,
@@ -3334,9 +3487,9 @@ mod tests {
             }
             // History builds up while another view is shown.
             scene.record(&snapshot, step as f32);
-            render(&mut scene, &snapshot, View::City, step as f32);
+            render(&mut scene, &snapshot, view("city"), step as f32);
         }
-        render(&mut scene, &snapshot, View::Strata, 29.0);
+        render(&mut scene, &snapshot, view("strata"), 29.0);
         assert_eq!(scene.visible, 16);
         let first = snapshot.processes[0].id;
         assert!(
@@ -3348,7 +3501,7 @@ mod tests {
             scene.positions.iter().map(|(id, p)| (*id, p[1])).collect();
         snapshot.elapsed = 30.0;
         snapshot.processes[33].cpu = 50.0;
-        render(&mut scene, &snapshot, View::Strata, 30.0);
+        render(&mut scene, &snapshot, view("strata"), 30.0);
         assert_eq!(scene.visible, 17, "a newly busy process earns a ridge");
         for (id, y) in &rows {
             assert_eq!(scene.positions[id][1], *y, "an existing ridge moved row");
@@ -3376,7 +3529,7 @@ mod tests {
     fn dishes_and_globe_talkers_keep_their_places() {
         let mut snapshot = demo(10.0, 128);
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Cells, 10.0);
+        render(&mut scene, &snapshot, view("cells"), 10.0);
         let containers: Vec<(Identity, Point)> = snapshot
             .processes
             .iter()
@@ -3391,18 +3544,18 @@ mod tests {
             .cgroup
             .clone();
         snapshot.units.get_mut(&session).unwrap().memory *= 400;
-        render(&mut scene, &snapshot, View::Cells, 10.1);
-        render(&mut scene, &snapshot, View::Cells, 10.2);
+        render(&mut scene, &snapshot, view("cells"), 10.1);
+        render(&mut scene, &snapshot, view("cells"), 10.2);
         for (id, at) in &containers {
             assert_eq!(scene.positions[id], *at, "the container dish moved");
         }
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Globe, 0.0);
+        render(&mut scene, &snapshot, view("globe"), 0.0);
         let mut talkers: Vec<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
         talkers.sort();
         let before: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
         snapshot.remotes.retain(|r| r.id != talkers[0]);
-        render(&mut scene, &snapshot, View::Globe, 0.0);
+        render(&mut scene, &snapshot, view("globe"), 0.0);
         let after: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
         assert_eq!(
             before, after,
@@ -3414,7 +3567,7 @@ mod tests {
     fn globe_shows_only_processes_with_remote_connections() {
         let snapshot = demo(10.0, 128);
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Globe, 10.0);
+        render(&mut scene, &snapshot, view("globe"), 10.0);
         let talkers: HashSet<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
         assert_eq!(scene.visible, talkers.len());
         assert!(scene.positions.keys().all(|id| talkers.contains(id)));
@@ -3426,13 +3579,13 @@ mod tests {
     fn city_does_not_relocate_when_resources_or_population_change() {
         let mut scene = Scene::new();
         let mut snapshot = demo(0.0, 32);
-        render(&mut scene, &snapshot, View::City, 0.0);
+        render(&mut scene, &snapshot, view("city"), 0.0);
         let id = snapshot.processes[10].id;
         let position = scene.positions[&id];
         snapshot.processes.remove(5);
         snapshot.processes[9].cpu = 1600.0;
         snapshot.processes[9].memory *= 100;
-        render(&mut scene, &snapshot, View::City, 0.0);
+        render(&mut scene, &snapshot, view("city"), 0.0);
         assert_eq!(scene.positions[&id], position);
     }
 
@@ -3474,7 +3627,7 @@ mod tests {
             ..Default::default()
         };
         let mut scene = Scene::new();
-        render(&mut scene, &leaves, View::Orbit, 0.0);
+        render(&mut scene, &leaves, view("orbit"), 0.0);
         assert_eq!(
             scene.stars.len(),
             20,
@@ -3485,7 +3638,7 @@ mod tests {
             shadows: vec![launchd],
             ..leaves.clone()
         };
-        for view in [View::Orbit, View::Flow] {
+        for view in [view("orbit"), view("flow")] {
             let mut scene = Scene::new();
             render(&mut scene, &shadowed, view, 0.0);
             let &[(star, members, _)] = scene.stars.as_slice() else {
@@ -3520,7 +3673,7 @@ mod tests {
         let mut focused = Scene::new();
         focused.render(
             &shadowed,
-            View::Orbit,
+            view("orbit"),
             &Camera::default(),
             320,
             180,
@@ -3547,7 +3700,7 @@ mod tests {
             ..Default::default()
         };
         let mut scene = Scene::new();
-        render(&mut scene, &snapshot, View::Orbit, 0.0);
+        render(&mut scene, &snapshot, view("orbit"), 0.0);
         // init, kthreadd and the six services with children; kernel threads and leaf services orbit.
         assert_eq!(scene.systems.len(), 8);
         assert_eq!(scene.stars.len(), 8);
@@ -3565,7 +3718,7 @@ mod tests {
         };
         let before = scene.systems.clone();
         for step in 1..=240 {
-            render(&mut scene, &snapshot, View::Orbit, step as f32 * 0.5);
+            render(&mut scene, &snapshot, view("orbit"), step as f32 * 0.5);
         }
         assert_eq!(scene.systems.len(), 8, "turning never re-places a system");
         assert_eq!(
@@ -3592,7 +3745,7 @@ mod tests {
         snapshot
             .processes
             .extend((1000..1040).map(|pid| process(pid, 100)));
-        render(&mut scene, &snapshot, View::Orbit, 121.0);
+        render(&mut scene, &snapshot, view("orbit"), 121.0);
         assert!(
             scene.systems[&service].1 > reserved,
             "the grown system was re-placed"
@@ -3689,7 +3842,7 @@ mod tests {
         let branch = snapshot.processes[16].id;
         let set = descendants(&snapshot, branch);
         assert_eq!(set.len(), 16);
-        for view in [View::City, View::Orbit] {
+        for view in [view("city"), view("orbit")] {
             let mut scene = Scene::new();
             let mut frame = scene.render(
                 &snapshot,

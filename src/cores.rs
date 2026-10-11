@@ -532,12 +532,13 @@ fn active(process: &Process) -> bool {
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::{Scene, View};
+    use crate::render::Scene;
+    use crate::views::view;
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
         scene.render(
             snapshot,
-            View::Cores,
+            view("cores"),
             &Camera::default(),
             320,
             180,

@@ -462,13 +462,14 @@ mod tests {
 
     #[test]
     fn popups_hold_only_measured_numbers_without_cgroup_accounting() {
-        use crate::render::{Camera, Scene, View};
+        use crate::render::{Camera, Scene};
+        use crate::views::view;
         let mut snapshot = demo(10.0, 64);
         let render = |snapshot: &Snapshot| {
             let mut scene = Scene::new();
             scene.render(
                 snapshot,
-                View::Cells,
+                view("cells"),
                 &Camera::default(),
                 320,
                 180,

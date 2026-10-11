@@ -122,11 +122,13 @@ pub enum Source {
     Locations,
     /// `Process::syscall_io`, the bytes and calls of read and write syscalls.
     SyscallIo,
+    /// The system journal: `journalctl` on Linux, the unified log on macOS.
+    Journal,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 15] = [
+    pub const ALL: [Source; 16] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -142,6 +144,7 @@ impl Source {
         Source::OpenFiles,
         Source::Locations,
         Source::SyscallIo,
+        Source::Journal,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -162,10 +165,11 @@ impl Source {
             Source::OpenFiles => "open files",
             Source::Locations => "remote locations",
             Source::SyscallIo => "syscall io",
+            Source::Journal => "journal",
         }
     }
 
-    fn bit(self) -> u64 {
+    const fn bit(self) -> u64 {
         1 << self as u32
     }
 }
@@ -175,6 +179,17 @@ impl Source {
 pub struct Sources(u64);
 
 impl Sources {
+    /// The set of `sources`, for constant contexts such as the view registry's rows.
+    pub const fn of(sources: &[Source]) -> Sources {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < sources.len() {
+            bits |= sources[index].bit();
+            index += 1;
+        }
+        Sources(bits)
+    }
+
     pub fn contains(self, source: Source) -> bool {
         self.0 & source.bit() != 0
     }
@@ -407,6 +422,11 @@ mod tests {
         let both = Sources::from(Source::FileLocks)
             .union(Sources::from([Source::GpuMemory, Source::FileLocks]));
         assert_eq!(format!("{both:?}"), r#"{"file locks", "gpu memory"}"#);
+        assert_eq!(
+            Sources::of(&[Source::GpuMemory, Source::FileLocks, Source::GpuMemory]),
+            both
+        );
+        assert!(Sources::of(&[]).is_empty());
         assert_eq!(
             Source::ALL.into_iter().collect::<Sources>().iter().count(),
             Source::ALL.len()

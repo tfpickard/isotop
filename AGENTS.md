@@ -30,7 +30,7 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), main loop, headless PNG and benchmark, and `warm_up`, which settles a headless frame (the golden render test calls it too) |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, headless PNG and benchmark, and `warm_up`, which runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
 | `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
@@ -39,7 +39,8 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `View`, `Stage`, and `Scene`, which owns City, Orbit, Ripple and Flow as methods, dispatches Matrix by hand and calls the module views below through `Stage` |
+| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup` and `LinkRule`; the built-in views' legends and record hooks; and `testing`, module views for tests |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Stage`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
@@ -63,7 +64,7 @@ files by path relative to `src/` in the first column; a row may list several.
 ## Architecture
 
 Dependencies mostly run one way: `platform` and `model` (the data), then the shared helpers, then
-`render` with the view modules, then `gpu` and `terminal`, then `main`. Check with
+`render` with `views` and the view modules, then `gpu` and `terminal`, then `main`. Check with
 `grep -n 'use crate::' src/*.rs` before adding an import. Nothing imports `main.rs`, `model` and
 `platform` never import `render`, a view or `terminal`, and `gpu` and `terminal` import only
 `render`. The exceptions, so don't assume otherwise:
@@ -71,21 +72,26 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 - `model` and `platform` import each other: the platform builds `model` types and `model` calls the
   `Sampler`. `journal` and `platform/*/journal.rs` do the same.
 - `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
-  `Color`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
+  `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
+  `Scene`, `Stage` and `Backdrop` and call the built-in views' legends. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
 - `render` and the views read `platform` types (`Shadow`, `Files`, `DeletedFile`, and `Source`
   and `Sources` from `Snapshot::missing`), and Cells and the coop its `GROUP_LABEL` and
   `WITHOUT_CGROUPS`.
 
-**The view contract.** A module view owns a state struct and implements
-`draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
-`Stage` carries in the frame, camera, selection, time, births and growth. A view writes back
-`stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
-`stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
+**The view contract.** A view is one module plus one row of `views::REGISTRY`. The module owns
+a state struct and implements `views::ViewModule`:
+`draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize` and
+`legend`, and where it needs them `record` (every sample, whichever view is shown), `key` and
+`inspector_line`. `Stage` carries in the frame, camera, selection, time, births and growth. A
+view writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read
+it), `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
 `stage.places` and `stage.notes`, and returns how many processes it showed; the rest count as
-collapsed. City, Orbit, Ripple and Flow are still `Scene` methods that use `Scene`'s own fields,
-and Matrix is a special arm in `Scene::render`. They are being moved onto `Stage`, so write new
-views the module way.
+collapsed. The row (`ViewInfo`) holds everything else that sets the view apart, and `Scene`,
+`App` and the headless warm-up read it instead of naming the view. The eleven older views are
+built in (`Hooks::BuiltIn`): `Scene` keeps their state in typed fields and draws them in its own
+arms, City, Orbit, Ripple and Flow as `Scene` methods and Matrix by hand. They are being moved
+onto `ViewModule`, so write new views the module way and never add an arm.
 
 **Shared helpers live in one place each.** Don't write a second copy:
 - `simulation`: `SpatialHash` and `SpatialHash3`, `Rng` (seeded per identity, `normal` for a
@@ -201,19 +207,25 @@ match your own shell.
   rate also needs `Counters` and `measure()`; a field filled on the background thread needs
   `Extras`, `background()` and the merge in `Collector::sample` (all in `model.rs`). `Snapshot`
   derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo`.
-- A new view is a module view like `reef.rs` (`docs/VIEW_CONVENTIONS.md` has the rules). Today it
-  touches these places; `View::next`, Tab, the number keys and `--view` follow from `View::ALL`:
-  - `src/<name>.rs` with a `draw` as in the Architecture section, a `mod` line in `main.rs` and a
-    row in the file table above.
-  - `render.rs`: the `View` variant, `View::ALL` (and its length), `View::backdrop`, a field on
-    `Scene`, and the view in both `match` arms of `Scene::render` (the arm list and the `Stage`
-    dispatch). Add `Scene::record` if it keeps history, and the `quiet` links test if it should
-    draw every link.
-  - `main.rs`: the title and the legend in `App::text`, and `warm_up` if the first frame needs
-    settling.
-  - Outside `src/`: the README section, key table and view lists, the view loop in
-    `.github/workflows/ci.yml`, and a line in `tests/golden.txt` (bless it and say so in the PR).
-  The registry from P1 (#17) will replace most of this list; update it when that merges.
+- A new view is one module plus one registry row (`docs/VIEW_CONVENTIONS.md` has the rules):
+  - `src/<name>.rs` with a `#[derive(Default)]` state struct that implements `ViewModule`, a
+    `mod` line in `main.rs` and a row in the file table above.
+  - One `ViewInfo` at the end of `REGISTRY` in `views.rs`, built with
+    `ViewInfo::new(name, title, backdrop, Hooks::Module(...))`, setting only the fields that
+    differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
+    `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
+    or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    `header` (None: the scene's visible and collapsed counts), `face` (None), `sources` (none)
+    and `demo` (`DemoOptions::default()`). Tab, Shift+Tab, `--view`, `--list-views` and
+    `--verbose` follow from the table. Never reorder the first ten rows: the digits pick them.
+  - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
+    . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
+    (returning true consumes that press). Every other key is global, and no key reaches the view
+    while a search is open.
+  - Test the module through `Scene::with_rows` and a table of its own, as `views::testing` does.
+  - Outside `src/`: the README section, key table and view lists, and a line in
+    `tests/golden.txt` (bless it and say so in the PR). CI renders every view `--list-views`
+    prints, and the golden test renders every row.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
   error-prone code.
 - Suppress lints with `#[expect(lint, reason = "...")]` only, never `#[allow]`.

@@ -485,7 +485,8 @@ mod tests {
     #[test]
     fn notes_and_arcs_carry_no_invented_rates_without_socket_traffic() {
         use crate::model::demo;
-        use crate::render::{Camera, Item, Scene, View};
+        use crate::render::{Camera, Item, Scene};
+        use crate::views::view;
         let mut snapshot = demo(10.0, 128);
         for remote in &mut snapshot.remotes {
             (remote.rtt, remote.up, remote.down) = (0.0, None, None);
@@ -495,7 +496,7 @@ mod tests {
             let mut scene = Scene::new();
             let frame = scene.render(
                 snapshot,
-                View::Globe,
+                view("globe"),
                 &Camera::default(),
                 320,
                 180,

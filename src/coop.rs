@@ -3001,7 +3001,8 @@ mod tests {
     use super::*;
     use crate::model::{Unit, demo};
     use crate::platform::Sources;
-    use crate::render::{Camera, Scene, View};
+    use crate::render::{Camera, Scene};
+    use crate::views::view;
 
     fn identity(pid: u32) -> Identity {
         Identity {
@@ -3090,7 +3091,7 @@ mod tests {
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
         let frame = scene.render(
             snapshot,
-            View::Coop,
+            view("coop"),
             &Camera::default(),
             160,
             90,
@@ -4339,7 +4340,7 @@ mod tests {
                 scene.record(&sample, 20.0 + k as f32);
                 let mut frame = scene.render(
                     &sample,
-                    View::Coop,
+                    view("coop"),
                     &Camera::default(),
                     320,
                     180,
@@ -4367,7 +4368,7 @@ mod tests {
     ) {
         let frame = scene.render(
             snapshot,
-            View::Coop,
+            view("coop"),
             &Camera::default(),
             160,
             90,

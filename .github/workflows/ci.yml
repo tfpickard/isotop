@@ -55,11 +55,12 @@ jobs:
           lldb --batch -o run -k "thread backtrace all" -k quit -- "$binary" --test-threads=1
       - run: cargo build --locked --release
 
-      # Keep this list in step with View::ALL in src/render.rs. Once P1 (#17) adds
-      # `isotop --list-views`, loop over its output instead.
+      # Every view the registry offers on this platform, as `--list-views` prints them.
       - name: Render every view headless
         run: |
-          for view in city orbit ripple flow cores cells strata globe reef matrix coop; do
+          views=$(./target/release/isotop --list-views)
+          test -n "$views"
+          for view in $views; do
             ./target/release/isotop --demo --view "$view" --renderer cpu \
               --width 960 --time 12 --output "$view-${{ runner.os }}.png"
           done

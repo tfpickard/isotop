@@ -27,7 +27,16 @@ cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
 ./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix
+./target/release/isotop --list-views      # the views this platform supports, one per line
 ```
+
+Each view knows whether it runs on the platform; every view runs on Linux and macOS
+today. Tab, Shift+Tab and the number keys pass over a view that does not. `--view`
+with such a view starts on the first view that does instead, except in a headless
+`--output` or `--benchmark` run, which exits with status 1 and says why.
+`--list-views` prints the supported views in Tab order and exits, and `--verbose`
+prints `skipping view <name>: not supported on this platform` to stderr at
+startup for each view it passes over. isotop never shows a "not supported" screen.
 
 Run directly in a graphics-capable terminal such as Ghostty or Kitty; tmux does
 not pass the graphics protocol through. The app queries graphics support on

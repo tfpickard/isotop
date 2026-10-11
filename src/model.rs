@@ -1226,6 +1226,12 @@ fn demo_files(index: usize, kind: Kind) -> (platform::Files, u32, Option<usize>)
     (files, held, waiting)
 }
 
+/// What the demo workload synthesizes for a view beyond what `demo` gives every view. A view asks
+/// for it on its registry row (`ViewInfo::demo`); the default is `demo` exactly, so a view that
+/// asks for nothing gets today's frames. S4 (#25) adds the options.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DemoOptions {}
+
 #[expect(clippy::too_many_lines, reason = "split in #90 (A31)")]
 pub fn demo(time: f64, count: usize) -> Snapshot {
     let names = [
