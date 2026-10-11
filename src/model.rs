@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,8 +168,9 @@ pub struct Snapshot {
     /// can have Unix and TCP sockets both. Empty when the platform does not tell the protocols
     /// apart.
     pub unix_links: HashSet<(Identity, Identity)>,
-    /// TCP connections leaving the machine, per process.
-    pub outside: HashMap<Identity, u32>,
+    /// TCP connections leaving the machine, per process. Ordered, because views draw one emitter
+    /// per entry and a hash order would change the frame from run to run.
+    pub outside: BTreeMap<Identity, u32>,
     pub cpus: Vec<Cpu>,
     /// Cgroups of the sampled processes, by path.
     pub units: HashMap<String, Unit>,

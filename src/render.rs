@@ -3874,4 +3874,59 @@ mod tests {
             assert!(shown.chars().count() <= LABEL_NAME_CELLS);
         }
     }
+
+    /// The display list of the headless demo frame for `view`, as text. The scene and the
+    /// snapshot are both new, and std seeds every `HashMap` and `HashSet` differently, so a
+    /// result that depends on iteration order differs between calls.
+    fn headless_display_list(view: View) -> Vec<String> {
+        const SIZE: [u32; 2] = [640, 360];
+        let snapshot = demo(12.0, 192);
+        let mut scene = Scene::new();
+        let mut camera = Camera::default();
+        let draw = |scene: &mut Scene, camera: &Camera, time: f32| {
+            scene.render(
+                &snapshot, view, camera, SIZE[0], SIZE[1], None, time, 1024, None,
+            )
+        };
+        draw(&mut scene, &camera, 12.0);
+        scene.fit(&mut camera, SIZE[0], SIZE[1]);
+        if view == View::Flow {
+            // The medium starts empty and the headless render lets it develop first.
+            for step in 0..80 {
+                draw(&mut scene, &camera, 8.0 + step as f32 * 0.05);
+            }
+        }
+        let frame = draw(&mut scene, &camera, 12.0);
+        frame.items.iter().map(|item| format!("{item:?}")).collect()
+    }
+
+    fn assert_display_list_is_repeatable(view: View) {
+        let first = headless_display_list(view);
+        for run in 1..8 {
+            let again = headless_display_list(view);
+            let first_difference = first
+                .iter()
+                .zip(&again)
+                .position(|(a, b)| a != b)
+                .or((first.len() != again.len()).then_some(first.len().min(again.len())));
+            if let Some(item) = first_difference {
+                panic!(
+                    "{view:?} drew a different frame on run {run}: item {item} of {} was\n  {:?}\nnow\n  {:?}",
+                    first.len(),
+                    first.get(item),
+                    again.get(item)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn orbit_draws_the_same_frame_whatever_order_hash_maps_iterate_in() {
+        assert_display_list_is_repeatable(View::Orbit);
+    }
+
+    #[test]
+    fn flow_draws_the_same_frame_whatever_order_hash_maps_iterate_in() {
+        assert_display_list_is_repeatable(View::Flow);
+    }
 }
