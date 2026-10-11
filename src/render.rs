@@ -32,6 +32,8 @@ pub const ORIGIN_Y: f32 = 0.57;
 /// Depth assigned to background stars, below every scene object.
 pub const BACKGROUND: f32 = -10000.0;
 pub(crate) const MIN_BODY_PX: f32 = 3.5;
+/// The longest piece of a `Frame::hairline` one pair of triangles covers, in pixels.
+const HAIRLINE_PIECE: f32 = 8.0;
 const FADE_SECONDS: f32 = 1.2;
 pub(crate) const WARM: Color = [255, 190, 110];
 pub(crate) const NVIDIA: Color = [118, 214, 60];
@@ -804,6 +806,51 @@ impl Frame {
         }
     }
 
+    /// A segment as a ribbon `width` pixels wide, in pieces of at most `HAIRLINE_PIECE` pixels so
+    /// no triangle scans a large box. Like a line it is depth-tested and leaves nothing pickable
+    /// where it is drawn; unlike a one-pixel line or beam, its triangles rasterize alike on the
+    /// CPU and the GPU.
+    pub(crate) fn hairline(
+        &mut self,
+        camera: &Camera,
+        a: Point,
+        b: Point,
+        color: Color,
+        width: f32,
+    ) {
+        let a = self.project(camera, a);
+        let b = self.project(camera, b);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let length = dx.hypot(dy);
+        if !(1e-3..=12000.0).contains(&length) {
+            return;
+        }
+        let half = width * 0.5;
+        let (nx, ny) = (-dy / length * half, dx / length * half);
+        let pieces = (length / HAIRLINE_PIECE).ceil() as usize;
+        let at = |t: f32| [a[0] + dx * t, a[1] + dy * t, a[2] + (b[2] - a[2]) * t];
+        for piece in 0..pieces {
+            let p = at(piece as f32 / pieces as f32);
+            let q = at((piece + 1) as f32 / pieces as f32);
+            let corners = [
+                [p[0] + nx, p[1] + ny, p[2]],
+                [q[0] + nx, q[1] + ny, q[2]],
+                [q[0] - nx, q[1] - ny, q[2]],
+                [p[0] - nx, p[1] - ny, p[2]],
+            ];
+            self.items.push(Item::Triangle(
+                [corners[0], corners[1], corners[2]],
+                color,
+                NONE,
+            ));
+            self.items.push(Item::Triangle(
+                [corners[0], corners[2], corners[3]],
+                color,
+                NONE,
+            ));
+        }
+    }
+
     pub(crate) fn sphere(
         &mut self,
         camera: &Camera,
@@ -1549,8 +1596,8 @@ impl Scene {
         self.splashes.clear();
         self.newborn.clear();
         match row.links {
-            LinkRule::All => self.draw_links(&mut frame, camera, snapshot, time, lift, false),
-            LinkRule::Quiet => self.draw_links(&mut frame, camera, snapshot, time, lift, true),
+            LinkRule::All => self.draw_links(&mut frame, camera, snapshot, time, lift, false, row),
+            LinkRule::Quiet => self.draw_links(&mut frame, camera, snapshot, time, lift, true, row),
             LinkRule::DrawnByView => {}
         }
         self.flash_exits(&mut frame, camera, &alive, time, row.flash);
@@ -1742,6 +1789,10 @@ impl Scene {
 
     /// Socket links as arcs lifted above the plane with travelling pulses, and connections that
     /// leave the machine as beams rising off the body. Links touching highlighted processes glow.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the frame's link inputs and the row"
+    )]
     fn draw_links(
         &self,
         frame: &mut Frame,
@@ -1750,6 +1801,7 @@ impl Scene {
         time: f32,
         lift: f32,
         quiet: bool,
+        row: &ViewInfo,
     ) {
         if self.links == Links::Off {
             return;
@@ -1784,7 +1836,11 @@ impl Scene {
             let mut last = start;
             for step in 1..=20 {
                 let next = curve(step as f32 / 20.0);
-                frame.beam(camera, last, next, color, weight);
+                if row.link_strokes {
+                    frame.hairline(camera, last, next, tint(color, 0.35 + 0.65 * weight), 1.1);
+                } else {
+                    frame.beam(camera, last, next, color, weight);
+                }
                 last = next;
             }
             let phase = (a.pid.wrapping_mul(31) ^ b.pid.wrapping_mul(17)) % 100;
@@ -1809,7 +1865,12 @@ impl Scene {
             for step in 0..10 {
                 let a = [p[0], p[1], p[2] + lift + height * step as f32 / 10.0];
                 let b = [p[0], p[1], p[2] + lift + height * (step + 1) as f32 / 10.0];
-                frame.beam(camera, a, b, OUTSIDE, strength * (1.0 - step as f32 / 10.0));
+                let weight = strength * (1.0 - step as f32 / 10.0);
+                if row.link_strokes {
+                    frame.hairline(camera, a, b, tint(OUTSIDE, 0.35 + 0.65 * weight), 1.1);
+                } else {
+                    frame.beam(camera, a, b, OUTSIDE, weight);
+                }
             }
         }
     }
@@ -3934,6 +3995,41 @@ mod tests {
         assert!(focused > 0 && focused < all);
         scene.links = Links::Off;
         assert_eq!(beams(&mut scene), 0);
+    }
+
+    #[test]
+    fn a_row_with_link_strokes_draws_its_links_as_unpickable_triangles() {
+        let snapshot = demo(3.0, 64);
+        let count = |view: View| {
+            let mut scene = Scene::with_rows(crate::views::testing::LINKED);
+            let frame = scene.render(&RenderInput::small(
+                &snapshot,
+                view,
+                &Camera::default(),
+                3.0,
+            ));
+            let beams = frame
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::Beam(..)))
+                .count();
+            let strokes = frame
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::Triangle(_, _, NONE)))
+                .count();
+            (beams, strokes)
+        };
+        let (beams, strokes) = count(View::at(0));
+        assert!(
+            beams > 0 && strokes == 0,
+            "{beams} beams, {strokes} strokes"
+        );
+        let (beams, strokes) = count(View::at(1));
+        assert!(
+            beams == 0 && strokes > 0,
+            "{beams} beams, {strokes} strokes"
+        );
     }
 
     #[test]

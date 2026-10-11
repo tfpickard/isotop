@@ -48,7 +48,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
    - legend
    - per-sample record hook
    - headless warm-up (see "Demo synthesis")
-   - links rule: all, quiet, or drawn by the view
+   - links rule: all, quiet, or drawn by the view, and whether the scene draws the links as hairlines (`link_strokes`)
    - generic birth and death flash, on or off
    - pressure haze, on or off
    - default pitch
@@ -194,7 +194,7 @@ python3 scripts/compare_png.py cpu.png gpu.png
 | Default | ≤ 0.25 | ≤ 0.25 % | every view not named below, including every new view |
 | Line-dominant | ≤ 0.5 | ≤ 1.0 % | city, ripple, cores, cells, globe |
 
-The line-dominant limit exists because hardware line rasterization (the diamond-exit rule for `Line` and `Beam`) differs from the CPU DDA. A view on that row passes with `--max-mean 0.5 --max-share 1.0`. No new view may use it. A view PR never loosens these numbers.
+The line-dominant limit exists because hardware line rasterization (the diamond-exit rule for `Line` and `Beam`) differs from the CPU DDA. A new view that needs one-pixel strokes to match draws them with `Frame::hairline` (thin triangles, which both rasterizers fill alike), and a row with `links: LinkRule::All` sets `link_strokes` so the scene draws its links that way too. A view on that row passes with `--max-mean 0.5 --max-share 1.0`. No new view may use it. A view PR never loosens these numbers.
 
 Measured on an Apple GPU (Metal), `--demo --time 12 --width 960`:
 

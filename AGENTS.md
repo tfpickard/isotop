@@ -282,7 +282,8 @@ match your own shell.
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
     `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
     demo samples, such as `Phase::Replay` at `--sample-ms`, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
-    or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    or `DrawnByView`), `link_strokes` (off: the scene's links are beams; a new view turns it on,
+    so its links are hairlines that rasterize alike on the CPU and the GPU), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
     wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
     shown), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`

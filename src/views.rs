@@ -83,6 +83,10 @@ pub struct ViewInfo {
     pub warmup: &'static [Warmup],
     /// Which socket links the scene draws over the view. Default: `LinkRule::Quiet`.
     pub links: LinkRule,
+    /// Whether the scene draws those links as hairlines (`Frame::hairline`, thin triangles), which the CPU
+    /// and the GPU rasterize alike, rather than as beams, whose one-pixel lines they do not.
+    /// Default: off, the beams the built-in views were blessed with; a new view turns it on.
+    pub link_strokes: bool,
     /// The generic exit flash: an expanding ring and glow where a process left. Default: on.
     pub flash: bool,
     /// The pressure haze tinting the sky. Default: on.
@@ -155,6 +159,7 @@ impl ViewInfo {
             hooks,
             warmup: &[],
             links: LinkRule::Quiet,
+            link_strokes: false,
             flash: true,
             haze: true,
             pitch: None,
@@ -1308,6 +1313,29 @@ pub mod testing {
             Backdrop::Space,
             Hooks::Module(|| Box::new(Probe::default())),
         ),
+    ];
+
+    /// `beamed` and `stroked`, which draw every link, as beams and as strokes.
+    pub static LINKED: &[ViewInfo] = &[
+        ViewInfo {
+            links: LinkRule::All,
+            ..ViewInfo::new(
+                "beamed",
+                "BEAMED",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Probe::default())),
+            )
+        },
+        ViewInfo {
+            links: LinkRule::All,
+            link_strokes: true,
+            ..ViewInfo::new(
+                "stroked",
+                "STROKED",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Probe::default())),
+            )
+        },
     ];
 
     /// `replaying`, which replays four seconds of demo samples before a headless frame of a demo
