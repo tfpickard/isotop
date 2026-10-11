@@ -21,6 +21,16 @@ import zlib
 
 ON_LINUX = sys.platform.startswith("linux")
 
+# Views reached through the `v` picker after the fixed steps. Each later view adds its name here;
+# names this platform does not list in `--list-views` are skipped.
+PICKER_VISITS = ["reef"]
+
+
+def listed_views(binary):
+    """The view names `binary --list-views` prints, which are the ones this platform supports."""
+    result = subprocess.run([binary, "--list-views"], capture_output=True, text=True, check=True)
+    return result.stdout.split()
+
 
 def load_shared_memory_functions():
     """Binds shm_open and shm_unlink, which Linux and macOS both provide through libc.
@@ -86,6 +96,21 @@ def exercise(binary, demo, shared_memory):
     command = [binary, "--width", "320", "--fps", "10", "--sample-ms", "100"]
     if demo:
         command.append("--demo")
+    supported = listed_views(binary)
+    visits = [name for name in PICKER_VISITS if name in supported]
+    # Each key step waits for the header it should produce before the next keys go out, so two
+    # steps can never land before a frame is drawn between them. `since_sent` holds what the
+    # terminal received after the latest step, and a step is done once it holds every needle.
+    steps = [
+        (b"\x1b[Z", [b"/ COOP /"]),
+        (b"\t", [b"/ CITY /"]),
+        (b"\t", [b"/ ORBIT /"]),
+        (b"/worker\r+ef \x1b", [b"/ PAUSED"]),
+        (b"7 g", [b"/ STRATA /", b"/ TOUR"]),
+    ]
+    steps += [(b"v" + name.encode() + b"\r", [f"/ {name.upper()} /".encode()]) for name in visits]
+    required_frames = 8 + 2 * len(visits)
+    time_limit = 20 + 5 * len(visits)
     child = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave)
     buffer = b""
     payload = b""
@@ -94,13 +119,13 @@ def exercise(binary, demo, shared_memory):
     decoded = []
     shared_names = set()
     headers = set()
-    back_tab_sent = False
-    coop_left = False
-    commands_sent = False
-    tour_sent = False
+    step = 0
+    awaiting = []
+    since_sent = b""
+    picker_headers = [f"/ {name.upper()} /".encode() for name in visits]
     started = time.monotonic()
     try:
-        while time.monotonic() - started < 20:
+        while time.monotonic() - started < time_limit:
             if select.select([master], [], [], 0.1)[0]:
                 try:
                     data = os.read(master, 262144)
@@ -109,7 +134,8 @@ def exercise(binary, demo, shared_memory):
                         break
                     raise
                 buffer += data
-                for header in [b"/ CITY /", b"/ ORBIT /", b"/ STRATA /", b"/ COOP /", b"/ PAUSED", b"/ TOUR"]:
+                since_sent = (since_sent + data)[-(1 << 20) :]
+                for header in [b"/ CITY /", b"/ ORBIT /", b"/ STRATA /", b"/ COOP /", b"/ PAUSED", b"/ TOUR"] + picker_headers:
                     if header in data:
                         headers.add(header)
                 while b"\x1b_G" in buffer:
@@ -151,19 +177,14 @@ def exercise(binary, demo, shared_memory):
                     buffer = buffer[-4096:]
                 if b"\x1b[c" in data:
                     os.write(master, b"\x1b[?62;22c")
-            if frame_count >= 1 and not back_tab_sent:
-                os.write(master, b"\x1b[Z")
-                back_tab_sent = True
-            if b"/ COOP /" in headers and not coop_left:
-                os.write(master, b"\t")
-                coop_left = True
-            if frame_count >= 2 and coop_left and not commands_sent:
-                os.write(master, b"\t/worker\r+ef \x1b")
-                commands_sent = True
-            if frame_count >= 5 and commands_sent and not tour_sent:
-                os.write(master, b"7 g")
-                tour_sent = True
-            if frame_count >= 8:
+            if awaiting and all(needle in since_sent for needle in awaiting):
+                awaiting = []
+            if not awaiting and frame_count >= 1 and step < len(steps):
+                keys, awaiting = steps[step]
+                step += 1
+                since_sent = b""
+                os.write(master, keys)
+            if not awaiting and step == len(steps) and frame_count >= required_frames:
                 os.write(master, b"q")
                 break
         # Keep reading until the child exits: a pseudo-terminal with a small buffer (macOS) blocks
@@ -197,13 +218,16 @@ def exercise(binary, demo, shared_memory):
                     pass
         assert child.returncode == 0, f"exit status {child.returncode}: {buffer!r}"
         assert queries == 1, "capability detection was not exercised"
-        assert frame_count >= 8, f"only {frame_count} frames"
+        assert step == len(steps) and not awaiting, f"step {step} of {len(steps)} never saw {awaiting}"
+        assert frame_count >= required_frames, f"only {frame_count} frames"
         assert len(set(decoded)) >= 2, "frames never changed"
         assert b"/ CITY /" in headers and b"/ ORBIT /" in headers, headers
         assert b"/ COOP /" in headers, "Shift+Tab did not switch to the coop view"
         assert b"/ PAUSED" in headers, "pause did not take effect"
         assert b"/ TOUR" in headers, "g did not start the tour"
         assert b"/ STRATA /" in headers, "7 did not switch to the strata view"
+        for name, header in zip(visits, picker_headers):
+            assert header in headers, f"the picker did not switch to the {name} view"
         assert not (termios.tcgetattr(slave)[3] & termios.ICANON) == 0, "raw mode was not restored"
         if ON_LINUX:
             leftovers = [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{child.pid}-")]
@@ -221,7 +245,7 @@ def exercise(binary, demo, shared_memory):
                 shm_unlink(name.encode())
         assert not leftovers, f"shared memory left behind: {leftovers}"
         transport = "shared memory" if shared_memory else "inline zlib"
-        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, back-tab to coop, search, focus, pause, number keys, tour, quit, terminal restoration passed")
+        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, back-tab to coop, search, focus, pause, number keys, tour, picker visits ({', '.join(visits) or 'none'}), quit, terminal restoration passed")
     finally:
         if child.poll() is None:
             child.kill()

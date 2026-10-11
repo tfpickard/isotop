@@ -112,6 +112,12 @@ impl Geo {
         self.city = city.map(|(_, reader)| reader);
     }
 
+    /// Whether the databases have been looked for, and none could be read. False until the first
+    /// lookup of a public address loads them.
+    pub fn lacks_database(&self) -> bool {
+        self.loaded && self.city.is_none() && self.legacy.iter().all(Option::is_none)
+    }
+
     /// Where `address` is, or why it has no place. Private addresses are answered without
     /// reading any database.
     pub fn locate(&mut self, address: IpAddr) -> Location {

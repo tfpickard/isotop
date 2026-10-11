@@ -10,7 +10,8 @@ use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use crate::platform::{DeletedFile, Files, Locks, UNNAMED};
+use crate::model::Blocker;
+use crate::platform::{DeletedFile, Files, Locks};
 
 /// How much one scan may read. Listing a descriptor directory costs about a microsecond per
 /// entry warm and several cold; examining a descriptor adds a readlink and a stat.
@@ -159,8 +160,6 @@ pub struct FileScan {
     bounds: Bounds,
     /// The last pid scanned, so the next scan starts after it.
     after: u32,
-    /// The last result for each pid: None for an unreadable table.
-    known: HashMap<u32, Option<Files>>,
 }
 
 impl Default for FileScan {
@@ -169,7 +168,6 @@ impl Default for FileScan {
             root: PathBuf::from("/proc"),
             bounds: BOUNDS,
             after: 0,
-            known: HashMap::new(),
         }
     }
 }
@@ -179,13 +177,11 @@ impl FileScan {
         Self::default()
     }
 
-    /// Open files per pid; None for a table that could not be read. A pid the scan has not
-    /// reached yet, this time or ever, is absent unless it keeps a previous result (a pid
-    /// reused within those few seconds briefly shows its predecessor's files); so is one that
-    /// exited during the scan.
+    /// Open files per pid read by this scan; None for a table that could not be read. The scan is
+    /// bounded, so a pid it did not reach this time is absent, and so is one that exited during
+    /// it. The collector keeps earlier tables, by process identity, until the scan comes round.
     pub fn sample(&mut self) -> HashMap<u32, Option<Files>> {
         let Ok(entries) = fs::read_dir(&self.root) else {
-            self.known.clear();
             return HashMap::new();
         };
         let mut pids: Vec<u32> = entries
@@ -213,12 +209,6 @@ impl FileScan {
                 }
             }
         }
-        for pid in pids {
-            if let Some(previous) = self.known.get(&pid) {
-                found.entry(pid).or_insert_with(|| previous.clone());
-            }
-        }
-        self.known = found.clone();
         found
     }
 }
@@ -230,7 +220,7 @@ impl FileScan {
 /// for every kind (POSIX, FLOCK, OFDLCK, LEASE, DELEG).
 fn parse_locks(text: &str) -> Locks {
     let mut locks = Locks::default();
-    let mut holder = UNNAMED;
+    let mut holder = Blocker::Unnamed;
     for line in text.lines() {
         let mut fields = line.split_whitespace().skip(1).peekable();
         let mut waiting = false;
@@ -248,7 +238,7 @@ fn parse_locks(text: &str) -> Locks {
             }
             continue;
         }
-        holder = pid.unwrap_or(UNNAMED);
+        holder = pid.map_or(Blocker::Unnamed, Blocker::Process);
         match pid {
             Some(pid) => *locks.held.entry(pid).or_default() += 1,
             None if number == -1 => locks.unattributed += 1,
@@ -301,11 +291,11 @@ garbage
         assert_eq!(
             locks.blocked,
             HashMap::from([
-                (1300, 1200),
-                (1301, 1200),
-                (1400, UNNAMED),
-                (1501, 1500),
-                (1700, UNNAMED)
+                (1300, Blocker::Process(1200)),
+                (1301, Blocker::Process(1200)),
+                (1400, Blocker::Unnamed),
+                (1501, Blocker::Process(1500)),
+                (1700, Blocker::Unnamed)
             ])
         );
         assert_eq!(locks.unattributed, 1, "the OFD lock has no pid");
@@ -464,7 +454,12 @@ garbage
         assert_eq!(second.get(&12), Some(&Some(expected.clone())));
         assert_eq!(second.get(&13), None, "exited");
         assert_eq!(second.get(&14), Some(&None), "unreadable");
-        assert_eq!(second.get(&10), Some(&Some(expected)), "kept from before");
+        assert_eq!(second.get(&10), Some(&Some(expected)), "come round again");
+        assert_eq!(
+            second.get(&11),
+            None,
+            "not reached this time; the collector keeps it"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -6,8 +6,11 @@ use std::process::Child;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use crate::platform;
+use crate::simulation::hash;
 
 /// Seconds between synthetic entries in demo mode.
 const DEMO_INTERVAL: f64 = 0.35;
@@ -15,6 +18,8 @@ const DEMO_INTERVAL: f64 = 0.35;
 const BACKLOG: usize = 2048;
 /// syslog severity: 0 emergency to 3 error, 4 warning, 5 notice, 6 info, 7 debug.
 const ERROR: u8 = 3;
+/// How long stopping waits for the reader thread to see the end of the follower's output.
+const READER_GRACE: Duration = Duration::from_millis(500);
 
 /// One journal entry as text, with its syslog severity.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +41,7 @@ pub struct Journal {
     lines: mpsc::Receiver<Line>,
     dropped: Arc<AtomicU64>,
     child: Option<Child>,
+    reader: Option<JoinHandle<()>>,
 }
 
 impl Journal {
@@ -54,13 +60,14 @@ impl Journal {
                     lines,
                     dropped,
                     child: None,
+                    reader: None,
                 };
             }
         };
         let stdout = child.stdout.take().expect("stdout is piped");
         let mut stderr = child.stderr.take().expect("stderr is piped");
         let count = Arc::clone(&dropped);
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
                 match read_entry(&mut reader) {
@@ -91,6 +98,7 @@ impl Journal {
             lines,
             dropped,
             child: Some(child),
+            reader: Some(reader),
         }
     }
 
@@ -103,13 +111,31 @@ impl Journal {
     pub fn dropped(&self) -> u64 {
         self.dropped.swap(0, Ordering::Relaxed)
     }
+
+    /// Stops the follower, which closes its output, and lets the reader thread finish on the end
+    /// of the stream. Returns whether the reader has ended. One still blocked after
+    /// `READER_GRACE` (some process outside the follower's group holding the pipe open) is left
+    /// to end on its own rather than stall the frame loop: it exits at the end of the stream or
+    /// when its next line finds no receiver.
+    fn stop(&mut self) -> bool {
+        if let Some(child) = &mut self.child {
+            platform::stop_journal(child);
+        }
+        self.child = None;
+        let Some(reader) = self.reader.take() else {
+            return true;
+        };
+        let deadline = Instant::now() + READER_GRACE;
+        while !reader.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        reader.is_finished() && reader.join().is_ok()
+    }
 }
 
 impl Drop for Journal {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            platform::stop_journal(child);
-        }
+        self.stop();
     }
 }
 
@@ -176,7 +202,7 @@ pub fn demo(from: f64, to: f64) -> Vec<Line> {
     let last = (to / DEMO_INTERVAL).floor() as i64;
     (first.max(0)..=last)
         .map(|k| {
-            let hash = (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32;
+            let hash = hash::golden_gamma_high(k as u64);
             let (priority, template) = LINES[hash as usize % LINES.len()];
             let text = template
                 .replace("{n}", &(hash % 9 + 1).to_string())
@@ -189,6 +215,16 @@ pub fn demo(from: f64, to: f64) -> Vec<Line> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// macOS, where the follower is a shell and `log` in a group of their own: the reader sees
+    /// the end of the stream only once every process holding the pipe is gone.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn stopping_the_journal_ends_its_reader() {
+        let mut journal = Journal::start();
+        assert!(journal.stop(), "the reader outlived its follower");
+        assert!(journal.child.is_none() && journal.reader.is_none());
+    }
 
     #[test]
     fn demo_lines_split_across_intervals_match_one_long_interval() {

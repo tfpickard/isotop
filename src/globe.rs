@@ -8,12 +8,13 @@ use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
+use crate::geometry::{dot, normalize};
+use crate::layout::{GOLDEN_ANGLE, Seats, spiral};
 use crate::model::{Identity, Location, Place, Process, Remote, Snapshot, bounded, bytes};
-use crate::pack::Seats;
-use crate::render::{
-    Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
-    mass_radius, normalize, tint,
-};
+use crate::palette::{kind_color, tint};
+use crate::platform::Source;
+use crate::render::{Camera, Color, LOWEST_PITCH, NONE, Point, SCALE, Stage, mass_radius};
+use crate::simulation::hash;
 
 pub(crate) const RADIUS: f32 = 20.0;
 const SPIN_SECONDS: f32 = 300.0;
@@ -59,6 +60,7 @@ enum Spot {
 }
 
 impl Globe {
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
         stage: &mut Stage,
@@ -155,7 +157,7 @@ impl Globe {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
-        let has_rates = !snapshot.missing.contains(&"socket traffic");
+        let has_rates = !snapshot.missing.contains(Source::SocketTraffic);
         let mut endpoints: HashMap<Spot, Endpoint> = HashMap::new();
         let mut per_process: HashMap<Identity, Vec<&Remote>> = HashMap::new();
         for remote in snapshot
@@ -171,7 +173,8 @@ impl Globe {
                 ),
                 None => Spot::Address(remote.address),
             };
-            let traffic = remote.up + remote.down;
+            let (up, down) = (remote.up.unwrap_or(0.0), remote.down.unwrap_or(0.0));
+            let traffic = up + down;
             let endpoint = endpoints.entry(key).or_insert_with(|| Endpoint {
                 location: remote.location.clone(),
                 address: remote.address,
@@ -180,13 +183,13 @@ impl Globe {
                 count: 0,
                 top: (-1.0, remote.id),
                 key,
-                phase: hash(&match key {
+                phase: hash::fnv1a_64(&match key {
                     Spot::Place(lat, lon) => format!("{lat},{lon}"),
                     Spot::Address(address) => address.to_string(),
                 }),
             });
-            endpoint.up += remote.up;
-            endpoint.down += remote.down;
+            endpoint.up += up;
+            endpoint.down += down;
             endpoint.count += 1;
             if traffic > endpoint.top.0 {
                 endpoint.top = (traffic, remote.id);
@@ -293,8 +296,7 @@ impl Globe {
         for id in &talkers {
             let process = processes[index[id]];
             let k = self.seats.seat(*id).unwrap_or(0);
-            let distance = 0.9 * (k as f32 + 0.5).sqrt();
-            let angle = k as f32 * GOLDEN_ANGLE;
+            let (distance, angle) = spiral(0.9, 0.5, k as f32, 0.0);
             let offset =
                 [0, 1, 2].map(|i| (east[i] * angle.cos() + north[i] * angle.sin()) * distance);
             let base = at(up, RADIUS + 2.5);
@@ -320,12 +322,12 @@ impl Globe {
                     let place = location_note(&r.location);
                     if has_rates {
                         format!(
-                            "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
+                            "{}:{} {place} | {:.0} ms | up {} down {}",
                             r.address,
                             r.port,
                             r.rtt,
-                            bytes(r.up as u64),
-                            bytes(r.down as u64)
+                            rate(r.up),
+                            rate(r.down)
                         )
                     } else {
                         format!("{}:{} {place}", r.address, r.port)
@@ -449,6 +451,15 @@ fn location_note(location: &Location) -> &str {
 }
 
 /// Spherical interpolation between unit vectors `a` and `b`, `angle` apart.
+/// A connection's byte rate for its note; `n/a` before the scan has an interval to measure over,
+/// rather than a rate of zero.
+fn rate(bytes_per_second: Option<f32>) -> String {
+    bytes_per_second.map_or_else(
+        || "n/a".to_owned(),
+        |value| format!("{}/s", bytes(value as u64)),
+    )
+}
+
 fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
     if angle < 1e-4 {
         return a;
@@ -510,12 +521,6 @@ fn tangents(up: Point, pole: Point, fallback: Point) -> (Point, Point) {
     (east, north)
 }
 
-fn hash(text: &str) -> u64 {
-    text.bytes().fold(14_695_981_039_346_656_037_u64, |h, b| {
-        (h ^ b as u64).wrapping_mul(1_099_511_628_211)
-    })
-}
-
 /// Coastlines as polylines of (longitude, latitude) in degrees.
 fn coastline() -> Vec<Vec<[f32; 2]>> {
     let mut lines = Vec::new();
@@ -539,7 +544,7 @@ fn coastline() -> Vec<Vec<[f32; 2]>> {
 
 /// The status legend, saying what the snapshot's platform leaves out.
 pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(&"socket traffic") {
+    if snapshot.missing.contains(Source::SocketTraffic) {
         format!(
             " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
             snapshot.geo
@@ -555,6 +560,14 @@ pub fn legend(snapshot: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::views::view;
+
+    #[test]
+    fn a_connection_rate_not_yet_measured_reads_n_a_not_zero() {
+        assert_eq!(rate(None), "n/a");
+        assert_eq!(rate(Some(0.0)), format!("{}/s", bytes(0)));
+        assert_eq!(rate(Some(2048.0)), format!("{}/s", bytes(2048)));
+    }
 
     #[test]
     fn facing_turns_the_viewer_towards_any_point_on_the_sphere() {
@@ -597,7 +610,7 @@ mod tests {
         let full = legend(&snapshot);
         assert!(full.contains("brighter with traffic | cyan = mostly download"));
         assert!(full.ends_with("| demo locations"));
-        snapshot.missing = vec!["socket traffic"];
+        snapshot.missing = Source::SocketTraffic.into();
         let text = legend(&snapshot);
         assert!(text.contains("no per-connection rates or RTT on macOS"));
         assert!(!text.contains("cyan") && text.ends_with("| demo locations"));
@@ -606,30 +619,25 @@ mod tests {
     #[test]
     fn notes_and_arcs_carry_no_invented_rates_without_socket_traffic() {
         use crate::model::demo;
-        use crate::render::{Camera, Item, Scene, View};
+        use crate::render::{Camera, Item, RenderInput, Scene};
         let mut snapshot = demo(10.0, 128);
         for remote in &mut snapshot.remotes {
-            (remote.rtt, remote.up, remote.down) = (0.0, 0.0, 0.0);
+            (remote.rtt, remote.up, remote.down) = (0.0, None, None);
         }
         let id = snapshot.remotes[0].id;
         let render = |snapshot: &Snapshot| {
             let mut scene = Scene::new();
-            let frame = scene.render(
+            let frame = scene.render(&RenderInput::small(
                 snapshot,
-                View::Globe,
+                view("globe"),
                 &Camera::default(),
-                320,
-                180,
-                None,
                 10.0,
-                512,
-                None,
-            );
+            ));
             (scene.notes, frame.items)
         };
         let (notes, _) = render(&snapshot);
         assert!(notes[&id][0].contains(" ms | up "));
-        snapshot.missing = vec!["socket traffic"];
+        snapshot.missing = Source::SocketTraffic.into();
         let (notes, items) = render(&snapshot);
         let lines = &notes[&id];
         assert!(!lines.is_empty());
@@ -659,25 +667,27 @@ mod tests {
         }
     }
 
+    /// The globe at `time` in a 640 by 360 frame seen through `camera`.
+    fn input<'a>(
+        snapshot: &'a Snapshot,
+        camera: &'a Camera,
+        time: f32,
+    ) -> crate::render::RenderInput<'a> {
+        crate::render::RenderInput {
+            width: 640,
+            height: 360,
+            ..crate::render::RenderInput::small(snapshot, view("globe"), camera, time)
+        }
+    }
+
     /// The scene and frame the globe draws for `camera`.
     fn drawn(
         snapshot: &Snapshot,
         camera: &Camera,
         time: f32,
     ) -> (crate::render::Scene, crate::render::Frame) {
-        use crate::render::{Scene, View};
-        let mut scene = Scene::new();
-        let frame = scene.render(
-            snapshot,
-            View::Globe,
-            camera,
-            640,
-            360,
-            None,
-            time,
-            512,
-            None,
-        );
+        let mut scene = crate::render::Scene::new();
+        let frame = scene.render(&input(snapshot, camera, time));
         (scene, frame)
     }
 
@@ -937,19 +947,8 @@ mod tests {
         assert!(at.contains_key("8.8.8.8"), "{at:?}");
         assert!(at.contains_key("10.0.0.2 (private)"), "{at:?}");
         assert!(at.keys().all(|name| !name.contains("GeoIP")), "{at:?}");
-        use crate::render::{Scene, View};
-        let mut scene = Scene::new();
-        scene.render(
-            &snapshot,
-            View::Globe,
-            &Camera::default(),
-            640,
-            360,
-            None,
-            0.0,
-            512,
-            None,
-        );
+        let mut scene = crate::render::Scene::new();
+        scene.render(&input(&snapshot, &Camera::default(), 0.0));
         let notes = &scene.notes[&snapshot.remotes[0].id];
         assert!(notes[0].starts_with("8.8.8.8:"), "{notes:?}");
         assert!(notes[0].contains("not in the GeoIP database"), "{notes:?}");
@@ -965,17 +964,7 @@ mod tests {
                 ("9.9.9.9", location),
             ]);
             let mut scene = crate::render::Scene::new();
-            let frame = scene.render(
-                &snapshot,
-                crate::render::View::Globe,
-                &Camera::default(),
-                640,
-                360,
-                None,
-                0.0,
-                512,
-                None,
-            );
+            let frame = scene.render(&input(&snapshot, &Camera::default(), 0.0));
             format!("{:?}", frame.items)
         };
         let expected = drawn(Location::Pending);

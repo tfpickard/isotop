@@ -1,14 +1,11 @@
 //! The macOS collector's decisions, kept free of FFI so they compile and are tested on Linux
 //! too (`platform/mod.rs` includes this file in Linux test builds).
 
-// On Linux only the tests below use these items.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::model::{CoreKind, Kind};
-use crate::platform::{DeletedFile, Files, Network, Remote};
+use crate::model::{CoreKind, Kind, Policy};
+use crate::platform::{DeletedFile, Files, Network, Remote, Source, Sources};
 
 /// Executables that run virtual machines or containers. A trailing `*` matches any suffix.
 const VIRTUALIZATION: [&str; 8] = [
@@ -95,6 +92,23 @@ pub fn priority_from_mach(priority: i32) -> i32 {
     51 - priority
 }
 
+/// The scheduling policy of a Mach policy number (`pti_policy`, from osfmk/mach/policy.h):
+/// 1 is timeshare, 2 round robin and 4 FIFO. Other numbers read as unknown.
+pub fn policy_from_mach(policy: i32) -> Policy {
+    match policy {
+        1 => Policy::Normal,
+        2 => Policy::RoundRobin,
+        4 => Policy::Fifo,
+        _ => Policy::Unknown,
+    }
+}
+
+/// When a process started, in seconds since the Unix epoch, from `pbi_start_tvsec` and
+/// `pbi_start_tvusec`.
+pub fn start_seconds(seconds: u64, microseconds: u64) -> f64 {
+    seconds as f64 + microseconds as f64 / 1e6
+}
+
 /// The executable path and argv from a `KERN_PROCARGS2` buffer: a native-endian `int argc`,
 /// the NUL-terminated path, NUL padding, then `argc` NUL-terminated arguments and the
 /// environment. A truncated buffer yields the arguments it holds, the last one cut short.
@@ -153,14 +167,15 @@ pub fn state(status: u32, running: i32) -> char {
 
 /// Share of the interval a CPU was busy, from two readings of its `[user, system, idle, nice]`
 /// scheduler ticks. The counters are 32-bit and wrap, so differences are taken modulo 2^32.
-pub fn busy(previous: [u32; 4], current: [u32; 4]) -> f32 {
+/// None when no ticks passed between the readings.
+pub fn busy(previous: [u32; 4], current: [u32; 4]) -> Option<f32> {
     let [user, system, idle, nice] =
         [0, 1, 2, 3].map(|i| u64::from(current[i].wrapping_sub(previous[i])));
     let total = user + system + idle + nice;
     if total == 0 {
-        return 0.0;
+        return None;
     }
-    ((user + system + nice) as f32 / total as f32).clamp(0.0, 1.0)
+    Some(((user + system + nice) as f32 / total as f32).clamp(0.0, 1.0))
 }
 
 /// A stand-in for the memory stall percentage from `kern.memorystatus_vm_pressure_level`
@@ -171,6 +186,46 @@ pub fn pressure_from_level(level: i32) -> f32 {
         4 => 75.0,
         _ => 0.0,
     }
+}
+
+/// The pressure readings from the memory pressure level, None when it could not be read, and
+/// the pressures missing: macOS has no CPU or I/O stall accounting at all.
+pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
+    let mut missing = Sources::from([Source::CpuPressure, Source::IoPressure]);
+    let memory = level.map_or_else(
+        || {
+            missing.insert(Source::MemoryPressure);
+            0.0
+        },
+        pressure_from_level,
+    );
+    ([0.0, memory, 0.0], missing)
+}
+
+/// What macOS never measures: the pressures it has no stall accounting for, the last CPU, the
+/// run queue, cgroups, socket traffic, the lock table, GPU memory (Apple GPUs share memory
+/// with the CPU and report none per process) and syscall I/O (no per-process counters of the
+/// bytes and calls of read and write). The clock is missing too unless it is measured
+/// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
+pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
+    let mut missing = Sources::from([
+        Source::CpuPressure,
+        Source::IoPressure,
+        Source::LastCpu,
+        Source::RunQueue,
+        Source::Cgroups,
+        Source::SocketTraffic,
+        Source::FileLocks,
+        Source::GpuMemory,
+        Source::SyscallIo,
+    ]);
+    if !clocked {
+        missing.insert(Source::CpuClock);
+    }
+    if !kinds_known {
+        missing.insert(Source::CoreKinds);
+    }
+    missing
 }
 
 /// Bytes the kernel can hand out without paging out application memory. `free` from
@@ -217,9 +272,12 @@ pub const CLOCK_FLOOR: f64 = 0.05;
 /// The average clock of the performance and efficiency clusters in MHz over one interval, as
 /// `[performance, efficiency]`, from each process's counters at the start and end of it: the
 /// cycles each cluster ran divided by the CPU time it ran them in, summed over the processes.
-/// A cluster with less than `CLOCK_FLOOR` seconds of CPU time reads 0 (no reading). A process
-/// whose counters went backwards (a reused pid) or disagree with each other is skipped.
-pub fn cluster_clocks(intervals: impl IntoIterator<Item = (Counters, Counters)>) -> [f32; 2] {
+/// A cluster with less than `CLOCK_FLOOR` seconds of CPU time, or whose processes counted no
+/// cycles (virtual machines), has no reading (None). A process whose counters went backwards
+/// (a reused pid) or disagree with each other is skipped.
+pub fn cluster_clocks(
+    intervals: impl IntoIterator<Item = (Counters, Counters)>,
+) -> [Option<f32>; 2] {
     // Cycles and nanoseconds per cluster, as [performance, efficiency].
     let mut cycles = [0_u64; 2];
     let mut time = [0_u64; 2];
@@ -252,11 +310,8 @@ pub fn cluster_clocks(intervals: impl IntoIterator<Item = (Counters, Counters)>)
     }
     [0, 1].map(|cluster| {
         let seconds = time[cluster] as f64 / 1e9;
-        if seconds < CLOCK_FLOOR {
-            0.0
-        } else {
-            (cycles[cluster] as f64 / seconds / 1e6) as f32
-        }
+        (seconds >= CLOCK_FLOOR && cycles[cluster] > 0)
+            .then(|| (cycles[cluster] as f64 / seconds / 1e6) as f32)
     })
 }
 
@@ -593,7 +648,10 @@ mod tests {
             counters(0, 0, 0, 0),
             counters(100 * MS, 100 * MS, 400_000_000, 400_000_000),
         );
-        assert_eq!(cluster_clocks([first, second]), [3400.0, 2000.0]);
+        assert_eq!(
+            cluster_clocks([first, second]),
+            [Some(3400.0), Some(2000.0)]
+        );
     }
 
     #[test]
@@ -604,18 +662,18 @@ mod tests {
             counters(0, 0, 0, 0),
             counters(90 * MS, 50 * MS, 230_000_000, 150_000_000),
         );
-        assert_eq!(cluster_clocks([interval]), [3000.0, 0.0]);
-        assert_eq!(cluster_clocks([]), [0.0, 0.0]);
+        assert_eq!(cluster_clocks([interval]), [Some(3000.0), None]);
+        assert_eq!(cluster_clocks([]), [None, None]);
     }
 
     #[test]
-    fn cluster_clocks_read_zero_without_cycle_counters() {
+    fn cluster_clocks_have_no_reading_without_cycle_counters() {
         // Virtual machines count CPU time but no cycles.
         let interval = (
             counters(0, 0, 0, 0),
             counters(2_000_000_000, 1_000_000_000, 0, 0),
         );
-        assert_eq!(cluster_clocks([interval]), [0.0, 0.0]);
+        assert_eq!(cluster_clocks([interval]), [None, None]);
     }
 
     #[test]
@@ -637,7 +695,7 @@ mod tests {
             cluster_clocks([good, reused, impossible]),
             cluster_clocks([good])
         );
-        assert_eq!(cluster_clocks([good]), [3000.0, 2000.0]);
+        assert_eq!(cluster_clocks([good]), [Some(3000.0), Some(2000.0)]);
     }
 
     #[test]
@@ -834,12 +892,12 @@ mod tests {
 
     #[test]
     fn busy_share_survives_a_wrapping_tick_counter() {
-        assert_eq!(busy([0; 4], [0; 4]), 0.0);
-        assert_eq!(busy([10, 10, 10, 10], [40, 20, 70, 10]), 0.4);
+        assert_eq!(busy([0; 4], [0; 4]), None, "no ticks passed");
+        assert_eq!(busy([10, 10, 10, 10], [40, 20, 70, 10]), Some(0.4));
         let before = [u32::MAX - 9, 0, u32::MAX - 29, 0];
         let after = [20, 0, 10, 0];
-        assert!((busy(before, after) - 30.0 / 70.0).abs() < 1e-6);
-        assert_eq!(busy([0, 0, 0, 0], [5, 0, 0, 5]), 1.0);
+        assert!((busy(before, after).unwrap() - 30.0 / 70.0).abs() < 1e-6);
+        assert_eq!(busy([0, 0, 0, 0], [5, 0, 0, 5]), Some(1.0));
     }
 
     #[test]
@@ -848,8 +906,52 @@ mod tests {
         assert_eq!(pressure_from_level(2), 25.0);
         assert_eq!(pressure_from_level(4), 75.0);
         assert_eq!(pressure_from_level(0), 0.0);
+        let unstalled = Sources::from([Source::CpuPressure, Source::IoPressure]);
+        assert_eq!(pressure(Some(2)), ([0.0, 25.0, 0.0], unstalled));
+        assert_eq!(
+            pressure(None).1,
+            unstalled.union(Source::MemoryPressure.into())
+        );
         assert_eq!(available(10, 5, 16384), 15 * 16384);
         assert_eq!(available(u32::MAX, u32::MAX, u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn macos_reports_gpu_memory_as_missing() {
+        for clocked in [false, true] {
+            let gaps = missing(clocked, true);
+            assert!(gaps.contains(Source::GpuMemory), "{gaps:?}");
+            assert_eq!(gaps.contains(Source::CpuClock), !clocked, "{gaps:?}");
+            assert!(!gaps.contains(Source::MemoryPressure) && !gaps.contains(Source::CoreKinds));
+        }
+        assert!(missing(true, false).contains(Source::CoreKinds));
+    }
+
+    #[test]
+    fn macos_reports_syscall_io_as_missing() {
+        for clocked in [false, true] {
+            for kinds_known in [false, true] {
+                let gaps = missing(clocked, kinds_known);
+                assert!(gaps.contains(Source::SyscallIo), "{gaps:?}");
+            }
+        }
+        assert_eq!(Source::SyscallIo.name(), "syscall io");
+    }
+
+    #[test]
+    fn mach_policy_maps_to_policy() {
+        assert_eq!(policy_from_mach(1), Policy::Normal);
+        assert_eq!(policy_from_mach(2), Policy::RoundRobin);
+        assert_eq!(policy_from_mach(4), Policy::Fifo);
+        for other in [0, 3, 5, -1] {
+            assert_eq!(policy_from_mach(other), Policy::Unknown, "policy {other}");
+        }
+    }
+
+    #[test]
+    fn start_seconds_join_the_seconds_and_microseconds() {
+        assert_eq!(start_seconds(1_700_000_000, 250_000), 1_700_000_000.25);
+        assert_eq!(start_seconds(0, 0), 0.0);
     }
 
     #[test]

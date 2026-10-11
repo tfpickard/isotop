@@ -6,7 +6,12 @@
 //! The C structs keep their header names and every field, so the layouts can be checked against
 //! the header line by line; isotop reads only some of the fields.
 
-#![allow(non_camel_case_types, non_upper_case_globals, dead_code)]
+#![expect(
+    non_camel_case_types,
+    non_upper_case_globals,
+    dead_code,
+    reason = "the C declarations keep their header names and every field, used or not"
+)]
 
 use std::ffi::{c_char, c_int, c_void};
 use std::mem::{align_of, offset_of, size_of};

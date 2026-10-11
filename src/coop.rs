@@ -7,19 +7,24 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::OnceLock;
 
-use crate::model::{CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes};
-use crate::pack::{Discs, Seats};
-use crate::platform::{DeletedFile, UNNAMED};
-use crate::render::{
-    Camera, Color, Frame, NONE, Point, SCALE, Stage, kind_color, spin, tint, without_apple_prefix,
+use crate::geometry::{cuboid, normalize_or_zero, shade};
+use crate::layout::{Discs, Seats, spin};
+use crate::model::{
+    Blocker, CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes,
 };
-use crate::simulation::{Rng, SpatialHash};
+use crate::palette::{core_color, core_name, kind_color, tint};
+use crate::platform::{DeletedFile, GROUP_LABEL, Source};
+use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, without_apple_prefix};
+use crate::simulation::hash::unit_from as fraction;
+use crate::simulation::{FixedStep, Rng, SpatialHash, hash, sprout};
 
 /// Fixed simulation step in seconds. The yard advances on wall-clock time in whole steps, so
 /// every frame rate follows the same trajectory.
 const H: f32 = 0.05;
 /// Steps a single frame may catch up; longer gaps (a stall, a pause) are dropped.
 const MAX_STEPS: usize = 10;
+/// Wall-clock seconds one frame may count; a longer gap (a stall, a pause) is dropped.
+const MAX_GAP: f32 = 0.5;
 /// Vicsek interaction radius in world units: a forager aligns with flock mates nearer than this.
 const NEIGHBOURHOOD: f32 = 4.0;
 /// Foraging speed `V_MIN + V_SPAN * cpu / (cpu + SPEED_KNEE)` in world units per second.
@@ -102,9 +107,6 @@ const YARD_MARGIN: f32 = 2.5;
 /// The narrowest yard, wide enough for a row of feeders.
 const MIN_YARD: f32 = 24.0;
 
-const PERFORMANCE: Color = [236, 178, 92];
-const EFFICIENCY: Color = [72, 183, 199];
-const UNKNOWN: Color = [140, 160, 196];
 const GRASS: Color = [70, 118, 60];
 const DIRT: Color = [118, 94, 66];
 const WOOD: Color = [156, 120, 82];
@@ -281,19 +283,11 @@ fn keep_inside(point: [f32; 2], radius: f32, low: [f32; 2], high: [f32; 2]) -> [
     })
 }
 
-fn unit(v: [f32; 2]) -> [f32; 2] {
-    let length = v[0].hypot(v[1]);
-    if length > 1e-6 {
-        [v[0] / length, v[1] / length]
-    } else {
-        [0.0, 0.0]
-    }
-}
-
 /// A fixed direction for two coincident chickens, opposite for each of the pair.
 fn parting(a: Identity, b: Identity) -> [f32; 2] {
     let (low, high, sign) = if a < b { (a, b, 1.0) } else { (b, a, -1.0) };
-    let angle = (low.pid.wrapping_mul(2_654_435_761) ^ high.pid) as f32 / u32::MAX as f32 * TAU;
+    // pid only: kept for pixel stability, see A33
+    let angle = (hash::knuth(low.pid) ^ high.pid) as f32 / u32::MAX as f32 * TAU;
     [sign * angle.cos(), sign * angle.sin()]
 }
 
@@ -360,7 +354,8 @@ impl Yard {
             );
             peers.sort_unstable_by_key(|&(k, _)| self.chickens[k].id);
             for &(k, weight) in &peers {
-                let toward = unit([positions[k][0] - here[0], positions[k][1] - here[1]]);
+                let toward =
+                    normalize_or_zero([positions[k][0] - here[0], positions[k][1] - here[1]]);
                 sum[0] += weight * (headings[k].cos() + 0.5 * toward[0]);
                 sum[1] += weight * (headings[k].sin() + 0.5 * toward[1]);
             }
@@ -369,7 +364,7 @@ impl Yard {
                 let distance = away[0].hypot(away[1]);
                 if distance > home.range {
                     let pull = 0.6 * ((distance - home.range) / 4.0).min(1.0);
-                    let direction = unit(away);
+                    let direction = normalize_or_zero(away);
                     sum[0] += pull * direction[0];
                     sum[1] += pull * direction[1];
                 }
@@ -379,7 +374,7 @@ impl Yard {
                 let distance = away[0].hypot(away[1]);
                 if distance < FLEE {
                     let push = 1.5 * (1.0 - distance / FLEE);
-                    let direction = unit(away);
+                    let direction = normalize_or_zero(away);
                     sum[0] += push * direction[0];
                     sum[1] += push * direction[1];
                 }
@@ -778,6 +773,15 @@ fn plural(count: u64, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
+/// The yard's fixed-step clock, which starts with coop's constants.
+struct YardClock(FixedStep);
+
+impl Default for YardClock {
+    fn default() -> Self {
+        Self(FixedStep::new(H, MAX_STEPS, MAX_GAP))
+    }
+}
+
 /// The persistent coop view.
 #[derive(Default)]
 pub struct Coop {
@@ -808,11 +812,11 @@ pub struct Coop {
     /// The sample the roles were last decided for, and the processes they were decided over.
     decided: Option<f64>,
     drawn: Vec<Identity>,
-    clock: Option<f32>,
-    accumulator: f32,
+    clock: YardClock,
     phi: Option<f32>,
     pressure_missing: bool,
-    /// The OS has no cgroups, so flocks are app or user groups and no OOM kill brings a fox.
+    /// The OS has no cgroups, so flocks are its process groups (`GROUP_LABEL`) and no OOM kill
+    /// brings a fox.
     cgroups_missing: bool,
     /// The OS reports no last CPU, so running chickens queue at one shared trough.
     trough_shared: bool,
@@ -932,22 +936,6 @@ fn home_range(radius: f32) -> f32 {
     (2.5 * radius).max(6.0)
 }
 
-fn feeder_color(kind: CoreKind) -> Color {
-    match kind {
-        CoreKind::Performance => PERFORMANCE,
-        CoreKind::Efficiency => EFFICIENCY,
-        CoreKind::Unknown => UNKNOWN,
-    }
-}
-
-fn kind_name(kind: CoreKind) -> &'static str {
-    match kind {
-        CoreKind::Performance => "performance",
-        CoreKind::Efficiency => "efficiency",
-        CoreKind::Unknown => "unknown",
-    }
-}
-
 /// Feeders in rows below the houses, between `left` and `right`, the first row's troughs just
 /// south of `top`, sorted by kind then id. With `shared`, one more trough follows in a row of its
 /// own, centred in the yard and as wide as the CPUs are many (3 to 8 slots). Returns the feeders
@@ -965,9 +953,9 @@ fn place_feeders(
             .map(|id| Cpu {
                 id,
                 kind: CoreKind::Unknown,
-                busy: 0.0,
-                mhz: 0.0,
-                wait: 0.0,
+                busy: None,
+                mhz: None,
+                wait: None,
             })
             .collect();
     }
@@ -988,7 +976,7 @@ fn place_feeders(
         feeders.push(Feeder {
             cpu: cpu.id,
             kind: cpu.kind,
-            busy: cpu.busy.clamp(0.0, 1.0),
+            busy: cpu.busy.unwrap_or(0.0).clamp(0.0, 1.0),
             center: [cursor + length * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
             slots,
             shared: false,
@@ -1001,7 +989,11 @@ fn place_feeders(
         feeders.push(Feeder {
             cpu: u32::MAX,
             kind: CoreKind::Unknown,
-            busy: cpus.iter().map(|cpu| cpu.busy.clamp(0.0, 1.0)).sum::<f32>() / cpus.len() as f32,
+            busy: cpus
+                .iter()
+                .map(|cpu| cpu.busy.unwrap_or(0.0).clamp(0.0, 1.0))
+                .sum::<f32>()
+                / cpus.len() as f32,
             center: [(left + right) * 0.5, top - 1.2 - row as f32 * FEEDER_ROW],
             slots,
             shared: true,
@@ -1042,18 +1034,6 @@ fn peer_weight(traffic: Option<f32>, cpu: f32, other: f32) -> f32 {
 
 fn rate(value: f32) -> String {
     bytes(value.max(0.0) as u64)
-}
-
-fn hash(value: u32) -> u32 {
-    let mut x = value.wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b;
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x2c1b_3c6d);
-    x ^= x >> 12;
-    x
-}
-
-fn fraction(value: u32) -> f32 {
-    (hash(value) >> 8) as f32 / 16_777_216.0
 }
 
 impl Coop {
@@ -1107,7 +1087,10 @@ impl Coop {
         let mut paths: Vec<&String> = snapshot.units.keys().collect();
         paths.sort();
         for path in paths {
-            let kills = snapshot.units[path].oom_kills;
+            // An unreadable count says nothing: the last known one stays the one to compare to.
+            let Some(kills) = snapshot.units[path].oom_kills else {
+                continue;
+            };
             let seen = *self.kills.entry(path.clone()).or_insert(kills);
             if kills > seen {
                 // Every kill claims a suspect, but only the first MAX_FOXES send a fox. The loop
@@ -1159,6 +1142,23 @@ impl Coop {
         self.calls.drain(..excess);
     }
 
+    /// Where each drawn chicken belongs, wherever it has walked to: its seat on its house's
+    /// perches, on the ground. The view harness checks layout stability here.
+    pub fn anchors(&self) -> HashMap<Identity, Point> {
+        self.yard
+            .chickens
+            .iter()
+            .filter_map(|chicken| {
+                let center = self.flocks.get(chicken.flock)?.center;
+                let (offset, _) = seat_offset(self.seats.seat(chicken.id)?);
+                Some((
+                    chicken.id,
+                    [center[0] + offset[0], center[1] + offset[1], 0.0],
+                ))
+            })
+            .collect()
+    }
+
     /// The status legend, with the yard's order parameter and what could not be measured.
     pub fn legend(&self) -> String {
         let phi = self
@@ -1170,7 +1170,7 @@ impl Coop {
             "feeder = CPU it ran on"
         };
         let (flock, fox) = if self.cgroups_missing {
-            ("app or user group", "")
+            (GROUP_LABEL, "")
         } else {
             ("cgroup", "fox = OOM kill, ")
         };
@@ -1247,20 +1247,7 @@ impl Coop {
 
     /// Steps the yard on wall-clock time; returns how far the frame lies into the next step.
     fn advance(&mut self, time: f32) -> f32 {
-        let dt = match self.clock {
-            Some(last) if time >= last => (time - last).min(0.5),
-            _ => 0.0,
-        };
-        self.clock = Some(time);
-        self.accumulator += dt;
-        let mut steps = 0;
-        while self.accumulator >= H && steps < MAX_STEPS {
-            self.yard.step(H);
-            self.accumulator -= H;
-            steps += 1;
-        }
-        self.accumulator = self.accumulator.min(H);
-        (self.accumulator / H).clamp(0.0, 1.0)
+        self.clock.0.advance(time, |step| self.yard.step(step))
     }
 
     /// Turns recorded OOM kills into fox runs: to where the victim was last drawn, or to its
@@ -1335,6 +1322,7 @@ impl Coop {
 
     /// Lays out houses, perches and feeders and decides each chicken's role, target, speed, noise
     /// and peers from the measured sample. Runs once per new sample or when the drawn set changes.
+    #[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
     fn decide(
         &mut self,
         processes: &[&Process],
@@ -1404,7 +1392,7 @@ impl Coop {
             low[axis] -= spare;
             high[axis] += spare;
         }
-        self.trough_shared = snapshot.missing.contains(&"last cpu");
+        self.trough_shared = snapshot.missing.contains(Source::LastCpu);
         let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1], self.trough_shared);
         self.feeders = feeders;
         self.band_top = low[1];
@@ -1487,9 +1475,9 @@ impl Coop {
         self.hidden.retain(|id, _| raw.contains_key(id));
 
         let psi = snapshot.pressure[0];
-        self.pressure_missing = snapshot.missing.contains(&"cpu pressure");
-        self.cgroups_missing = snapshot.missing.contains(&"cgroups");
-        self.locks_missing = snapshot.missing.contains(&"file locks");
+        self.pressure_missing = snapshot.missing.contains(Source::CpuPressure);
+        self.cgroups_missing = snapshot.missing.contains(Source::Cgroups);
+        self.locks_missing = snapshot.missing.contains(Source::FileLocks);
         let by_pid: HashMap<u32, &Process> = snapshot
             .processes
             .iter()
@@ -1545,10 +1533,10 @@ impl Coop {
                 }
                 chicken.role = role;
             }
-            let holder = process
-                .blocked_on
-                .filter(|&pid| pid != UNNAMED)
-                .and_then(|pid| by_pid.get(&pid).copied());
+            let holder = match process.blocked_on {
+                Some(Blocker::Process(pid)) => by_pid.get(&pid).copied(),
+                Some(Blocker::Unnamed) | None => None,
+            };
             chicken.holder = holder.map(|holder| holder.id);
             nest_of.push(
                 holder
@@ -1659,7 +1647,10 @@ impl Coop {
                     let feeder = if self.trough_shared {
                         self.feeders.len() - 1
                     } else {
-                        feeder_of.get(&process.core).copied().unwrap_or(0)
+                        process
+                            .core
+                            .and_then(|core| feeder_of.get(&core).copied())
+                            .unwrap_or(0)
                     };
                     eating[feeder].push((process.priority, process.id, k));
                 }
@@ -1717,7 +1708,7 @@ impl Coop {
                 let place = if feeder.shared {
                     "the shared trough (no last CPU on this OS)".to_owned()
                 } else {
-                    format!("cpu{} ({})", feeder.cpu, kind_name(feeder.kind))
+                    format!("cpu{} ({})", feeder.cpu, core_name(feeder.kind))
                 };
                 let mut note = format!(
                     "feeding at {place}, pecking rank {} of {} by {standing}",
@@ -1727,11 +1718,11 @@ impl Coop {
                 if rank >= feeder.slots {
                     note.push_str(", waiting in line");
                 }
-                if !feeder.shared && feeder.cpu != process.core {
-                    note.push_str(&format!(
-                        " (ran on cpu{}, which has no feeder)",
-                        process.core
-                    ));
+                if let Some(core) = process
+                    .core
+                    .filter(|&core| !feeder.shared && feeder.cpu != core)
+                {
+                    note.push_str(&format!(" (ran on cpu{core}, which has no feeder)"));
                 }
                 if process.state != 'R' {
                     note.push_str(" (held: not running for one sample)");
@@ -1755,24 +1746,29 @@ impl Coop {
                     )
                 ),
                 Role::Waiting => {
-                    let pid = process.blocked_on.unwrap_or(UNNAMED);
-                    match by_pid.get(&pid) {
-                        _ if pid == UNNAMED => "waiting for a file lock no process can be named \
+                    let pid = match process.blocked_on {
+                        Some(Blocker::Process(pid)) => Some(pid),
+                        Some(Blocker::Unnamed) | None => None,
+                    };
+                    match pid.map(|pid| (pid, by_pid.get(&pid))) {
+                        None => "waiting for a file lock no process can be named \
                                                for (an OFD lock, or a holder in another pid \
                                                namespace), at its own nest"
                             .into(),
-                        Some(holder) if flock_key(holder) == self.flocks[nest_of[k]].key => {
+                        Some((pid, Some(holder)))
+                            if flock_key(holder) == self.flocks[nest_of[k]].key =>
+                        {
                             format!(
                                 "waiting for a file lock held by {} (pid {pid})",
                                 holder.name
                             )
                         }
-                        Some(holder) => format!(
+                        Some((pid, Some(holder))) => format!(
                             "waiting for a file lock held by {} (pid {pid}), at its own nest \
                              because the holder's flock is not drawn",
                             holder.name
                         ),
-                        None => format!(
+                        Some((pid, None)) => format!(
                             "waiting for a file lock held by pid {pid}, which was not sampled, \
                              at its own nest"
                         ),
@@ -1965,7 +1961,7 @@ impl Coop {
         let time = stage.time;
         let grows: Vec<f32> = order
             .iter()
-            .map(|&index| 0.3 + 0.7 * stage.growth(processes[index].id))
+            .map(|&index| sprout(stage.growth(processes[index].id)))
             .collect();
         let frame = &mut *stage.frame;
         let (low, high) = (self.yard.low, self.yard.high);
@@ -2121,43 +2117,6 @@ fn puffs(read: f32) -> usize {
     (1 + (read / DUST_RATE).log2().max(0.0) as usize).min(MAX_PUFFS)
 }
 
-/// Shading of a vertical face by its outward direction, from a fixed light in the north west.
-fn shade(color: Color, normal: [f32; 2]) -> Color {
-    tint(color, 0.72 + 0.2 * (-0.6 * normal[0] + 0.8 * normal[1]))
-}
-
-/// An axis-aligned box: its top and four sides, each shaded by facing.
-fn cuboid(frame: &mut Frame, camera: &Camera, low: Point, high: Point, color: Color) {
-    let [x0, y0, z0] = low;
-    let [x1, y1, z1] = high;
-    frame.quad(
-        camera,
-        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
-        tint(color, 1.05),
-        NONE,
-    );
-    for (points, normal) in [
-        (
-            [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
-            [0.0, -1.0],
-        ),
-        (
-            [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
-            [0.0, 1.0],
-        ),
-        (
-            [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]],
-            [-1.0, 0.0],
-        ),
-        (
-            [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
-            [1.0, 0.0],
-        ),
-    ] {
-        frame.quad(camera, points, shade(color, normal), NONE);
-    }
-}
-
 /// Grass inside and around the fence, with packed earth under the feeders. Decorative.
 fn draw_ground(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2], band_top: f32) {
     let margin = HEDGE + 2.5;
@@ -2291,7 +2250,7 @@ fn draw_hedge(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2])
 fn draw_feeder(frame: &mut Frame, camera: &Camera, feeder: &Feeder) {
     let [x, y] = feeder.center;
     let half = [feeder.length() * 0.5, TROUGH_DEPTH * 0.5];
-    let color = feeder_color(feeder.kind);
+    let color = core_color(feeder.kind);
     cuboid(
         frame,
         camera,
@@ -2565,7 +2524,8 @@ fn offset(base: Point, forward: [f32; 2], f: f32, side: f32, up: f32) -> Point {
 
 /// Draws one chicken in the pose of its role and returns its body centre: a plump body of
 /// three spheres, neck, head with comb, beak, wattle and eyes, wings, a tail fan and legs.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "split in #78 (A19)")]
+#[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
 fn draw_chicken(
     frame: &mut Frame,
     camera: &Camera,
@@ -2944,19 +2904,19 @@ fn draw_fox(frame: &mut Frame, camera: &Camera, fox: &Fox, time: f32) {
     let (at, heading, carrying) = if u < 0.42 {
         (
             lerp(fox.entry, fox.prey, ease(u / 0.42)),
-            unit([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
+            normalize_or_zero([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
             false,
         )
     } else if u < 0.55 {
         (
             fox.prey,
-            unit([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
+            normalize_or_zero([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
             true,
         )
     } else {
         (
             lerp(fox.prey, fox.exit, ease((u - 0.55) / 0.45)),
-            unit([fox.exit[0] - fox.prey[0], fox.exit[1] - fox.prey[1]]),
+            normalize_or_zero([fox.exit[0] - fox.prey[0], fox.exit[1] - fox.prey[1]]),
             true,
         )
     };
@@ -3054,7 +3014,9 @@ fn draw_fox(frame: &mut Frame, camera: &Camera, fox: &Fox, time: f32) {
 mod tests {
     use super::*;
     use crate::model::{Unit, demo};
-    use crate::render::{Camera, Scene, View};
+    use crate::platform::Sources;
+    use crate::render::{Camera, RenderInput, Scene};
+    use crate::views::view;
 
     fn identity(pid: u32) -> Identity {
         Identity {
@@ -3065,31 +3027,18 @@ mod tests {
 
     fn process(pid: u32, cgroup: &str) -> Process {
         Process {
-            id: identity(pid),
-            parent: 1,
             name: format!("hen-{pid}"),
-            command: String::new(),
             group: cgroup.rsplit('/').next().unwrap_or("").into(),
-            kind: Kind::System,
-            state: 'S',
             cpu: 5.0,
             memory: 20 << 20,
             io_rate: Some(0.0),
             read_rate: Some(0.0),
             write_rate: Some(0.0),
             written: Some(0),
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
             cgroup: cgroup.into(),
-            performance_share: None,
-            waiting: None,
             files: Measured::Known(crate::platform::Files::default()),
             locks_held: Measured::Known(0),
-            blocked_on: None,
+            ..crate::model::testing::process(pid, 1)
         }
     }
 
@@ -3154,17 +3103,12 @@ mod tests {
     }
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
-        let frame = scene.render(
-            snapshot,
-            View::Coop,
-            &Camera::default(),
-            160,
-            90,
-            None,
-            time,
-            4096,
-            None,
-        );
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
+            limit: 4096,
+            ..RenderInput::small(snapshot, view("coop"), &Camera::default(), time)
+        });
         scene.spare = frame.release();
     }
 
@@ -3457,9 +3401,9 @@ mod tests {
         sample.cpus = vec![Cpu {
             id: 0,
             kind: CoreKind::Efficiency,
-            busy: 1.0,
-            mhz: 0.0,
-            wait: 0.0,
+            busy: Some(1.0),
+            mhz: None,
+            wait: None,
         }];
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
@@ -3707,7 +3651,7 @@ mod tests {
         holder.locks_held = Measured::Known(1);
         let mut waiter = process(2, "/system.slice/waiter.service");
         waiter.cpu = 50.0;
-        waiter.blocked_on = Some(1);
+        waiter.blocked_on = Some(Blocker::Process(1));
         let mut scene = Scene::new();
         let sample = snapshot(vec![holder.clone(), waiter.clone()], 1.0);
         render(&mut scene, &sample, 1.0);
@@ -3737,7 +3681,7 @@ mod tests {
         assert_eq!(chicken.role, Role::Feeding, "running outranks a stale wait");
         // A holder that is not sampled leaves it at its own nest.
         let mut orphan = sample.processes[1].clone();
-        orphan.blocked_on = Some(77);
+        orphan.blocked_on = Some(Blocker::Process(77));
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![orphan.clone()], 1.0), 1.0);
         let chicken = &scene.coop.yard.chickens[0];
@@ -3745,7 +3689,7 @@ mod tests {
         assert!(chicken.target[0] > scene.coop.flocks[0].nest()[0]);
         assert!(notes(&scene, 2)[0].contains("pid 77, which was not sampled"));
         // So does a lock no process can be named for, such as an OFD lock.
-        orphan.blocked_on = Some(UNNAMED);
+        orphan.blocked_on = Some(Blocker::Unnamed);
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![orphan], 1.0), 1.0);
         let chicken = &scene.coop.yard.chickens[0];
@@ -3769,7 +3713,7 @@ mod tests {
             processes.extend((2..2 + count).map(|pid| {
                 let mut waiter = process(pid, "/system.slice/flock.service");
                 waiter.memory = memory;
-                waiter.blocked_on = Some(1);
+                waiter.blocked_on = Some(Blocker::Process(1));
                 waiter
             }));
             let mut scene = Scene::new();
@@ -3813,7 +3757,7 @@ mod tests {
             HashMap::from([(
                 path.to_string(),
                 Unit {
-                    oom_kills: kills,
+                    oom_kills: Some(kills),
                     ..Unit::default()
                 },
             )])
@@ -3858,7 +3802,7 @@ mod tests {
         HashMap::from([(
             path.to_string(),
             Unit {
-                oom_kills: kills,
+                oom_kills: Some(kills),
                 ..Unit::default()
             },
         )])
@@ -4009,7 +3953,7 @@ mod tests {
                 sample.units.insert(
                     path.clone(),
                     Unit {
-                        oom_kills: kills,
+                        oom_kills: Some(kills),
                         ..Unit::default()
                     },
                 );
@@ -4030,7 +3974,7 @@ mod tests {
                 p.state = 'R';
                 p.cpu = 90.0;
                 p.memory = 20 << 20;
-                p.core = u32::from(pid > 9);
+                p.core = Some(u32::from(pid > 9));
                 p
             })
             .collect();
@@ -4075,7 +4019,7 @@ mod tests {
                 p.state = 'R';
                 p.cpu = 90.0;
                 p.memory = 20 << 20;
-                p.core = u32::from(pid > 9);
+                p.core = Some(u32::from(pid > 9));
                 p
             })
             .collect();
@@ -4086,12 +4030,12 @@ mod tests {
             .map(|(id, busy)| Cpu {
                 id: id as u32,
                 kind: CoreKind::Unknown,
-                busy,
-                mhz: 0.0,
-                wait: 0.0,
+                busy: Some(busy),
+                mhz: None,
+                wait: None,
             })
             .collect();
-        sample.missing = vec!["cpu pressure", "last cpu"];
+        sample.missing = [Source::CpuPressure, Source::LastCpu].into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         let coop = &scene.coop;
@@ -4147,7 +4091,7 @@ mod tests {
     fn coop_keeps_per_cpu_feeders_when_only_cpu_pressure_is_missing() {
         let mut sample = snapshot(vec![process(1, "/system.slice/a.service")], 1.0);
         sample.cores = 2;
-        sample.missing = vec!["cpu pressure"];
+        sample.missing = Source::CpuPressure.into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         assert_eq!(scene.coop.feeders.len(), 2);
@@ -4170,7 +4114,7 @@ mod tests {
             })
             .collect();
         let mut sample = snapshot(processes, 1.0);
-        sample.missing = vec!["file locks"];
+        sample.missing = Source::FileLocks.into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         assert!(
@@ -4195,7 +4139,7 @@ mod tests {
             "{legend}"
         );
         // Where locks exist but could not be read, the legend counts the processes instead.
-        sample.missing.clear();
+        sample.missing = Sources::default();
         sample.elapsed = 2.0;
         render(&mut scene, &sample, 2.0);
         let legend = scene.coop.legend();
@@ -4403,17 +4347,12 @@ mod tests {
             for k in 0..6 {
                 let sample = demo(20.0 + k as f64, 160);
                 scene.record(&sample, 20.0 + k as f32);
-                let mut frame = scene.render(
+                let mut frame = scene.render(&RenderInput::small(
                     &sample,
-                    View::Coop,
+                    view("coop"),
                     &Camera::default(),
-                    320,
-                    180,
-                    None,
                     20.0 + k as f32 * 0.7,
-                    512,
-                    None,
-                );
+                ));
                 frame.rasterize();
                 pixels = frame.pixels.clone();
                 scene.spare = frame.release();
@@ -4431,17 +4370,14 @@ mod tests {
         selected: Option<Identity>,
         focus: Option<Identity>,
     ) {
-        let frame = scene.render(
-            snapshot,
-            View::Coop,
-            &Camera::default(),
-            160,
-            90,
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
             selected,
-            time,
             limit,
             focus,
-        );
+            ..RenderInput::small(snapshot, view("coop"), &Camera::default(), time)
+        });
         scene.spare = frame.release();
     }
 
