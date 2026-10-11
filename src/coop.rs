@@ -11,7 +11,7 @@ use crate::geometry::{cuboid, normalize_or_zero, shade};
 use crate::layout::{Discs, Seats, spin};
 use crate::model::{CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes};
 use crate::palette::{core_color, core_name, kind_color, tint};
-use crate::platform::{DeletedFile, UNNAMED};
+use crate::platform::{DeletedFile, GROUP_LABEL, Source, UNNAMED};
 use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, without_apple_prefix};
 use crate::simulation::hash::unit_from as fraction;
 use crate::simulation::{Rng, SpatialHash, hash, sprout};
@@ -803,7 +803,8 @@ pub struct Coop {
     accumulator: f32,
     phi: Option<f32>,
     pressure_missing: bool,
-    /// The OS has no cgroups, so flocks are app or user groups and no OOM kill brings a fox.
+    /// The OS has no cgroups, so flocks are its process groups (`GROUP_LABEL`) and no OOM kill
+    /// brings a fox.
     cgroups_missing: bool,
     /// The OS reports no last CPU, so running chickens queue at one shared trough.
     trough_shared: bool,
@@ -1133,7 +1134,7 @@ impl Coop {
             "feeder = CPU it ran on"
         };
         let (flock, fox) = if self.cgroups_missing {
-            ("app or user group", "")
+            (GROUP_LABEL, "")
         } else {
             ("cgroup", "fox = OOM kill, ")
         };
@@ -1368,7 +1369,7 @@ impl Coop {
             low[axis] -= spare;
             high[axis] += spare;
         }
-        self.trough_shared = snapshot.missing.contains(&"last cpu");
+        self.trough_shared = snapshot.missing.contains(Source::LastCpu);
         let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1], self.trough_shared);
         self.feeders = feeders;
         self.band_top = low[1];
@@ -1451,9 +1452,9 @@ impl Coop {
         self.hidden.retain(|id, _| raw.contains_key(id));
 
         let psi = snapshot.pressure[0];
-        self.pressure_missing = snapshot.missing.contains(&"cpu pressure");
-        self.cgroups_missing = snapshot.missing.contains(&"cgroups");
-        self.locks_missing = snapshot.missing.contains(&"file locks");
+        self.pressure_missing = snapshot.missing.contains(Source::CpuPressure);
+        self.cgroups_missing = snapshot.missing.contains(Source::Cgroups);
+        self.locks_missing = snapshot.missing.contains(Source::FileLocks);
         let by_pid: HashMap<u32, &Process> = snapshot
             .processes
             .iter()
@@ -2982,6 +2983,7 @@ fn draw_fox(frame: &mut Frame, camera: &Camera, fox: &Fox, time: f32) {
 mod tests {
     use super::*;
     use crate::model::{Unit, demo};
+    use crate::platform::Sources;
     use crate::render::{Camera, Scene, View};
 
     fn identity(pid: u32) -> Identity {
@@ -4006,7 +4008,7 @@ mod tests {
                 wait: 0.0,
             })
             .collect();
-        sample.missing = vec!["cpu pressure", "last cpu"];
+        sample.missing = [Source::CpuPressure, Source::LastCpu].into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         let coop = &scene.coop;
@@ -4062,7 +4064,7 @@ mod tests {
     fn coop_keeps_per_cpu_feeders_when_only_cpu_pressure_is_missing() {
         let mut sample = snapshot(vec![process(1, "/system.slice/a.service")], 1.0);
         sample.cores = 2;
-        sample.missing = vec!["cpu pressure"];
+        sample.missing = Source::CpuPressure.into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         assert_eq!(scene.coop.feeders.len(), 2);
@@ -4085,7 +4087,7 @@ mod tests {
             })
             .collect();
         let mut sample = snapshot(processes, 1.0);
-        sample.missing = vec!["file locks"];
+        sample.missing = Source::FileLocks.into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         assert!(
@@ -4110,7 +4112,7 @@ mod tests {
             "{legend}"
         );
         // Where locks exist but could not be read, the legend counts the processes instead.
-        sample.missing.clear();
+        sample.missing = Sources::default();
         sample.elapsed = 2.0;
         render(&mut scene, &sample, 2.0);
         let legend = scene.coop.legend();

@@ -28,8 +28,8 @@ The README covers usage. This file covers how to work on the code.
 |---|---|
 | `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark, and `warm_up`, which settles a headless frame (the golden render test calls it too) |
 | `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
-| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`) and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
-| `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
+| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
+| `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `platform/linux/files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
@@ -69,7 +69,9 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 - `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
   `Color`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
-- `render` and `coop` read `platform` types (`Shadow`, `Files`, `DeletedFile`).
+- `render` and the views read `platform` types (`Shadow`, `Files`, `DeletedFile`, and `Source`
+  and `Sources` from `Snapshot::missing`), and Cells and the coop its `GROUP_LABEL` and
+  `WITHOUT_CGROUPS`.
 
 **The view contract.** A module view owns a state struct and implements
 `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.

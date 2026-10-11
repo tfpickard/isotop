@@ -10,6 +10,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 use crate::layout::{Discs, Seats, spin, spiral};
 use crate::model::{Kind, Process, Snapshot, Unit, bounded, bytes};
 use crate::palette::{CONTAINER, SESSION, SYSTEM, kind_color, mix, tint};
+use crate::platform::{GROUP_LABEL, Source, WITHOUT_CGROUPS};
 use crate::render::{
     Color, NONE, Point, Stage, WARM, mass_radius, ring_bounds, without_apple_prefix,
 };
@@ -415,8 +416,10 @@ fn describe(cell: &Cell, processes: &[&Process], nucleus: bool) -> Vec<String> {
 
 /// The status legend, saying what the snapshot's platform leaves out.
 pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(&"cgroups") {
-        " Cell = app or user group, size = memory | groups by app and user; macOS has no cgroups, so no limits, quotas or pressure | organelles = processes".into()
+    if snapshot.missing.contains(Source::Cgroups) {
+        format!(
+            " Cell = {GROUP_LABEL}, size = memory | {WITHOUT_CGROUPS}, so no limits, quotas or pressure | organelles = processes"
+        )
     } else {
         " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
     }
@@ -431,11 +434,17 @@ mod tests {
     fn legend_drops_limits_quotas_and_pressure_without_cgroups() {
         let mut snapshot = demo(1.0, 8);
         assert!(legend(&snapshot).contains("dashed ring = memory limit | arc = CPU vs quota"));
-        snapshot.missing = vec!["cgroups"];
+        snapshot.missing = Source::Cgroups.into();
         let text = legend(&snapshot);
-        assert!(text.contains(
-            "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
-        ));
+        assert!(text.contains(&format!(
+            " Cell = {GROUP_LABEL}, size = memory | {WITHOUT_CGROUPS}, so no limits, quotas or \
+             pressure | "
+        )));
+        if cfg!(target_os = "macos") {
+            assert!(text.contains(
+                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
+            ));
+        }
         assert!(!text.contains("dashed ring") && !text.contains("throttled"));
     }
 
@@ -464,7 +473,7 @@ mod tests {
                 .values()
                 .any(|lines| lines.iter().any(|l| l.starts_with("pressure cpu")))
         );
-        snapshot.missing = vec!["cgroups"];
+        snapshot.missing = Source::Cgroups.into();
         snapshot.units.clear();
         for process in &mut snapshot.processes {
             process.cgroup.clear();

@@ -7,22 +7,17 @@
 //!   - `processes(&mut self) -> io::Result<Vec<RawProcess>>`, in any order; an error means
 //!     live mode cannot run at all;
 //!   - `memory(&self) -> (u64, u64)`: total and available bytes;
-//!   - `pressure(&self) -> ([f32; 3], bool)`: CPU, memory and I/O stall percentages, and
-//!     whether the source could be read at all (when not, the collector reports all three
-//!     pressures as missing);
+//!   - `pressure(&self) -> ([f32; 3], Sources)`: CPU, memory and I/O stall percentages, and
+//!     the pressure sources among them that could not be read (their value is 0);
 //!   - `cpus(&mut self, dt: f32) -> Vec<Cpu>`: per-CPU use over the last `dt` seconds, sorted
 //!     by id. It is called after `processes` in every sample, so a platform may derive CPU
 //!     readings from the processes it has just read;
-//!   - `missing(&self) -> Vec<&'static str>`: what this platform can never measure, named as
-//!     `Snapshot::missing` names it and appended to it every sample. The names views react to
-//!     are "cpu pressure", "memory pressure", "io pressure", "last cpu" (`Process::core` is
-//!     meaningless), "cpu clock" (`Cpu::mhz` is 0), "run queue" (`Cpu::wait` is 0), "cgroups"
-//!     (no accounting units, so no limits, quotas or pressure), "socket traffic" (no
-//!     per-connection rates or round-trip times) and "file locks" (no lock table: `locks()`
-//!     returns None, so no process holds or waits for a lock). Linux returns none;
-//!   - `per_cluster(&self) -> Vec<&'static str>`: sources measured per CPU cluster rather than
-//!     per CPU, named as `Snapshot::per_cluster` names them: "cpu clock" when every CPU's
-//!     `Cpu::mhz` is the average clock of the cluster of its kind. Linux returns none;
+//!   - `missing(&self) -> Sources`: what this platform does not measure, as of the last
+//!     `processes` and `cpus` calls, added to `Snapshot::missing` every sample. `Source` lists
+//!     what each source's absence means for the values;
+//!   - `per_cluster(&self) -> Sources`: sources measured per CPU cluster rather than per CPU:
+//!     `Source::CpuClock` when every CPU's `Cpu::mhz` is the average clock of the cluster of
+//!     its kind. Linux returns none;
 //!   - `unreadable(&self) -> usize`: how many processes the last `processes()` call could see
 //!     but not measure because they belong to another user, and so left out. Races with exiting
 //!     processes are not permission gaps and do not count; Linux returns 0;
@@ -37,9 +32,9 @@
 //!     the regular files each process holds open, None for a table that could not be read; a
 //!     pid the scan has not reached is absent;
 //!   - `locks() -> Option<Locks>`: file locks with their holders and waiters, None when they
-//!     cannot be read;
+//!     cannot be read (the collector then reports `Source::FileLocks` missing);
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, u64>`: GPU memory
-//!     per pid.
+//!     per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
 //! - `journal() -> io::Result<(Child, JournalParser)>`: a running log follower with piped
 //!   stdout and stderr, and the parser that reads one entry at a time from its stdout;
 //!   `JOURNAL: &str` names the follower (`journalctl` or `log`) in the messages isotop prints
@@ -49,8 +44,12 @@
 //!   killing the child alone could leave the command it is waiting on running.
 //! - `MEMORY_LABEL: &str` names what `Process::memory` measures (RSS on Linux), as the
 //!   inspector and legends show it.
+//! - `GROUP_LABEL: &str` names what `Process::group` stands for when `Source::Cgroups` is
+//!   missing, and `WITHOUT_CGROUPS: &str` says how processes are grouped then and why, as the
+//!   Cells and Coop legends show them.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::io::{self, BufRead};
 use std::net::IpAddr;
 
@@ -84,6 +83,137 @@ compile_error!("isotop has platform support for Linux and macOS only");
 )]
 #[path = "macos/journal.rs"]
 mod macos_journal;
+
+/// A system-wide source of measurements that a platform or a machine may lack. Where one is
+/// missing, the values it would fill read 0 or None, and the views say so instead of drawing
+/// them. A pull request that adds a source adds its variant here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// `Snapshot::pressure[0]`, the CPU stall percentage.
+    CpuPressure,
+    /// `Snapshot::pressure[1]`, the memory stall percentage.
+    MemoryPressure,
+    /// `Snapshot::pressure[2]`, the I/O stall percentage.
+    IoPressure,
+    /// `Process::core`, the CPU each process last ran on.
+    LastCpu,
+    /// `Cpu::mhz`, the clock of each CPU.
+    CpuClock,
+    /// `Cpu::wait`, the time tasks spent waiting for each CPU.
+    RunQueue,
+    /// Cgroup v2 accounting: no `Unit`s, so no limits, quotas, pressure or OOM kills.
+    Cgroups,
+    /// Per-connection byte counters and round-trip times of TCP sockets.
+    SocketTraffic,
+    /// The lock table: no process holds or waits for a lock.
+    FileLocks,
+    /// `Process::gpu_memory`, GPU memory per process.
+    GpuMemory,
+    /// `Cpu::kind`: every CPU is `CoreKind::Unknown`.
+    CoreKinds,
+}
+
+impl Source {
+    /// Every source, in declaration order.
+    pub const ALL: [Source; 11] = [
+        Source::CpuPressure,
+        Source::MemoryPressure,
+        Source::IoPressure,
+        Source::LastCpu,
+        Source::CpuClock,
+        Source::RunQueue,
+        Source::Cgroups,
+        Source::SocketTraffic,
+        Source::FileLocks,
+        Source::GpuMemory,
+        Source::CoreKinds,
+    ];
+
+    /// The source's name in lower case, as messages show it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::CpuPressure => "cpu pressure",
+            Source::MemoryPressure => "memory pressure",
+            Source::IoPressure => "io pressure",
+            Source::LastCpu => "last cpu",
+            Source::CpuClock => "cpu clock",
+            Source::RunQueue => "run queue",
+            Source::Cgroups => "cgroups",
+            Source::SocketTraffic => "socket traffic",
+            Source::FileLocks => "file locks",
+            Source::GpuMemory => "gpu memory",
+            Source::CoreKinds => "core kinds",
+        }
+    }
+
+    fn bit(self) -> u64 {
+        1 << self as u32
+    }
+}
+
+/// A set of sources, one bit per `Source`.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sources(u64);
+
+impl Sources {
+    pub fn contains(self, source: Source) -> bool {
+        self.0 & source.bit() != 0
+    }
+
+    pub fn insert(&mut self, source: Source) {
+        self.0 |= source.bit();
+    }
+
+    /// Only tests ask; the views ask for the sources they draw.
+    #[cfg(test)]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The sources in either set.
+    pub fn union(self, other: Sources) -> Sources {
+        Sources(self.0 | other.0)
+    }
+
+    /// The sources in the set, in declaration order.
+    pub fn iter(self) -> impl Iterator<Item = Source> {
+        Source::ALL
+            .into_iter()
+            .filter(move |&source| self.contains(source))
+    }
+}
+
+impl From<Source> for Sources {
+    fn from(source: Source) -> Self {
+        Sources(source.bit())
+    }
+}
+
+impl FromIterator<Source> for Sources {
+    fn from_iter<I: IntoIterator<Item = Source>>(sources: I) -> Self {
+        let mut set = Sources::default();
+        for source in sources {
+            set.insert(source);
+        }
+        set
+    }
+}
+
+impl<const N: usize> From<[Source; N]> for Sources {
+    fn from(sources: [Source; N]) -> Self {
+        sources.into_iter().collect()
+    }
+}
+
+/// Lists the names, so a failed assertion reads `{"cpu clock", "run queue"}`.
+impl fmt::Debug for Sources {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter
+            .debug_set()
+            .entries(self.iter().map(Source::name))
+            .finish()
+    }
+}
 
 /// One process as the OS reports it, before isotop smooths anything.
 pub struct RawProcess {
@@ -209,4 +339,54 @@ pub struct Locks {
     /// Open file description locks: they belong to an open file, not a process, and report pid
     /// -1, so no process can be named as their holder.
     pub unattributed: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_names_are_unique_and_match_previous_wording() {
+        let names: Vec<&str> = Source::ALL.iter().map(|source| source.name()).collect();
+        assert_eq!(
+            names[..9],
+            [
+                "cpu pressure",
+                "memory pressure",
+                "io pressure",
+                "last cpu",
+                "cpu clock",
+                "run queue",
+                "cgroups",
+                "socket traffic",
+                "file locks",
+            ],
+            "the names `Snapshot::missing` held as strings"
+        );
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        assert!(Source::ALL.len() <= 64, "a source is one bit of a u64");
+    }
+
+    #[test]
+    fn sources_hold_each_source_once_and_list_them_in_declaration_order() {
+        let mut sources = Sources::default();
+        assert!(sources.is_empty());
+        sources.insert(Source::FileLocks);
+        sources.insert(Source::CpuPressure);
+        sources.insert(Source::FileLocks);
+        assert!(sources.contains(Source::FileLocks) && !sources.contains(Source::Cgroups));
+        assert_eq!(
+            sources.iter().collect::<Vec<_>>(),
+            [Source::CpuPressure, Source::FileLocks]
+        );
+        assert_ne!(sources, Sources::from(Source::FileLocks));
+        let both = Sources::from(Source::FileLocks)
+            .union(Sources::from([Source::GpuMemory, Source::FileLocks]));
+        assert_eq!(format!("{both:?}"), r#"{"file locks", "gpu memory"}"#);
+        assert_eq!(
+            Source::ALL.into_iter().collect::<Sources>().iter().count(),
+            Source::ALL.len()
+        );
+    }
 }

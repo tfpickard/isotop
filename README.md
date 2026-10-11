@@ -40,6 +40,20 @@ seconds on a background thread. CPU uses a 1.5-second exponential smoothing time
 fully occupied CPU core. Sizes ease toward each sample over 0.3 seconds;
 inspector values remain the sampled measurements.
 
+**What a Linux machine may lack.** isotop says what it cannot read rather than
+drawing zeros, as it does on macOS (below). On Linux the gaps depend on the
+machine: without `cpufreq` (common in virtual machines) the Cores legend says "no
+clock readings"; without a readable `/proc/schedstat` that counts waiting, "no run
+queue readings"; without the hybrid `cpu_core`/`cpu_atom` sysfs (any CPU that is not
+a hybrid Intel one, ARM big.LITTLE included) its lanes read "no core kinds
+reported". Each pressure file under `/proc/pressure` is judged on its own, and the
+status line prints `n/a` for one that cannot be read. Without cgroup v2 with a
+memory controller, or when no process sits in a cgroup below the root (inside a
+container, say), Cells and the coop group processes by service and draw no limits,
+quotas, pressure or OOM kills. An unreadable `/proc/locks` means no brooding or
+queueing in the coop, and without NVML the Orbit legend leaves out its green NVIDIA
+entry.
+
 ## Rendering
 
 Every frame is a display list of screen-space primitives (triangles, lines,
@@ -130,7 +144,7 @@ cache is stale.
 | Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
-| GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos |
+| GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
 | The systemd journal | Matrix follows the unified log instead; see below |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`

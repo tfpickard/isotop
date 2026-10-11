@@ -35,6 +35,7 @@ use crossterm::event::{
 
 use journal::Journal;
 use model::{Collector, Identity, Process, Snapshot, bytes, describe};
+use platform::Source;
 use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
 
@@ -630,7 +631,7 @@ impl App {
         lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
             || match self.view {
                 View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
-                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(&self.scene)),
+                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU{} | cyan arcs = sockets, pink = outside{}", gpu_note(s), hub_note(&self.scene)),
                 View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
                 View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(&self.scene)),
                 View::Cores => cores::legend(s),
@@ -1172,11 +1173,8 @@ fn place_panel(
 /// The pressure readings for the status line, `n/a` for each one the platform cannot measure.
 fn pressure_text(snapshot: &Snapshot) -> String {
     let [cpu, memory, io] = snapshot.pressure;
-    let reading = |name: &str, value: f32| {
-        if snapshot
-            .missing
-            .contains(&format!("{name} pressure").as_str())
-        {
+    let reading = |source: Source, value: f32| {
+        if snapshot.missing.contains(source) {
             "n/a".to_owned()
         } else {
             format!("{value:.0}%")
@@ -1184,10 +1182,19 @@ fn pressure_text(snapshot: &Snapshot) -> String {
     };
     format!(
         "pressure cpu {} mem {} io {}",
-        reading("cpu", cpu),
-        reading("memory", memory),
-        reading("io", io)
+        reading(Source::CpuPressure, cpu),
+        reading(Source::MemoryPressure, memory),
+        reading(Source::IoPressure, io)
     )
+}
+
+/// The Orbit legend's GPU entry, left out where per-process GPU memory is not measured.
+fn gpu_note(snapshot: &Snapshot) -> &'static str {
+    if snapshot.missing.contains(Source::GpuMemory) {
+        ""
+    } else {
+        " | green = NVIDIA GPU"
+    }
 }
 
 /// A short note beside the process count for processes of other users that could not be
@@ -1809,25 +1816,26 @@ mod tests {
         );
     }
 
-    /// The macOS gaps, as the collector reports them.
-    const MACOS: [&str; 8] = [
-        "cpu pressure",
-        "io pressure",
-        "last cpu",
-        "cpu clock",
-        "run queue",
-        "cgroups",
-        "socket traffic",
-        "file locks",
+    /// The macOS gaps, as the collector reports them on a Mac without cluster clocks.
+    const MACOS: [Source; 9] = [
+        Source::CpuPressure,
+        Source::IoPressure,
+        Source::LastCpu,
+        Source::CpuClock,
+        Source::RunQueue,
+        Source::Cgroups,
+        Source::SocketTraffic,
+        Source::FileLocks,
+        Source::GpuMemory,
     ];
 
     /// The status text of `view` over the demo workload with the given gaps, after one frame so
     /// views that learn the gaps while drawing have seen them.
-    fn lines_with(view: View, missing: &[&'static str], unreadable: usize) -> Vec<String> {
+    fn lines_with(view: View, missing: &[Source], unreadable: usize) -> Vec<String> {
         let mut snapshot = model::demo(1.0, 16);
-        snapshot.missing = missing.to_vec();
+        snapshot.missing = missing.iter().copied().collect();
         snapshot.unreadable = unreadable;
-        if missing.contains(&"last cpu") {
+        if missing.contains(&Source::LastCpu) {
             // A Mac without the rusage counters that place marbles by cluster: no share of
             // performance-core time and no waiting threads.
             for process in &mut snapshot.processes {
@@ -1835,7 +1843,7 @@ mod tests {
                 process.waiting = None;
             }
         }
-        if missing.contains(&"file locks") {
+        if missing.contains(&Source::FileLocks) {
             // No lock table: every process's locks are unreadable and none waits on one.
             for process in &mut snapshot.processes {
                 process.locks_held = model::Measured::Unreadable;
@@ -1867,7 +1875,11 @@ mod tests {
         );
         let none = lines_with(
             View::City,
-            &["cpu pressure", "memory pressure", "io pressure"],
+            &[
+                Source::CpuPressure,
+                Source::MemoryPressure,
+                Source::IoPressure,
+            ],
             0,
         );
         assert!(
@@ -1917,10 +1929,16 @@ mod tests {
         assert!(!cores.contains("marble ="), "{cores}");
         let cells = lines_with(View::Cells, &MACOS, 0)[2].clone();
         assert!(
-            cells.contains(
-                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
-            ),
+            cells.contains(&format!(
+                "{}, so no limits, quotas or pressure",
+                platform::WITHOUT_CGROUPS
+            )),
             "{cells}"
+        );
+        let orbit = lines_with(View::Orbit, &MACOS, 0)[2].clone();
+        assert!(
+            orbit.contains("glow + trail = CPU | cyan arcs") && !orbit.contains("NVIDIA"),
+            "{orbit}"
         );
         let globe = lines_with(View::Globe, &MACOS, 0)[2].clone();
         assert!(
@@ -1938,7 +1956,10 @@ mod tests {
     #[test]
     fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
         let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
-        assert!(mac.contains("flock = app or user group"), "{mac}");
+        assert!(
+            mac.contains(&format!("flock = {} | ", platform::GROUP_LABEL)),
+            "{mac}"
+        );
         assert!(
             mac.contains("dust = reads | eyes = memory pressure"),
             "{mac}"
@@ -1988,6 +2009,7 @@ mod tests {
         );
         assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
         assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
+        assert!(text(View::Orbit).contains("glow + trail = CPU | green = NVIDIA GPU | cyan arcs"));
         assert!(!text(View::Coop).contains("share one trough"));
     }
 

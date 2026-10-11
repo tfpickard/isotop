@@ -14,7 +14,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Network, RawProcess, Shadow};
+use crate::platform::{Files, Network, RawProcess, Shadow, Source, Sources};
 
 pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};
@@ -23,25 +23,41 @@ pub use nvml::Nvml as Gpu;
 /// What `Process::memory` measures here: the resident set size.
 pub const MEMORY_LABEL: &str = "RSS";
 
+/// Without cgroup v2 a process's group is the service or scope its cgroup lines name.
+pub const GROUP_LABEL: &str = "service";
+pub const WITHOUT_CGROUPS: &str = "groups by service; no cgroup v2 accounting here";
+
 /// Reads processes, memory, pressure and CPUs, keeping the CPU counters between readings.
 pub struct Sampler {
     cpu_previous: HashMap<u32, Ticks>,
     core_kinds: HashMap<u32, CoreKind>,
     hz: f32,
     page_size: u64,
+    /// What this machine lacks for good: core kinds, and cgroup v2 accounting.
+    fixed_gaps: Sources,
+    /// What the last `cpus` call could not read.
+    cpu_gaps: Sources,
+    /// Whether any process in the last `processes` call sat in a cgroup v2 cgroup below the
+    /// root; inside a container every process may read as the root `0::/`.
+    grouped: bool,
 }
 
 impl Sampler {
     pub fn new() -> Self {
+        let core_kinds = core_kinds();
+        let controllers = fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").ok();
         Self {
             cpu_previous: HashMap::new(),
-            core_kinds: core_kinds(),
+            fixed_gaps: fixed_gaps(&core_kinds, controllers.as_deref()),
+            core_kinds,
             // SAFETY: sysconf takes no pointers and has no preconditions; for a selector it
             // does not know it returns -1, which max(1) clamps. These selectors return positive
             // values on supported Linux systems.
             hz: unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f32,
             // SAFETY: as above.
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
+            cpu_gaps: Sources::default(),
+            grouped: false,
         }
     }
 
@@ -95,6 +111,7 @@ impl Sampler {
                 runnable_ticks: None,
             });
         }
+        self.grouped = processes.iter().any(|raw| !raw.process.cgroup.is_empty());
         Ok(processes)
     }
 
@@ -120,24 +137,34 @@ impl Sampler {
         (total, available)
     }
 
-    /// Pressure stall percentages, and whether PSI is available.
-    pub fn pressure(&self) -> ([f32; 3], bool) {
-        pressure()
+    /// Pressure stall percentages, and the pressures that could not be read.
+    pub fn pressure(&self) -> ([f32; 3], Sources) {
+        pressure(
+            ["cpu", "memory", "io"]
+                .map(|resource| fs::read_to_string(format!("/proc/pressure/{resource}")).ok()),
+        )
     }
 
     /// Per-CPU use since the previous call, `dt` seconds ago.
     pub fn cpus(&mut self, dt: f32) -> Vec<Cpu> {
-        cpus(&mut self.cpu_previous, &self.core_kinds, dt)
+        let (cpus, gaps) = cpus(&mut self.cpu_previous, &self.core_kinds, dt);
+        self.cpu_gaps = gaps;
+        cpus
     }
 
-    /// Linux measures everything isotop shows.
-    pub fn missing(&self) -> Vec<&'static str> {
-        Vec::new()
+    /// What this machine lacks: the gaps found at start, those of the last CPU readings, and
+    /// cgroups when no process sat in a cgroup v2 cgroup below the root.
+    pub fn missing(&self) -> Sources {
+        let mut missing = self.fixed_gaps.union(self.cpu_gaps);
+        if !self.grouped {
+            missing.insert(Source::Cgroups);
+        }
+        missing
     }
 
     /// Linux measures every CPU on its own.
-    pub fn per_cluster(&self) -> Vec<&'static str> {
-        Vec::new()
+    pub fn per_cluster(&self) -> Sources {
+        Sources::default()
     }
 
     /// Always 0: a process that vanishes between readdir and the read is a race, not a gap.
@@ -227,8 +254,13 @@ pub fn account(
     units
 }
 
-/// Per-CPU busy share and wait from /proc/stat and /proc/schedstat, and clock from cpufreq.
-fn cpus(previous: &mut HashMap<u32, Ticks>, kinds: &HashMap<u32, CoreKind>, dt: f32) -> Vec<Cpu> {
+/// Per-CPU busy share and wait from /proc/stat and /proc/schedstat, and clock from cpufreq,
+/// with what could not be read of the latter two.
+fn cpus(
+    previous: &mut HashMap<u32, Ticks>,
+    kinds: &HashMap<u32, CoreKind>,
+    dt: f32,
+) -> (Vec<Cpu>, Sources) {
     let mut ticks: HashMap<u32, Ticks> = HashMap::new();
     if let Ok(text) = fs::read_to_string("/proc/stat") {
         for (id, values) in text.lines().filter_map(cpu_line) {
@@ -244,10 +276,10 @@ fn cpus(previous: &mut HashMap<u32, Ticks>, kinds: &HashMap<u32, CoreKind>, dt: 
             );
         }
     }
-    if let Ok(text) = fs::read_to_string("/proc/schedstat") {
-        // Field 8 of a cpuN line (schedstat version 15 and later) is nanoseconds spent waiting.
+    let schedstat = fs::read_to_string("/proc/schedstat").ok();
+    if let Some(text) = &schedstat {
         for (id, values) in text.lines().filter_map(cpu_line) {
-            if let (Some(entry), Some(&wait)) = (ticks.get_mut(&id), values.get(7)) {
+            if let (Some(entry), Some(&wait)) = (ticks.get_mut(&id), values.get(WAIT_FIELD)) {
                 entry.wait = wait;
             }
         }
@@ -279,7 +311,46 @@ fn cpus(previous: &mut HashMap<u32, Ticks>, kinds: &HashMap<u32, CoreKind>, dt: 
         .collect();
     cpus.sort_by_key(|cpu| cpu.id);
     *previous = ticks;
-    cpus
+    let clocks: Vec<f32> = cpus.iter().map(|cpu| cpu.mhz).collect();
+    let gaps = cpu_gaps(schedstat.as_deref(), &clocks);
+    (cpus, gaps)
+}
+
+/// Index of a /proc/schedstat cpuN value (field 8 of the line, schedstat version 15 and later)
+/// that counts nanoseconds spent waiting to run.
+const WAIT_FIELD: usize = 7;
+
+/// What a CPU reading lacks: the clock when no CPU has a cpufreq reading (common in virtual
+/// machines), and the run queue when /proc/schedstat is unreadable or too old to count waiting.
+fn cpu_gaps(schedstat: Option<&str>, clocks: &[f32]) -> Sources {
+    let mut gaps = Sources::default();
+    if !clocks.iter().any(|&mhz| mhz > 0.0) {
+        gaps.insert(Source::CpuClock);
+    }
+    let waits = schedstat.is_some_and(|text| {
+        text.lines()
+            .filter_map(cpu_line)
+            .any(|(_, values)| values.len() > WAIT_FIELD)
+    });
+    if !waits {
+        gaps.insert(Source::RunQueue);
+    }
+    gaps
+}
+
+/// What a machine lacks for as long as isotop runs: core kinds when the hybrid sysfs names none
+/// (every CPU that is not a hybrid Intel one, ARM big.LITTLE included), and cgroups when the
+/// unified hierarchy is not mounted at /sys/fs/cgroup (cgroup v1, or none) or offers no memory
+/// controller, without which `account` finds no units.
+fn fixed_gaps(kinds: &HashMap<u32, CoreKind>, controllers: Option<&str>) -> Sources {
+    let mut gaps = Sources::default();
+    if kinds.is_empty() {
+        gaps.insert(Source::CoreKinds);
+    }
+    if !controllers.is_some_and(|text| text.split_whitespace().any(|name| name == "memory")) {
+        gaps.insert(Source::Cgroups);
+    }
+    gaps
 }
 
 /// A `cpuN v1 v2 ...` line as (N, values); the aggregate `cpu` line is skipped.
@@ -317,14 +388,24 @@ fn ranges(text: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Pressure stall percentages, and whether /proc/pressure/cpu could be read at all (kernels
-/// without PSI have no such file). Unreadable or unparsable values count as 0.
-fn pressure() -> ([f32; 3], bool) {
-    let texts = ["cpu", "memory", "io"]
-        .map(|resource| fs::read_to_string(format!("/proc/pressure/{resource}")).ok());
-    let readable = texts[0].is_some();
-    let values = texts.map(|text| text.as_deref().and_then(parse_pressure).unwrap_or(0.0));
-    (values, readable)
+/// Pressure stall percentages from the texts of /proc/pressure/cpu, memory and io, each judged
+/// on its own: a file that could not be read (kernels without PSI, or with it turned off) or
+/// parsed reads 0 and is missing.
+fn pressure(texts: [Option<String>; 3]) -> ([f32; 3], Sources) {
+    let mut missing = Sources::default();
+    let mut values = [0.0; 3];
+    let sources = [
+        Source::CpuPressure,
+        Source::MemoryPressure,
+        Source::IoPressure,
+    ];
+    for ((text, value), source) in texts.iter().zip(&mut values).zip(sources) {
+        match text.as_deref().and_then(parse_pressure) {
+            Some(reading) => *value = reading,
+            None => missing.insert(source),
+        }
+    }
+    (values, missing)
 }
 
 /// The `some avg10=` value from a /proc/pressure file.
@@ -568,6 +649,87 @@ mod tests {
         });
         let (process, _) = parse_stat(5, &favoured, 4096).unwrap();
         assert_eq!((process.priority, process.nice), (0, -20));
+    }
+
+    #[test]
+    fn linux_reports_missing_cpufreq_and_schedstat() {
+        let schedstat = "version 15\ntimestamp 1\ncpu0 0 0 0 0 0 0 6891 2519 25\ndomain0 3 0\n";
+        assert!(cpu_gaps(Some(schedstat), &[2400.0, 0.0]).is_empty());
+        assert_eq!(
+            cpu_gaps(Some(schedstat), &[0.0, 0.0]),
+            Sources::from(Source::CpuClock),
+            "no CPU has a cpufreq reading"
+        );
+        assert_eq!(cpu_gaps(Some(schedstat), &[]), Source::CpuClock.into());
+        assert_eq!(
+            cpu_gaps(None, &[2400.0]),
+            Source::RunQueue.into(),
+            "/proc/schedstat is unreadable"
+        );
+        assert_eq!(
+            cpu_gaps(Some("version 14\ncpu0 0 0 0 0 0 0 6891\n"), &[2400.0]),
+            Source::RunQueue.into(),
+            "a schedstat too old to count waiting"
+        );
+        assert_eq!(
+            cpu_gaps(None, &[0.0]),
+            Sources::from([Source::CpuClock, Source::RunQueue])
+        );
+    }
+
+    #[test]
+    fn linux_reports_missing_core_kinds_and_cgroup_v2() {
+        let hybrid = HashMap::from([(0, CoreKind::Performance), (1, CoreKind::Efficiency)]);
+        let unified = "cpuset cpu io memory hugetlb pids rdma misc\n";
+        assert!(fixed_gaps(&hybrid, Some(unified)).is_empty());
+        assert_eq!(
+            fixed_gaps(&HashMap::new(), Some(unified)),
+            Source::CoreKinds.into(),
+            "no hybrid sysfs, as on ARM big.LITTLE or a CPU of one kind"
+        );
+        assert_eq!(
+            fixed_gaps(&hybrid, None),
+            Source::Cgroups.into(),
+            "cgroup v1, or no cgroups mounted"
+        );
+        assert_eq!(
+            fixed_gaps(&hybrid, Some("cpu io pids\n")),
+            Source::Cgroups.into(),
+            "no memory controller, so no units"
+        );
+    }
+
+    #[test]
+    fn linux_sampler_reports_cgroups_missing_when_no_process_sits_in_cgroup_v2() {
+        let mut sampler = Sampler::new();
+        sampler.fixed_gaps = Sources::default();
+        sampler.grouped = true;
+        assert!(sampler.missing().is_empty());
+        sampler.grouped = false;
+        assert_eq!(sampler.missing(), Source::Cgroups.into());
+    }
+
+    #[test]
+    fn pressure_is_judged_per_file() {
+        let reading = |value: &str| Some(format!("some avg10={value} avg60=0.00\nfull avg10=0.00"));
+        let (values, missing) = pressure([reading("4.00"), reading("2.50"), reading("1.00")]);
+        assert_eq!(values, [4.0, 2.5, 1.0]);
+        assert!(missing.is_empty());
+        let (values, missing) = pressure([reading("4.00"), None, Some("garbled".into())]);
+        assert_eq!(values, [4.0, 0.0, 0.0]);
+        assert_eq!(
+            missing,
+            Sources::from([Source::MemoryPressure, Source::IoPressure])
+        );
+        let (_, missing) = pressure([None, None, None]);
+        assert_eq!(
+            missing,
+            Sources::from([
+                Source::CpuPressure,
+                Source::MemoryPressure,
+                Source::IoPressure
+            ])
+        );
     }
 
     #[test]

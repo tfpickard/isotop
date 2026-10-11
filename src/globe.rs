@@ -11,6 +11,7 @@ use crate::geometry::{dot, normalize};
 use crate::layout::{GOLDEN_ANGLE, Seats, spiral};
 use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
 use crate::palette::{kind_color, tint};
+use crate::platform::Source;
 use crate::render::{Camera, Color, LOWEST_PITCH, NONE, Point, SCALE, Stage, mass_radius};
 use crate::simulation::hash;
 
@@ -143,7 +144,7 @@ impl Globe {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
-        let has_rates = !snapshot.missing.contains(&"socket traffic");
+        let has_rates = !snapshot.missing.contains(Source::SocketTraffic);
         let mut endpoints: HashMap<Spot, Endpoint> = HashMap::new();
         let mut per_process: HashMap<Identity, Vec<&Remote>> = HashMap::new();
         for remote in snapshot
@@ -400,7 +401,7 @@ fn coastline() -> Vec<Vec<[f32; 2]>> {
 
 /// The status legend, saying what the snapshot's platform leaves out.
 pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(&"socket traffic") {
+    if snapshot.missing.contains(Source::SocketTraffic) {
         format!(
             " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
             snapshot.geo
@@ -458,7 +459,7 @@ mod tests {
         let full = legend(&snapshot);
         assert!(full.contains("brighter with traffic | cyan = mostly download"));
         assert!(full.ends_with("| demo locations"));
-        snapshot.missing = vec!["socket traffic"];
+        snapshot.missing = Source::SocketTraffic.into();
         let text = legend(&snapshot);
         assert!(text.contains("no per-connection rates or RTT on macOS"));
         assert!(!text.contains("cyan") && text.ends_with("| demo locations"));
@@ -490,7 +491,7 @@ mod tests {
         };
         let (notes, _) = render(&snapshot);
         assert!(notes[&id][0].contains(" ms | up "));
-        snapshot.missing = vec!["socket traffic"];
+        snapshot.missing = Source::SocketTraffic.into();
         let (notes, items) = render(&snapshot);
         let lines = &notes[&id];
         assert!(!lines.is_empty());

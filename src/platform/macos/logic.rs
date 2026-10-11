@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::model::{CoreKind, Kind};
-use crate::platform::{DeletedFile, Files, Network, Remote};
+use crate::platform::{DeletedFile, Files, Network, Remote, Source, Sources};
 
 /// Executables that run virtual machines or containers. A trailing `*` matches any suffix.
 const VIRTUALIZATION: [&str; 8] = [
@@ -168,6 +168,44 @@ pub fn pressure_from_level(level: i32) -> f32 {
         4 => 75.0,
         _ => 0.0,
     }
+}
+
+/// The pressure readings from the memory pressure level, None when it could not be read, and
+/// the pressures missing: macOS has no CPU or I/O stall accounting at all.
+pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
+    let mut missing = Sources::from([Source::CpuPressure, Source::IoPressure]);
+    let memory = level.map_or_else(
+        || {
+            missing.insert(Source::MemoryPressure);
+            0.0
+        },
+        pressure_from_level,
+    );
+    ([0.0, memory, 0.0], missing)
+}
+
+/// What macOS never measures: the pressures it has no stall accounting for, the last CPU, the
+/// run queue, cgroups, socket traffic, the lock table and GPU memory (Apple GPUs share memory
+/// with the CPU and report none per process). The clock is missing too unless it is measured
+/// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
+pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
+    let mut missing = Sources::from([
+        Source::CpuPressure,
+        Source::IoPressure,
+        Source::LastCpu,
+        Source::RunQueue,
+        Source::Cgroups,
+        Source::SocketTraffic,
+        Source::FileLocks,
+        Source::GpuMemory,
+    ]);
+    if !clocked {
+        missing.insert(Source::CpuClock);
+    }
+    if !kinds_known {
+        missing.insert(Source::CoreKinds);
+    }
+    missing
 }
 
 /// Bytes the kernel can hand out without paging out application memory. `free` from
@@ -845,8 +883,25 @@ mod tests {
         assert_eq!(pressure_from_level(2), 25.0);
         assert_eq!(pressure_from_level(4), 75.0);
         assert_eq!(pressure_from_level(0), 0.0);
+        let unstalled = Sources::from([Source::CpuPressure, Source::IoPressure]);
+        assert_eq!(pressure(Some(2)), ([0.0, 25.0, 0.0], unstalled));
+        assert_eq!(
+            pressure(None).1,
+            unstalled.union(Source::MemoryPressure.into())
+        );
         assert_eq!(available(10, 5, 16384), 15 * 16384);
         assert_eq!(available(u32::MAX, u32::MAX, u64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn macos_reports_gpu_memory_as_missing() {
+        for clocked in [false, true] {
+            let gaps = missing(clocked, true);
+            assert!(gaps.contains(Source::GpuMemory), "{gaps:?}");
+            assert_eq!(gaps.contains(Source::CpuClock), !clocked, "{gaps:?}");
+            assert!(!gaps.contains(Source::MemoryPressure) && !gaps.contains(Source::CoreKinds));
+        }
+        assert!(missing(true, false).contains(Source::CoreKinds));
     }
 
     #[test]

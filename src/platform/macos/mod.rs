@@ -21,13 +21,17 @@ use std::process::Child;
 use std::time::Instant;
 
 use crate::model::{CoreKind, Cpu, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Locks, Network, RawProcess, Shadow};
+use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources};
 
 pub use journal::{JOURNAL, journal};
 
 /// What `Process::memory` measures here: the physical footprint, which counts compressed and
 /// swapped dirty memory and leaves out clean shared pages, so it is not a resident size.
 pub const MEMORY_LABEL: &str = "memory footprint";
+
+/// macOS has no cgroups; a process's group is its outermost app bundle, or its user.
+pub const GROUP_LABEL: &str = "app or user group";
+pub const WITHOUT_CGROUPS: &str = "groups by app and user; macOS has no cgroups";
 
 /// `ARG_MAX` on macOS, used when `kern.argmax` cannot be read.
 const ARG_MAX: usize = 1 << 20;
@@ -386,13 +390,10 @@ impl Sampler {
         (self.memory_total, available)
     }
 
-    /// The memory pressure level in the memory slot, and whether the level could be read.
-    /// macOS has no CPU or I/O stall accounting.
-    pub fn pressure(&self) -> ([f32; 3], bool) {
-        match sysctl::<c_int>(c"kern.memorystatus_vm_pressure_level") {
-            Some(level) => ([0.0, logic::pressure_from_level(level), 0.0], true),
-            None => ([0.0; 3], false),
-        }
+    /// The memory pressure level in the memory slot, and the pressures missing: CPU and I/O
+    /// always, as macOS has no stall accounting for them, and memory when the level is unreadable.
+    pub fn pressure(&self) -> ([f32; 3], Sources) {
+        logic::pressure(sysctl::<c_int>(c"kern.memorystatus_vm_pressure_level"))
     }
 
     /// Per-CPU use since the previous call, and each CPU's cluster clock over the interval of
@@ -429,31 +430,18 @@ impl Sampler {
         cpus
     }
 
-    /// Sources macOS does not have at all, by the names `Snapshot::missing` uses. The clock is
-    /// missing only when it cannot be measured per cluster either.
-    pub fn missing(&self) -> Vec<&'static str> {
-        let mut missing = vec![
-            "cpu pressure",
-            "io pressure",
-            "last cpu",
-            "cpu clock",
-            "run queue",
-            "cgroups",
-            "socket traffic",
-            "file locks",
-        ];
-        if self.clocked() {
-            missing.retain(|&name| name != "cpu clock");
-        }
-        missing
+    /// Sources macOS does not have at all. The clock is missing only when it cannot be
+    /// measured per cluster either.
+    pub fn missing(&self) -> Sources {
+        logic::missing(self.clocked(), !self.core_kinds.is_empty())
     }
 
-    /// Sources measured per cluster, by the names `Snapshot::per_cluster` uses.
-    pub fn per_cluster(&self) -> Vec<&'static str> {
+    /// Sources measured per cluster.
+    pub fn per_cluster(&self) -> Sources {
         if self.clocked() {
-            vec!["cpu clock"]
+            Source::CpuClock.into()
         } else {
-            Vec::new()
+            Sources::default()
         }
     }
 
@@ -1248,13 +1236,18 @@ mod tests {
         );
         let missing = sampler.missing();
         assert!(
-            ["last cpu", "run queue", "cgroups"]
-                .iter()
-                .all(|name| missing.contains(name))
+            [
+                Source::LastCpu,
+                Source::RunQueue,
+                Source::Cgroups,
+                Source::GpuMemory
+            ]
+            .iter()
+            .all(|&source| missing.contains(source))
         );
         assert_eq!(
-            missing.contains(&"cpu clock"),
-            !sampler.per_cluster().contains(&"cpu clock")
+            missing.contains(Source::CpuClock),
+            !sampler.per_cluster().contains(Source::CpuClock)
         );
         assert!(processes.len() + sampler.unreadable() <= sampler.pids.len());
     }

@@ -106,7 +106,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 
 ## Degradation and the status strip
 
-- A source the platform lacks adds a short lowercase noun to `Snapshot.missing`, for example "socket traffic", "interrupts", "oom score", "wait channel" or "temperature". A process that refuses a read is `Measured::Unreadable`. A read not reached yet is `Measured::Pending`. Never substitute zero.
+- A source the platform lacks is a `Source` variant (`platform/mod.rs`) in `Snapshot.missing`, a `Sources` bit set; the variant's `name()` is a short lowercase noun, for example "socket traffic", "interrupts", "oom score", "wait channel" or "temperature". A PR that adds a source adds its variant, and views match on `Source::X`, never on the name. A process that refuses a read is `Measured::Unreadable`. A read not reached yet is `Measured::Pending`. Never substitute zero.
 - Active optional sources are listed in `Snapshot.sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)), for example "proc connector" or "sample diff".
 - Optional background sources run only while a shown view declares them in `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)). Budgeted per-process selections use `top_n` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)).
 - The legend line is the third status line. It starts with a space, like the existing legends, and is built in this order:

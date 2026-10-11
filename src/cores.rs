@@ -14,6 +14,7 @@ use std::f32::consts::{PI, TAU};
 
 use crate::model::{CoreKind, Cpu, Identity, Process, Snapshot, bounded};
 use crate::palette::{core_color, core_name, kind_color, tint};
+use crate::platform::Source;
 use crate::render::{Camera, Color, Frame, NONE, Point, Stage, WARM, mass_radius, ring_bounds};
 
 /// Seconds of CPU time per lap, so a process using one full core laps every LAP seconds.
@@ -170,7 +171,7 @@ impl Track {
         }
         // Without a last CPU per process a marble cannot be placed on a lane, and the running and
         // idle counts would all fall on one of them, so neither is drawn.
-        let placed = !snapshot.missing.contains(&"last cpu");
+        let placed = !snapshot.missing.contains(Source::LastCpu);
         let mut racing: HashMap<u32, usize> = HashMap::new();
         let mut parked: HashMap<u32, usize> = HashMap::new();
         for process in processes.iter().filter(|_| placed) {
@@ -484,24 +485,28 @@ impl Track {
 
 /// The status legend, saying what the snapshot's platform leaves out or measures per cluster.
 pub fn legend(snapshot: &Snapshot) -> String {
-    let lacks = |name| snapshot.missing.contains(&name);
+    let lacks = |source| snapshot.missing.contains(source);
     let clustered = by_cluster(snapshot);
-    let mut line = " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned();
-    line.push_str(if snapshot.per_cluster.contains(&"cpu clock") {
+    let mut line = if lacks(Source::CoreKinds) {
+        " Lane = CPU (no core kinds reported) | brightness = busy".to_owned()
+    } else {
+        " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned()
+    };
+    line.push_str(if snapshot.per_cluster.contains(Source::CpuClock) {
         " | chevrons = cluster clock (cycles per CPU second)"
-    } else if lacks("cpu clock") {
+    } else if lacks(Source::CpuClock) {
         " | no clock readings"
     } else {
         " | chevrons = clock"
     });
-    line.push_str(if !lacks("run queue") {
+    line.push_str(if !lacks(Source::RunQueue) {
         " | red queue = waiting tasks"
     } else if clustered && snapshot.processes.iter().any(|p| p.waiting.is_some()) {
         " | red beads = threads waiting to run"
     } else {
         " | no run queue readings"
     });
-    line.push_str(if !lacks("last cpu") {
+    line.push_str(if !lacks(Source::LastCpu) {
         " | marble = running process, one lap per 10 s of CPU, hops = migrations"
     } else if clustered {
         " | marble = running process, one lap per 10 s of CPU; it rides the band it mostly ran on \
@@ -515,7 +520,7 @@ pub fn legend(snapshot: &Snapshot) -> String {
 /// Whether marbles ride by cluster: the platform reports no last CPU per process but does
 /// split CPU time between performance and efficiency cores, and the track has lanes of both.
 fn by_cluster(snapshot: &Snapshot) -> bool {
-    snapshot.missing.contains(&"last cpu")
+    snapshot.missing.contains(Source::LastCpu)
         && snapshot
             .processes
             .iter()
@@ -557,17 +562,17 @@ mod tests {
         scene.positions.len()
     }
 
-    fn demo_missing(missing: &[&'static str]) -> Snapshot {
+    fn demo_missing<const N: usize>(missing: [Source; N]) -> Snapshot {
         let mut snapshot = demo(12.0, 64);
-        snapshot.missing = missing.to_vec();
+        snapshot.missing = missing.into();
         snapshot
     }
 
     /// The demo as macOS reports it: no last CPU, but each process's share of performance-core
     /// time, and the clock per cluster.
     fn by_cluster() -> Snapshot {
-        let mut snapshot = demo_missing(&["last cpu", "run queue"]);
-        snapshot.per_cluster = vec!["cpu clock"];
+        let mut snapshot = demo_missing([Source::LastCpu, Source::RunQueue]);
+        snapshot.per_cluster = Source::CpuClock.into();
         for cpu in &mut snapshot.cpus {
             cpu.wait = 0.0;
         }
@@ -593,16 +598,16 @@ mod tests {
     #[test]
     fn marbles_are_not_drawn_without_a_last_cpu_or_a_share_per_cluster() {
         assert!(
-            marbles(&demo_missing(&[])) > 0,
+            marbles(&demo_missing([])) > 0,
             "the demo has running processes"
         );
-        let mut snapshot = demo_missing(&["last cpu"]);
+        let mut snapshot = demo_missing([Source::LastCpu]);
         for process in &mut snapshot.processes {
             process.performance_share = None;
         }
         assert_eq!(marbles(&snapshot), 0);
         assert!(
-            marbles(&demo_missing(&["cpu clock", "run queue"])) > 0,
+            marbles(&demo_missing([Source::CpuClock, Source::RunQueue])) > 0,
             "other gaps keep the marbles"
         );
     }
@@ -753,14 +758,22 @@ mod tests {
              clock | red queue = waiting tasks | marble = running process, one lap per 10 s of \
              CPU, hops = migrations"
         );
-        snapshot.missing = vec!["last cpu"];
+        snapshot.missing = Source::LastCpu.into();
         for process in &mut snapshot.processes {
             process.performance_share = None;
         }
         assert!(legend(&snapshot).contains("lanes = load; macOS reports no last CPU per process"));
-        snapshot.missing = vec!["cpu clock"];
+        snapshot.missing = Source::CpuClock.into();
         let clockless = legend(&snapshot);
         assert!(clockless.contains("no clock readings") && !clockless.contains("chevrons"));
+        snapshot.missing = [Source::CpuClock, Source::RunQueue, Source::CoreKinds].into();
+        assert_eq!(
+            legend(&snapshot),
+            " Lane = CPU (no core kinds reported) | brightness = busy | no clock readings | no \
+             run queue readings | marble = running process, one lap per 10 s of CPU, hops = \
+             migrations",
+            "a Linux machine without cpufreq, schedstat or hybrid cores"
+        );
     }
 
     #[test]
@@ -774,8 +787,8 @@ mod tests {
              hops when that changes (macOS reports the cluster, not the core)"
         );
         let mut unclocked = by_cluster();
-        unclocked.per_cluster.clear();
-        unclocked.missing.push("cpu clock");
+        unclocked.per_cluster = Default::default();
+        unclocked.missing.insert(Source::CpuClock);
         assert!(legend(&unclocked).contains("| no clock readings | red beads"));
         let mut unmeasured = by_cluster();
         for process in &mut unmeasured.processes {

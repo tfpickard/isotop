@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::geo;
 use crate::places::COUNTRIES;
-use crate::platform::{self, RawProcess};
+use crate::platform::{self, RawProcess, Source, Sources};
 use crate::simulation::smoothing;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -230,14 +230,15 @@ pub struct Snapshot {
     /// pid -1.
     pub unattributed_locks: u32,
     /// System-wide sources that could not be read this sample or that the platform never has:
-    /// "cpu pressure", "memory pressure" and "io pressure" when pressure stall information is
-    /// unreadable, then the platform's permanent gaps (`Sampler::missing`).
-    pub missing: Vec<&'static str>,
+    /// the pressures `Sampler::pressure` could not read, the platform's gaps
+    /// (`Sampler::missing`), and the lock table and GPU memory once the background thread has
+    /// found them absent.
+    pub missing: Sources,
     /// Processes the platform could see but not measure because they belong to another user.
     pub unreadable: usize,
     /// Sources the platform measures per CPU cluster rather than per CPU (`Sampler::per_cluster`):
-    /// "cpu clock" when every CPU's `mhz` is the average clock of the cluster of its kind.
-    pub per_cluster: Vec<&'static str>,
+    /// `Source::CpuClock` when every CPU's `mhz` is the average clock of the cluster of its kind.
+    pub per_cluster: Sources,
     /// The processes counted in `unreadable`, as far as anyone may read them (`Sampler::shadows`),
     /// so that what they started can still be drawn under them.
     pub shadows: Vec<platform::Shadow>,
@@ -293,6 +294,8 @@ struct Extras {
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<platform::Files>>,
     locks: Measured<platform::Locks>,
+    /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table.
+    missing: Sources,
     geo: String,
 }
 
@@ -338,6 +341,8 @@ fn background(
                 let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
                 let remotes = remotes(&network.remotes, &mut sockets, locator);
                 let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
+                let locks = platform::locks().map_or(Measured::Unreadable, Measured::Known);
+                let missing = background_gaps(gpu.is_some(), &locks);
                 let extras = Extras {
                     network,
                     gpu: gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default(),
@@ -345,7 +350,8 @@ fn background(
                     remotes,
                     traffic,
                     files: scan.sample(),
-                    locks: platform::locks().map_or(Measured::Unreadable, Measured::Known),
+                    locks,
+                    missing,
                     geo: geo.source.clone(),
                 };
                 match writer.lock() {
@@ -357,6 +363,19 @@ fn background(
         })
         .ok()
         .map(|_| shared)
+}
+
+/// The slow sources a background pass found absent: GPU memory when no GPU library loaded, and
+/// file locks when the lock table could not be read.
+fn background_gaps(gpu: bool, locks: &Measured<platform::Locks>) -> Sources {
+    let mut missing = Sources::default();
+    if !gpu {
+        missing.insert(Source::GpuMemory);
+    }
+    if matches!(locks, Measured::Unreadable) {
+        missing.insert(Source::FileLocks);
+    }
+    missing
 }
 
 /// Sets a process's open files and locks from the background scans: absent from the file scan
@@ -524,7 +543,7 @@ impl Collector {
         }
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().max(0.001);
-        let (pressure, pressure_readable) = self.sampler.pressure();
+        let (pressure, pressure_missing) = self.sampler.pressure();
         let mut snapshot = Snapshot {
             cores: std::thread::available_parallelism().map_or(1, usize::from),
             elapsed: now.duration_since(self.origin).as_secs_f64(),
@@ -544,7 +563,7 @@ impl Collector {
         // After the processes, which a platform may derive CPU readings from (the macOS
         // cluster clocks come from the processes' cycle counters).
         snapshot.cpus = self.sampler.cpus(dt);
-        snapshot.missing = missing(pressure_readable, self.sampler.missing());
+        snapshot.missing = pressure_missing.union(self.sampler.missing());
         snapshot.per_cluster = self.sampler.per_cluster();
         snapshot.unreadable = self.sampler.unreadable();
         snapshot.shadows = self.sampler.shadows();
@@ -606,6 +625,7 @@ impl Collector {
                 })
                 .collect();
             snapshot.geo = extras.geo.clone();
+            snapshot.missing = snapshot.missing.union(extras.missing);
         }
         self.previous = next;
         self.last = now;
@@ -681,22 +701,6 @@ fn restarted(ticks: u64, runnable_ticks: Option<u64>, previous: &Counters) -> bo
         || runnable_ticks
             .zip(previous.runnable_ticks)
             .is_some_and(|(now, before)| now < before)
-}
-
-/// The names for `Snapshot::missing`: the three pressure sources when pressure could not be read
-/// at all, then the platform's permanent gaps, each name once.
-fn missing(pressure_readable: bool, permanent: Vec<&'static str>) -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = if pressure_readable {
-        Vec::new()
-    } else {
-        vec!["cpu pressure", "memory pressure", "io pressure"]
-    };
-    for name in permanent {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    names
 }
 
 pub fn bounded(value: f32, knee: f32) -> f32 {
@@ -980,9 +984,9 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         units,
         remotes,
         unattributed_locks: 1,
-        missing: Vec::new(),
+        missing: Sources::default(),
         unreadable: 0,
-        per_cluster: Vec::new(),
+        per_cluster: Sources::default(),
         shadows: Vec::new(),
         home: Some(Place {
             latitude: 52.37,
@@ -1295,20 +1299,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_names_the_pressures_then_the_platform_gaps_once_each() {
-        assert!(missing(true, Vec::new()).is_empty());
+    fn background_reports_gpu_memory_and_file_locks_only_when_absent() {
+        let table = Measured::Known(platform::Locks::default());
+        assert!(background_gaps(true, &table).is_empty());
+        assert!(background_gaps(true, &Measured::Pending).is_empty());
+        assert_eq!(background_gaps(false, &table), Source::GpuMemory.into());
         assert_eq!(
-            missing(true, vec!["last cpu", "cgroups"]),
-            ["last cpu", "cgroups"]
-        );
-        assert_eq!(
-            missing(false, Vec::new()),
-            ["cpu pressure", "memory pressure", "io pressure"]
-        );
-        assert_eq!(
-            missing(false, vec!["cpu pressure", "io pressure", "last cpu"]),
-            ["cpu pressure", "memory pressure", "io pressure", "last cpu"],
-            "a name the platform repeats is listed once"
+            background_gaps(false, &Measured::Unreadable),
+            Sources::from([Source::GpuMemory, Source::FileLocks])
         );
     }
 
@@ -1323,11 +1321,14 @@ mod tests {
         let mut sampler = platform::Sampler::new();
         let _ = sampler.processes();
         let gaps = sampler.missing();
-        assert!(gaps.iter().all(|name| snapshot.missing.contains(name)));
+        assert!(gaps.iter().all(|source| snapshot.missing.contains(source)));
         assert_eq!(snapshot.per_cluster, sampler.per_cluster());
         if cfg!(target_os = "linux") {
-            assert!(gaps.is_empty() && snapshot.unreadable == 0);
-            assert!(snapshot.per_cluster.is_empty());
+            // Linux reads the last CPU and socket traffic everywhere; what else it lacks
+            // depends on the machine.
+            assert!(!snapshot.missing.contains(Source::LastCpu));
+            assert!(!snapshot.missing.contains(Source::SocketTraffic));
+            assert!(snapshot.unreadable == 0 && snapshot.per_cluster.is_empty());
         }
     }
 
