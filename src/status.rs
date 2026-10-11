@@ -6,10 +6,6 @@ use crate::platform::Source;
 /// ` | no <source>: <consequence>` when `source` is missing from `snapshot`, which the legend
 /// appends where it names what the view does without; None when the source is there or was never
 /// asked for.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no legend uses it until the first new view")
-)]
 pub fn missing_note(snapshot: &Snapshot, source: Source, consequence: &str) -> Option<String> {
     snapshot
         .missing

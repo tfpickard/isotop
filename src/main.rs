@@ -14,6 +14,7 @@ mod layout;
 mod matrix;
 mod medium;
 mod model;
+mod necropolis;
 mod palette;
 mod picker;
 mod places;
@@ -1885,7 +1886,11 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
 fn demo_snapshot(row: &ViewInfo, previous: f64, time: f64, count: usize) -> Snapshot {
     let mut snapshot = model::demo_with(time, count, row.demo);
     if row.demo.churn {
-        snapshot.life = model::demo_events(previous, time, count);
+        snapshot.life = model::demo_events(previous, time, count, row.demo);
+        // A view that demands the events is told where they come from, as a live run tells it.
+        if row.sources.contains(Source::LifeEvents) {
+            snapshot.sources = model::demo_life_sources(row.demo);
+        }
     }
     snapshot
 }
@@ -2685,6 +2690,7 @@ mod tests {
             churn: true,
             exact_cpu_time: true,
             observer: false,
+            mortality: false,
         };
         let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
         app.scene = Scene::with_rows(rows);
@@ -2738,9 +2744,15 @@ mod tests {
         );
         // With churn a sample carries the life events since the one a `--sample-ms` before it;
         // without, none.
-        assert_eq!(app.history[0].life, model::demo_events(11.0, 12.0, 64));
+        assert_eq!(
+            app.history[0].life,
+            model::demo_events(11.0, 12.0, 64, asked)
+        );
         let interval = |view| demo_snapshot(app.scene.row(view), 0.0, 120.0, 64).life;
-        assert_eq!(interval(demanding), model::demo_events(0.0, 120.0, 64));
+        assert_eq!(
+            interval(demanding),
+            model::demo_events(0.0, 120.0, 64, asked)
+        );
         assert!(!interval(demanding).is_empty());
         assert!(interval(plain).is_empty());
     }
@@ -3615,7 +3627,7 @@ mod tests {
         type_text(&mut app, "eef");
         assert_eq!(
             picker_lines(&app, 31)[1].trim_end(),
-            "> *  9 reef      REEF"
+            "> *  9 reef       REEF"
         );
         assert_eq!(app.view, view("city"), "typing never switches");
     }
@@ -3884,7 +3896,7 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/13");
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/14");
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -4123,7 +4135,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("tesseract"))
+                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -4138,7 +4150,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("tesseract"))
+                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
         );
     }
 

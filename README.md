@@ -1,12 +1,12 @@
 # isotop
 
-A living picture of your machine inside the terminal, in thirteen views: a process
+A living picture of your machine inside the terminal, in fourteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
 cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
-macOS) as Matrix rain, and a minute of process worldlines in a tesseract whose fourth
-axis is time. Written in
+macOS) as Matrix rain, a minute of process worldlines in a tesseract whose fourth
+axis is time, and a moonlit cemetery of the processes that exited. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -28,7 +28,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -173,6 +173,7 @@ cache is stale.
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
+| Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -205,8 +206,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the thirteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy and the tesseract are reached with Tab, Shift+Tab,
+the fourteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract and the necropolis are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
@@ -526,6 +527,40 @@ On macOS, forks branch from the responsible app rather than the Unix parent, bec
 
 Keys while the tesseract is shown: `,` and `.` turn a quarter turn back and forward in the current plane, `;` cycles the plane (XW, YW, ZW), `b` boosts into the selected process's rest frame and `b` again or Esc returns to the lab frame (the next Esc has its usual meaning), and Home and `r` also restore the canonical orientation, the lab frame and the drift. Any of `,` `.` `;` stops the drift.
 
+### Necropolis
+
+![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and the waning moon](docs/media/necropolis.webp)
+
+Exited processes as headstones in a cemetery at night, one row per minute of death with the newest in front.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Row | The UTC minute of the death (`Snapshot::wall` at the exit's time) | One row per minute with deaths, 3.1 apart, newest in front; when a new minute opens a row the others ease back one spacing over 1.2 s. A row is two lines of 26 units, the second 1.5 behind, filled from the left; graves beyond both are counted on the label (`+N`). Closed rows are frozen; a late death joins the end of its minute's row |
+| Row label | The minute | `HH:MM UTC` for the newest row, `HH:MM` for older ones |
+| Stone height | Lifetime CPU time: taskstats utime + stime, else the last sampled `cpu_time` | 0.55 + 0.36 log10(max(ms, 3)), at most 3.2 |
+| Stone width | Peak memory: taskstats `hiwater_rss`, else the most any sample saw | 0.62 + 0.15 log2(max(MiB, 1)), at most 2.4 |
+| Stone tint | Process kind | Slate (kernel), green granite (system), sandstone (session), lilac marble (containers) |
+| Place in the row | Parent and child | In the open row, a death whose parent or child is already buried there takes the slot after that family, and only the graves after it move |
+| Epitaph (hover, click) | Name, pid, lifetime, cause, kind, cgroup, parent | `name-pid`, `lived <lifetime>   <cause>`, `kind \| cgroup \| parent name-pid`. Lifetime from taskstats `etime`, else wall clock minus start; the cause is the first rule that matches: SIGKILL while the cgroup's `oom_kills` rises in the same or the next sample, "taken by the OOM killer" (each rise claims the largest victim); a core dump, "dumped core"; another signal, "killed by SIGTERM" (Linux names, else "killed by signal N"); AFORK with exit 0, "forked, never exec'd"; exit N > 0, "exited N"; exit 0, "exited peacefully"; no cause, "died between samples" |
+| Mass grave | More than 8 deaths from one parent within 1 s | One low slab 0.42 high and 2.4 + 0.1 N long (at most 3.6), labelled `comm x N mass grave (parent-pid)`; it counts as one grave |
+| Zombie in an open pit | A live process in state Z | A pink figure in a pit in front of the newest row, pickable as the process; a pit is kept for life. Reaped, it sinks over 0.5 s and is buried |
+| Mausoleum | A `.service` cgroup with no live process and at least 3 standing graves | Its graves leave their rows (the gaps stay, nothing else moves); it stands in the lot at the left end of the row of its last death, two rows deep, labelled `unit (unit stopped, N graves)`; later graves of the unit join it |
+| Unmarked marker | An exit of a process no sample listed | A marker 0.28 high in the corner field, the newest 120 drawn, all counted: `N died between samples` |
+| Ghost | A new process whose pid is that of a standing grave, with another start time | Five stacked glows over the grave rising for 4 s and fading for 2 s, labelled `pid N reused` and `name-pid rests below`; not pickable |
+| Fog | Memory pressure (stall percentage, 10 s average) | Each face blended towards the fog colour by its distance from the front of the plot as a share of its depth times 0.4 + 1.2 p / (p + 10), at most 0.6; 4 to 16 wisps (4 + 12 p / (p + 10)), Gaussian patches on the ground up to 12% of the frame wide, add up to 0.3 |
+| Sinking rows | The number of standing graves | Above 600 the oldest whole rows are dropped; from 450 the oldest row sinks by up to 1.5 and is fully fogged at 600, the second oldest half as much |
+| Moon | The date (`Snapshot::wall`) | age = (days since 2000-01-06 18:14 UTC) mod 29.530588853; lit = (1 − cos(2π age / 29.530588853)) / 2, the lit side on the right while waxing |
+
+**Decorative:** the fence and its gate, the gravel paths, the grass, the soil beds in front of the stones, the two bare oaks, the stars, the earthshine on the moon's dark side, the shapes of the stones (round, slab, gothic, cross, and an obelisk for some of the tallest, drawn from the identity), the lines engraved on them, a zombie's sway, and the fog's base density of 0.4.
+
+**Burial.** Deaths are taken in from the fork, exec and exit events (see [Fork, exec and exit events](#fork-exec-and-exit-events)) on every sample, whichever view is shown, while the events are read. A death is buried 1 s after it happened and at least one sample later, so a mass grave and an OOM kill are known by then; a process still listed (a zombie) waits until it is gone. Everything a grave shows is fixed when it is dug, and its stone is built once.
+
+**Caps.** 600 graves (whole rows go), 120 markers drawn, four ghosts at once, 16 wisps. A grave costs at most about 40 triangles, culled when they face away.
+
+**What cannot be measured.** The events are read only while the necropolis is shown, so deaths while another view is shown are not seen. Without taskstats (it needs CAP_NET_ADMIN), causes come from the proc connector's exit status, heights and widths from what the samples saw and lifetimes from the start time, and the legend says "no exit records"; where only sample diffing works (an ordinary container), every cause is "died between samples" and there are no unmarked markers, and the legend says "no fork events". Live mode never invents a cause.
+
+On macOS only sample diffing and kqueue see deaths: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -616,7 +651,7 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -709,8 +744,9 @@ Search, focus, links and the tour work on processes only.
 uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
 the media and creatures have settled, demo strata replays a minute of
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
-`--time 300`), demo coop replays 30 seconds of samples for CPU variation, and demo tesseract
-replays a minute of samples at `--sample-ms` (before `--benchmark` too). Live headless output takes two samples to measure CPU, so live strata
+`--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
+replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -722,7 +758,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-36,692 lines of Rust (22,922 production, 13,770 test) in 42 files, 459 tests, 13 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+39,745 lines of Rust (25,191 production, 14,554 test) in 43 files, 479 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

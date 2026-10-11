@@ -23,7 +23,7 @@ ON_LINUX = sys.platform.startswith("linux")
 
 # Views reached through the `v` picker after the fixed steps. Each later view adds its name here;
 # names this platform does not list in `--list-views` are skipped.
-PICKER_VISITS = ["reef", "ptolemy", "tesseract"]
+PICKER_VISITS = ["reef", "ptolemy", "tesseract", "necropolis"]
 
 # A view's own keys, sent right after the picker shows it, each with what the terminal must show
 # afterwards before the next keys go out.

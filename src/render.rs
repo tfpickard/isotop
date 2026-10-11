@@ -489,7 +489,6 @@ impl Frame {
 
     /// The pick value for `thing` in this frame. Call it once per thing per frame and give
     /// every item of that thing the value it returns.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub fn thing_pick(&mut self, thing: Thing) -> u32 {
         debug_assert!(
             self.things.len() < (THING - 1) as usize,
@@ -1034,7 +1033,6 @@ pub(crate) struct Stage<'a> {
     pub selected: Option<Identity>,
     /// The selected thing, or the hovered one if none is selected, so the view can highlight
     /// it. Never Some while a process is selected.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub thing: Option<Thing>,
     /// The process the tour is visiting, if a tour runs; the tour clears the selection.
     pub toured: Option<Identity>,

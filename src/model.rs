@@ -362,10 +362,6 @@ pub struct Snapshot {
     /// The wall-clock time of the sample, in seconds since the Unix epoch, for what follows the
     /// calendar (a minute of the day, the phase of the moon): the system clock when it was taken,
     /// and in `--demo` `DEMO_EPOCH` plus the demo time. 0 in a default snapshot.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first read by the necropolis view (#45)")
-    )]
     pub wall: f64,
     /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
     pub pressure: [f32; 3],
@@ -1936,6 +1932,16 @@ pub struct DemoOptions {
     /// every demo pid, started at 0 and called `isotop`, using 40 +/- 10% CPU and 96 +/- 4 MiB.
     /// Off, the observer is None.
     pub observer: bool,
+    /// With `churn`, shapes how the transients die for a graveyard: cycles three and a half
+    /// times as long (84 to 105 s), so about 40 processes die a minute at 192; pids that are never reused except
+    /// the out-of-memory victim's, reused every 90 s; children that hold a sixteenth of the usual
+    /// memory; a short `sh` helper per cycle, which seldom lives through a sample; family 1
+    /// forking 12 `cc1` children within 0.4 s every other cycle, all dying within a second;
+    /// family 2 running every fourth cycle in `backup.service`, a unit of its own that is empty
+    /// once the cycle ends; the victim in a scope of its own whose `Unit::oom_kills` counts its
+    /// kills; and one exit in ten seen only by sample diffing, with no cause or record. Off, the
+    /// churn is as described above.
+    pub mortality: bool,
 }
 
 /// One transient family per this many base processes.
@@ -1973,6 +1979,8 @@ enum Role {
     Child,
     /// The process that grows until the out-of-memory killer ends it.
     Victim,
+    /// A short-lived helper of the parent (`DemoOptions::mortality`).
+    Helper,
 }
 
 /// One transient process of one cycle: when it is listed and everything else fixed about it.
@@ -1996,6 +2004,11 @@ struct Transient {
     signal: Option<i32>,
     /// The bytes the victim holds when it is killed; None follows the usual formula.
     peak_memory: Option<f64>,
+    /// The cgroup and kind it runs under instead of its anchor's district
+    /// (`DemoOptions::mortality`).
+    unit: Option<(&'static str, Kind)>,
+    /// Scales the usual formula's memory.
+    memory_scale: f64,
 }
 
 /// The number of transient families for `count` base processes. The victim is family number
@@ -2004,10 +2017,13 @@ fn demo_families(count: usize) -> usize {
     count.div_ceil(DEMO_FAMILY_SIZE)
 }
 
-/// The length of a family's cycle in seconds.
-fn demo_cycle_period(family: usize, families: usize) -> f64 {
+/// The length of a family's cycle in seconds, three and a half times as long with `mortality`
+/// except the victim's.
+fn demo_cycle_period(family: usize, families: usize, mortality: bool) -> f64 {
     if family == families {
         DEMO_OOM_PERIOD
+    } else if mortality {
+        3.5 * (24.0 + 2.0 * (family % 4) as f64)
     } else {
         24.0 + 2.0 * (family % 4) as f64
     }
@@ -2020,8 +2036,9 @@ fn demo_cycle_offset(family: usize) -> f64 {
 }
 
 /// The number of the cycle of `family` that `time` falls in; negative before the first.
-fn demo_epoch(time: f64, family: usize, families: usize) -> i64 {
-    ((time - demo_cycle_offset(family)) / demo_cycle_period(family, families)).floor() as i64
+fn demo_epoch(time: f64, family: usize, families: usize, mortality: bool) -> i64 {
+    ((time - demo_cycle_offset(family)) / demo_cycle_period(family, families, mortality)).floor()
+        as i64
 }
 
 /// The identity of the transient in pool slot `slot`. The pid is above every base pid, and the
@@ -2064,12 +2081,23 @@ fn demo_base_identity(index: usize) -> Identity {
 /// most 4.2 s after that, its children run for at most 12 s, and the last zombie window ends
 /// 1.4 s after the last of them, so under 19 s of the shortest cycle's 24. The victim lives 35
 /// to 55 s, is killed 60 s into its cycle and is a zombie for a second after, inside the 90.
-fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
+fn demo_cycle(count: usize, family: usize, epoch: i64, mortality: bool) -> Vec<Transient> {
+    let cycle = demo_cycle_drawn(count, family, epoch, mortality);
+    if mortality {
+        demo_mortal(cycle, count, family, epoch)
+    } else {
+        cycle
+    }
+}
+
+/// The cycle `demo_cycle` describes before `DemoOptions::mortality` shapes it.
+fn demo_cycle_drawn(count: usize, family: usize, epoch: i64, mortality: bool) -> Vec<Transient> {
     let families = demo_families(count);
     if count == 0 || family > families {
         return Vec::new();
     }
-    let start = demo_cycle_offset(family) + epoch as f64 * demo_cycle_period(family, families);
+    let start =
+        demo_cycle_offset(family) + epoch as f64 * demo_cycle_period(family, families, mortality);
     let mut rng = Rng::new(hash_identity(
         Identity {
             pid: family as u32,
@@ -2103,6 +2131,8 @@ fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
             code: 0,
             signal: Some(9),
             peak_memory: Some((1.1 + 0.5 * f64::from(rng.unit())) * 1073741824.0),
+            unit: None,
+            memory_scale: 1.0,
         }];
     }
     let parent_birth = start + f64::from(rng.unit());
@@ -2136,6 +2166,8 @@ fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
             code: if signal.is_some() { 0 } else { code },
             signal,
             peak_memory: None,
+            unit: None,
+            memory_scale: 1.0,
         });
     }
     let exit = last_exit + 0.4;
@@ -2155,18 +2187,145 @@ fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
             code: 0,
             signal: None,
             peak_memory: None,
+            unit: None,
+            memory_scale: 1.0,
         },
     );
+    cycle
+}
+
+/// The unit family 2 runs in every fourth cycle under `DemoOptions::mortality`.
+const DEMO_SERVICE_UNIT: &str = "/system.slice/backup.service";
+
+/// The scope the out-of-memory victim runs in under `DemoOptions::mortality`.
+pub const DEMO_VICTIM_UNIT: &str =
+    "/user.slice/user-1000.slice/user@1000.service/app.slice/app-browser.scope";
+
+/// Seeds the draws `DemoOptions::mortality` adds to a cycle.
+const DEMO_MORTALITY_SALT: u64 = 0x6e65_6372_6f70;
+
+/// Transients one (family, cycle) can hold under `DemoOptions::mortality`: a parent, up to 12
+/// children and a helper, with room to spare.
+const DEMO_MORTAL_SLOTS: usize = 16;
+
+/// Cycles after which a family's pids come round again under `DemoOptions::mortality`.
+const DEMO_MORTAL_EPOCHS: i64 = 64;
+
+/// `cycle`, family `family`'s cycle number `epoch`, shaped for a graveyard
+/// (`DemoOptions::mortality`).
+fn demo_mortal(
+    mut cycle: Vec<Transient>,
+    count: usize,
+    family: usize,
+    epoch: i64,
+) -> Vec<Transient> {
+    let families = demo_families(count);
+    if cycle.is_empty() {
+        return cycle;
+    }
+    if family == families {
+        // The victim keeps its pool pid, so each one reuses the pid of the one before.
+        for victim in &mut cycle {
+            victim.unit = Some((DEMO_VICTIM_UNIT, Kind::Session));
+        }
+        return cycle;
+    }
+    let mut rng = Rng::new(hash_identity(
+        Identity {
+            pid: family as u32,
+            start: epoch as u64,
+        },
+        DEMO_MORTALITY_SALT,
+    ));
+    let parent = cycle[0].clone();
+    let zombie = parent.end - parent.exit;
+    let burst = family == 1 && epoch.rem_euclid(2) == 0;
+    if burst {
+        cycle.truncate(1);
+        for child in 0..12 {
+            let birth = parent.birth + 0.2 + 0.4 * child as f64 / 12.0;
+            let exit = birth + 3.0 + 0.2 * f64::from(rng.unit());
+            cycle.push(Transient {
+                role: Role::Child,
+                shape: 4 * (1 + (rng.next_u64() % 1000) as usize),
+                birth,
+                exit,
+                end: exit,
+                code: 0,
+                signal: None,
+                ..parent.clone()
+            });
+        }
+    }
+    if family == 2 && epoch.rem_euclid(4) == 1 {
+        if cycle.len() < 3 {
+            let last = cycle[cycle.len() - 1].clone();
+            cycle.push(Transient {
+                role: Role::Child,
+                birth: last.birth + 0.5,
+                exit: last.exit + 0.5,
+                end: last.end + 0.5,
+                ..last
+            });
+        }
+        for transient in &mut cycle {
+            transient.unit = Some((DEMO_SERVICE_UNIT, Kind::System));
+        }
+    }
+    let last_child = cycle[1..]
+        .iter()
+        .map(|child| child.exit)
+        .fold(parent.birth, f64::max);
+    cycle[0].exit = if burst {
+        last_child + 0.4
+    } else {
+        cycle[0].exit.max(last_child + 0.4)
+    };
+    cycle[0].end = cycle[0].exit + zombie;
+    {
+        let birth = parent.birth + 0.3 + 2.5 * f64::from(rng.unit());
+        let exit = birth + 0.05 + 0.35 * f64::from(rng.unit());
+        cycle.push(Transient {
+            role: Role::Helper,
+            shape: 1 + (rng.next_u64() % 4000) as usize,
+            birth,
+            exit,
+            end: exit,
+            code: 0,
+            signal: None,
+            ..cycle[0].clone()
+        });
+    }
+    let base = 1001 + count + (families + 1) * (DEMO_MAX_CHILDREN + 1);
+    let round = epoch.rem_euclid(DEMO_MORTAL_EPOCHS) as usize;
+    for (index, transient) in cycle.iter_mut().enumerate() {
+        let pid = base + (round * families + family) * DEMO_MORTAL_SLOTS + index;
+        let ticks = (transient.birth * 100.0).floor() as i64;
+        transient.id = Identity {
+            pid: pid as u32,
+            start: (DEMO_TRANSIENT_START + ticks) as u64,
+        };
+        if transient.role != Role::Parent {
+            transient.memory_scale = 0.0625;
+        }
+    }
+    let parent_id = cycle[0].id;
+    for transient in &mut cycle[1..] {
+        transient.parent = parent_id;
+    }
     cycle
 }
 
 /// The transients listed at `time`, family by family with the parent of a cycle before its
 /// children: those born at or before `time` and not yet gone. A cycle holds its transients
 /// inside itself, so only the cycle that `time` falls in can have any.
-fn demo_listed(time: f64, count: usize) -> Vec<Transient> {
+fn demo_listed(time: f64, count: usize, mortality: bool) -> Vec<Transient> {
     let families = demo_families(count);
     (0..=families)
-        .flat_map(|family| demo_cycle(count, family, demo_epoch(time, family, families)))
+        .flat_map(|family| {
+            let epoch = demo_epoch(time, family, families, mortality);
+            demo_cycle(count, family, epoch, mortality)
+        })
         .filter(|transient| transient.birth <= time && time < transient.end)
         .collect()
 }
@@ -2178,6 +2337,7 @@ impl Transient {
             Role::Parent => ["make", "cargo", "ninja", "pytest"][self.family % 4],
             Role::Child => ["cc1", "rustc", "ld", "test"][self.shape % 4],
             Role::Victim => "leak",
+            Role::Helper => "sh",
         }
     }
 
@@ -2209,7 +2369,7 @@ impl Transient {
         let phase = (0.55 * time + 1.71 * self.shape as f64) as f32;
         let usual =
             (12.0 + (self.shape * 71 % 900) as f32 * (0.8 + 0.2 * (phase * 0.2).sin())) * 1048576.0;
-        f64::from(usual) * (0.3 + 0.7 * (age / 3.0).clamp(0.0, 1.0))
+        f64::from(usual) * (0.3 + 0.7 * (age / 3.0).clamp(0.0, 1.0)) * self.memory_scale
     }
 
     /// The `Process` listed at `time`, which is between `birth` and `end`. Once it has exited it is a zombie: no CPU, no memory, no readable descriptor
@@ -2224,9 +2384,19 @@ impl Transient {
             0.0
         };
         let family = self.anchor / DEMO_FAMILY_SIZE;
-        let kind = [Kind::System, Kind::Session, Kind::Container, Kind::Kernel][family % 4];
-        let group = format!("district-{:02}.service", family);
-        let cgroup = demo_slice(kind).map_or_else(String::new, |slice| format!("{slice}/{group}"));
+        let (kind, group, cgroup) = match self.unit {
+            Some((cgroup, kind)) => {
+                let group = cgroup.rsplit('/').next().unwrap_or(cgroup);
+                (kind, group.to_owned(), cgroup.to_owned())
+            }
+            None => {
+                let kind = [Kind::System, Kind::Session, Kind::Container, Kind::Kernel][family % 4];
+                let group = format!("district-{:02}.service", family);
+                let cgroup =
+                    demo_slice(kind).map_or_else(String::new, |slice| format!("{slice}/{group}"));
+                (kind, group, cgroup)
+            }
+        };
         let (priority, nice) = demo_priority(index, kind);
         let io_rate = if index.is_multiple_of(7) {
             cpu * 65536.0
@@ -2339,13 +2509,17 @@ pub struct DemoLife {
 /// An interval shorter than 3 s, the shortest a process is listed, has no such pair, and its
 /// events are exactly the difference between the two populations. The cycles are 24 to 30 s long
 /// (90 s for the one process that outgrows 1 GiB and is killed with signal 9), so an interval of
-/// that length or more holds every kind of event.
-pub fn demo_life(from: f64, to: f64, count: usize) -> Vec<DemoLife> {
+/// that length or more holds every kind of event. With `DemoOptions::mortality` the cycles are
+/// three and a half times as long, and its helpers, which live under a second, can fork and exit in one
+/// short interval.
+pub fn demo_life(from: f64, to: f64, count: usize, options: DemoOptions) -> Vec<DemoLife> {
     let families = demo_families(count);
+    let mortality = options.mortality;
     let mut events = Vec::new();
     for family in 0..=families {
-        let epochs = demo_epoch(from, family, families)..=demo_epoch(to, family, families);
-        for transient in epochs.flat_map(|epoch| demo_cycle(count, family, epoch)) {
+        let epochs = demo_epoch(from, family, families, mortality)
+            ..=demo_epoch(to, family, families, mortality);
+        for transient in epochs.flat_map(|epoch| demo_cycle(count, family, epoch, mortality)) {
             let event = |kind, time, running_at: f64, cpu_seconds| DemoLife {
                 kind,
                 id: transient.id,
@@ -2391,37 +2565,68 @@ pub fn demo_life(from: f64, to: f64, count: usize) -> Vec<DemoLife> {
 /// The life events of the demo's transient processes in `(from, to]` among `count` base
 /// processes: `demo_life` one to one, so they are what the populations at `from` and `to` differ
 /// by. Forks come from the proc connector; exits from taskstats, with a record made from the
-/// process's life and identity.
-pub fn demo_events(from: f64, to: f64, count: usize) -> Vec<LifeEvent> {
-    demo_life(from, to, count)
+/// process's life and identity. With `DemoOptions::mortality`, one exit in ten (never a kill by
+/// signal 9) comes from sample diffing instead, which sees neither cause nor record.
+pub fn demo_events(from: f64, to: f64, count: usize, options: DemoOptions) -> Vec<LifeEvent> {
+    demo_life(from, to, count, options)
         .into_iter()
-        .map(|life| LifeEvent {
-            at: life.time,
-            kind: match life.kind {
-                DemoLifeKind::Fork => LifeKind::Fork {
-                    parent: life.parent,
-                    child: life.id,
-                },
-                DemoLifeKind::Exit => LifeKind::Exit {
-                    id: life.id,
-                    cause: match life.signal {
-                        // The signals whose default action dumps core (signal(7)).
-                        Some(number) => Cause::Signal {
-                            number,
-                            core: matches!(number, 3..=8 | 11 | 24 | 25 | 31),
-                        },
-                        None => Cause::Code(life.code),
+        .map(|life| {
+            let unseen = options.mortality
+                && life.kind == DemoLifeKind::Exit
+                && life.signal != Some(9)
+                && hash_identity(life.id, DEMO_RECORD_SALT ^ DEMO_MORTALITY_SALT)
+                    .is_multiple_of(10);
+            if unseen {
+                return LifeEvent {
+                    at: life.time,
+                    kind: LifeKind::Exit {
+                        id: life.id,
+                        cause: Cause::Unknown,
+                        record: None,
                     },
-                    record: Some(demo_record(&life)),
+                    source: LifeSource::Diff,
+                    estimated: false,
+                };
+            }
+            LifeEvent {
+                at: life.time,
+                kind: match life.kind {
+                    DemoLifeKind::Fork => LifeKind::Fork {
+                        parent: life.parent,
+                        child: life.id,
+                    },
+                    DemoLifeKind::Exit => LifeKind::Exit {
+                        id: life.id,
+                        cause: match life.signal {
+                            // The signals whose default action dumps core (signal(7)).
+                            Some(number) => Cause::Signal {
+                                number,
+                                core: matches!(number, 3..=8 | 11 | 24 | 25 | 31),
+                            },
+                            None => Cause::Code(life.code),
+                        },
+                        record: Some(demo_record(&life)),
+                    },
                 },
-            },
-            source: match life.kind {
-                DemoLifeKind::Fork => LifeSource::Connector,
-                DemoLifeKind::Exit => LifeSource::Taskstats,
-            },
-            estimated: false,
+                source: match life.kind {
+                    DemoLifeKind::Fork => LifeSource::Connector,
+                    DemoLifeKind::Exit => LifeSource::Taskstats,
+                },
+                estimated: false,
+            }
         })
         .collect()
+}
+
+/// The optional sources a demo run with churn lists while the life events are demanded: the
+/// stream and the mechanisms `demo_events` names, sample diffing among them with
+/// `DemoOptions::mortality`.
+pub fn demo_life_sources(options: DemoOptions) -> Sources {
+    let mut sources = Sources::from([Source::LifeEvents, Source::ProcConnector, Source::Taskstats]);
+    if options.mortality {
+        sources.insert(Source::SampleDiff);
+    }
+    sources
 }
 
 /// The exit record of a transient's `life`. What its life does not
@@ -2689,10 +2894,26 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     if options.churn {
         // The units keep the limits they were given from the base processes, and the transients
         // add what they use, so a unit's pressure shows them.
-        let transients: Vec<Process> = demo_listed(time, count)
+        let transients: Vec<Process> = demo_listed(time, count, options.mortality)
             .iter()
             .map(|transient| transient.process(time))
             .collect();
+        if options.mortality {
+            // The victim's scope stays, counting its kills from when each victim is gone: with a
+            // head start, so the count is positive before time 0 as well, and rises at each kill.
+            let families = demo_families(count);
+            let kills = ((time - demo_cycle_offset(families) - 60.0 - DEMO_ZOMBIE_SECONDS)
+                / DEMO_OOM_PERIOD)
+                .floor() as i64
+                + 1001;
+            units
+                .entry(DEMO_VICTIM_UNIT.to_owned())
+                .or_default()
+                .oom_kills = Some(kills.max(0) as u64);
+            for transient in &transients {
+                units.entry(transient.cgroup.clone()).or_default();
+            }
+        }
         for transient in &transients {
             if let Some(unit) = units.get_mut(&transient.cgroup) {
                 unit.memory += transient.memory;
@@ -4283,16 +4504,19 @@ mod tests {
         churn: true,
         exact_cpu_time: false,
         observer: false,
+        mortality: false,
     };
     const EXACT: DemoOptions = DemoOptions {
         churn: false,
         exact_cpu_time: true,
         observer: false,
+        mortality: false,
     };
     const BOTH: DemoOptions = DemoOptions {
         churn: true,
         exact_cpu_time: true,
         observer: false,
+        mortality: false,
     };
 
     /// The transients of `snapshot`, which come after the `count` base processes.
@@ -4336,6 +4560,84 @@ mod tests {
         assert_eq!(first, reversed);
         assert_eq!(first[2], first[5], "the same time gives the same snapshot");
         assert!(demo_with(5.0, 0, BOTH).processes.is_empty());
+    }
+
+    #[test]
+    fn mortality_gives_a_graveyard_every_kind_of_death_and_reuses_only_the_victims_pid() {
+        const MORTAL: DemoOptions = DemoOptions {
+            churn: true,
+            exact_cpu_time: false,
+            observer: false,
+            mortality: true,
+        };
+        let events = demo_events(-600.0, 0.0, 192, MORTAL);
+        let exits: Vec<(Identity, &Cause, bool, f64)> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                LifeKind::Exit { id, cause, record } => {
+                    Some((*id, cause, record.is_some(), event.at))
+                }
+                _ => None,
+            })
+            .collect();
+        let per_minute = exits.len() as f64 / 10.0;
+        assert!(
+            (30.0..50.0).contains(&per_minute),
+            "{per_minute} deaths a minute"
+        );
+        assert!(
+            exits
+                .iter()
+                .any(|(_, cause, record, _)| **cause == Cause::Unknown && !record)
+        );
+        assert!(
+            exits
+                .iter()
+                .any(|(_, cause, _, _)| matches!(cause, Cause::Signal { number: 9, .. }))
+        );
+        assert!(
+            exits
+                .iter()
+                .any(|(_, cause, _, _)| matches!(cause, Cause::Signal { core: true, .. }))
+        );
+        // Pids come round only for the victim, once per 90 s.
+        let mut pids: HashMap<u32, usize> = HashMap::new();
+        for (id, ..) in &exits {
+            *pids.entry(id.pid).or_default() += 1;
+        }
+        let reused: Vec<u32> = pids
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(pid, _)| *pid)
+            .collect();
+        assert_eq!(reused.len(), 1, "{reused:?}");
+        assert!(pids[&reused[0]] >= 6);
+        // A burst: more than eight children of one parent die within a second.
+        let parents: HashMap<Identity, Identity> = demo_life(-600.0, 0.0, 192, MORTAL)
+            .into_iter()
+            .map(|life| (life.id, life.parent))
+            .collect();
+        let burst = exits.iter().any(|(id, _, _, at)| {
+            exits
+                .iter()
+                .filter(|(other, _, _, other_at)| {
+                    parents[other] == parents[id] && (0.0..=1.0).contains(&(other_at - at))
+                })
+                .count()
+                > 8
+        });
+        assert!(burst);
+        // A unit of its own that empties, and a scope whose OOM kills rise with each victim.
+        let service = (-600..0).any(|second| {
+            demo_with(f64::from(second), 192, MORTAL)
+                .processes
+                .iter()
+                .any(|process| process.cgroup == DEMO_SERVICE_UNIT)
+        });
+        assert!(service);
+        let kills = |time: f64| demo_with(time, 192, MORTAL).units[DEMO_VICTIM_UNIT].oom_kills;
+        let victim_end = demo_cycle_offset(12) + 61.0;
+        assert_eq!(kills(victim_end).map(|k| k - 1), kills(victim_end - 0.5));
     }
 
     #[test]
@@ -4461,7 +4763,7 @@ mod tests {
         for from in [-61.5, 0.0, 7.3, 20.0, 96.25, 311.0] {
             for length in [0.4, 1.0, 2.9, 5.5, 20.0, 75.0, 200.0] {
                 let to = from + length;
-                let events = demo_life(from, to, count);
+                let events = demo_life(from, to, count, CHURN);
                 assert!(
                     events.windows(2).all(|pair| pair[0].time <= pair[1].time),
                     "ordered by time"
@@ -4511,17 +4813,17 @@ mod tests {
         for count in [16, 192] {
             for (from, middle, to) in [(-50.0, 13.7, 120.0), (0.0, 61.0, 400.0), (31.0, 31.5, 33.0)]
             {
-                let whole = demo_life(from, to, count);
-                let mut parts = demo_life(from, middle, count);
-                parts.extend(demo_life(middle, to, count));
+                let whole = demo_life(from, to, count, CHURN);
+                let mut parts = demo_life(from, middle, count, CHURN);
+                parts.extend(demo_life(middle, to, count, CHURN));
                 assert_eq!(whole, parts, "{from}..{middle}..{to} for {count}");
                 assert!(!whole.is_empty() || to - from < 5.0);
             }
         }
         let thirds: Vec<DemoLife> = (0..300)
-            .flat_map(|second| demo_life(f64::from(second), f64::from(second + 1), 192))
+            .flat_map(|second| demo_life(f64::from(second), f64::from(second + 1), 192, CHURN))
             .collect();
-        assert_eq!(thirds, demo_life(0.0, 300.0, 192));
+        assert_eq!(thirds, demo_life(0.0, 300.0, 192, CHURN));
     }
 
     #[test]
@@ -4545,7 +4847,7 @@ mod tests {
         // Within a pid, consecutive cycles never overlap in time.
         for family in 0..=families {
             let parents: Vec<_> = (0..5)
-                .map(|epoch| demo_cycle(count, family, epoch)[0].clone())
+                .map(|epoch| demo_cycle(count, family, epoch, false)[0].clone())
                 .collect();
             assert!(
                 parents
@@ -4561,7 +4863,7 @@ mod tests {
     fn a_large_transient_exits_every_ninety_seconds() {
         let count = 192;
         let families = demo_families(count);
-        let kills: Vec<DemoLife> = demo_life(-500.0, 1000.0, count)
+        let kills: Vec<DemoLife> = demo_life(-500.0, 1000.0, count, CHURN)
             .into_iter()
             .filter(|event| event.kind == DemoLifeKind::Exit && event.signal == Some(9))
             .collect();
@@ -4589,7 +4891,7 @@ mod tests {
             assert!(young.is_none_or(|process| process.memory < victim.memory));
         }
         assert_eq!(
-            demo_life(0.0, 90.0 * 10.0, count)
+            demo_life(0.0, 90.0 * 10.0, count, CHURN)
                 .iter()
                 .filter(|event| event.signal == Some(9))
                 .count()
@@ -4680,7 +4982,7 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 2, "only {checked} transients to follow");
-        let born = demo_life(-1.0, 100.0, count)
+        let born = demo_life(-1.0, 100.0, count, CHURN)
             .into_iter()
             .find(|event| event.kind == DemoLifeKind::Fork)
             .expect("something forks");
@@ -5528,8 +5830,8 @@ mod tests {
 
     #[test]
     fn demo_events_cover_every_cause_and_repeat_for_the_same_time() {
-        let events = demo_events(0.0, 600.0, 192);
-        assert_eq!(events, demo_events(0.0, 600.0, 192));
+        let events = demo_events(0.0, 600.0, 192, CHURN);
+        assert_eq!(events, demo_events(0.0, 600.0, 192, CHURN));
         assert!(events.windows(2).all(|pair| pair[0].at <= pair[1].at));
         let mut causes = Vec::new();
         let mut never_execd = Vec::new();
@@ -5584,7 +5886,7 @@ mod tests {
             let (before, after) = (identities(from), identities(to));
             let mut forks = HashSet::new();
             let mut exits = HashSet::new();
-            for event in demo_events(from, to, count) {
+            for event in demo_events(from, to, count, CHURN) {
                 assert!(from < event.at && event.at <= to);
                 match event.kind {
                     LifeKind::Fork { parent, child } => {

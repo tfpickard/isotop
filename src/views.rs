@@ -13,7 +13,7 @@ use std::fmt;
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
-use crate::{cells, cores, globe, ptolemy, tesseract};
+use crate::{cells, cores, globe, necropolis, ptolemy, tesseract};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -172,6 +172,7 @@ impl ViewInfo {
                 churn: false,
                 exact_cpu_time: false,
                 observer: false,
+                mortality: false,
             },
             keys: "",
             contract: Contract::DEFAULT,
@@ -329,13 +330,6 @@ pub enum LinkRule {
     /// Only the links of highlighted processes: selected, hovered or toured.
     Quiet,
     /// None: the view draws its own.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view draws its own links until the first new view"
-        )
-    )]
     DrawnByView,
 }
 
@@ -730,6 +724,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             churn: true,
             exact_cpu_time: false,
             observer: true,
+            mortality: false,
         },
         // The window of 60 samples is full only after a minute.
         contract: Contract {
@@ -759,12 +754,43 @@ pub static REGISTRY: &[ViewInfo] = &[
             churn: true,
             exact_cpu_time: true,
             observer: false,
+            mortality: false,
         },
         ..ViewInfo::new(
             "tesseract",
             "TESSERACT",
             Backdrop::Dusk,
             Hooks::Module(|| Box::new(tesseract::Tesseract::default())),
+        )
+    },
+    ViewInfo {
+        // Graves are drawn by the view; the zombies have no socket links worth drawing.
+        links: LinkRule::DrawnByView,
+        // A reaped zombie sinks into its pit instead of flashing; fog stands for memory pressure.
+        flash: false,
+        haze: false,
+        // The tour visits processes, and the living are not drawn.
+        tour: false,
+        sources: Sources::of(&[Source::LifeEvents]),
+        // Ten minutes of deaths, so the reference frame at 12 s shows ten rows.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 600,
+                before_start: true,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: false,
+            observer: false,
+            mortality: true,
+        },
+        ..ViewInfo::new(
+            "necropolis",
+            "NECROPOLIS",
+            Backdrop::Dusk,
+            Hooks::Module(|| Box::new(necropolis::Necropolis::default())),
         )
     },
 ];
@@ -1418,6 +1444,7 @@ pub mod testing {
                 churn: true,
                 exact_cpu_time: true,
                 observer: false,
+                mortality: false,
             },
             ..ViewInfo::new(
                 "demanding",
@@ -1477,7 +1504,7 @@ mod tests {
         );
         assert_eq!(
             with(|hooks| matches!(hooks, Hooks::Module(_))),
-            ["ptolemy", "tesseract"]
+            ["ptolemy", "tesseract", "necropolis"]
         );
     }
 }

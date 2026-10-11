@@ -1267,6 +1267,7 @@ mod tests {
         churn: true,
         exact_cpu_time: true,
         observer: false,
+        mortality: false,
     };
 
     fn snapshot(elapsed: f64, processes: Vec<Process>) -> Snapshot {

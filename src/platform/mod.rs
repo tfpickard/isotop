@@ -377,10 +377,6 @@ pub enum LifeKind {
 pub enum LifeSource {
     Taskstats,
     Connector,
-    #[cfg_attr(
-        all(target_os = "linux", not(test)),
-        expect(dead_code, reason = "kqueue is macOS only")
-    )]
     Kqueue,
     Diff,
 }
@@ -389,10 +385,6 @@ impl LifeSource {
     /// Every mechanism, most detailed first: with `source`, what picks the delivering ones out of
     /// `Snapshot::sources`, which also holds the demanded stream (`Source::LifeEvents`) and other
     /// views' sources.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first read by the necropolis view (#45)")
-    )]
     pub const ALL: [LifeSource; 4] = [
         LifeSource::Taskstats,
         LifeSource::Connector,
@@ -411,7 +403,6 @@ impl LifeSource {
     }
 
     /// "taskstats", "proc connector", "kqueue" or "sample diff".
-    #[cfg_attr(not(test), expect(dead_code, reason = "no view shows life events yet"))]
     pub fn name(self) -> &'static str {
         self.source().name()
     }
@@ -433,7 +424,7 @@ impl Cause {
     /// taskstats): the low 7 bits are the signal that killed it, 0 for a normal exit, bit 7 says
     /// it dumped core, and the next byte is the exit status.
     #[cfg_attr(
-        target_os = "macos",
+        all(target_os = "macos", not(test)),
         expect(dead_code, reason = "only Linux sources report a wait status")
     )]
     pub fn of_status(status: u32) -> Cause {
@@ -444,6 +435,50 @@ impl Cause {
                 core: status & 0x80 != 0,
             },
         }
+    }
+}
+
+impl Cause {
+    /// The name of signal `number` in Linux's numbering (signal(7)), which every wait status
+    /// isotop reads uses: macOS reports no exit status. None for a real-time or unknown signal.
+    pub fn signal_name(number: i32) -> Option<&'static str> {
+        const NAMES: [&str; 31] = [
+            "SIGHUP",
+            "SIGINT",
+            "SIGQUIT",
+            "SIGILL",
+            "SIGTRAP",
+            "SIGABRT",
+            "SIGBUS",
+            "SIGFPE",
+            "SIGKILL",
+            "SIGUSR1",
+            "SIGSEGV",
+            "SIGUSR2",
+            "SIGPIPE",
+            "SIGALRM",
+            "SIGTERM",
+            "SIGSTKFLT",
+            "SIGCHLD",
+            "SIGCONT",
+            "SIGSTOP",
+            "SIGTSTP",
+            "SIGTTIN",
+            "SIGTTOU",
+            "SIGURG",
+            "SIGXCPU",
+            "SIGXFSZ",
+            "SIGVTALRM",
+            "SIGPROF",
+            "SIGWINCH",
+            "SIGIO",
+            "SIGPWR",
+            "SIGSYS",
+        ];
+        usize::try_from(number)
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| NAMES.get(index).copied())
     }
 }
 
@@ -679,6 +714,21 @@ mod tests {
         let unique: HashSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "{names:?}");
         assert!(Source::ALL.len() <= 64, "a source is one bit of a u64");
+    }
+
+    #[test]
+    fn signals_are_named_in_linux_numbering() {
+        assert_eq!(Cause::signal_name(9), Some("SIGKILL"));
+        assert_eq!(Cause::signal_name(15), Some("SIGTERM"));
+        assert_eq!(Cause::signal_name(11), Some("SIGSEGV"));
+        assert_eq!(Cause::signal_name(31), Some("SIGSYS"));
+        assert_eq!(Cause::signal_name(0), None);
+        assert_eq!(
+            Cause::signal_name(34),
+            None,
+            "real-time signals have no name"
+        );
+        assert_eq!(Cause::signal_name(-1), None);
     }
 
     #[test]
