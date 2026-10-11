@@ -74,12 +74,14 @@ impl Globe {
             longitude: 0.0,
             name: "home unknown: pass --home LAT,LON".into(),
         });
-        // Start with home turned towards the default isometric camera, which looks from 45°.
-        let spin =
-            std::f32::consts::FRAC_PI_4 - home.longitude.to_radians() + TAU * time / SPIN_SECONDS;
+        let spin = spin(&home, time);
         let direction = |latitude: f32, longitude: f32| -> Point {
-            let (lat, lon) = (latitude.to_radians(), longitude.to_radians() + spin);
-            [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+            let (lat, azimuth) = (latitude.to_radians(), spin - longitude.to_radians());
+            [
+                lat.cos() * azimuth.cos(),
+                lat.cos() * azimuth.sin(),
+                lat.sin(),
+            ]
         };
         let at = |d: Point, r: f32| -> Point { [0, 1, 2].map(|k| center[k] + d[k] * r) };
         let viewer = camera.viewer();
@@ -323,6 +325,16 @@ impl Globe {
     }
 }
 
+/// The azimuth, about the world's vertical axis, at which longitude zero lies. A place's
+/// azimuth is `spin - longitude`, so east is the direction of falling azimuth. Camera::view puts
+/// screen-right at falling azimuth, which draws east on the right as on any map.
+///
+/// At time zero home sits at azimuth 45 degrees, facing the default isometric camera. The
+/// earth then turns eastward, so the surface that faces the viewer moves to the right.
+fn spin(home: &Place, time: f32) -> f32 {
+    FRAC_PI_4 + home.longitude.to_radians() - TAU * time / SPIN_SECONDS
+}
+
 /// Spherical interpolation between unit vectors `a` and `b`, `angle` apart.
 fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
     if angle < 1e-4 {
@@ -361,18 +373,20 @@ pub fn face(point: Point, camera: &Camera) -> (f32, f32) {
     (rotation, pitch)
 }
 
-/// East and north unit vectors on the surface at unit vector `up`.
+/// East and north unit vectors on the surface at unit vector `up`. Longitude grows as azimuth
+/// falls (see `spin`), so east is the direction of falling azimuth and (east, north, up) is
+/// left-handed in world coordinates: north is east x up.
 fn tangents(up: Point) -> (Point, Point) {
     // At a pole every horizontal direction is a tangent and "east" is undefined; pick one.
     let east = if up[0].hypot(up[1]) < 1e-4 {
         [1.0, 0.0, 0.0]
     } else {
-        normalize([-up[1], up[0], 0.0])
+        normalize([up[1], -up[0], 0.0])
     };
     let north = [
-        up[1] * east[2] - up[2] * east[1],
-        up[2] * east[0] - up[0] * east[2],
-        up[0] * east[1] - up[1] * east[0],
+        east[1] * up[2] - east[2] * up[1],
+        east[2] * up[0] - east[0] * up[2],
+        east[0] * up[1] - east[1] * up[0],
     ];
     (east, north)
 }
@@ -516,6 +530,108 @@ mod tests {
             .collect();
         assert!(colors.contains(&NEUTRAL));
         assert!(!colors.contains(&DOWN) && !colors.contains(&UP));
+    }
+
+    fn named(name: &str, latitude: f32, longitude: f32) -> Place {
+        Place {
+            latitude,
+            longitude,
+            name: name.into(),
+        }
+    }
+
+    /// Frame-pixel positions of the globe's labelled points, by label, as the camera projects them.
+    fn labelled(snapshot: &Snapshot, camera: &Camera, time: f32) -> HashMap<String, [f32; 2]> {
+        use crate::render::{Scene, View};
+        let mut scene = Scene::new();
+        let frame = scene.render(
+            snapshot,
+            View::Globe,
+            camera,
+            640,
+            360,
+            None,
+            time,
+            512,
+            None,
+        );
+        scene
+            .places
+            .iter()
+            .map(|(point, name)| {
+                let at = frame.project(camera, *point);
+                (name.clone(), [at[0], at[1]])
+            })
+            .collect()
+    }
+
+    /// A snapshot whose home is London and whose first process talks to each of `places`.
+    fn connected_to(places: &[Place]) -> Snapshot {
+        let mut snapshot = crate::model::demo(10.0, 128);
+        snapshot.home = Some(named("London", 51.5, -0.1));
+        let template = snapshot.remotes[0].clone();
+        snapshot.remotes = places
+            .iter()
+            .enumerate()
+            .map(|(k, place)| Remote {
+                address: IpAddr::from([8, 8, 8, k as u8 + 1]),
+                place: Some(place.clone()),
+                ..template.clone()
+            })
+            .collect();
+        snapshot
+    }
+
+    #[test]
+    fn east_is_to_the_right_of_west_on_the_facing_side() {
+        let snapshot = connected_to(&[
+            named("Berlin", 52.5, 13.4),
+            named("Madrid", 40.4, -3.7),
+            named("Reykjavik", 64.1, -21.9),
+        ]);
+        let at = labelled(&snapshot, &Camera::default(), 0.0);
+        let (london, berlin) = (at["London"], at["Berlin"]);
+        let (madrid, reykjavik) = (at["Madrid"], at["Reykjavik"]);
+        assert!(berlin[0] > london[0], "Berlin {berlin:?} London {london:?}");
+        assert!(reykjavik[0] < london[0], "Iceland is west of Britain");
+        assert!(madrid[0] < berlin[0], "Spain is west of Germany");
+        // Screen y grows downwards.
+        assert!(madrid[1] > berlin[1], "Spain is south of Germany");
+        assert!(reykjavik[1] < london[1], "Iceland is north of Britain");
+    }
+
+    #[test]
+    fn the_earth_turns_eastward() {
+        let snapshot = connected_to(&[named("Berlin", 52.5, 13.4)]);
+        let camera = Camera::default();
+        let mut last = labelled(&snapshot, &camera, 0.0);
+        for time in [3.0, 6.0, 9.0] {
+            let now = labelled(&snapshot, &camera, time);
+            for name in ["London", "Berlin"] {
+                assert!(now[name][0] > last[name][0], "{name} at {time} s");
+            }
+            last = now;
+        }
+    }
+
+    #[test]
+    fn tangents_point_east_where_longitude_grows_and_north_up_the_globe() {
+        // Longitude grows as azimuth falls, so a step east is a step to a smaller azimuth.
+        for (latitude, azimuth) in [(0.0f32, 0.7f32), (50.0, 2.0), (-35.0, -1.2)] {
+            let at = |azimuth: f32| {
+                let lat = latitude.to_radians();
+                [
+                    lat.cos() * azimuth.cos(),
+                    lat.cos() * azimuth.sin(),
+                    lat.sin(),
+                ]
+            };
+            let (up, further) = (at(azimuth), at(azimuth - 0.01));
+            let (east, north) = tangents(up);
+            let step = normalize([0, 1, 2].map(|k| further[k] - up[k]));
+            assert!(dot(east, step) > 0.999, "{latitude}: {east:?} {step:?}");
+            assert!(north[2] > 0.1, "{latitude}: north is up the globe");
+        }
     }
 
     #[test]
