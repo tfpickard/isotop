@@ -41,7 +41,7 @@ The README covers usage. This file covers how to work on the code.
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
 | `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
 | `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
-| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries, the seeded `Rng`, hashes, and the `growth`, `sprout` and `smoothing` easing |
+| `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, hashes, and the `growth`, `sprout` and `smoothing` easing |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
@@ -84,9 +84,10 @@ and Matrix is a special arm in `Scene::render`. They are being moved onto `Stage
 views the module way.
 
 **Shared helpers live in one place each.** Don't write a second copy:
-- `simulation`: `SpatialHash`, `Rng` (seeded per identity), `XorShift32`, `simulation::hash`
-  (`fnv1a_64_bytes` and the rest), `hash_identity`, and the `growth`, `sprout` and `smoothing`
-  easing.
+- `simulation`: `SpatialHash` and `SpatialHash3`, `Rng` (seeded per identity, `normal` for a
+  Gaussian), `XorShift32`, `Complex` with `dft`, `fft` and `inverse_fft` (forward sign
+  `exp(-2*pi*i*k*n/N)`), `simulation::hash` (`fnv1a_64_bytes` and the rest), `hash_identity`, and
+  the `growth`, `sprout` and `smoothing` easing.
 - `palette`: every colour table, `mix`, `tint`, `kind_color`. `geometry`: vector maths and
   `cuboid`. `layout`: `Seats`, `Discs`, the golden-angle `spiral`.
 - `render::shared`: constants the CPU rasterizer and the WGSL shader share.
