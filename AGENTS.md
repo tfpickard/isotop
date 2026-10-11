@@ -50,7 +50,8 @@ The README covers usage. This file covers how to work on the code.
 
 - **The CPU and GPU backends must draw the same frame.** If you change how anything is
   rasterized (sky, sphere shading, glow falloff, depth mapping), change `render.rs` and
-  `shaders.wgsl` together. To check, render the same view with `--renderer cpu` and
+  `shaders.wgsl` together. Shared constants live in `render::shared`; never write them in WGSL
+  directly. To check, render the same view with `--renderer cpu` and
   `--renderer gpu` and compare the PNGs.
 - **Layouts are stable.** A process keeps its place when CPU, memory or the population changes.
   Systems and districts are only re-placed when their structure outgrows the reservation, and

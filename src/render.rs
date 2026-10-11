@@ -7,9 +7,11 @@ use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::platform::Shadow;
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
+pub mod shared;
+
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
-pub const NONE: u32 = u32::MAX;
+pub use shared::NONE;
 const PALETTE: [Color; 8] = [
     [72, 183, 199],
     [122, 145, 229],
@@ -98,10 +100,10 @@ impl View {
 /// The sky behind a view. The GPU shader receives the discriminant as `globals.sky.x`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backdrop {
-    Dusk = 0,
-    Space = 1,
-    Sea = 2,
-    Void = 3,
+    Dusk = shared::BACKDROP_DUSK as isize,
+    Space = shared::BACKDROP_SPACE as isize,
+    Sea = shared::BACKDROP_SEA as isize,
+    Void = shared::BACKDROP_VOID as isize,
 }
 
 /// Which socket links to draw.
@@ -233,9 +235,13 @@ pub struct Sky {
 impl Sky {
     pub fn base(&self, y: f32) -> [f32; 3] {
         match self.backdrop {
-            Backdrop::Space => [5.0, 8.0, 18.0],
-            Backdrop::Dusk => [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0],
-            Backdrop::Sea => [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0],
+            Backdrop::Space => shared::SPACE_BASE,
+            Backdrop::Dusk => {
+                std::array::from_fn(|i| shared::DUSK_BASE[i] + y * shared::DUSK_SLOPE[i])
+            }
+            Backdrop::Sea => {
+                std::array::from_fn(|i| shared::SEA_BASE[i] - y * shared::SEA_SLOPE[i])
+            }
             Backdrop::Void => [0.0; 3],
         }
     }
@@ -243,8 +249,10 @@ impl Sky {
     /// Haze density along one normalised screen axis; the field is the product of both axes.
     pub fn profile(&self, t: f32, phase: f32) -> f32 {
         0.5 + 0.5
-            * (t * 7.3 + self.time * 0.11 + phase).sin()
-            * (t * 2.9 - self.time * 0.07 + phase * 1.7).cos()
+            * (t * shared::HAZE_FREQUENCY_A + self.time * shared::HAZE_DRIFT_A + phase).sin()
+            * (t * shared::HAZE_FREQUENCY_B - self.time * shared::HAZE_DRIFT_B
+                + phase * shared::HAZE_PHASE_B)
+                .cos()
     }
 
     pub fn hazy(&self) -> bool {
@@ -570,7 +578,7 @@ impl Frame {
             self.pixel(
                 (a[0] + (b[0] - a[0]) * t) as i32,
                 (a[1] + (b[1] - a[1]) * t) as i32,
-                a[2] + (b[2] - a[2]) * t + 0.02,
+                a[2] + (b[2] - a[2]) * t + shared::LINE_DEPTH_BIAS,
                 color,
                 NONE,
             );
@@ -578,7 +586,11 @@ impl Frame {
     }
 
     fn ball(&mut self, p: Point, r: f32, depth: f32, color: Color, pick: u32, selected: bool) {
-        let outer = if selected { r + 3.0 } else { r + 1.0 };
+        let outer = if selected {
+            r + shared::SELECTION_RING_WIDTH
+        } else {
+            r + shared::SPHERE_EDGE
+        };
         let x0 = (p[0] - outer).floor().max(0.0) as i32;
         let x1 = (p[0] + outer).ceil().min(self.width as f32 - 1.0) as i32;
         let y0 = (p[1] - outer).floor().max(0.0) as i32;
@@ -590,10 +602,14 @@ impl Frame {
                 let d = nx * nx + ny * ny;
                 if d <= 1.0 {
                     let nz = (1.0 - d).sqrt();
-                    let light = (0.25 + (-nx * 0.4 - ny * 0.5 + nz * 0.65).max(0.0)).min(1.2);
+                    let light = (shared::SPHERE_AMBIENT
+                        + (-nx * shared::SPHERE_LIGHT_X - ny * shared::SPHERE_LIGHT_Y
+                            + nz * shared::SPHERE_LIGHT_Z)
+                            .max(0.0))
+                    .min(shared::SPHERE_LIGHT_MAX);
                     self.pixel(x, y, p[2] + nz * depth, tint(color, light), pick);
                 } else if selected && d <= (outer / r).powi(2) {
-                    self.pixel(x, y, p[2], [237, 220, 154], pick);
+                    self.pixel(x, y, p[2], shared::SELECTION_COLOR.map(|c| c as u8), pick);
                 }
             }
         }

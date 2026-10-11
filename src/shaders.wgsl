@@ -13,7 +13,8 @@ struct Globals {
 
 @group(0) @binding(0) var<uniform> globals: Globals;
 
-const NONE: u32 = 0xffffffffu;
+// Constants shared with the CPU rasterizer (NONE, BACKDROP_*, SPHERE_*, ...) come from the
+// generated prelude in render::shared; never write them here.
 
 struct Targets {
     @location(0) color: vec4<f32>,
@@ -30,7 +31,7 @@ fn normalized(depth: f32) -> f32 {
 
 fn profile(t: f32, phase: f32) -> f32 {
     let time = globals.haze.w;
-    return 0.5 + 0.5 * sin(t * 7.3 + time * 0.11 + phase) * cos(t * 2.9 - time * 0.07 + phase * 1.7);
+    return 0.5 + 0.5 * sin(t * HAZE_FREQUENCY_A + time * HAZE_DRIFT_A + phase) * cos(t * HAZE_FREQUENCY_B - time * HAZE_DRIFT_B + phase * HAZE_PHASE_B);
 }
 
 @vertex
@@ -43,13 +44,15 @@ fn sky_vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32>
 fn sky_fragment(@builtin(position) position: vec4<f32>) -> Targets {
     let x = floor(position.x) / globals.size.x;
     let y = floor(position.y) / globals.size.y;
-    var base = vec3<f32>(5.0, 8.0, 18.0);
-    if globals.sky.x < 0.5 {
-        base = vec3<f32>(8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0);
-    } else if globals.sky.x > 2.5 {
+    // The backdrop arrives as a float; each test is the midpoint between neighbouring discriminants.
+    let backdrop = globals.sky.x;
+    var base = SPACE_BASE;
+    if backdrop < f32(BACKDROP_DUSK) + 0.5 {
+        base = DUSK_BASE + y * DUSK_SLOPE;
+    } else if backdrop > f32(BACKDROP_VOID) - 0.5 {
         base = vec3<f32>(0.0);
-    } else if globals.sky.x > 1.5 {
-        base = vec3<f32>(24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0);
+    } else if backdrop > f32(BACKDROP_SEA) - 0.5 {
+        base = SEA_BASE - y * SEA_SLOPE;
     }
     let density = profile(x, 0.0) * profile(y, 1.9);
     let color = min(base + globals.haze.xyz * density, vec3<f32>(255.0));
@@ -111,7 +114,7 @@ struct BallTargets {
 
 @vertex
 fn ball_vertex(@builtin(vertex_index) index: u32, ball: Ball) -> BallVarying {
-    let reach = ball.radius + 4.0;
+    let reach = ball.radius + SELECTION_RING_WIDTH + 1.0;
     let position = ball.center.xy + CORNERS[index] * reach;
     return BallVarying(
         vec4<f32>(clip(position), 0.5, 1.0),
@@ -124,15 +127,15 @@ fn ball_fragment(input: BallVarying) -> BallTargets {
     // The CPU rasterizer samples at integer pixel coordinates; do the same.
     let n = (floor(input.position.xy) - input.center.xy) / input.radius;
     let d = dot(n, n);
-    let outer = select(input.radius + 1.0, input.radius + 3.0, input.selected != 0u) / input.radius;
+    let outer = select(input.radius + SPHERE_EDGE, input.radius + SELECTION_RING_WIDTH, input.selected != 0u) / input.radius;
     var out: BallTargets;
     if d <= 1.0 {
         let nz = sqrt(1.0 - d);
-        let light = min(0.25 + max(-n.x * 0.4 - n.y * 0.5 + nz * 0.65, 0.0), 1.2);
+        let light = min(SPHERE_AMBIENT + max(-n.x * SPHERE_LIGHT_X - n.y * SPHERE_LIGHT_Y + nz * SPHERE_LIGHT_Z, 0.0), SPHERE_LIGHT_MAX);
         let color = clamp(floor(input.color.rgb * 255.0 * light), vec3<f32>(0.0), vec3<f32>(255.0));
         out = BallTargets(vec4<f32>(color / 255.0, 1.0), input.pick, normalized(input.center.z + nz * input.world));
     } else if input.selected != 0u && d <= outer * outer {
-        out = BallTargets(vec4<f32>(237.0, 220.0, 154.0, 255.0) / 255.0, input.pick, normalized(input.center.z));
+        out = BallTargets(vec4<f32>(SELECTION_COLOR, 255.0) / 255.0, input.pick, normalized(input.center.z));
     } else {
         discard;
     }
@@ -170,9 +173,9 @@ fn glow_fragment(input: GlowVarying) -> Targets {
     return Targets(vec4<f32>(input.color.rgb, weight), NONE);
 }
 
-// Glyph cells are 7 by 14 font pixels; font pixel (column, row) is bit row * 7 + column of the
-// 128-bit mask, split little-endian across four words.
-const GLYPH = vec2<f32>(7.0, 14.0);
+// Font pixel (column, row) of a glyph cell is bit row * GLYPH_COLUMNS + column of the 128-bit
+// mask, split little-endian across four words.
+const GLYPH = vec2<f32>(GLYPH_WIDTH, GLYPH_HEIGHT);
 
 struct Glyph {
     @location(0) origin: vec2<f32>,
@@ -201,7 +204,7 @@ fn glyph_fragment(input: GlyphVarying) -> Targets {
     if any(cell < vec2<f32>(0.0)) || any(cell >= GLYPH) {
         discard;
     }
-    let bit = u32(cell.y) * 7u + u32(cell.x);
+    let bit = u32(cell.y) * GLYPH_COLUMNS + u32(cell.x);
     if ((input.bits[bit / 32u] >> (bit % 32u)) & 1u) == 0u {
         discard;
     }
