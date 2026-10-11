@@ -121,6 +121,13 @@ struct Options {
     home: Option<(f32, f32)>,
 }
 
+impl Options {
+    /// Height of a headless frame: 16:9 at the requested width.
+    fn headless_height(&self) -> u32 {
+        self.width * 9 / 16
+    }
+}
+
 fn parse_home(text: &str) -> Result<(f32, f32), String> {
     let (latitude, longitude) = text
         .split_once(',')
@@ -1249,52 +1256,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     app.choose_renderer(options.renderer, options.gpu_power)?;
     let limit = options.limit as usize;
     if options.output.is_some() || options.benchmark.is_some() {
-        let height = options.width * 9 / 16;
-        // Simulated media (ripple, flow, the reef's fish) start empty: let them develop before
-        // the captured frame. Strata needs a history, which the demo workload can replay.
-        if options.view == View::Strata && options.demo && options.output.is_some() {
-            for back in (1..=60).rev() {
-                let at = options.time - back as f64;
-                app.history = VecDeque::from([model::demo(at, options.processes as usize)]);
-                app.animation = at as f32;
-                let warmup = app.render(options.width, height, limit);
-                app.scene.spare = warmup.release();
-            }
-            app.history = VecDeque::from([model::demo(options.time, options.processes as usize)]);
-        }
-        // The coop's CPU history and fox baselines come from the samples before the frame.
-        if options.view == View::Coop && options.demo && options.output.is_some() {
-            for back in (1..=30).rev() {
-                let at = options.time - back as f64;
-                if at >= 0.0 {
-                    let snapshot = model::demo(at, options.processes as usize);
-                    app.scene.record(&snapshot, at as f32);
-                }
-            }
-        }
-        if matches!(
-            options.view,
-            View::Ripple | View::Flow | View::Reef | View::Cores | View::Coop
-        ) && options.output.is_some()
-        {
-            for step in 0..80 {
-                app.animation = options.time as f32 - 4.0 + step as f32 * 0.05;
-                let warmup = app.render(options.width, height, limit);
-                app.scene.spare = warmup.release();
-            }
-        }
-        // The rain needs several seconds to fill the screen.
-        if options.view == View::Matrix {
-            let mut fed = options.time - 8.0;
-            for step in 0..=160 {
-                let at = options.time - 8.0 + step as f64 * 0.05;
-                feed(&mut app, journal.as_ref(), options.demo, fed, at);
-                fed = at;
-                app.animation = at as f32;
-                let warmup = app.render(options.width, height, limit);
-                app.scene.spare = warmup.release();
-            }
-        }
+        let height = options.headless_height();
+        warm_up(&mut app, &options, journal.as_ref());
         app.animation = options.time as f32;
         let mut frame = app.render(options.width, height, limit);
         if let Some(count) = options.benchmark {
@@ -1449,6 +1412,61 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
         );
     }
     Ok(())
+}
+
+/// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured.
+/// The golden render test runs this too, so the hashes it checks are the PNGs' frames.
+fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
+    let (width, height, limit) = (
+        options.width,
+        options.headless_height(),
+        options.limit as usize,
+    );
+    // Simulated media (ripple, flow, the reef's fish) start empty: let them develop before
+    // the captured frame. Strata needs a history, which the demo workload can replay.
+    if options.view == View::Strata && options.demo && options.output.is_some() {
+        for back in (1..=60).rev() {
+            let at = options.time - back as f64;
+            app.history = VecDeque::from([model::demo(at, options.processes as usize)]);
+            app.animation = at as f32;
+            let warmup = app.render(width, height, limit);
+            app.scene.spare = warmup.release();
+        }
+        app.history = VecDeque::from([model::demo(options.time, options.processes as usize)]);
+    }
+    // The coop's CPU history and fox baselines come from the samples before the frame.
+    if options.view == View::Coop && options.demo && options.output.is_some() {
+        for back in (1..=30).rev() {
+            let at = options.time - back as f64;
+            if at >= 0.0 {
+                let snapshot = model::demo(at, options.processes as usize);
+                app.scene.record(&snapshot, at as f32);
+            }
+        }
+    }
+    if matches!(
+        options.view,
+        View::Ripple | View::Flow | View::Reef | View::Cores | View::Coop
+    ) && options.output.is_some()
+    {
+        for step in 0..80 {
+            app.animation = options.time as f32 - 4.0 + step as f32 * 0.05;
+            let warmup = app.render(width, height, limit);
+            app.scene.spare = warmup.release();
+        }
+    }
+    // The rain needs several seconds to fill the screen.
+    if options.view == View::Matrix {
+        let mut fed = options.time - 8.0;
+        for step in 0..=160 {
+            let at = options.time - 8.0 + step as f64 * 0.05;
+            feed(app, journal, options.demo, fed, at);
+            fed = at;
+            app.animation = at as f32;
+            let warmup = app.render(width, height, limit);
+            app.scene.spare = warmup.release();
+        }
+    }
 }
 
 /// Hands the matrix view its journal lines: synthetic ones arriving in `(from, to]` demo seconds,
@@ -1966,5 +1984,244 @@ mod tests {
         assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
         assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
         assert!(!text(View::Coop).contains("share one trough"));
+    }
+
+    /// The checked-in golden hashes, which are those of Linux on x86_64.
+    const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden.txt");
+
+    /// FNV-1a 64 of a render's colour, pick and depth buffers.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Hashes {
+        pixels: u64,
+        picks: u64,
+        depth: u64,
+    }
+
+    fn fnv1a(bytes: impl IntoIterator<Item = u8>) -> u64 {
+        // The 64-bit offset basis and prime from the FNV specification.
+        bytes.into_iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    fn view_name(view: View) -> String {
+        use clap::ValueEnum;
+        let value = view.to_possible_value().expect("every view has a name");
+        value.get_name().to_owned()
+    }
+
+    /// The frame `isotop --demo --time 12 --renderer cpu --width 480 --output` writes for `view`.
+    fn golden_render(view: View) -> Hashes {
+        let name = view_name(view);
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "12",
+            "--renderer",
+            "cpu",
+            "--width",
+            "480",
+            "--output",
+            "golden.png",
+            "--view",
+            &name,
+        ]);
+        let mut app = App::new(view, model::demo(options.time, options.processes as usize));
+        warm_up(&mut app, &options, None);
+        app.animation = options.time as f32;
+        let frame = app.render(
+            options.width,
+            options.headless_height(),
+            options.limit as usize,
+        );
+        Hashes {
+            pixels: fnv1a(frame.pixels.iter().copied()),
+            picks: fnv1a(frame.picks.iter().flat_map(|pick| pick.to_le_bytes())),
+            depth: fnv1a(
+                frame
+                    .depth()
+                    .iter()
+                    .flat_map(|depth| depth.to_bits().to_le_bytes()),
+            ),
+        }
+    }
+
+    /// Every view's golden render, each view on its own thread.
+    fn render_every_view() -> Vec<(String, Hashes)> {
+        std::thread::scope(|scope| {
+            let renders: Vec<_> = View::ALL
+                .iter()
+                .map(|&view| scope.spawn(move || (view_name(view), golden_render(view))))
+                .collect();
+            renders
+                .into_iter()
+                .map(|render| render.join().expect("the view renders"))
+                .collect()
+        })
+    }
+
+    /// The renders shared by the tests below, so each view is rendered once for both of them.
+    fn first_renders() -> &'static [(String, Hashes)] {
+        static RENDERS: std::sync::OnceLock<Vec<(String, Hashes)>> = std::sync::OnceLock::new();
+        RENDERS.get_or_init(render_every_view)
+    }
+
+    fn golden_line(hashes: &Hashes) -> String {
+        format!(
+            "{:016x} {:016x} {:016x}",
+            hashes.pixels, hashes.picks, hashes.depth
+        )
+    }
+
+    /// Compares `renders` with the golden file at `path`, or rewrites the file when `bless` is set.
+    fn check_golden(
+        path: &std::path::Path,
+        renders: &[(String, Hashes)],
+        bless: bool,
+    ) -> Result<(), String> {
+        if bless {
+            let mut text = String::from(
+                "# view pixels picks depth: FNV-1a 64 of `--demo --time 12 --renderer cpu --width 480`\n",
+            );
+            for (name, hashes) in renders {
+                text += &format!("{name} {}\n", golden_line(hashes));
+            }
+            return std::fs::write(path, text)
+                .map_err(|error| format!("{}: {error}", path.display()));
+        }
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let stored: HashMap<&str, Vec<&str>> = text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((fields.next()?, fields.collect()))
+            })
+            .collect();
+        let mut changed = Vec::new();
+        for (name, hashes) in renders {
+            let rendered = golden_line(hashes);
+            match stored.get(name.as_str()) {
+                None => changed.push(format!("{name}: no golden hash")),
+                Some(fields) => {
+                    let buffers: Vec<&str> = ["pixels", "picks", "depth"]
+                        .into_iter()
+                        .zip(rendered.split(' '))
+                        .enumerate()
+                        .filter(|(index, (_, hash))| fields.get(*index) != Some(hash))
+                        .map(|(_, (buffer, _))| buffer)
+                        .collect();
+                    if !buffers.is_empty() {
+                        changed.push(format!("{name}: {} changed", buffers.join(", ")));
+                    }
+                }
+            }
+        }
+        let mut retired: Vec<&str> = stored
+            .keys()
+            .copied()
+            .filter(|name| !renders.iter().any(|(rendered, _)| rendered == name))
+            .collect();
+        retired.sort_unstable();
+        changed.extend(
+            retired
+                .iter()
+                .map(|name| format!("{name}: no longer a view")),
+        );
+        if changed.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "golden render hashes in {} differ:\n  {}\nIf the change is intended, rewrite the file with \
+             `ISOTOP_BLESS=1 cargo test every_view_matches` and say why in the PR description, with the renders.",
+            path.display(),
+            changed.join("\n  ")
+        ))
+    }
+
+    /// Renders every view as a headless `--output` run does and compares the FNV-1a 64 hashes of
+    /// its colour, pick and depth buffers with `tests/golden.txt`. `ISOTOP_BLESS=1` rewrites it.
+    ///
+    /// Transcendental functions (`sin`, `exp`, `powf`) are not guaranteed to round the same way
+    /// across libm implementations and architectures, so the checked-in hashes are those of Linux
+    /// on x86_64, which CI's `ubuntu-latest` runs, and only that platform compares them. Elsewhere
+    /// every view still renders, which catches panics, and the comparison is skipped.
+    ///
+    /// `ISOTOP_GOLDEN_FILE=<path>` reads, and in bless mode writes, that file instead, and compares
+    /// on any platform: bless a local baseline before a change and compare against it after.
+    #[test]
+    fn every_view_matches_its_golden_hash() {
+        let renders = first_renders();
+        let bless = std::env::var_os("ISOTOP_BLESS").is_some_and(|value| value == "1");
+        let (path, compare) = match std::env::var_os("ISOTOP_GOLDEN_FILE") {
+            Some(path) => (PathBuf::from(path), true),
+            None => (
+                PathBuf::from(GOLDEN),
+                cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            ),
+        };
+        if !compare {
+            assert!(
+                !bless,
+                "the checked-in hashes are blessed on Linux x86_64 only; \
+                 set ISOTOP_GOLDEN_FILE to bless a local baseline"
+            );
+            return;
+        }
+        if let Err(message) = check_golden(&path, renders, bless) {
+            panic!("{message}");
+        }
+    }
+
+    #[test]
+    fn every_view_renders_the_same_frame_twice() {
+        let second = render_every_view();
+        for ((name, first), (_, second)) in first_renders().iter().zip(&second) {
+            assert_eq!(
+                first, second,
+                "{name} drew a different frame from the same inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn bless_mode_rewrites_the_golden_file() {
+        let path = std::env::temp_dir().join(format!("isotop-golden-{}.txt", std::process::id()));
+        std::fs::write(&path, "city 0 0 0\nretired 0 0 0\n").expect("the file is written");
+        let hashes = |pixels, picks, depth| Hashes {
+            pixels,
+            picks,
+            depth,
+        };
+        let mut renders = vec![
+            ("city".to_owned(), hashes(1, 2, 3)),
+            ("orbit".to_owned(), hashes(4, 5, 6)),
+        ];
+        let stale = check_golden(&path, &renders, false);
+        let blessed = check_golden(&path, &renders, true);
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        let fresh = check_golden(&path, &renders, false);
+        renders[1].1.picks = 7;
+        let changed = check_golden(&path, &renders, false);
+        std::fs::remove_file(&path).ok();
+        let stale = stale.expect_err("a stale file fails");
+        assert!(
+            stale.contains("city: pixels, picks, depth changed"),
+            "{stale}"
+        );
+        assert!(stale.contains("orbit: no golden hash"), "{stale}");
+        assert!(stale.contains("retired: no longer a view"), "{stale}");
+        assert!(stale.contains("ISOTOP_BLESS=1"), "{stale}");
+        assert_eq!(blessed, Ok(()));
+        assert!(
+            written.contains("\norbit 0000000000000004 0000000000000005 0000000000000006\n"),
+            "{written}"
+        );
+        assert!(!written.contains("retired"), "{written}");
+        assert_eq!(fresh, Ok(()));
+        let changed = changed.expect_err("a changed buffer fails");
+        assert!(changed.contains("orbit: picks changed"), "{changed}");
+        assert!(!changed.contains("city:"), "{changed}");
     }
 }

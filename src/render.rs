@@ -343,6 +343,12 @@ impl Frame {
         frame
     }
 
+    /// Depth per pixel after a CPU rasterization; larger is nearer.
+    #[cfg(test)]
+    pub fn depth(&self) -> &[f32] {
+        &self.depth
+    }
+
     pub fn release(self) -> Buffers {
         Buffers {
             items: self.items,
@@ -1374,7 +1380,11 @@ impl Scene {
             let strength = if glowing { 0.9 } else { 0.35 };
             frame.glow(camera, curve(t), 5.0, color, strength);
         }
-        for (id, &count) in &snapshot.outside {
+        // Overlapping beams blend in drawing order, and a `HashMap` iterates in a different order
+        // every run.
+        let mut outside: Vec<_> = snapshot.outside.iter().collect();
+        outside.sort_unstable_by_key(|&(id, _)| *id);
+        for (id, &count) in outside {
             let Some(&p) = self.positions.get(id) else {
                 continue;
             };
@@ -2093,7 +2103,11 @@ impl Scene {
                 }
             }
         }
-        for (id, &count) in &snapshot.outside {
+        // A `HashMap` iterates in a different order every run; the particles draw from one random
+        // stream, so a fixed order keeps the frame repeatable.
+        let mut outside: Vec<_> = snapshot.outside.iter().collect();
+        outside.sort_unstable_by_key(|&(id, _)| *id);
+        for (id, &count) in outside {
             if let Some(index) = processes.iter().position(|p| p.id == *id)
                 && let Some(slot) = bodies.iter().position(|b| b.index == index)
             {

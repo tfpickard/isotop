@@ -90,6 +90,12 @@ macOS code cannot run on Linux. Type-check it locally with
 `platform/macos/logic.rs` and `platform/macos/journal.rs` is also compiled into Linux test
 builds, so `cargo test` covers it here. Keep FFI out of those two files so that stays true.
 
+`every_view_matches_its_golden_hash` checks every view's CPU render against `tests/golden.txt`
+on Linux x86_64; `ISOTOP_BLESS=1 cargo test every_view_matches` rewrites the file. A PR that
+changes a golden hash says why in its description and carries the renders. On other platforms,
+bless a local baseline before a change with `ISOTOP_GOLDEN_FILE=<path> ISOTOP_BLESS=1 cargo test
+every_view_matches`, then run it again without `ISOTOP_BLESS` after the change to compare.
+
 The smoke test drives the release binary through a pseudo-terminal. It runs once in demo mode
 over shared memory and once in live mode inline, and exercises view switching, search, focus,
 pause, quit and terminal restoration.
