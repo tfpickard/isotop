@@ -48,8 +48,8 @@ use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, de
 use picker::{Entry, Picker, Toggle};
 use platform::Source;
 use render::{
-    Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target, Thing,
-    label_name,
+    Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target,
+    Thing, label_name,
 };
 use terminal::{Label, Popup, Terminal, Tone};
 use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
@@ -1137,7 +1137,7 @@ impl App {
             Some(Target::Thing(thing)) if Some(thing) != self.thing => self
                 .scene
                 .card(self.view, thing, snapshot)
-                .map(|card| format!(" {} ", card.title)),
+                .map(|card| thing_tag(&card)),
             _ => None,
         };
         if let Some(hover) = self.hover
@@ -2020,6 +2020,15 @@ fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64)
     }
     if let Some(source) = source {
         app.scene.matrix.skipped += source.dropped();
+    }
+}
+
+/// The hover tag of a thing: like a process's, a name and what it is, here the card's title and
+/// its first line.
+fn thing_tag(card: &Card) -> String {
+    match card.lines.first() {
+        Some(line) => format!(" {} - {line} ", card.title),
+        None => format!(" {} ", card.title),
     }
 }
 
@@ -3943,8 +3952,12 @@ mod tests {
             .collect();
         assert_eq!(
             tags,
-            [format!(" {} ", testing::lantern_title(101))],
-            "a hovered thing shows its title"
+            [format!(
+                " {} - {} ",
+                testing::lantern_title(101),
+                testing::WICK
+            )],
+            "a hovered thing shows its title and its card's first line"
         );
         app.hover = None;
         let lantern = Thing {
