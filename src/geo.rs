@@ -98,8 +98,14 @@ impl Geo {
                     format!("cities from {name}")
                 }
             }
-            (None, [Some(_), _] | [_, Some(_)]) => {
-                "countries from the system GeoIP database".into()
+            (None, [Some(_), Some(_)]) => "countries from the system GeoIP database".into(),
+            // The ring and the inspector say "no GeoIP database" for the other family, so the
+            // legend must not claim a database without saying which family it covers.
+            (None, [Some(_), None]) => {
+                "countries from the system GeoIP database (IPv4 only)".into()
+            }
+            (None, [None, Some(_)]) => {
+                "countries from the system GeoIP database (IPv6 only)".into()
             }
             (None, _) => "no GeoIP database (see --geoip)".into(),
         };
@@ -368,6 +374,28 @@ mod tests {
             geo.locate("2001:4860:4860::8888".parse().unwrap()),
             Location::Unlisted
         );
+    }
+
+    #[test]
+    fn the_legend_says_which_family_a_single_legacy_database_covers() {
+        let mut geo = locator("legend-v4", [Some(leaves(COUNTRY_BEGIN)), None]);
+        geo.locate("8.8.8.8".parse().unwrap());
+        assert_eq!(
+            geo.source,
+            "countries from the system GeoIP database (IPv4 only)"
+        );
+        let mut geo = locator("legend-v6", [None, Some(leaves(COUNTRY_BEGIN))]);
+        geo.locate("8.8.8.8".parse().unwrap());
+        assert_eq!(
+            geo.source,
+            "countries from the system GeoIP database (IPv6 only)"
+        );
+        let mut geo = locator(
+            "legend-both",
+            [Some(leaves(COUNTRY_BEGIN)), Some(leaves(COUNTRY_BEGIN))],
+        );
+        geo.locate("8.8.8.8".parse().unwrap());
+        assert_eq!(geo.source, "countries from the system GeoIP database");
     }
 
     #[test]

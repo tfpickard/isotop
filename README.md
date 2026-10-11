@@ -309,7 +309,9 @@ shown; nothing is sent anywhere.
   requires; GeoLite2 City in `/usr/share/GeoIP` or `/var/lib/GeoIP` is found
   automatically.
 - Otherwise the legacy country database many distributions ship
-  (`/usr/share/GeoIP/GeoIP.dat`) places connections at country label points.
+  (`/usr/share/GeoIP/GeoIP.dat`) places connections at country label points. If
+  only the IPv4 or only the IPv6 file is installed, the legend says so and
+  connections of the other family are counted as having no database.
 - macOS ships no GeoIP database, and isotop never looks addresses up online, so
   install one to see places. For example, DB-IP's City Lite:
 
