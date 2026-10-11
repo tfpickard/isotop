@@ -388,8 +388,12 @@ impl App {
     }
 
     /// Lets a held globe turn with time again from where it stands, and stands it upright.
-    /// Does nothing unless the earth was held.
+    /// Does nothing unless the earth was held, or off the globe, where a tour must leave the
+    /// hold for the next visit to the globe.
     fn release_globe(&mut self) {
+        if self.view != View::Globe {
+            return;
+        }
         let time = self.render_time();
         self.both(|c| c.release(time));
         self.goal.globe_tilt = 0.0;
@@ -2339,6 +2343,26 @@ mod tests {
         app.update_tour(None);
         assert!(!app.goal.globe_held && !app.camera.globe_held);
         assert_eq!(app.goal.globe_tilt, 0.0);
+    }
+
+    #[test]
+    fn a_tour_on_another_view_leaves_a_held_globe_as_it_was() {
+        let mut app = globe_at(20.0);
+        scroll(&mut app, MouseEventKind::ScrollDown, 3);
+        scroll(&mut app, MouseEventKind::ScrollRight, 3);
+        let tilt = app.goal.globe_tilt;
+        assert!(app.goal.globe_held && tilt > 0.0);
+        app.view = View::City;
+        app.render(SCENE.width, SCENE.height, 512);
+        app.update_tour(Some(Duration::ZERO));
+        assert!(app.tour.is_some(), "an idle City tours");
+        app.update_tour(None);
+        assert!(app.goal.globe_held && app.camera.globe_held);
+        assert_eq!(app.goal.globe_tilt, tilt);
+        app.tour = None;
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        assert!(app.tour.is_some());
+        assert!(app.goal.globe_held && app.goal.globe_tilt == tilt);
     }
 
     #[test]
