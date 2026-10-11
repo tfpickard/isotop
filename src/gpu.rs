@@ -196,6 +196,7 @@ pub struct Gpu {
 impl Gpu {
     /// Opens the preferred hardware adapter. Software adapters are refused: the CPU rasterizer
     /// is faster than an emulated GPU.
+    #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
     pub fn new(power: wgpu::PowerPreference) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -461,6 +462,7 @@ impl Gpu {
     }
 
     /// Rasterizes the frame's display list into its pixels, and its picking buffer around `pointer`.
+    #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
     pub fn render(&mut self, frame: &mut Frame, pointer: Option<[f32; 2]>) -> Result<(), String> {
         let (width, height) = (frame.width, frame.height);
         let mut vertices = Vec::with_capacity(frame.items.len() * 2);

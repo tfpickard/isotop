@@ -52,6 +52,7 @@ impl Strata {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
         stage: &mut Stage,

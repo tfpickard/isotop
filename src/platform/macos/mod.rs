@@ -1473,8 +1473,8 @@ mod tests {
         let mut byte = [0];
         output.read_exact(&mut byte).unwrap();
         let group = child.id() as libc::pid_t;
-        // SAFETY: signal 0 is not sent; killpg only says whether the group has a member.
         assert_eq!(
+            // SAFETY: signal 0 is not sent; killpg only says whether the group has a member.
             unsafe { libc::killpg(group, 0) },
             0,
             "the follower leads a group"

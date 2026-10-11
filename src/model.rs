@@ -767,6 +767,7 @@ fn demo_files(index: usize, kind: Kind) -> (platform::Files, u32, Option<usize>)
     (files, held, waiting)
 }
 
+#[expect(clippy::too_many_lines, reason = "split in #90 (A31)")]
 pub fn demo(time: f64, count: usize) -> Snapshot {
     let names = [
         "init",

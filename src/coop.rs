@@ -1298,6 +1298,7 @@ impl Coop {
 
     /// Lays out houses, perches and feeders and decides each chicken's role, target, speed, noise
     /// and peers from the measured sample. Runs once per new sample or when the drawn set changes.
+    #[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
     fn decide(
         &mut self,
         processes: &[&Process],
@@ -2491,7 +2492,8 @@ fn offset(base: Point, forward: [f32; 2], f: f32, side: f32, up: f32) -> Point {
 
 /// Draws one chicken in the pose of its role and returns its body centre: a plump body of
 /// three spheres, neck, head with comb, beak, wattle and eyes, wings, a tail fan and legs.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "split in #78 (A19)")]
+#[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
 fn draw_chicken(
     frame: &mut Frame,
     camera: &Camera,

@@ -154,6 +154,7 @@ match your own shell.
   `App::text`, and a draw function called from `Scene::render`.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
   error-prone code.
+- Suppress lints with `#[expect(lint, reason = "...")]` only, never `#[allow]`.
 
 ## Shell notes
 

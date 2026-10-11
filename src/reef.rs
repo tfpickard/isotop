@@ -257,7 +257,7 @@ impl Reef {
     }
 
     /// A school of fish around its home, steered by cohesion, separation and alignment.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #71 (A12)")]
     fn school(
         &mut self,
         stage: &mut Stage,
@@ -491,7 +491,7 @@ impl Reef {
 
     /// One polyp of a coral colony: a stalk rising from the colony's base, taller near the middle,
     /// topped by a polyp sized by memory that glows with CPU.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #71 (A12)")]
     fn polyp(
         &self,
         stage: &mut Stage,

@@ -72,7 +72,7 @@ fn hopping(hop: Option<(f32, f32)>, target: f32, time: f32) -> (f32, f32, Option
 }
 
 /// The beam a hopping marble leaves along its arc, from the radius it left to where it is now.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "split in #71 (A12)")]
 fn hop_trail(
     frame: &mut Frame,
     camera: &Camera,
@@ -96,6 +96,7 @@ fn hop_trail(
 }
 
 impl Track {
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
         stage: &mut Stage,

@@ -27,3 +27,16 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+too_many_lines = "warn"
+too_many_arguments = "warn"

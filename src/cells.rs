@@ -173,6 +173,7 @@ impl Dishes {
         shown
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     fn draw_cell(
         &mut self,
         stage: &mut Stage,

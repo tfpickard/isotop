@@ -1114,7 +1114,8 @@ impl Scene {
     }
 
     /// Records a frame; call `Frame::rasterize` (or a GPU backend) to turn it into pixels.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #70 (A11)")]
+    #[expect(clippy::too_many_lines, reason = "split in #70 (A11)")]
     pub fn render(
         &mut self,
         snapshot: &Snapshot,
@@ -1373,6 +1374,7 @@ impl Scene {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in #73 (A14)")]
     fn draw_city(
         &mut self,
         frame: &mut Frame,
@@ -1827,7 +1829,6 @@ impl Scene {
     /// ripples at its own pitch, so a cluster's rings interfere with each other and spread over
     /// open water to the next. Buoys float on the surface sized by memory; every patch of water
     /// belongs to its nearest process; births drip and exits splash. Pressure raises a swell.
-    #[allow(clippy::too_many_arguments)]
     fn draw_ripples(
         &mut self,
         frame: &mut Frame,
@@ -1981,7 +1982,8 @@ impl Scene {
     /// Spacetime weather: memory bends a sheet into gravity wells, CPU spins whirlpools, sockets
     /// become two-lane rivers between the wells of processes that talk, and connections leaving
     /// the machine send sparks up off the sheet. Particles in each emitter's colour trace it all.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #74 (A15)")]
+    #[expect(clippy::too_many_lines, reason = "split in #74 (A15)")]
     fn draw_flow(
         &mut self,
         frame: &mut Frame,
@@ -2622,7 +2624,7 @@ impl Scene {
 
     /// Places a body and its descendants. `target` is the settled position used for layout,
     /// picking and labels; `drawn` includes the spawn animation that flies bodies out of parents.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #74 (A15)")]
     fn orbit_branch(
         &mut self,
         tree: &Tree,

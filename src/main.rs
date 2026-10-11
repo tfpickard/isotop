@@ -1228,6 +1228,7 @@ fn pointer(frame: &mut Frame, from: [f32; 2], to: [f32; 2]) {
     frame.circle(to, 10.0, COLOR);
 }
 
+#[expect(clippy::too_many_lines, reason = "split in #79 (A20)")]
 fn run(options: Options) -> Result<(), Box<dyn Error>> {
     if !options.time.is_finite() || options.time < 0.0 {
         return Err("--time must be finite and nonnegative".into());
