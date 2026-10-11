@@ -26,7 +26,7 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text), main loop, headless PNG and benchmark, and `warm_up`, which settles a headless frame (the golden render test calls it too) |
 | `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`) and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting |
@@ -35,8 +35,12 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Scene` and every view |
-| `coop.rs` | The Coop view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `View`, `Stage`, and `Scene`, which owns City, Orbit, Ripple and Flow as methods, dispatches Matrix by hand and calls the module views below through `Stage` |
+| `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
+| `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
+| `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
+| `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
+| `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` neighbour queries, the seeded `Rng`, hashes, and the `growth`, `sprout` and `smoothing` easing |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
@@ -48,6 +52,43 @@ The README covers usage. This file covers how to work on the code.
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
 | `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
 | `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
+
+`agents_file_table_lists_every_source_file` fails when a `.rs` file under `src/` has no row. Name
+files by path relative to `src/` in the first column; a row may list several.
+
+## Architecture
+
+Dependencies mostly run one way: `platform` and `model` (the data), then the shared helpers, then
+`render` with the view modules, then `gpu` and `terminal`, then `main`. Check with
+`grep -n 'use crate::' src/*.rs` before adding an import. Nothing imports `main.rs`, `model` and
+`platform` never import `render`, a view or `terminal`, and `gpu` and `terminal` import only
+`render`. The exceptions, so don't assume otherwise:
+
+- `model` and `platform` import each other: the platform builds `model` types and `model` calls the
+  `Sampler`. `journal` and `platform/*/journal.rs` do the same.
+- `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
+  `Color`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
+  `Frame`. `simulation` and `layout` import only `model::Identity`.
+- `render` and `coop` read `platform` types (`Shadow`, `Files`, `DeletedFile`).
+
+**The view contract.** A module view owns a state struct and implements
+`draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
+`Stage` carries in the frame, camera, selection, time, births and growth. A view writes back
+`stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
+`stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
+`stage.places` and `stage.notes`, and returns how many processes it showed; the rest count as
+collapsed. City, Orbit, Ripple and Flow are still `Scene` methods that use `Scene`'s own fields,
+and Matrix is a special arm in `Scene::render`. They are being moved onto `Stage`, so write new
+views the module way.
+
+**Shared helpers live in one place each.** Don't write a second copy:
+- `simulation`: `SpatialHash`, `Rng` (seeded per identity), `XorShift32`, `simulation::hash`
+  (`fnv1a_64_bytes` and the rest), `hash_identity`, and the `growth`, `sprout` and `smoothing`
+  easing.
+- `palette`: every colour table, `mix`, `tint`, `kind_color`. `geometry`: vector maths and
+  `cuboid`. `layout`: `Seats`, `Discs`, the golden-angle `spiral`.
+- `render::shared`: constants the CPU rasterizer and the WGSL shader share.
+- `model::testing::process` builds a `Process` in tests.
 
 ## Invariants
 
@@ -150,8 +191,19 @@ match your own shell.
   rate also needs `Counters` and `measure()`; a field filled on the background thread needs
   `Extras`, `background()` and the merge in `Collector::sample` (all in `model.rs`). `Snapshot`
   derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo`.
-- A new view needs: a `View` variant, a `next()` entry, the status-line name and legend in
-  `App::text`, and a draw function called from `Scene::render`.
+- A new view is a module view like `reef.rs` (`docs/VIEW_CONVENTIONS.md` has the rules). Today it
+  touches these places; `View::next`, Tab, the number keys and `--view` follow from `View::ALL`:
+  - `src/<name>.rs` with a `draw` as in the Architecture section, a `mod` line in `main.rs` and a
+    row in the file table above.
+  - `render.rs`: the `View` variant, `View::ALL` (and its length), `View::backdrop`, a field on
+    `Scene`, and the view in both `match` arms of `Scene::render` (the arm list and the `Stage`
+    dispatch). Add `Scene::record` if it keeps history, and the `quiet` links test if it should
+    draw every link.
+  - `main.rs`: the title and the legend in `App::text`, and `warm_up` if the first frame needs
+    settling.
+  - Outside `src/`: the README section, key table and view lists, the view loop in
+    `.github/workflows/ci.yml`, and a line in `tests/golden.txt` (bless it and say so in the PR).
+  The registry from P1 (#17) will replace most of this list; update it when that merges.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
   error-prone code.
 - Suppress lints with `#[expect(lint, reason = "...")]` only, never `#[allow]`.
@@ -163,8 +215,15 @@ match your own shell.
 
 ## Git workflow
 
-- `main` only changes through pull requests. Do each piece of work on a branch named
-  `feat/...`, `fix/...` or `docs/...` cut from an up-to-date `main`, and open a PR with `gh`.
+- `main` only changes through pull requests. Do each piece of work on a branch cut from an
+  up-to-date `main` and open a PR with `gh`. The prefix says what the work is: `feat/...` for new
+  behaviour, a view or tooling; `fix/...` for a bug; `refactor/...` for restructuring that changes
+  no behaviour (the golden hashes stay as they are); `docs/...` for documentation and templates
+  only.
+- A PR stacked on another feature branch does not close its issues: GitHub honours `Closes #N`
+  only when the PR merges into the default branch. List them as `Part of #N` in the body and
+  close them when the stack reaches `main`, or retarget the PR to `main` before merging and use
+  `Closes #N` then.
 - Run the gates before pushing a branch. The PR description says what changed and how it was
   checked, including screenshots for visual changes.
 - Commits are attributed to the human author only, with no AI `Co-authored-by` trailers.

@@ -25,12 +25,14 @@ Work items are referred to by ID: P1 to P5 (prerequisites), S1 to S6 (shared pre
 
 ### Today (before [P1 (#17)](https://github.com/tfpickard/isotop/issues/17))
 
-`AGENTS.md` lists what a view needs:
+`AGENTS.md` ("A new view is a module view") lists what a view touches today:
 
-- a `View` variant and its `ALL`, `backdrop()` and `next()` entries in `render.rs`;
-- a `Scene` field and a dispatch arm in `Scene::render`;
-- the title and legend arms in `App::text` in `main.rs`;
-- any headless warm-up in `main.rs`.
+- a module `src/<name>.rs` with a `draw(&mut Stage, ...)` and a `mod` line in `main.rs`;
+- in `render.rs`, the `View` variant, `View::ALL`, `View::backdrop`, a `Scene` field and the arms in `Scene::render`;
+- in `main.rs`, the title and legend arms in `App::text` and any headless warm-up in `warm_up`;
+- outside `src/`, the README, the view loop in CI and `tests/golden.txt`.
+
+`View::next`, Tab, the number keys and `--view` follow from `View::ALL`.
 
 No new view is built this way. Every view issue depends on [P1 (#17)](https://github.com/tfpickard/isotop/issues/17).
 
@@ -93,7 +95,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 
 - `model::demo(time, count)` must stay byte-identical. A view that needs births and exits, or an exact CPU-time integral, sets `DemoOptions { churn, exact_cpu_time }` on its registry row (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25)). Use `demo_with`, `demo_life` and `demo_cpu_seconds`, all from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25). Other views' demo frames do not change.
 - Demo data for a new field goes into that new field. Never alter a field that existing views draw.
-- A new field on `Process`, `Snapshot` or `RawProcess` follows the rule in `AGENTS.md`: update `parse_stat` (`platform/linux/mod.rs`), `Sampler::process` (`platform/macos/mod.rs`), `model::demo` and the `render.rs` test helper; a `RawProcess` field also passes through `measure` in `model.rs`. **Decision:** in `model::demo` the field takes its empty value (`Default`, an empty collection or `None`), so existing frames stay byte-identical. Synthesized values for it come only through `demo_with` (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25)) when a registry row asks for them. A building block that needs this adds a `DemoOptions` field that defaults to off.
+- A new field on `Process`, `Snapshot` or `RawProcess` follows the rule in `AGENTS.md`: decide it in `parse_stat` (`platform/linux/mod.rs`), `Sampler::process` (`platform/macos/mod.rs`) and `model::demo`, and set it in `Default for Process` (`model.rs`), which the test helper builds on; a `RawProcess` field also passes through `measure` in `model.rs`. **Decision:** in `model::demo` the field takes its empty value (`Default`, an empty collection or `None`), so existing frames stay byte-identical. Synthesized values for it come only through `demo_with` (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25)) when a registry row asks for them. A building block that needs this adds a `DemoOptions` field that defaults to off.
 - Calendar-dependent visuals use `SystemTime::now()` in live mode. In demo mode they use the fixed epoch 2026-10-10T04:12:00Z plus `--time`.
 - Headless warm-ups:
   - **Existing views.** The warm-ups in `main.rs` today (strata, coop, ripple, flow, reef, cores, matrix) differ in kind: some rasterize frames, some only record samples, and some run only under `--demo` with `--output`. [P1 (#17)](https://github.com/tfpickard/isotop/issues/17) moves each one to its registry row unchanged, with the same phases, step counts, rasterizing and `--demo`/`--output`/`--benchmark` conditions. Their PNGs and benchmark behaviour stay as they are.

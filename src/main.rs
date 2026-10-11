@@ -2224,4 +2224,62 @@ mod tests {
         assert!(changed.contains("orbit: picks changed"), "{changed}");
         assert!(!changed.contains("city:"), "{changed}");
     }
+
+    /// Paths relative to `src/` that the first column of AGENTS.md's tables names. Only table rows
+    /// count, so a path mentioned in prose does not.
+    fn agents_table_paths() -> Vec<String> {
+        let guide = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"))
+            .expect("AGENTS.md is readable");
+        guide
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .filter_map(|line| line.split('|').nth(1))
+            .flat_map(|cell| cell.split('`').skip(1).step_by(2))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn source_files(directory: &std::path::Path, prefix: &str, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(directory).expect("src is readable") {
+            let entry = entry.expect("directory entries are readable");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if path.is_dir() {
+                source_files(&path, &format!("{prefix}{name}/"), found);
+            } else if name.ends_with(".rs") {
+                found.push(format!("{prefix}{name}"));
+            }
+        }
+    }
+
+    #[test]
+    fn agents_file_table_lists_every_source_file() {
+        let listed = agents_table_paths();
+        let mut found = Vec::new();
+        source_files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            "",
+            &mut found,
+        );
+        found.sort();
+        let missing: Vec<&String> = found.iter().filter(|file| !listed.contains(file)).collect();
+        assert!(
+            missing.is_empty(),
+            "AGENTS.md's file table has no row for: {missing:?}. Add one, naming the file by its \
+             path under src/ in the first column"
+        );
+    }
+
+    #[test]
+    fn agents_file_table_names_only_files_that_exist() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let gone: Vec<String> = agents_table_paths()
+            .into_iter()
+            .filter(|file| !source.join(file).is_file())
+            .collect();
+        assert!(
+            gone.is_empty(),
+            "AGENTS.md's file table names files that do not exist under src/: {gone:?}"
+        );
+    }
 }
