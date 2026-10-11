@@ -2,7 +2,7 @@
 //! a polyp per process; your session's apps swim in schools; containers are crabs on the sand;
 //! kernel threads drift as plankton. I/O rises as bubbles and zombies float belly-up.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::f32::consts::TAU;
 
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
@@ -44,43 +44,57 @@ struct Swimmer {
 }
 
 impl Reef {
-    pub fn draw(&mut self, stage: &mut Stage, processes: &[&Process], _: &Snapshot) -> usize {
+    pub fn draw(
+        &mut self,
+        stage: &mut Stage,
+        processes: &[&Process],
+        snapshot: &Snapshot,
+    ) -> usize {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1));
         self.last = Some(time);
+        // Seats and homes are reserved for every sampled process, drawn or not, so focusing a
+        // subtree, or `--limit` hiding some, neither frees their seats nor drops their cluster's
+        // place: clearing it puts everything back where it was. Only drawn processes are drawn.
+        let habitats: Vec<(Identity, String)> = snapshot
+            .processes
+            .iter()
+            .filter(|process| process.kind != Kind::Kernel)
+            .map(|process| (process.id, habitat(process)))
+            .collect();
+        self.seats
+            .assign(habitats.iter().map(|(id, name)| (*id, name.as_str())));
+        let needs: Vec<(String, f32)> = habitats
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|name| {
+                let span = self.seats.span(name) as f32;
+                (name.to_owned(), 1.6 * span.sqrt() + 2.0)
+            })
+            .collect();
+        let homes = self.homes.arrange(&needs);
+        let reach = (self.homes.reach() + 6.0).max(16.0);
+        self.draw_seabed(stage, reach, time);
         let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
         for (index, process) in processes.iter().enumerate() {
             if process.kind != Kind::Kernel {
                 groups.entry(habitat(process)).or_default().push(index);
             }
         }
-        self.seats.assign(
-            groups.iter().flat_map(|(name, members)| {
-                members.iter().map(|&i| (processes[i].id, name.as_str()))
-            }),
-        );
-        let needs: Vec<(String, f32)> = groups
-            .keys()
-            .map(|name| {
-                let span = self.seats.span(name) as f32;
-                (name.clone(), 1.6 * span.sqrt() + 2.0)
-            })
-            .collect();
-        let homes = self.homes.arrange(&needs);
-        let reach = (self.homes.reach() + 6.0).max(16.0);
-        self.draw_seabed(stage, reach, time);
-        let alive: HashMap<Identity, usize> = processes
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.id, i))
-            .collect();
-        self.fish.retain(|id, _| alive.contains_key(id));
+        // A fish whose process is sampled but not drawn waits where it swam, and swims on from
+        // there when it comes back instead of hatching again.
+        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        self.fish.retain(|id, _| sampled.contains(id));
         let mut shown = 0;
         let mut names: Vec<&String> = groups.keys().collect();
         names.sort();
         for name in names {
             let members = &groups[name];
-            let home = homes[name];
+            let Some(&home) = homes.get(name) else {
+                continue;
+            };
             let room = self.homes.reserved(name) / 1.15;
             let kind = processes[members[0]].kind;
             let palette = (spin(name) / TAU * 997.0) as usize;
@@ -570,6 +584,8 @@ fn hash(value: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::demo;
+    use crate::render::{Camera, Scene, View};
 
     #[test]
     fn same_named_units_of_different_cgroups_live_apart() {
@@ -607,5 +623,87 @@ mod tests {
         );
         assert_ne!(habitat(&system), habitat(&session));
         assert_eq!(habitat(&system), habitat(&system.clone()));
+    }
+
+    type Places = HashMap<Identity, Point>;
+
+    /// Renders one reef frame and returns where every drawn process stands.
+    fn draw(
+        scene: &mut Scene,
+        snapshot: &Snapshot,
+        time: f32,
+        limit: usize,
+        selected: Option<Identity>,
+        focus: Option<Identity>,
+    ) -> Places {
+        let frame = scene.render(
+            snapshot,
+            View::Reef,
+            &Camera::default(),
+            160,
+            90,
+            selected,
+            time,
+            limit,
+            focus,
+        );
+        scene.spare = frame.release();
+        scene.positions.clone()
+    }
+
+    /// Asserts that everything in `now` stands where it stood in `before`.
+    fn in_place(now: &Places, before: &Places) {
+        for (id, position) in now {
+            assert_eq!(before.get(id), Some(position), "{id:?} moved");
+        }
+    }
+
+    /// The demo reef grown in two stages, so its clusters stand where they arrived and not where a
+    /// fresh packing would put them, and swum for two seconds, so no fish is still where it
+    /// hatched. Returns the scene, the full sample and the time of the last frame.
+    fn settled() -> (Scene, Snapshot, f32) {
+        let early = demo(30.0, 32);
+        let sample = demo(30.0, 160);
+        let mut scene = Scene::new();
+        let mut time = 30.0;
+        for step in 0..20 {
+            let snapshot = if step < 8 { &early } else { &sample };
+            draw(&mut scene, snapshot, time, 4096, None, None);
+            time += 0.1;
+        }
+        (scene, sample, time - 0.1)
+    }
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_reef_cluster_in_place() {
+        let (mut scene, sample, time) = settled();
+        let before = draw(&mut scene, &sample, time, 4096, None, None);
+        // One family of sixteen, all in one school. The frames repeat the last time, so the fish
+        // do not swim and anything that moves was moved by the change of focus.
+        let root = sample.processes[16].id;
+        let focused = draw(&mut scene, &sample, time, 4096, None, Some(root));
+        assert_eq!(focused.len(), 16);
+        in_place(&focused, &before);
+        let cleared = draw(&mut scene, &sample, time, 4096, None, None);
+        assert_eq!(cleared.len(), before.len());
+        in_place(&cleared, &before);
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_reef_places() {
+        let (mut scene, sample, time) = settled();
+        let before = draw(&mut scene, &sample, time, 4096, None, None);
+        let limited = draw(&mut scene, &sample, time, 80, None, None);
+        assert!(limited.len() < before.len());
+        in_place(&limited, &before);
+        // Selecting a process beyond the limit swaps it in for the last one inside it: it comes
+        // back to its own seat, not to a fresh one in a cluster of its own.
+        let selected = sample.processes[150].id;
+        let swapped = draw(&mut scene, &sample, time, 80, Some(selected), None);
+        assert!(swapped.contains_key(&selected));
+        in_place(&swapped, &before);
+        let restored = draw(&mut scene, &sample, time, 4096, None, None);
+        assert_eq!(restored.len(), before.len());
+        in_place(&restored, &before);
     }
 }

@@ -280,6 +280,10 @@ session and containers. Accounting comes from the cgroup v2 files
   quota throttles it, and bursts when the OOM killer strikes inside it.
 - Organelles: its processes, with the largest as the nucleus. Kernel threads
   belong to no cell and are only counted.
+- Processes hidden by focus (`f`) or by `--limit` keep their seats, and their
+  cells keep their place and size, so clearing the focus puts every cell back.
+  A cell draws only the processes that are shown, and its nucleus stays its
+  largest process even while that one is hidden.
 
 ### Strata
 
@@ -326,7 +330,9 @@ The machine as a coral reef under a sea sky. System services grow as coral
 colonies, one per cgroup, with a polyp per process that glows with CPU; your
 session's apps swim in schools whose speed follows their CPU; containers are
 crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
-memory everywhere, I/O rises as bubbles, and zombies float belly-up.
+memory everywhere, I/O rises as bubbles, and zombies float belly-up. Processes
+hidden by focus (`f`) or by `--limit` keep their seats and their cluster's place,
+and a hidden fish waits where it swam, so clearing the focus puts everything back.
 
 ### Coop
 
