@@ -118,7 +118,7 @@ pub enum Source {
     Sockets,
     /// `Process::files`, each process's open files.
     OpenFiles,
-    /// `Remote::place`, where remote addresses are, from the local GeoIP database.
+    /// `Remote::location`, where remote addresses are, from the local GeoIP database.
     Locations,
     /// `Process::syscall_io`, the bytes and calls of read and write syscalls.
     SyscallIo,

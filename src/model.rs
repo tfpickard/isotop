@@ -267,6 +267,29 @@ pub struct Place {
     pub name: String,
 }
 
+/// Where a remote address is on the map, or why it has none.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Location {
+    Known(Place),
+    /// A private, loopback, link-local or carrier-grade NAT address, which has no geography.
+    Private,
+    /// A public address not looked up yet.
+    Pending,
+    /// A public address, and no GeoIP database covers its address family.
+    NoDatabase,
+    /// A public address the GeoIP database does not list.
+    Unlisted,
+}
+
+impl Location {
+    pub fn place(&self) -> Option<&Place> {
+        match self {
+            Self::Known(place) => Some(place),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CoreKind {
     Performance,
@@ -322,7 +345,7 @@ pub struct Remote {
     /// been seen twice, and when its counters went backwards.
     pub up: Option<f32>,
     pub down: Option<f32>,
-    pub place: Option<Place>,
+    pub location: Location,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -733,12 +756,22 @@ fn background(
             let paths = accounted(wanted_now, &mut retained);
             let mut latency = Vec::new();
             let network = timed(&mut latency, Source::Sockets, platform::network);
-            let places = reads.read(Source::Locations, || {
+            let locations = reads.read(Source::Locations, || {
                 timed(&mut latency, Source::Locations, || {
                     located(&mut geo, &network.remotes)
                 })
             });
-            let remotes = remotes(&network.remotes, &mut sockets, places.as_deref());
+            let unread = if reads.missing.contains(Source::Locations) {
+                Location::NoDatabase
+            } else {
+                Location::Pending
+            };
+            let remotes = remotes(
+                &network.remotes,
+                &mut sockets,
+                locations.as_deref(),
+                &unread,
+            );
             let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
             let gpu_memory = timed(&mut latency, Source::GpuMemory, || {
                 gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default()
@@ -916,21 +949,25 @@ fn merge_files(
 
 /// Where each of `sockets` is, in order, from the GeoIP database; None when no database can be
 /// read, which makes `Source::Locations` missing. The database loads on the first public
-/// address, so a machine with none to look up is not judged yet.
-fn located(geo: &mut geo::Geo, sockets: &[platform::Remote]) -> Option<Vec<Option<Place>>> {
-    let places = sockets
+/// address, so a machine with none to look up is not judged yet. When only one address family
+/// has a database, the other family's addresses are `Location::NoDatabase`.
+fn located(geo: &mut geo::Geo, sockets: &[platform::Remote]) -> Option<Vec<Location>> {
+    let locations = sockets
         .iter()
         .map(|socket| geo.locate(socket.address))
         .collect();
-    (!geo.lacks_database()).then_some(places)
+    (!geo.lacks_database()).then_some(locations)
 }
 
-/// Byte rates from the change in each socket's counters since the previous scan, and `places`,
-/// where each of them is when the locations were read.
+/// Byte rates from the change in each socket's counters since the previous scan, and `locations`,
+/// where each of them is when the locations were read. Without them a public address is
+/// `unread` (`Pending` while the locations are not being read yet, `NoDatabase` when they cannot
+/// be) and a private one is `Private`, which needs no database.
 fn remotes(
     sockets: &[platform::Remote],
     previous: &mut HashMap<u64, (Instant, u64, u64)>,
-    places: Option<&[Option<Place>]>,
+    locations: Option<&[Location]>,
+    unread: &Location,
 ) -> Vec<Remote> {
     let now = Instant::now();
     let mut next = HashMap::new();
@@ -964,7 +1001,11 @@ fn remotes(
                 rtt: socket.rtt as f32 / 1000.0,
                 up,
                 down,
-                place: places.and_then(|places| places[index].clone()),
+                location: match locations {
+                    Some(locations) => locations[index].clone(),
+                    None if geo::public(socket.address) => unread.clone(),
+                    None => Location::Private,
+                },
             }
         })
         .collect();
@@ -2079,11 +2120,15 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
                     rtt: 20.0 + (i * 13 % 180) as f32,
                     up: Some(2048.0 * pulse),
                     down: Some(65536.0 * pulse * pulse),
-                    place: (k < 2).then(|| Place {
-                        latitude,
-                        longitude,
-                        name: format!("{name} ({code})"),
-                    }),
+                    location: if k < 2 {
+                        Location::Known(Place {
+                            latitude,
+                            longitude,
+                            name: format!("{name} ({code})"),
+                        })
+                    } else {
+                        Location::Unlisted
+                    },
                 }
             })
         })
@@ -2287,12 +2332,72 @@ mod tests {
     }
 
     #[test]
+    fn addresses_are_pending_until_located_except_private_ones() {
+        let socket = |address: &str| platform::Remote {
+            pid: 1,
+            inode: 1,
+            address: address.parse().unwrap(),
+            port: 443,
+            rtt: 0,
+            sent: 0,
+            received: 0,
+        };
+        let sockets = [
+            socket("8.8.8.8"),
+            socket("10.0.0.2"),
+            socket("::ffff:100.64.0.1"),
+            socket("2001:4860:4860::8888"),
+        ];
+        let found = remotes(&sockets, &mut HashMap::new(), None, &Location::Pending);
+        let locations: Vec<&Location> = found.iter().map(|r| &r.location).collect();
+        assert_eq!(
+            locations,
+            [
+                &Location::Pending,
+                &Location::Private,
+                &Location::Private,
+                &Location::Pending
+            ]
+        );
+        let nowhere = || PathBuf::from("/nonexistent/isotop-test");
+        let mut geo = geo::Geo::with_databases(Vec::new(), [nowhere(), nowhere()]);
+        let read = located(&mut geo, &sockets);
+        assert_eq!(read, None, "no database can be read");
+        let found = remotes(
+            &sockets,
+            &mut HashMap::new(),
+            read.as_deref(),
+            &Location::NoDatabase,
+        );
+        let locations: Vec<&Location> = found.iter().map(|r| &r.location).collect();
+        assert_eq!(
+            locations,
+            [
+                &Location::NoDatabase,
+                &Location::Private,
+                &Location::Private,
+                &Location::NoDatabase
+            ]
+        );
+    }
+
+    #[test]
     fn demo_carries_every_data_source() {
         let snapshot = demo(30.0, 128);
         assert_eq!(snapshot.cpus.len(), 16);
         assert!(snapshot.units.len() >= 4);
-        assert!(snapshot.remotes.iter().any(|r| r.place.is_some()));
-        assert!(snapshot.remotes.iter().any(|r| r.place.is_none()));
+        assert!(
+            snapshot
+                .remotes
+                .iter()
+                .any(|r| r.location.place().is_some())
+        );
+        assert!(
+            snapshot
+                .remotes
+                .iter()
+                .any(|r| r.location == Location::Unlisted)
+        );
         assert!(
             snapshot
                 .processes
@@ -2926,12 +3031,27 @@ mod tests {
         assert_eq!(second.read_rate, Some(0.0), "idle is a measured zero");
         // A connection seen for the first time has no byte rate either; the second scan has.
         let mut scans = HashMap::new();
-        let first = remotes(&[socket(5, 1000, 4000)], &mut scans, None);
+        let first = remotes(
+            &[socket(5, 1000, 4000)],
+            &mut scans,
+            None,
+            &Location::Pending,
+        );
         assert_eq!((first[0].up, first[0].down), (None, None));
-        let second = remotes(&[socket(5, 1000, 4500)], &mut scans, None);
+        let second = remotes(
+            &[socket(5, 1000, 4500)],
+            &mut scans,
+            None,
+            &Location::Pending,
+        );
         assert_eq!(second[0].up, Some(0.0));
         assert!(second[0].down.is_some_and(|rate| rate > 0.0));
-        let fresh = remotes(&[socket(5, 1000, 4500), socket(6, 0, 0)], &mut scans, None);
+        let fresh = remotes(
+            &[socket(5, 1000, 4500), socket(6, 0, 0)],
+            &mut scans,
+            None,
+            &Location::Pending,
+        );
         assert_eq!((fresh[1].up, fresh[1].down), (None, None), "a new socket");
     }
 
@@ -2960,8 +3080,18 @@ mod tests {
         );
         // A socket whose counters went back reads as unknown in that direction only.
         let mut scans = HashMap::new();
-        remotes(&[socket(5, 9000, 4000)], &mut scans, None);
-        let next = remotes(&[socket(5, 100, 4800)], &mut scans, None);
+        remotes(
+            &[socket(5, 9000, 4000)],
+            &mut scans,
+            None,
+            &Location::Pending,
+        );
+        let next = remotes(
+            &[socket(5, 100, 4800)],
+            &mut scans,
+            None,
+            &Location::Pending,
+        );
         assert_eq!(next[0].up, None);
         assert!(next[0].down.is_some());
     }
@@ -3084,7 +3214,7 @@ mod tests {
                     rtt: 10.0,
                     up: Some(1.0),
                     down: Some(1.0),
-                    place: None,
+                    location: Location::Unlisted,
                 })
                 .into(),
             traffic: HashMap::from([((7, 8), 100.0)]),
@@ -3476,11 +3606,15 @@ mod tests {
                         rtt: 20.0 + (i * 13 % 180) as f32,
                         up: Some(2048.0 * pulse),
                         down: Some(65536.0 * pulse * pulse),
-                        place: (k < 2).then(|| Place {
-                            latitude,
-                            longitude,
-                            name: format!("{name} ({code})"),
-                        }),
+                        location: if k < 2 {
+                            Location::Known(Place {
+                                latitude,
+                                longitude,
+                                name: format!("{name} ({code})"),
+                            })
+                        } else {
+                            Location::Unlisted
+                        },
                     }
                 })
             })
@@ -4089,24 +4223,33 @@ mod tests {
     }
 
     #[test]
-    fn remotes_carry_the_places_that_were_read_and_none_when_locations_were_not() {
+    fn remotes_carry_the_locations_that_were_read_and_say_why_when_they_were_not() {
         let place = Place {
             latitude: 35.7,
             longitude: 139.7,
             name: "Tokyo, JP".into(),
         };
         let sockets = [socket(5, 0, 0), socket(6, 0, 0)];
+        let read = [Location::Unlisted, Location::Known(place.clone())];
         let located = remotes(
             &sockets,
             &mut HashMap::new(),
-            Some(&[None, Some(place.clone())]),
+            Some(&read),
+            &Location::Pending,
         );
         assert_eq!(
-            located.iter().map(|r| r.place.clone()).collect::<Vec<_>>(),
-            [None, Some(place)]
+            located
+                .iter()
+                .map(|r| r.location.clone())
+                .collect::<Vec<_>>(),
+            read
         );
-        let unlocated = remotes(&sockets, &mut HashMap::new(), None);
-        assert!(unlocated.iter().all(|remote| remote.place.is_none()));
+        let unread = remotes(&sockets, &mut HashMap::new(), None, &Location::Pending);
+        assert!(
+            unread
+                .iter()
+                .all(|remote| remote.location == Location::Pending)
+        );
     }
 
     #[test]
@@ -4131,11 +4274,11 @@ mod tests {
         // Demanded: active when a database answers, missing when none could be read. Which of
         // the two depends on the machine; the pair always agrees with what the database says.
         let mut reads = Reads::new(Demand::from(Sources::from(Source::Locations)));
-        let places = reads.read(Source::Locations, || {
+        let locations = reads.read(Source::Locations, || {
             located(&mut geo, std::slice::from_ref(&public))
         });
         let absent = geo.source == "no GeoIP database (see --geoip)";
-        assert_eq!(places.is_none(), absent, "{}", geo.source);
+        assert_eq!(locations.is_none(), absent, "{}", geo.source);
         assert_eq!(reads.missing.contains(Source::Locations), absent);
         assert_eq!(reads.active.contains(Source::Locations), !absent);
     }
