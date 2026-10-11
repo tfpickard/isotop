@@ -359,6 +359,14 @@ pub struct Snapshot {
     pub memory_available: Option<u64>,
     pub cores: usize,
     pub elapsed: f64,
+    /// The wall-clock time of the sample, in seconds since the Unix epoch, for what follows the
+    /// calendar (a minute of the day, the phase of the moon): the system clock when it was taken,
+    /// and in `--demo` `DEMO_EPOCH` plus the demo time. 0 in a default snapshot.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first read by the necropolis view (#45)")
+    )]
+    pub wall: f64,
     /// Pressure stall percentages (10 s average) for CPU, memory and I/O.
     pub pressure: [f32; 3],
     pub links: Vec<(Identity, Identity, u32)>,
@@ -1542,6 +1550,9 @@ impl Collector {
         let mut snapshot = Snapshot {
             cores: std::thread::available_parallelism().map_or(1, usize::from),
             elapsed: now.duration_since(self.origin).as_secs_f64(),
+            wall: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |since| since.as_secs_f64()),
             pressure,
             home: self.home.clone(),
             ..Default::default()
@@ -1795,6 +1806,10 @@ fn demo_write_share(index: usize) -> f32 {
 /// When the demo machine booted, in seconds since the Unix epoch.
 const DEMO_BOOT_TIME: f64 = 1_760_000_000.0;
 
+/// The wall-clock time of demo time 0, in seconds since the Unix epoch: 2026-10-10T04:12:00Z,
+/// the fixed calendar epoch of demo screenshots. Every base process started before it.
+pub const DEMO_EPOCH: f64 = 1_791_605_520.0;
+
 /// Seconds between the starts of consecutive demo processes (`Identity::start` counts them).
 const DEMO_START_SPACING: f64 = 30.0;
 
@@ -2019,10 +2034,10 @@ fn demo_transient_identity(count: usize, slot: usize, birth: f64) -> Identity {
     }
 }
 
-/// When a transient born at demo second `birth` started, in seconds since the Unix epoch: demo
-/// time 0 is the instant after the last of `count` base processes started.
-fn demo_transient_started(count: usize, birth: f64) -> f64 {
-    DEMO_BOOT_TIME + (count as u64 + 1) as f64 * DEMO_START_SPACING + birth
+/// When a transient born at demo second `birth` started, in seconds since the Unix epoch, on the
+/// clock of `Snapshot::wall`: demo time 0 is `DEMO_EPOCH`, after every base process started.
+fn demo_transient_started(birth: f64) -> f64 {
+    DEMO_EPOCH + birth
 }
 
 /// The signal that ends a transient child, if any: one in 16 is terminated (15) and one in 16
@@ -2197,10 +2212,9 @@ impl Transient {
         f64::from(usual) * (0.3 + 0.7 * (age / 3.0).clamp(0.0, 1.0))
     }
 
-    /// The `Process` listed at `time`, which is between `birth` and `end`, among `count` base
-    /// processes. Once it has exited it is a zombie: no CPU, no memory, no readable descriptor
+    /// The `Process` listed at `time`, which is between `birth` and `end`. Once it has exited it is a zombie: no CPU, no memory, no readable descriptor
     /// table, and no rate, because there is nothing running to measure one on.
-    fn process(&self, time: f64, count: usize) -> Process {
+    fn process(&self, time: f64) -> Process {
         let index = self.shape;
         let running = !self.exited(time);
         let phase = (0.55 * time + 1.71 * index as f64) as f32;
@@ -2279,7 +2293,7 @@ impl Transient {
             policy: demo_policy(index, priority, nice),
             syscall_io: running.then(|| demo_syscall_io(index, io_rate, write_rate)),
             major_faults: running.then(|| demo_major_faults(index, phase)),
-            started: demo_transient_started(count, self.birth),
+            started: demo_transient_started(self.birth),
         }
     }
 }
@@ -2398,7 +2412,7 @@ pub fn demo_events(from: f64, to: f64, count: usize) -> Vec<LifeEvent> {
                         },
                         None => Cause::Code(life.code),
                     },
-                    record: Some(demo_record(&life, count)),
+                    record: Some(demo_record(&life)),
                 },
             },
             source: match life.kind {
@@ -2410,16 +2424,16 @@ pub fn demo_events(from: f64, to: f64, count: usize) -> Vec<LifeEvent> {
         .collect()
 }
 
-/// The exit record of a transient's `life` among `count` base processes. What its life does not
+/// The exit record of a transient's `life`. What its life does not
 /// say (I/O and context switches, and whether it ever called exec) follows from its CPU time,
 /// its lifetime and its identity.
-fn demo_record(life: &DemoLife, count: usize) -> ExitRecord {
+fn demo_record(life: &DemoLife) -> ExitRecord {
     let birth = (life.id.start as i64 - DEMO_TRANSIENT_START) as f64 / 100.0;
     let lifetime = (life.time - birth).max(0.0);
     let cpu = life.cpu_seconds.max(0.0);
     ExitRecord {
         comm: life.name.clone(),
-        btime: demo_transient_started(count, birth) as u64,
+        btime: demo_transient_started(birth) as u64,
         etime: (lifetime * 1e6) as u64,
         cpu: (cpu * 1e6) as u64,
         hiwater_rss: life.memory,
@@ -2677,7 +2691,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         // add what they use, so a unit's pressure shows them.
         let transients: Vec<Process> = demo_listed(time, count)
             .iter()
-            .map(|transient| transient.process(time, count))
+            .map(|transient| transient.process(time))
             .collect();
         for transient in &transients {
             if let Some(unit) = units.get_mut(&transient.cgroup) {
@@ -2698,6 +2712,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         memory_available: Some(12 * 1024_u64.pow(3)),
         cores: 16,
         elapsed: time,
+        wall: DEMO_EPOCH + time,
         pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
         links,
         link_traffic,
@@ -4187,6 +4202,7 @@ mod tests {
             memory_available: Some(12 * 1024_u64.pow(3)),
             cores: 16,
             elapsed: time,
+            wall: DEMO_EPOCH + time,
             pressure: [wave(0.21, 30.0), wave(0.13, 18.0), wave(0.17, 24.0)],
             links,
             link_traffic,
@@ -4229,6 +4245,7 @@ mod tests {
             memory_available,
             cores,
             elapsed,
+            wall,
             pressure,
             links,
             link_traffic,
@@ -4255,7 +4272,7 @@ mod tests {
         let outside: BTreeMap<_, _> = outside.iter().collect();
         let units: BTreeMap<_, _> = units.iter().collect();
         format!(
-            "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {pressure:?}\n\
+            "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {wall:?} {pressure:?}\n\
              {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}"
@@ -4319,6 +4336,29 @@ mod tests {
         assert_eq!(first, reversed);
         assert_eq!(first[2], first[5], "the same time gives the same snapshot");
         assert!(demo_with(5.0, 0, BOTH).processes.is_empty());
+    }
+
+    #[test]
+    fn demo_samples_tell_the_time_on_the_demo_epoch_and_transients_start_on_that_clock() {
+        for time in [-300.0, 0.0, 12.0, 95.5] {
+            let snapshot = demo_with(time, 192, CHURN);
+            assert_eq!(snapshot.wall, DEMO_EPOCH + time);
+            for transient in transients(&snapshot, 192) {
+                assert!(transient.started <= snapshot.wall, "{}", transient.name);
+                assert!(
+                    snapshot.wall - transient.started < 90.0,
+                    "{}",
+                    transient.name
+                );
+            }
+        }
+        assert!(
+            demo(0.0, 1000)
+                .processes
+                .iter()
+                .all(|process| process.started < DEMO_EPOCH),
+            "every base process started before demo time 0"
+        );
     }
 
     #[test]
