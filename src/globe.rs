@@ -1,13 +1,14 @@
 //! Globe: where this machine's TCP connections go. The world turns once every five minutes;
 //! great-circle arcs rise from home to every remote place, brighter with more traffic, and pulses
 //! travel the way the bytes flow. Processes with connections hover above home. Locations come from
-//! a local GeoIP database; addresses it cannot place circle the north pole.
+//! a local GeoIP database; addresses that have no place circle the north pole, and a label says
+//! why: no database, not listed, still being located, or private.
 
 use std::collections::HashMap;
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
-use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
+use crate::model::{Identity, Location, Place, Process, Remote, Snapshot, bounded, bytes};
 use crate::pack::Seats;
 use crate::render::{
     Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
@@ -38,7 +39,8 @@ pub struct Globe {
 
 /// Remote connections that land in the same place.
 struct Endpoint {
-    place: Option<Place>,
+    location: Location,
+    address: IpAddr,
     up: f32,
     down: f32,
     count: usize,
@@ -49,7 +51,7 @@ struct Endpoint {
     phase: u64,
 }
 
-/// Where connections are grouped: located ones by rounded coordinates, unlocated ones per address.
+/// Where connections are grouped: placed ones by rounded coordinates, the rest per address.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Spot {
     Place(i32, i32),
@@ -153,7 +155,7 @@ impl Globe {
             .filter(|r| index.contains_key(&r.id))
         {
             per_process.entry(remote.id).or_default().push(remote);
-            let key = match &remote.place {
+            let key = match remote.location.place() {
                 Some(place) => Spot::Place(
                     place.latitude.round() as i32,
                     place.longitude.round() as i32,
@@ -162,7 +164,8 @@ impl Globe {
             };
             let traffic = remote.up + remote.down;
             let endpoint = endpoints.entry(key).or_insert_with(|| Endpoint {
-                place: remote.place.clone(),
+                location: remote.location.clone(),
+                address: remote.address,
                 up: 0.0,
                 down: 0.0,
                 count: 0,
@@ -187,14 +190,18 @@ impl Globe {
                 .then(a.key.cmp(&b.key))
         });
         for (rank, endpoint) in endpoints.iter().enumerate() {
-            let target = match &endpoint.place {
+            let target = match endpoint.location.place() {
                 Some(place) => direction(place.latitude, place.longitude),
                 None => {
                     let angle = (endpoint.phase % 1000) as f32 / 1000.0 * TAU + spin;
                     normalize([0.45 * angle.cos(), 0.45 * angle.sin(), 1.0])
                 }
             };
-            let height = if endpoint.place.is_some() { 1.01 } else { 1.25 };
+            let height = if endpoint.location.place().is_some() {
+                1.01
+            } else {
+                1.25
+            };
             let traffic = endpoint.up + endpoint.down;
             let color = if !has_rates {
                 NEUTRAL
@@ -244,17 +251,29 @@ impl Globe {
                 0.3 + 0.5 * bounded(traffic, 50_000.0),
             );
             stage.frame.sphere(camera, end, 0.3, color, pick, false);
-            if rank < 12 && facing(end) {
-                let name = endpoint
-                    .place
-                    .as_ref()
-                    .map_or_else(|| "unlocated".into(), |p| p.name.clone());
+            if rank < 12
+                && facing(end)
+                && let Some(name) = endpoint_label(&endpoint.location, endpoint.address)
+            {
                 let many = if endpoint.count > 1 {
                     format!(" x{}", endpoint.count)
                 } else {
                     String::new()
                 };
                 stage.places.push((end, format!("{name}{many}")));
+            }
+        }
+        // The ring's centre, which is where addresses without a place circle.
+        let ring = at([0.0, 0.0, 1.0], RADIUS * 1.25);
+        if facing(ring) {
+            let count = |wanted: Location| {
+                endpoints
+                    .iter()
+                    .filter(|endpoint| endpoint.location == wanted)
+                    .count()
+            };
+            if let Some(text) = ring_label(count(Location::NoDatabase), count(Location::Pending)) {
+                stage.places.push((ring, text));
             }
         }
         let (east, north) = tangents(up);
@@ -288,7 +307,7 @@ impl Globe {
                 .iter()
                 .take(4)
                 .map(|r| {
-                    let place = r.place.as_ref().map_or("unlocated", |p| p.name.as_str());
+                    let place = location_note(&r.location);
                     if has_rates {
                         format!(
                             "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
@@ -333,6 +352,46 @@ impl Globe {
 /// earth then turns eastward, so the surface that faces the viewer moves to the right.
 fn spin(home: &Place, time: f32) -> f32 {
     FRAC_PI_4 + home.longitude.to_radians() - TAU * time / SPIN_SECONDS
+}
+
+/// The label at an endpoint on the globe: a place's name, or the address of a connection the
+/// GeoIP database does not list or that is private. An address with no database or still being
+/// located has none; the ring's label speaks for those.
+fn endpoint_label(location: &Location, address: IpAddr) -> Option<String> {
+    match location {
+        Location::Known(place) => Some(place.name.clone()),
+        Location::Unlisted => Some(address.to_string()),
+        Location::Private => Some(format!("{address} (private)")),
+        Location::NoDatabase | Location::Pending => None,
+    }
+}
+
+/// The one label at the ring's centre, counting addresses that have no place yet or no way to
+/// get one.
+fn ring_label(no_database: usize, pending: usize) -> Option<String> {
+    let addresses = |count: usize| format!("{count} address{}", if count == 1 { "" } else { "es" });
+    let mut parts = Vec::new();
+    if no_database > 0 {
+        parts.push(format!(
+            "no GeoIP database: {} (see --geoip)",
+            addresses(no_database)
+        ));
+    }
+    if pending > 0 {
+        parts.push(format!("locating {}", addresses(pending)));
+    }
+    (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// What the inspector says about where a connection goes.
+fn location_note(location: &Location) -> &str {
+    match location {
+        Location::Known(place) => &place.name,
+        Location::Private => "private",
+        Location::Unlisted => "not in the GeoIP database",
+        Location::NoDatabase => "no GeoIP database",
+        Location::Pending => "locating",
+    }
 }
 
 /// Spherical interpolation between unit vectors `a` and `b`, `angle` apart.
@@ -575,11 +634,110 @@ mod tests {
             .enumerate()
             .map(|(k, place)| Remote {
                 address: IpAddr::from([8, 8, 8, k as u8 + 1]),
-                place: Some(place.clone()),
+                location: Location::Known(place.clone()),
                 ..template.clone()
             })
             .collect();
         snapshot
+    }
+
+    /// A snapshot whose first process connects to each of these addresses.
+    fn connected_with(addresses: &[(&str, Location)]) -> Snapshot {
+        let mut snapshot = connected_to(&[]);
+        let template = crate::model::demo(10.0, 128).remotes[0].clone();
+        snapshot.remotes = addresses
+            .iter()
+            .map(|(address, location)| Remote {
+                address: address.parse().unwrap(),
+                location: location.clone(),
+                ..template.clone()
+            })
+            .collect();
+        snapshot
+    }
+
+    #[test]
+    fn without_a_database_one_label_counts_the_unplaced_addresses() {
+        let mut snapshot = connected_with(&[
+            ("8.8.8.8", Location::NoDatabase),
+            ("1.1.1.1", Location::NoDatabase),
+            ("9.9.9.9", Location::NoDatabase),
+        ]);
+        let at = labelled(&snapshot, &Camera::default(), 0.0);
+        let counting: Vec<&String> = at.keys().filter(|name| name.contains("GeoIP")).collect();
+        assert_eq!(counting, ["no GeoIP database: 3 addresses (see --geoip)"]);
+        assert!(at.keys().all(|name| !name.contains("8.8.8.8")), "{at:?}");
+        snapshot.remotes.truncate(1);
+        let at = labelled(&snapshot, &Camera::default(), 0.0);
+        assert!(at.contains_key("no GeoIP database: 1 address (see --geoip)"));
+    }
+
+    #[test]
+    fn addresses_still_being_located_share_one_label() {
+        let snapshot = connected_with(&[
+            ("8.8.8.8", Location::Pending),
+            ("1.1.1.1", Location::Pending),
+        ]);
+        let at = labelled(&snapshot, &Camera::default(), 0.0);
+        assert!(at.contains_key("locating 2 addresses"), "{at:?}");
+        assert!(at.keys().all(|name| !name.contains("GeoIP")), "{at:?}");
+    }
+
+    #[test]
+    fn unlisted_and_private_endpoints_are_labelled_with_their_address() {
+        let snapshot = connected_with(&[
+            ("8.8.8.8", Location::Unlisted),
+            ("10.0.0.2", Location::Private),
+        ]);
+        let at = labelled(&snapshot, &Camera::default(), 0.0);
+        assert!(at.contains_key("8.8.8.8"), "{at:?}");
+        assert!(at.contains_key("10.0.0.2 (private)"), "{at:?}");
+        assert!(at.keys().all(|name| !name.contains("GeoIP")), "{at:?}");
+        use crate::render::{Scene, View};
+        let mut scene = Scene::new();
+        scene.render(
+            &snapshot,
+            View::Globe,
+            &Camera::default(),
+            640,
+            360,
+            None,
+            0.0,
+            512,
+            None,
+        );
+        let notes = &scene.notes[&snapshot.remotes[0].id];
+        assert!(notes[0].starts_with("8.8.8.8:"), "{notes:?}");
+        assert!(notes[0].contains("not in the GeoIP database"), "{notes:?}");
+        assert!(notes[1].contains("10.0.0.2:") && notes[1].contains(" private"));
+    }
+
+    #[test]
+    fn endpoints_keep_their_places_whatever_the_reason_they_have_none() {
+        let drawn = |location: Location| {
+            let snapshot = connected_with(&[
+                ("8.8.8.8", location.clone()),
+                ("1.1.1.1", location.clone()),
+                ("9.9.9.9", location),
+            ]);
+            let mut scene = crate::render::Scene::new();
+            let frame = scene.render(
+                &snapshot,
+                crate::render::View::Globe,
+                &Camera::default(),
+                640,
+                360,
+                None,
+                0.0,
+                512,
+                None,
+            );
+            format!("{:?}", frame.items)
+        };
+        let expected = drawn(Location::Pending);
+        for location in [Location::NoDatabase, Location::Unlisted, Location::Private] {
+            assert!(drawn(location.clone()) == expected, "{location:?}");
+        }
     }
 
     #[test]

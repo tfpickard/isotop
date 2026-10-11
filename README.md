@@ -310,8 +310,22 @@ shown; nothing is sent anywhere.
   automatically.
 - Otherwise the legacy country database many distributions ship
   (`/usr/share/GeoIP/GeoIP.dat`) places connections at country label points.
-- Private, loopback and carrier-grade NAT addresses have no location;
-  connections the database cannot place circle the north pole.
+- macOS ships no GeoIP database, and isotop never looks addresses up online, so
+  install one to see places. For example, DB-IP's City Lite:
+
+  ```sh
+  mkdir -p ~/.local/share/isotop
+  curl -L "https://download.db-ip.com/free/dbip-city-lite-$(date +%Y-%m).mmdb.gz" | gunzip > ~/.local/share/isotop/dbip-city-lite.mmdb
+  ```
+
+- Connections with no place circle the north pole, and the reason is shown. With
+  no database, one label there counts the addresses (`no GeoIP database: N
+  addresses`), and while addresses are still being looked up another says
+  `locating N addresses`. An address the database does not list is labelled with
+  the address itself, and a private, loopback or carrier-grade NAT address, which
+  has no geography, with `(private)`. The count label sits over the north pole, so
+  it is out of sight when the globe is turned to show the south; the legend still
+  says "no GeoIP database".
 - Home is the system time zone's city (`/etc/localtime` and `zone1970.tab`), or
   `--home LAT,LON`.
 

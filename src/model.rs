@@ -101,6 +101,29 @@ pub struct Place {
     pub name: String,
 }
 
+/// Where a remote address is on the map, or why it has none.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Location {
+    Known(Place),
+    /// A private, loopback, link-local or carrier-grade NAT address, which has no geography.
+    Private,
+    /// A public address not looked up yet.
+    Pending,
+    /// A public address, and no GeoIP database covers its address family.
+    NoDatabase,
+    /// A public address the GeoIP database does not list.
+    Unlisted,
+}
+
+impl Location {
+    pub fn place(&self) -> Option<&Place> {
+        match self {
+            Self::Known(place) => Some(place),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CoreKind {
     Performance,
@@ -147,7 +170,7 @@ pub struct Remote {
     /// Bytes per second sent and received.
     pub up: f32,
     pub down: f32,
-    pub place: Option<Place>,
+    pub location: Location,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -369,7 +392,11 @@ fn remotes(
                 rtt: socket.rtt as f32 / 1000.0,
                 up,
                 down,
-                place: geo.as_mut().and_then(|geo| geo.locate(socket.address)),
+                location: match geo.as_mut() {
+                    Some(geo) => geo.locate(socket.address),
+                    None if geo::public(socket.address) => Location::Pending,
+                    None => Location::Private,
+                },
             }
         })
         .collect();
@@ -905,11 +932,15 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
                     rtt: 20.0 + (i * 13 % 180) as f32,
                     up: 2048.0 * pulse,
                     down: 65536.0 * pulse * pulse,
-                    place: (k < 2).then(|| Place {
-                        latitude,
-                        longitude,
-                        name: format!("{name} ({code})"),
-                    }),
+                    location: if k < 2 {
+                        Location::Known(Place {
+                            latitude,
+                            longitude,
+                            name: format!("{name} ({code})"),
+                        })
+                    } else {
+                        Location::Unlisted
+                    },
                 }
             })
         })
@@ -1053,12 +1084,65 @@ mod tests {
     }
 
     #[test]
+    fn addresses_are_pending_until_located_except_private_ones() {
+        let socket = |address: &str| platform::Remote {
+            pid: 1,
+            inode: 1,
+            address: address.parse().unwrap(),
+            port: 443,
+            rtt: 0,
+            sent: 0,
+            received: 0,
+        };
+        let sockets = [
+            socket("8.8.8.8"),
+            socket("10.0.0.2"),
+            socket("::ffff:100.64.0.1"),
+            socket("2001:4860:4860::8888"),
+        ];
+        let found = remotes(&sockets, &mut HashMap::new(), None);
+        let locations: Vec<&Location> = found.iter().map(|r| &r.location).collect();
+        assert_eq!(
+            locations,
+            [
+                &Location::Pending,
+                &Location::Private,
+                &Location::Private,
+                &Location::Pending
+            ]
+        );
+        let nowhere = || PathBuf::from("/nonexistent/isotop-test");
+        let mut geo = geo::Geo::with_databases(Vec::new(), [nowhere(), nowhere()]);
+        let found = remotes(&sockets, &mut HashMap::new(), Some(&mut geo));
+        let locations: Vec<&Location> = found.iter().map(|r| &r.location).collect();
+        assert_eq!(
+            locations,
+            [
+                &Location::NoDatabase,
+                &Location::Private,
+                &Location::Private,
+                &Location::NoDatabase
+            ]
+        );
+    }
+
+    #[test]
     fn demo_carries_every_data_source() {
         let snapshot = demo(30.0, 128);
         assert_eq!(snapshot.cpus.len(), 16);
         assert!(snapshot.units.len() >= 4);
-        assert!(snapshot.remotes.iter().any(|r| r.place.is_some()));
-        assert!(snapshot.remotes.iter().any(|r| r.place.is_none()));
+        assert!(
+            snapshot
+                .remotes
+                .iter()
+                .any(|r| r.location.place().is_some())
+        );
+        assert!(
+            snapshot
+                .remotes
+                .iter()
+                .any(|r| r.location == Location::Unlisted)
+        );
         assert!(
             snapshot
                 .processes
