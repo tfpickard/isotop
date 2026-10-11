@@ -21,7 +21,7 @@ mod terminal;
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, TAU};
 use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -33,7 +33,7 @@ use crossterm::event::{
 
 use journal::Journal;
 use model::{Collector, Identity, Process, Snapshot, bytes, describe};
-use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
+use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, SCALE, Scene, View, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
@@ -274,6 +274,8 @@ struct App {
     scene: Scene,
     camera: Camera,
     goal: Camera,
+    /// The camera that drew `scene.positions`, which the camera has since moved on from.
+    rendered: Camera,
     view: View,
     selected: Option<Identity>,
     focus: Option<Identity>,
@@ -310,6 +312,7 @@ impl App {
             scene: Scene::new(),
             camera: Camera::default(),
             goal: Camera::default(),
+            rendered: Camera::default(),
             view,
             selected: None,
             focus: None,
@@ -374,17 +377,31 @@ impl App {
         change(&mut self.goal);
     }
 
+    /// The time the scene is drawn at: the sample's own while paused or rewound, else the
+    /// animation clock.
+    fn render_time(&self) -> f32 {
+        if self.paused {
+            self.history[self.history_index].elapsed as f32
+        } else {
+            self.animation
+        }
+    }
+
+    /// Lets a held globe turn with time again from where it stands, and stands it upright.
+    /// Does nothing unless the earth was held.
+    fn release_globe(&mut self) {
+        let time = self.render_time();
+        self.both(|c| c.release(time));
+        self.goal.globe_tilt = 0.0;
+    }
+
     fn render(&mut self, width: u32, height: u32, limit: usize) -> Frame {
         let index = if self.paused {
             self.history_index
         } else {
             self.history.len() - 1
         };
-        let time = if self.paused {
-            self.history[index].elapsed as f32
-        } else {
-            self.animation
-        };
+        let time = self.render_time();
         self.scene.highlight = [
             self.selected,
             self.hovered,
@@ -423,6 +440,7 @@ impl App {
                 );
             }
         }
+        self.rendered = self.camera.clone();
         let failure = match self.gpu.as_mut() {
             Some(gpu) => gpu.render(&mut frame, self.hover.map(|h| h.frame)).err(),
             None => {
@@ -515,7 +533,11 @@ impl App {
     fn update_tour(&mut self, after: Option<Duration>) {
         let now = Instant::now();
         let due = match &self.tour {
-            None => after.is_some_and(|after| now.duration_since(self.last_input) >= after),
+            // A globe held by hand stays where it was put until r or g.
+            None => {
+                after.is_some_and(|after| now.duration_since(self.last_input) >= after)
+                    && !(self.view == View::Globe && self.goal.globe_held)
+            }
             Some(tour) => {
                 now.duration_since(tour.since) >= TOUR_STEP
                     || !self.scene.positions.contains_key(&tour.target)
@@ -528,6 +550,7 @@ impl App {
             && let Some(&p) = self.scene.positions.get(&tour.target)
         {
             self.goal.center = [p[0], p[1]];
+            self.release_globe();
             self.face(p);
         }
     }
@@ -535,14 +558,20 @@ impl App {
     /// On the globe, turns the camera so `point` is on the near side and centres the point
     /// itself: the world spins, so a process above home is behind the earth for half of every
     /// turn, and it floats far above the ground the camera otherwise centres on.
+    ///
+    /// The point was drawn by `rendered`, whose lean the camera is still easing away from, so
+    /// the goal aims at where the point will be once the earth stands upright.
     fn face(&mut self, point: [f32; 3]) {
         if self.view == View::Globe {
+            let point = globe::upright(point, &self.rendered);
+            self.goal.globe_tilt = 0.0;
             (self.goal.rotation, self.goal.pitch) = globe::face(point, &self.goal);
             self.goal.look_at(point);
         }
     }
 
     fn visit(&mut self, index: usize) {
+        self.release_globe();
         let targets = self.tour_targets();
         self.tour = (!targets.is_empty()).then(|| Tour {
             index,
@@ -647,7 +676,12 @@ impl App {
         } else if self.show_help {
             lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | g tour | f focus | l labels | c links".into());
         } else {
-            lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
+            let scroll = if self.view == View::Globe {
+                "scroll turn/tilt | drag pan"
+            } else {
+                "scroll pan"
+            };
+            lines.push(format!(" Tab next view | g tour | {scroll} | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit"));
         }
         let links = match self.scene.links {
             Links::All => "",
@@ -655,7 +689,12 @@ impl App {
             Links::Off => " | links: off",
         };
         lines.push(if self.show_help {
-            " Scroll pan | Ctrl-scroll zoom | Alt-scroll or right-drag rotate/tilt | n next match | [/] rewind | r reset | Ctrl-C quit".into()
+            let scroll = if self.view == View::Globe {
+                "Scroll turn/tilt | drag pan"
+            } else {
+                "Scroll pan"
+            };
+            format!(" {scroll} | Ctrl-scroll zoom | Alt-scroll or right-drag rotate/tilt | n next match | [/] rewind | r reset | Ctrl-C quit")
         } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | {}{links}{}",
             self.renderer, self.history.len(), s.elapsed, pressure_text(s),
             if self.focus.is_some() { " | SUBTREE FOCUS" } else { "" }) });
@@ -979,6 +1018,10 @@ impl App {
             KeyCode::Char('c') => self.scene.links.cycle(),
             KeyCode::Home => self.fit = true,
             KeyCode::Char('r') => {
+                // Release first: the camera must stop being held before it eases to the default
+                // camera, or it would copy the goal's release and spin a second time.
+                let time = self.render_time();
+                self.camera.release(time);
                 self.goal = Camera::default();
                 self.fit = true;
             }
@@ -1067,6 +1110,19 @@ impl App {
                 self.both(|c| c.scale_at(factor, offset[0], offset[1]));
             } else if mouse.modifiers.contains(KeyModifiers::ALT) {
                 self.both(|c| c.rotation += 0.08 * (x + y));
+            } else if self.view == View::Globe {
+                // The surface follows the fingers the way panning moves content: scrolling right
+                // moves it left, which turns it westward, and scrolling down moves it up, which
+                // brings the south up. The angle moves the surface under the pointer by `step`.
+                let step = layout.height as f32 * 0.04;
+                let angle = (step / (globe::RADIUS * SCALE * self.camera.zoom)).min(0.25);
+                let time = self.render_time();
+                self.both(|c| {
+                    c.hold(time);
+                    c.globe_turn = (c.globe_turn + x * angle).rem_euclid(TAU);
+                    c.globe_tilt =
+                        (c.globe_tilt + y * angle).clamp(c.pitch - FRAC_PI_2, c.pitch + FRAC_PI_2);
+                });
             } else {
                 let step = layout.height as f32 * 0.04;
                 self.both(|c| c.pan(x * step, y * step));
@@ -1966,5 +2022,425 @@ mod tests {
         assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
         assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
         assert!(!text(View::Coop).contains("share one trough"));
+    }
+
+    const SCENE: Layout = Layout {
+        columns: 80,
+        rows: 24,
+        width: 640,
+        height: 360,
+        cell: None,
+    };
+
+    fn scroll(app: &mut App, kind: MouseEventKind, times: usize) {
+        let frame = app.render(SCENE.width, SCENE.height, 512);
+        let event = MouseEvent {
+            kind,
+            column: 10,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        for _ in 0..times {
+            app.mouse(event, &SCENE, &frame, &[], false);
+        }
+    }
+
+    /// A globe at animation time `time`, drawn once so its camera has settled.
+    fn globe_at(time: f32) -> App {
+        let mut app = App::new(View::Globe, model::demo(1.0, 64));
+        app.animation = time;
+        app.render(SCENE.width, SCENE.height, 512);
+        app
+    }
+
+    /// Where the globe's home marker falls on screen with the camera as it stands.
+    fn home_on_screen(app: &mut App) -> [f32; 2] {
+        let frame = app.render(SCENE.width, SCENE.height, 512);
+        let at = frame.project(&app.camera, app.scene.places[0].0);
+        [at[0], at[1]]
+    }
+
+    /// Where a world point falls on screen if the view is panned by (dx, dy) frame pixels.
+    fn panned_by(camera: &Camera, point: [f32; 3], dx: f32, dy: f32) -> [f32; 2] {
+        let mut panned = camera.clone();
+        panned.pan(dx, dy);
+        let frame = Frame::new(
+            SCENE.width,
+            SCENE.height,
+            render::Sky {
+                backdrop: render::Backdrop::Void,
+                haze: [0.0; 3],
+                time: 0.0,
+            },
+            Default::default(),
+        );
+        let at = frame.project(&panned, point);
+        [at[0], at[1]]
+    }
+
+    #[test]
+    fn scrolling_turns_and_tilts_the_globe_the_way_panning_moves_the_view() {
+        let step = SCENE.height as f32 * 0.04;
+        for (kind, sideways) in [
+            (MouseEventKind::ScrollRight, true),
+            (MouseEventKind::ScrollLeft, true),
+            (MouseEventKind::ScrollDown, false),
+            (MouseEventKind::ScrollUp, false),
+        ] {
+            let mut app = globe_at(0.0);
+            let centre = app.goal.center;
+            let before = home_on_screen(&mut app);
+            let point = app.scene.places[0].0;
+            let (dx, dy) = match kind {
+                MouseEventKind::ScrollRight => (step, 0.0),
+                MouseEventKind::ScrollLeft => (-step, 0.0),
+                MouseEventKind::ScrollDown => (0.0, step),
+                _ => (0.0, -step),
+            };
+            // What panning by the same scroll does to the same point is the way it must move.
+            let by_pan = panned_by(&app.camera, point, dx, dy);
+            let pan_moves = [by_pan[0] - before[0], by_pan[1] - before[1]];
+            scroll(&mut app, kind, 1);
+            let after = home_on_screen(&mut app);
+            let moved = [after[0] - before[0], after[1] - before[1]];
+            let (along, across) = if sideways { (0, 1) } else { (1, 0) };
+            assert_eq!(moved[along].signum(), pan_moves[along].signum(), "{kind:?}");
+            let ratio = moved[along] / pan_moves[along];
+            assert!(
+                (0.3..1.05).contains(&ratio),
+                "{kind:?} moved {ratio} of a step"
+            );
+            assert!(
+                moved[across].abs() < 0.35 * step,
+                "{kind:?} drifted {moved:?}"
+            );
+            assert!(
+                app.goal.globe_held && app.camera.globe_held,
+                "{kind:?} holds"
+            );
+            assert!(app.goal.center == centre, "{kind:?} panned");
+        }
+    }
+
+    #[test]
+    fn scrolling_the_globe_moves_the_surface_by_one_step_whatever_the_zoom() {
+        let step = SCENE.height as f32 * 0.04;
+        for zoom in [1.0, 5.0, 30.0] {
+            let mut app = globe_at(0.0);
+            app.both(|c| c.zoom = zoom);
+            let before = home_on_screen(&mut app);
+            scroll(&mut app, MouseEventKind::ScrollRight, 1);
+            let after = home_on_screen(&mut app);
+            let moved = (after[0] - before[0]).abs();
+            // The surface at home is a little foreshortened and the angle is capped at 0.25 rad.
+            let reach = (0.25 * globe::RADIUS * render::SCALE * zoom).min(step);
+            assert!(
+                moved > 0.5 * reach && moved <= reach * 1.02,
+                "zoom {zoom}: {moved} px for {reach}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tilt_stops_at_the_poles_for_the_camera_it_is_clamped_against() {
+        let mut app = globe_at(0.0);
+        scroll(&mut app, MouseEventKind::ScrollDown, 80);
+        let pitch = app.camera.pitch;
+        assert!((app.camera.globe_tilt - (pitch + FRAC_PI_2)).abs() < 1e-5);
+        scroll(&mut app, MouseEventKind::ScrollUp, 160);
+        assert!((app.camera.globe_tilt - (pitch - FRAC_PI_2)).abs() < 1e-5);
+        assert_eq!(app.camera.globe_tilt, app.goal.globe_tilt);
+    }
+
+    #[test]
+    fn dragging_still_pans_the_globe() {
+        let mut app = globe_at(0.0);
+        let frame = app.render(SCENE.width, SCENE.height, 512);
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        let centre = app.goal.center;
+        for event in [
+            mouse(MouseEventKind::Down(MouseButton::Left), 10),
+            mouse(MouseEventKind::Drag(MouseButton::Left), 14),
+            mouse(MouseEventKind::Up(MouseButton::Left), 14),
+        ] {
+            app.mouse(event, &SCENE, &frame, &[], false);
+        }
+        assert_ne!(app.goal.center, centre, "dragging pans");
+        assert_eq!(app.goal.globe_turn, 0.0);
+        assert_eq!(app.goal.globe_tilt, 0.0);
+        assert!(!app.goal.globe_held, "dragging leaves the earth turning");
+    }
+
+    #[test]
+    fn other_views_still_pan_when_scrolled() {
+        for view in [View::City, View::Orbit, View::Reef] {
+            let mut app = App::new(view, model::demo(1.0, 64));
+            let frame = app.render(SCENE.width, SCENE.height, 512);
+            let mut expected = app.camera.clone();
+            let step = SCENE.height as f32 * 0.04;
+            expected.pan(step, -step);
+            for kind in [MouseEventKind::ScrollRight, MouseEventKind::ScrollUp] {
+                let event = MouseEvent {
+                    kind,
+                    column: 10,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                };
+                app.mouse(event, &SCENE, &frame, &[], false);
+            }
+            for k in 0..2 {
+                assert!(
+                    (app.goal.center[k] - expected.center[k]).abs() < 1e-3,
+                    "{view:?}: {:?} against {:?}",
+                    app.goal.center,
+                    expected.center
+                );
+            }
+            assert!(!app.goal.globe_held, "{view:?}");
+        }
+    }
+
+    #[test]
+    fn a_turned_globe_holds_still_until_reset_and_then_spins_on_without_a_jump() {
+        let mut app = globe_at(10.0);
+        // Holding the earth freezes it where it is, however far the clock has run.
+        let free = home_on_screen(&mut app);
+        app.both(|c| c.hold(10.0));
+        let frozen = home_on_screen(&mut app);
+        assert!(
+            (free[0] - frozen[0]).abs() < 0.01 && (free[1] - frozen[1]).abs() < 0.01,
+            "holding jumped {free:?} to {frozen:?}"
+        );
+        app.both(|c| c.release(10.0));
+        scroll(&mut app, MouseEventKind::ScrollRight, 3);
+        scroll(&mut app, MouseEventKind::ScrollDown, 2);
+        let held = home_on_screen(&mut app);
+        for time in [40.0, 150.0] {
+            app.animation = time;
+            let later = home_on_screen(&mut app);
+            assert!(
+                (held[0] - later[0]).abs() < 0.01 && (held[1] - later[1]).abs() < 0.01,
+                "the held earth moved by {held:?} to {later:?} at {time} s"
+            );
+        }
+        // r renders straight after the key, before the camera has eased anywhere.
+        app.animation = 150.0;
+        app.key(KeyCode::Char('r'), KeyModifiers::NONE, 10.0);
+        assert!(!app.camera.globe_held && !app.goal.globe_held);
+        let straight_after = home_on_screen(&mut app);
+        assert!(
+            (held[0] - straight_after[0]).abs() < 0.01
+                && (held[1] - straight_after[1]).abs() < 0.01,
+            "r made the earth jump from {held:?} to {straight_after:?}"
+        );
+        // Then the camera eases back to the default while the earth turns on.
+        let mut last = straight_after;
+        for frame in 1..=120 {
+            let elapsed = 1.0 / 20.0;
+            app.animation += elapsed;
+            let goal = app.goal.clone();
+            app.camera.approach(&goal, 1.0 - (-elapsed / 0.2_f32).exp());
+            let now = home_on_screen(&mut app);
+            let jump = (now[0] - last[0]).hypot(now[1] - last[1]);
+            assert!(jump < 100.0, "frame {frame} jumped {jump} px");
+            last = now;
+        }
+        assert!(app.camera.globe_tilt.abs() < 1e-3);
+        assert!(
+            (app.camera.globe_turn.rem_euclid(TAU) - app.goal.globe_turn).abs() < 1e-3
+                || (app.camera.globe_turn.rem_euclid(TAU) - TAU).abs() < 1e-3
+        );
+        // It is the globe a new session shows at that time: nothing doubled the spin.
+        let mut fresh = globe_at(app.animation);
+        let (a, b) = (home_on_screen(&mut app), home_on_screen(&mut fresh));
+        assert!(
+            (a[0] - b[0]).abs() < 2.0 && (a[1] - b[1]).abs() < 2.0,
+            "{a:?} {b:?}"
+        );
+    }
+
+    #[test]
+    fn holding_and_releasing_while_paused_or_rewound_does_not_jump() {
+        let mut app = globe_at(0.0);
+        app.history.push_back(model::demo(50.0, 64));
+        app.history.push_back(model::demo(100.0, 64));
+        app.animation = 500.0;
+        // [ pauses and steps back to the sample at 50 s, whatever the animation clock says.
+        app.key(KeyCode::Char('['), KeyModifiers::NONE, 10.0);
+        assert!(app.paused);
+        assert_eq!(app.render_time(), 50.0);
+        let free = home_on_screen(&mut app);
+        let time = app.render_time();
+        app.both(|c| c.hold(time));
+        let held = home_on_screen(&mut app);
+        assert!(
+            (free[0] - held[0]).abs() < 0.01 && (free[1] - held[1]).abs() < 0.01,
+            "holding jumped {free:?} to {held:?}"
+        );
+        scroll(&mut app, MouseEventKind::ScrollRight, 2);
+        let turned = home_on_screen(&mut app);
+        assert!(turned[0] < held[0], "the scroll turned it");
+        // g releases it, and the earth stays where the hand left it.
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        assert!(!app.camera.globe_held);
+        let released = home_on_screen(&mut app);
+        assert!(
+            (turned[0] - released[0]).abs() < 0.01 && (turned[1] - released[1]).abs() < 0.01,
+            "releasing jumped {turned:?} to {released:?}"
+        );
+        // Rewinding further carries the free earth with the sample time, not the clock.
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        app.key(KeyCode::Char('['), KeyModifiers::NONE, 10.0);
+        assert_eq!(app.render_time(), 1.0);
+    }
+
+    #[test]
+    fn the_idle_tour_waits_while_the_globe_is_held() {
+        let idle = Duration::from_secs(1);
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(60)).unwrap();
+        let mut app = globe_at(0.0);
+        app.last_input = long_ago;
+        app.update_tour(Some(idle));
+        assert!(app.tour.is_some(), "an idle free globe tours");
+        let mut app = globe_at(0.0);
+        scroll(&mut app, MouseEventKind::ScrollRight, 1);
+        app.last_input = long_ago;
+        app.update_tour(Some(idle));
+        assert!(app.tour.is_none(), "a held globe is left alone");
+        app.key(KeyCode::Char('r'), KeyModifiers::NONE, 10.0);
+        app.last_input = long_ago;
+        app.update_tour(Some(idle));
+        assert!(app.tour.is_some(), "r lets the tour start again");
+        // A hold left on the globe does not stop other views touring.
+        let mut app = App::new(View::City, model::demo(1.0, 64));
+        app.render(SCENE.width, SCENE.height, 512);
+        app.goal.globe_held = true;
+        app.last_input = long_ago;
+        app.update_tour(Some(idle));
+        assert!(app.tour.is_some());
+    }
+
+    #[test]
+    fn a_tour_that_finds_the_globe_held_lets_it_go() {
+        let mut app = globe_at(20.0);
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        assert!(app.tour.is_some());
+        // A hold that arrives without the input handler ending the tour first.
+        let time = app.render_time();
+        app.both(|c| {
+            c.hold(time);
+            c.globe_tilt = 0.4;
+        });
+        app.update_tour(None);
+        assert!(!app.goal.globe_held && !app.camera.globe_held);
+        assert_eq!(app.goal.globe_tilt, 0.0);
+    }
+
+    #[test]
+    fn g_releases_a_held_globe_even_when_there_is_nobody_to_visit() {
+        let mut app = App::new(View::Globe, {
+            let mut snapshot = model::demo(1.0, 64);
+            snapshot.remotes.clear();
+            snapshot
+        });
+        app.render(SCENE.width, SCENE.height, 512);
+        scroll(&mut app, MouseEventKind::ScrollDown, 3);
+        assert!(app.goal.globe_held);
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        assert!(app.tour.is_none(), "no talkers, no tour");
+        assert!(!app.goal.globe_held && !app.camera.globe_held);
+        assert_eq!(app.goal.globe_tilt, 0.0);
+    }
+
+    /// The world point of the tour's target, and where the goal camera puts it on screen.
+    fn target_on_screen(app: &mut App) -> ([f32; 2], Option<Identity>) {
+        app.camera = app.goal.clone();
+        let frame = app.render(640, 360, 512);
+        let target = app.tour.as_ref().expect("a tour").target;
+        let at = frame.project(&app.camera, app.scene.positions[&target]);
+        let picked = frame.pick_near(at[0], at[1], 3.0);
+        ([at[0], at[1]], picked)
+    }
+
+    #[test]
+    fn the_tour_still_faces_its_target_after_the_globe_was_tilted() {
+        for time in [0.0, 75.0, 150.0, 225.0] {
+            for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+                let mut app = globe_at(time);
+                scroll(&mut app, MouseEventKind::ScrollRight, 4);
+                scroll(&mut app, kind, 7);
+                assert!(app.camera.globe_tilt.abs() > 0.5);
+                app.render(640, 360, 512);
+                app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+                app.update_tour(None);
+                let target = app.tour.as_ref().expect("a tour").target;
+                let ([x, y], picked) = target_on_screen(&mut app);
+                assert_eq!(picked, Some(target), "{time} s {kind:?}");
+                let (cx, cy) = (320.0, 360.0 * ORIGIN_Y);
+                assert!(
+                    (x - cx).abs() < 1.5 && (y - cy).abs() < 1.5,
+                    "{time} s {kind:?}: the target is at {x},{y}, not the centre"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_tour_aims_true_while_the_camera_is_still_easing() {
+        let mut app = globe_at(30.0);
+        scroll(&mut app, MouseEventKind::ScrollDown, 7);
+        scroll(&mut app, MouseEventKind::ScrollRight, 5);
+        app.render(640, 360, 512);
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        // The loop's order: the camera eases, then the tour aims, then the frame is drawn, so
+        // the positions the tour reads were drawn by a camera that has since moved.
+        let goal = app.goal.clone();
+        app.camera.approach(&goal, 0.25);
+        assert!(app.camera.globe_tilt > 0.1 && app.camera.globe_tilt != app.rendered.globe_tilt);
+        app.update_tour(None);
+        let ([x, y], _) = target_on_screen(&mut app);
+        let (cx, cy) = (320.0, 360.0 * ORIGIN_Y);
+        assert!(
+            (x - cx).abs() < 1.5 && (y - cy).abs() < 1.5,
+            "the target is at {x},{y}, not the centre"
+        );
+    }
+
+    #[test]
+    fn searching_keeps_the_hold_but_stands_the_earth_upright_on_the_match() {
+        let mut app = globe_at(30.0);
+        scroll(&mut app, MouseEventKind::ScrollDown, 6);
+        scroll(&mut app, MouseEventKind::ScrollRight, 3);
+        app.render(640, 360, 512);
+        let target = *app.scene.positions.keys().next().unwrap();
+        app.matches = vec![target];
+        app.select_match();
+        assert!(app.goal.globe_held, "the found process must not drift away");
+        assert_eq!(app.goal.globe_tilt, 0.0);
+        let goal = app.goal.clone();
+        app.camera.approach(&goal, 1.0);
+        app.camera = app.goal.clone();
+        let frame = app.render(640, 360, 512);
+        let at = frame.project(&app.camera, app.scene.positions[&target]);
+        assert!((at[0] - 320.0).abs() < 1.5 && (at[1] - 360.0 * ORIGIN_Y).abs() < 1.5);
+    }
+
+    #[test]
+    fn globe_hints_say_scroll_turns_and_drag_pans() {
+        let mut globe = App::new(View::Globe, model::demo(1.0, 64));
+        let mut city = App::new(View::City, model::demo(1.0, 64));
+        let line = |app: &App, index: usize| app.text(0.0, "test", 20, 512)[index].clone();
+        assert!(line(&globe, 3).contains(" | scroll turn/tilt | drag pan | Ctrl-scroll zoom"));
+        assert!(!line(&globe, 3).contains("scroll pan"));
+        assert!(line(&city, 3).contains(" | scroll pan | Ctrl-scroll zoom"));
+        globe.show_help = true;
+        city.show_help = true;
+        assert!(line(&globe, 4).starts_with(" Scroll turn/tilt | drag pan | Ctrl-scroll zoom"));
+        assert!(line(&city, 4).starts_with(" Scroll pan | Ctrl-scroll zoom"));
     }
 }

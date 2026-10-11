@@ -15,7 +15,7 @@ use crate::render::{
     mass_radius, normalize, tint,
 };
 
-const RADIUS: f32 = 20.0;
+pub(crate) const RADIUS: f32 = 20.0;
 const SPIN_SECONDS: f32 = 300.0;
 /// Natural Earth 110 m coastlines: per line a little-endian u16 point count, then i16 pairs of
 /// longitude and latitude in hundredths of a degree.
@@ -76,14 +76,23 @@ impl Globe {
             longitude: 0.0,
             name: "home unknown: pass --home LAT,LON".into(),
         });
-        let spin = spin(&home, time);
+        let spin = spin(&home, camera, time);
+        // How the earth leans, applied to every direction on it so that it all leans together.
+        let lean = tilt_of(camera);
+        let tilt = |v: Point| -> Point {
+            if lean == 0.0 {
+                v
+            } else {
+                lean_about_right(v, camera.rotation, lean)
+            }
+        };
         let direction = |latitude: f32, longitude: f32| -> Point {
             let (lat, azimuth) = (latitude.to_radians(), spin - longitude.to_radians());
-            [
+            tilt([
                 lat.cos() * azimuth.cos(),
                 lat.cos() * azimuth.sin(),
                 lat.sin(),
-            ]
+            ])
         };
         let at = |d: Point, r: f32| -> Point { [0, 1, 2].map(|k| center[k] + d[k] * r) };
         let viewer = camera.viewer();
@@ -194,7 +203,7 @@ impl Globe {
                 Some(place) => direction(place.latitude, place.longitude),
                 None => {
                     let angle = (endpoint.phase % 1000) as f32 / 1000.0 * TAU + spin;
-                    normalize([0.45 * angle.cos(), 0.45 * angle.sin(), 1.0])
+                    tilt(normalize([0.45 * angle.cos(), 0.45 * angle.sin(), 1.0]))
                 }
             };
             let height = if endpoint.location.place().is_some() {
@@ -264,7 +273,8 @@ impl Globe {
             }
         }
         // The ring's centre, which is where addresses without a place circle.
-        let ring = at([0.0, 0.0, 1.0], RADIUS * 1.25);
+        let pole = tilt([0.0, 0.0, 1.0]);
+        let ring = at(pole, RADIUS * 1.25);
         if facing(ring) {
             let count = |wanted: Location| {
                 endpoints
@@ -276,7 +286,7 @@ impl Globe {
                 stage.places.push((ring, text));
             }
         }
-        let (east, north) = tangents(up);
+        let (east, north) = tangents(up, pole, tilt([1.0, 0.0, 0.0]));
         let mut talkers: Vec<Identity> = per_process.keys().copied().collect();
         talkers.sort();
         self.seats.assign(talkers.iter().map(|&id| (id, "home")));
@@ -344,14 +354,58 @@ impl Globe {
     }
 }
 
+/// How far the earth has turned by `time` while it is free, in radians about its axis. The
+/// earth turns eastward, which is towards falling azimuth (see `spin`), so this falls.
+pub(crate) fn drift(time: f32) -> f32 {
+    -TAU * time / SPIN_SECONDS
+}
+
 /// The azimuth, about the world's vertical axis, at which longitude zero lies. A place's
 /// azimuth is `spin - longitude`, so east is the direction of falling azimuth. Camera::view puts
 /// screen-right at falling azimuth, which draws east on the right as on any map.
 ///
 /// At time zero home sits at azimuth 45 degrees, facing the default isometric camera. The
-/// earth then turns eastward, so the surface that faces the viewer moves to the right.
-fn spin(home: &Place, time: f32) -> f32 {
-    FRAC_PI_4 + home.longitude.to_radians() - TAU * time / SPIN_SECONDS
+/// earth then turns eastward, so the surface that faces the viewer moves to the right, until
+/// someone holds it still and turns it by hand (`Camera::globe_turn`).
+fn spin(home: &Place, camera: &Camera, time: f32) -> f32 {
+    let free = if camera.globe_held { 0.0 } else { drift(time) };
+    FRAC_PI_4 + home.longitude.to_radians() + camera.globe_turn + free
+}
+
+/// The earth's lean from `camera`, kept so the latitude facing the viewer, `pitch - tilt`, stays
+/// between the poles: the pitch changes without telling the tilt.
+fn tilt_of(camera: &Camera) -> f32 {
+    camera
+        .globe_tilt
+        .clamp(camera.pitch - FRAC_PI_2, camera.pitch + FRAC_PI_2)
+}
+
+/// `v` turned by `angle` about the screen-horizontal axis R = (cos(r + pi/4), -sin(r + pi/4), 0)
+/// of a camera with rotation `rotation`, right-handed about +R. A positive angle brings the
+/// southern hemisphere up towards the viewer.
+fn lean_about_right(v: Point, rotation: f32, angle: f32) -> Point {
+    let (s, c) = (rotation + FRAC_PI_4).sin_cos();
+    let axis = [c, -s, 0.0];
+    let (sin, cos) = angle.sin_cos();
+    let cross = [
+        axis[1] * v[2] - axis[2] * v[1],
+        axis[2] * v[0] - axis[0] * v[2],
+        axis[0] * v[1] - axis[1] * v[0],
+    ];
+    let along = dot(axis, v) * (1.0 - cos);
+    [0, 1, 2].map(|k| v[k] * cos + cross[k] * sin + axis[k] * along)
+}
+
+/// A point of the scene drawn with `camera` as it would be drawn on an earth that was not
+/// leaning, which is where it ends up once the earth has been stood upright again.
+pub(crate) fn upright(point: Point, camera: &Camera) -> Point {
+    let lean = tilt_of(camera);
+    if lean == 0.0 {
+        return point;
+    }
+    let offset = [point[0], point[1], point[2] - RADIUS];
+    let [x, y, z] = lean_about_right(offset, camera.rotation, -lean);
+    [x, y, z + RADIUS]
 }
 
 /// The label at an endpoint on the globe: a place's name, or the address of a connection the
@@ -432,15 +486,21 @@ pub fn face(point: Point, camera: &Camera) -> (f32, f32) {
     (rotation, pitch)
 }
 
-/// East and north unit vectors on the surface at unit vector `up`. Longitude grows as azimuth
-/// falls (see `spin`), so east is the direction of falling azimuth and (east, north, up) is
-/// left-handed in world coordinates: north is east x up.
-fn tangents(up: Point) -> (Point, Point) {
-    // At a pole every horizontal direction is a tangent and "east" is undefined; pick one.
-    let east = if up[0].hypot(up[1]) < 1e-4 {
-        [1.0, 0.0, 0.0]
+/// East and north unit vectors on the surface at unit vector `up`, on an earth whose north pole
+/// points along `pole`. Longitude grows as azimuth falls (see `spin`), so east is the direction
+/// of falling azimuth, `up x pole`, and (east, north, up) is left-handed in world coordinates:
+/// north is east x up. At a pole every horizontal direction is a tangent and "east" is
+/// undefined, so `fallback`, a unit vector at right angles to `pole`, stands in.
+fn tangents(up: Point, pole: Point, fallback: Point) -> (Point, Point) {
+    let across = [
+        up[1] * pole[2] - up[2] * pole[1],
+        up[2] * pole[0] - up[0] * pole[2],
+        up[0] * pole[1] - up[1] * pole[0],
+    ];
+    let east = if dot(across, across).sqrt() < 1e-4 {
+        fallback
     } else {
-        normalize([up[1], -up[0], 0.0])
+        normalize(across)
     };
     let north = [
         east[1] * up[2] - east[2] * up[1],
@@ -599,8 +659,12 @@ mod tests {
         }
     }
 
-    /// Frame-pixel positions of the globe's labelled points, by label, as the camera projects them.
-    fn labelled(snapshot: &Snapshot, camera: &Camera, time: f32) -> HashMap<String, [f32; 2]> {
+    /// The scene and frame the globe draws for `camera`.
+    fn drawn(
+        snapshot: &Snapshot,
+        camera: &Camera,
+        time: f32,
+    ) -> (crate::render::Scene, crate::render::Frame) {
         use crate::render::{Scene, View};
         let mut scene = Scene::new();
         let frame = scene.render(
@@ -614,6 +678,12 @@ mod tests {
             512,
             None,
         );
+        (scene, frame)
+    }
+
+    /// Frame-pixel positions of the globe's labelled points, by label, as the camera projects them.
+    fn labelled(snapshot: &Snapshot, camera: &Camera, time: f32) -> HashMap<String, [f32; 2]> {
+        let (scene, frame) = drawn(snapshot, camera, time);
         scene
             .places
             .iter()
@@ -622,6 +692,180 @@ mod tests {
                 (name.clone(), [at[0], at[1]])
             })
             .collect()
+    }
+
+    /// Where the globe's centre falls in the frame.
+    fn centre(camera: &Camera) -> [f32; 2] {
+        let (_, frame) = drawn(&connected_to(&[]), camera, 0.0);
+        let at = frame.project(camera, [0.0, 0.0, RADIUS]);
+        [at[0], at[1]]
+    }
+
+    /// A camera that holds the earth still, leaning by `tilt`.
+    fn leaning(tilt: f32, turn: f32) -> Camera {
+        Camera {
+            globe_tilt: tilt,
+            globe_turn: turn,
+            globe_held: true,
+            ..Camera::default()
+        }
+    }
+
+    fn rotated_about(axis: Point, angle: f32, v: Point) -> Point {
+        let (sin, cos) = angle.sin_cos();
+        let cross = [
+            axis[1] * v[2] - axis[2] * v[1],
+            axis[2] * v[0] - axis[0] * v[2],
+            axis[0] * v[1] - axis[1] * v[0],
+        ];
+        let along = dot(axis, v) * (1.0 - cos);
+        [0, 1, 2].map(|k| v[k] * cos + cross[k] * sin + axis[k] * along)
+    }
+
+    #[test]
+    fn tilting_brings_either_pole_to_face_the_viewer() {
+        let snapshot = connected_to(&[
+            named("North Pole", 90.0, 0.0),
+            named("South Pole", -90.0, 0.0),
+        ]);
+        let pitch = Camera::default().pitch;
+        let middle = centre(&Camera::default());
+        for (pole, tilt) in [
+            ("North Pole", pitch - FRAC_PI_2),
+            ("South Pole", pitch + FRAC_PI_2),
+        ] {
+            let camera = leaning(tilt, 0.0);
+            let at = labelled(&snapshot, &camera, 0.0)[pole];
+            assert!(
+                (at[0] - middle[0]).abs() < 0.1 && (at[1] - middle[1]).abs() < 0.1,
+                "{pole} at {at:?}, centre {middle:?}"
+            );
+        }
+        // Without the lean, the south pole is behind the earth and the north pole is not at its centre.
+        let level = labelled(&snapshot, &leaning(0.0, 0.0), 0.0);
+        assert!(!level.contains_key("South Pole"));
+        assert!((level["North Pole"][1] - middle[1]).abs() > 20.0);
+    }
+
+    #[test]
+    fn turning_spins_the_earth_about_its_own_axis_even_when_tilted() {
+        let mut snapshot = connected_with(&[("8.8.8.8", Location::NoDatabase)]);
+        snapshot.home = Some(named("London", 51.5, -0.1));
+        let label = "no GeoIP database: 1 address (see --geoip)";
+        let first = labelled(&snapshot, &leaning(0.5, 0.0), 0.0);
+        // The label sits over the north pole as the lean has carried it.
+        let camera = leaning(0.5, 0.0);
+        let (_, frame) = drawn(&snapshot, &camera, 0.0);
+        let pole = lean_about_right([0.0, 0.0, 1.0], camera.rotation, 0.5);
+        let over = frame.project(
+            &camera,
+            [0, 1, 2].map(|k| [0.0, 0.0, RADIUS][k] + pole[k] * RADIUS * 1.25),
+        );
+        assert!(
+            (first[label][0] - over[0]).abs() < 0.01 && (first[label][1] - over[1]).abs() < 0.01,
+            "{:?} against {over:?}",
+            first[label]
+        );
+        for turn in [0.4, 1.3, 3.0] {
+            let later = labelled(&snapshot, &leaning(0.5, turn), 0.0);
+            let (before, after) = (first[label], later[label]);
+            assert!(
+                (before[0] - after[0]).abs() < 0.01 && (before[1] - after[1]).abs() < 0.01,
+                "the pole moved: {before:?} to {after:?} at turn {turn}"
+            );
+            let (home, moved) = (first["London"], later["London"]);
+            assert!(
+                (home[0] - moved[0]).hypot(home[1] - moved[1]) > 5.0,
+                "home did not move at turn {turn}"
+            );
+        }
+    }
+
+    #[test]
+    fn talkers_keep_their_seats_around_home_when_a_tilted_earth_turns() {
+        let mut snapshot = crate::model::demo(10.0, 128);
+        snapshot.home = Some(named("London", 51.5, -0.1));
+        let tilt = 0.5;
+        let (a, b) = (0.4, 1.3);
+        let (first, _) = drawn(&snapshot, &leaning(tilt, a), 0.0);
+        let (second, _) = drawn(&snapshot, &leaning(tilt, b), 0.0);
+        assert!(first.positions.len() > 3);
+        // The earth's axis after the lean, and turning by hand about it by b - a.
+        let axis = lean_about_right([0.0, 0.0, 1.0], Camera::default().rotation, tilt);
+        for (id, at) in &first.positions {
+            let offset = [at[0], at[1], at[2] - RADIUS];
+            let turned = rotated_about(axis, b - a, offset);
+            let expected = [turned[0], turned[1], turned[2] + RADIUS];
+            let seen = second.positions[id];
+            assert!(
+                (0..3).all(|k| (expected[k] - seen[k]).abs() < 1e-3),
+                "{expected:?} against {seen:?}"
+            );
+            assert!((0..3).any(|k| (at[k] - seen[k]).abs() > 0.1), "never moved");
+        }
+    }
+
+    #[test]
+    fn changing_pitch_never_tips_the_earth_past_a_pole() {
+        let snapshot = crate::model::demo(10.0, 128);
+        let picture = |camera: &Camera| format!("{:?}", drawn(&snapshot, camera, 0.0).1.items);
+        for pitch in [LOWEST_PITCH, Camera::default().pitch, 1.2, FRAC_PI_2] {
+            for tilt in [-5.0, -1.0, 0.0, 1.0, 5.0] {
+                let camera = Camera {
+                    pitch,
+                    ..leaning(tilt, 0.3)
+                };
+                let used = tilt_of(&camera);
+                assert!(
+                    (-FRAC_PI_2 - 1e-6..=FRAC_PI_2 + 1e-6).contains(&(pitch - used)),
+                    "pitch {pitch} tilt {tilt}: the facing latitude is {}",
+                    pitch - used
+                );
+                let at_the_limit = Camera {
+                    globe_tilt: used,
+                    ..camera.clone()
+                };
+                assert!(
+                    picture(&camera) == picture(&at_the_limit),
+                    "pitch {pitch} tilt {tilt} drew something other than the clamped lean"
+                );
+            }
+        }
+        // A tilt the old pitch allowed is held back when the pitch drops.
+        let steep = Camera {
+            pitch: FRAC_PI_2,
+            ..leaning(2.0, 0.0)
+        };
+        let shallow = Camera {
+            pitch: LOWEST_PITCH,
+            ..steep.clone()
+        };
+        assert_eq!(tilt_of(&steep), 2.0);
+        assert!((tilt_of(&shallow) - (LOWEST_PITCH + FRAC_PI_2)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn standing_the_earth_upright_undoes_the_lean_of_any_point_drawn() {
+        let mut snapshot = crate::model::demo(10.0, 128);
+        snapshot.home = Some(named("London", 51.5, -0.1));
+        let (level, _) = drawn(&snapshot, &leaning(0.0, 0.6), 0.0);
+        for (tilt, rotation) in [(0.5, 0.0), (-0.9, 1.1), (2.0, -2.0)] {
+            let camera = Camera {
+                rotation,
+                ..leaning(tilt, 0.6)
+            };
+            let (leant, _) = drawn(&snapshot, &camera, 0.0);
+            for (id, at) in &leant.positions {
+                let back = upright(*at, &camera);
+                let expected = level.positions[id];
+                assert!(
+                    (0..3).all(|k| (back[k] - expected[k]).abs() < 1e-3),
+                    "{back:?} against {expected:?} at tilt {tilt}"
+                );
+            }
+        }
+        let flat = Camera::default();
+        assert_eq!(upright([3.0, 4.0, 25.0], &flat), [3.0, 4.0, 25.0]);
     }
 
     /// A snapshot whose home is London and whose first process talks to each of `places`.
@@ -785,7 +1029,7 @@ mod tests {
                 ]
             };
             let (up, further) = (at(azimuth), at(azimuth - 0.01));
-            let (east, north) = tangents(up);
+            let (east, north) = tangents(up, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
             let step = normalize([0, 1, 2].map(|k| further[k] - up[k]));
             assert!(dot(east, step) > 0.999, "{latitude}: {east:?} {step:?}");
             assert!(north[2] > 0.1, "{latitude}: north is up the globe");
@@ -808,7 +1052,7 @@ mod tests {
         assert!((dot(middle, middle) - 1.0).abs() < 1e-5);
         assert!((middle[0] - middle[1]).abs() < 1e-5);
         for up in [[0.6, 0.8, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
-            let (east, north) = tangents(up);
+            let (east, north) = tangents(up, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
             assert!((dot(east, east) - 1.0).abs() < 1e-5, "{up:?}");
             assert!((dot(north, north) - 1.0).abs() < 1e-5, "{up:?}");
             assert!(dot(east, north).abs() < 1e-5 && dot(east, up).abs() < 1e-5);

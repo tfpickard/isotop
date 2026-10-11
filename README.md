@@ -465,7 +465,7 @@ Any key or mouse movement ends the tour.
 | Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
 | Shift + Tab | Previous view |
 | `1`-`9`, `0` | Jump to a view in that order |
-| Two-finger scroll / wheel | Pan (vertical and horizontal) |
+| Two-finger scroll / wheel | Pan (vertical and horizontal); on the globe, turn the earth (horizontal) and tilt it (vertical) |
 | Ctrl + scroll | Zoom towards the pointer |
 | Alt + scroll | Rotate |
 | Right or middle drag | Rotate (horizontal) and tilt (vertical) |
@@ -475,14 +475,14 @@ Any key or mouse movement ends the tour.
 | PgUp / PgDn | Tilt up / down |
 | `t` | Toggle top-down and isometric |
 | Home | Fit scene |
-| `r` | Reset camera and fit |
+| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again |
 | Hover | Name and description of the process under the pointer |
 | Left click | Select the nearest process and open its inspector popup |
 | Left click on empty space | Close the popup |
-| Left drag | Pan |
+| Left drag | Pan (on the globe too) |
 | `l` | Toggle labels |
 | `h` | Hide or show the status panel, giving the scene the whole terminal |
-| `g` | Start the guided tour now; `g` again (or any input) ends it |
+| `g` | Start the guided tour now; `g` again (or any input) ends it; on the globe it also lets a turned earth spin again |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
 | Tab while searching / `n` afterward | Next match |
@@ -493,6 +493,13 @@ Any key or mouse movement ends the tour.
 | `[` / `]` | Previous / next retained snapshot |
 | `?` | Toggle help |
 | `q` / Ctrl-C | Quit |
+
+On the globe, scrolling follows your fingers the way panning moves the other
+views: scrolling right carries the surface to the left, and scrolling down
+carries it up, so any latitude, the poles included, can be brought to face you.
+Scrolling at all stops the earth's own turn, and a turned globe holds still until
+`r` or `g`; the idle tour waits while it is held. Search keeps the hold and
+stands the earth upright on the match.
 
 Terminals deliver touchpad scrolling as wheel events but do not forward pinch or
 rotate gestures, so Ctrl-scroll and Alt-scroll stand in for them. Camera moves
