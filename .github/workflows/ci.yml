@@ -21,33 +21,45 @@ jobs:
         # GitHub's runner-images.
         os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
+    # Warm runs take about 2 minutes; this leaves room for a cold cache and more renders.
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      # Both runner images ship rustup; installing through it avoids a third-party action.
-      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Both runner images ship rustup. With no arguments, `rustup toolchain install` installs
+      # what rust-toolchain.toml pins, so a new stable release cannot change CI unannounced.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      # Type-checks the macOS-only code without the Apple SDK, so a break shows up before the
+      # slower macOS job finishes.
+      - name: Clippy for macOS from Linux
+        if: runner.os == 'Linux'
+        run: |
+          rustup target add aarch64-apple-darwin
+          cargo clippy --locked --target aarch64-apple-darwin --all-targets -- -D warnings
+      - run: cargo test --locked
       # A crash in native code (a CoreFoundation trap, a bad FFI call) kills the test binary
       # without a Rust message. Re-run it one test at a time under lldb so the log names the
       # test and shows the native backtrace.
       - name: Backtrace a crashed macOS test run
         if: failure() && runner.os == 'macOS'
         run: |
-          binary=$(cargo test --no-run --message-format=json 2>/dev/null \
+          binary=$(cargo test --locked --no-run --message-format=json 2>/dev/null \
             | python3 -c 'import json,sys
           for line in sys.stdin:
               m = json.loads(line)
               if m.get("profile", {}).get("test") and m.get("executable"):
                   print(m["executable"])' | head -n 1)
           lldb --batch -o run -k "thread backtrace all" -k quit -- "$binary" --test-threads=1
-      - run: cargo build --release
+      - run: cargo build --locked --release
 
-      - name: Render coop and orbit headless
+      # Keep this list in step with View::ALL in src/render.rs. Once P1 (#17) adds
+      # `isotop --list-views`, loop over its output instead.
+      - name: Render every view headless
         run: |
-          for view in coop orbit; do
+          for view in city orbit ripple flow cores cells strata globe reef matrix coop; do
             ./target/release/isotop --demo --view "$view" --renderer cpu \
               --width 960 --time 12 --output "$view-${{ runner.os }}.png"
           done
@@ -69,7 +81,7 @@ jobs:
           sudo ./target/release/isotop --view orbit --width 960 --output live-root-macOS.png
           sudo chown "$(id -u)" live-root-macOS.png
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: renders-${{ runner.os }}
@@ -85,9 +97,29 @@ jobs:
         run: |
           ./target/release/isotop --demo --view coop --renderer gpu \
             --width 960 --time 12 --output coop-gpu-${{ runner.os }}.png
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: runner.os == 'macOS'
         continue-on-error: true
         with:
           name: renders-gpu-${{ runner.os }}
           path: coop-gpu-${{ runner.os }}.png
+
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+      # SHA-256 of cargo-deny-$CARGO_DENY_VERSION-x86_64-unknown-linux-musl.tar.gz, from the
+      # release's .sha256 asset. Update both together.
+      CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # cargo-deny is a tool, not a dependency, so install the prebuilt release binary.
+      - name: Install cargo-deny
+        run: |
+          archive="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl --fail --silent --show-error --location --output "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${archive}"
+          echo "${CARGO_DENY_SHA256}  ${archive}" | sha256sum --check
+          tar --extract --gzip --file "$archive" --strip-components=1 --wildcards '*/cargo-deny'
+      - run: ./cargo-deny --locked check advisories bans licenses sources

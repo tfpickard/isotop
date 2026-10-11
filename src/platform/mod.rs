@@ -78,7 +78,10 @@ compile_error!("isotop has platform support for Linux and macOS only");
 // The macOS log parser is std-only; Linux test builds compile it too so its tests run in the
 // Linux gates.
 #[cfg(all(test, not(target_os = "macos")))]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "on Linux only the parser's tests use it, not the macOS follower"
+)]
 #[path = "macos/journal.rs"]
 mod macos_journal;
 

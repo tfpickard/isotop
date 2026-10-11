@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use crate::platform;
+use crate::simulation::hash;
 
 /// Seconds between synthetic entries in demo mode.
 const DEMO_INTERVAL: f64 = 0.35;
@@ -176,7 +177,7 @@ pub fn demo(from: f64, to: f64) -> Vec<Line> {
     let last = (to / DEMO_INTERVAL).floor() as i64;
     (first.max(0)..=last)
         .map(|k| {
-            let hash = (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 32;
+            let hash = hash::golden_gamma_high(k as u64);
             let (priority, template) = LINES[hash as usize % LINES.len()];
             let text = template
                 .replace("{n}", &(hash % 9 + 1).to_string())

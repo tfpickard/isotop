@@ -13,9 +13,8 @@ use std::collections::hash_map::Entry;
 use std::f32::consts::{PI, TAU};
 
 use crate::model::{CoreKind, Cpu, Identity, Process, Snapshot, bounded};
-use crate::render::{
-    Camera, Color, Frame, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, tint,
-};
+use crate::palette::{core_color, core_name, kind_color, tint};
+use crate::render::{Camera, Color, Frame, NONE, Point, Stage, WARM, mass_radius, ring_bounds};
 
 /// Seconds of CPU time per lap, so a process using one full core laps every LAP seconds.
 const LAP: f32 = 10.0;
@@ -33,9 +32,6 @@ const TO_PERFORMANCE: f32 = 0.6;
 const TO_EFFICIENCY: f32 = 0.4;
 const FIRST_LEVEL: f32 = 0.5;
 const SEGMENTS: usize = 120;
-const PERFORMANCE: Color = [236, 178, 92];
-const EFFICIENCY: Color = [72, 183, 199];
-const UNKNOWN: Color = [140, 160, 196];
 const QUEUE: Color = [240, 96, 84];
 
 #[derive(Default)]
@@ -76,7 +72,7 @@ fn hopping(hop: Option<(f32, f32)>, target: f32, time: f32) -> (f32, f32, Option
 }
 
 /// The beam a hopping marble leaves along its arc, from the radius it left to where it is now.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "split in #71 (A12)")]
 fn hop_trail(
     frame: &mut Frame,
     camera: &Camera,
@@ -100,6 +96,7 @@ fn hop_trail(
 }
 
 impl Track {
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
         stage: &mut Stage,
@@ -190,11 +187,7 @@ impl Track {
         }
         for cpu in &cpus {
             let r = lane_radius(cpu.id);
-            let base = match cpu.kind {
-                CoreKind::Performance => PERFORMANCE,
-                CoreKind::Efficiency => EFFICIENCY,
-                CoreKind::Unknown => UNKNOWN,
-            };
+            let base = core_color(cpu.kind);
             let surface = tint(base, 0.10 + 0.45 * cpu.busy);
             let (inside, outside) = (r - LANE * 0.5 + 0.08, r + LANE * 0.5 - 0.08);
             for k in 0..SEGMENTS {
@@ -466,9 +459,10 @@ impl Track {
             );
             stage.positions.insert(process.id, position);
             let kind = match cpus.iter().find(|c| c.id == core).map(|c| c.kind) {
-                Some(CoreKind::Performance) => " (performance core)",
-                Some(CoreKind::Efficiency) => " (efficiency core)",
-                _ => "",
+                Some(kind @ (CoreKind::Performance | CoreKind::Efficiency)) => {
+                    format!(" ({} core)", core_name(kind))
+                }
+                _ => String::new(),
             };
             stage.notes.insert(
                 process.id,

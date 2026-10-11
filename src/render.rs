@@ -2,24 +2,20 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
+use crate::geometry::{dot, normalize};
+use crate::layout::{spin, spiral, vacant};
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
-use crate::model::{Identity, Kind, Measured, Process, Snapshot, bounded};
+use crate::model::{Identity, Process, Snapshot, bounded};
+use crate::palette::{DISTRICTS, kind_color, process_color, tint};
 use crate::platform::Shadow;
+use crate::simulation::{growth, hash, smoothing};
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
+
+pub mod shared;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
-pub const NONE: u32 = u32::MAX;
-const PALETTE: [Color; 8] = [
-    [72, 183, 199],
-    [122, 145, 229],
-    [190, 135, 215],
-    [211, 159, 91],
-    [98, 185, 149],
-    [212, 116, 140],
-    [149, 171, 213],
-    [166, 185, 104],
-];
+pub use shared::NONE;
 /// Screen pixels per world unit at zoom 1: sqrt(3/2), the isometric foreshortening.
 pub(crate) const SCALE: f32 = 1.224_745;
 /// Elevation of a true isometric view, asin(1/sqrt(3)).
@@ -31,7 +27,6 @@ pub const ORIGIN_Y: f32 = 0.57;
 /// Depth assigned to background stars, below every scene object.
 pub const BACKGROUND: f32 = -10000.0;
 pub(crate) const MIN_BODY_PX: f32 = 3.5;
-const GROW_SECONDS: f32 = 0.9;
 const FADE_SECONDS: f32 = 1.2;
 pub(crate) const WARM: Color = [255, 190, 110];
 pub(crate) const NVIDIA: Color = [118, 214, 60];
@@ -98,10 +93,10 @@ impl View {
 /// The sky behind a view. The GPU shader receives the discriminant as `globals.sky.x`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backdrop {
-    Dusk = 0,
-    Space = 1,
-    Sea = 2,
-    Void = 3,
+    Dusk = shared::BACKDROP_DUSK as isize,
+    Space = shared::BACKDROP_SPACE as isize,
+    Sea = shared::BACKDROP_SEA as isize,
+    Void = shared::BACKDROP_VOID as isize,
 }
 
 /// Which socket links to draw.
@@ -233,9 +228,13 @@ pub struct Sky {
 impl Sky {
     pub fn base(&self, y: f32) -> [f32; 3] {
         match self.backdrop {
-            Backdrop::Space => [5.0, 8.0, 18.0],
-            Backdrop::Dusk => [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0],
-            Backdrop::Sea => [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0],
+            Backdrop::Space => shared::SPACE_BASE,
+            Backdrop::Dusk => {
+                std::array::from_fn(|i| shared::DUSK_BASE[i] + y * shared::DUSK_SLOPE[i])
+            }
+            Backdrop::Sea => {
+                std::array::from_fn(|i| shared::SEA_BASE[i] - y * shared::SEA_SLOPE[i])
+            }
             Backdrop::Void => [0.0; 3],
         }
     }
@@ -243,8 +242,10 @@ impl Sky {
     /// Haze density along one normalised screen axis; the field is the product of both axes.
     pub fn profile(&self, t: f32, phase: f32) -> f32 {
         0.5 + 0.5
-            * (t * 7.3 + self.time * 0.11 + phase).sin()
-            * (t * 2.9 - self.time * 0.07 + phase * 1.7).cos()
+            * (t * shared::HAZE_FREQUENCY_A + self.time * shared::HAZE_DRIFT_A + phase).sin()
+            * (t * shared::HAZE_FREQUENCY_B - self.time * shared::HAZE_DRIFT_B
+                + phase * shared::HAZE_PHASE_B)
+                .cos()
     }
 
     pub fn hazy(&self) -> bool {
@@ -334,13 +335,19 @@ impl Frame {
         };
         if sky.backdrop == Backdrop::Space {
             for i in 0..(width * height / 1100).clamp(200, 4000) {
-                let hash = i.wrapping_mul(2654435761);
+                let hash = hash::knuth(i);
                 let x = (hash % width) as f32;
                 let y = (hash.rotate_left(13) % height) as f32;
                 frame.items.push(Item::Star([x, y], [37, 48, 71]));
             }
         }
         frame
+    }
+
+    /// Depth per pixel after a CPU rasterization; larger is nearer.
+    #[cfg(test)]
+    pub fn depth(&self) -> &[f32] {
+        &self.depth
     }
 
     pub fn release(self) -> Buffers {
@@ -564,7 +571,7 @@ impl Frame {
             self.pixel(
                 (a[0] + (b[0] - a[0]) * t) as i32,
                 (a[1] + (b[1] - a[1]) * t) as i32,
-                a[2] + (b[2] - a[2]) * t + 0.02,
+                a[2] + (b[2] - a[2]) * t + shared::LINE_DEPTH_BIAS,
                 color,
                 NONE,
             );
@@ -572,7 +579,11 @@ impl Frame {
     }
 
     fn ball(&mut self, p: Point, r: f32, depth: f32, color: Color, pick: u32, selected: bool) {
-        let outer = if selected { r + 3.0 } else { r + 1.0 };
+        let outer = if selected {
+            r + shared::SELECTION_RING_WIDTH
+        } else {
+            r + shared::SPHERE_EDGE
+        };
         let x0 = (p[0] - outer).floor().max(0.0) as i32;
         let x1 = (p[0] + outer).ceil().min(self.width as f32 - 1.0) as i32;
         let y0 = (p[1] - outer).floor().max(0.0) as i32;
@@ -584,10 +595,14 @@ impl Frame {
                 let d = nx * nx + ny * ny;
                 if d <= 1.0 {
                     let nz = (1.0 - d).sqrt();
-                    let light = (0.25 + (-nx * 0.4 - ny * 0.5 + nz * 0.65).max(0.0)).min(1.2);
+                    let light = (shared::SPHERE_AMBIENT
+                        + (-nx * shared::SPHERE_LIGHT_X - ny * shared::SPHERE_LIGHT_Y
+                            + nz * shared::SPHERE_LIGHT_Z)
+                            .max(0.0))
+                    .min(shared::SPHERE_LIGHT_MAX);
                     self.pixel(x, y, p[2] + nz * depth, tint(color, light), pick);
                 } else if selected && d <= (outer / r).powi(2) {
-                    self.pixel(x, y, p[2], [237, 220, 154], pick);
+                    self.pixel(x, y, p[2], shared::SELECTION_COLOR.map(|c| c as u8), pick);
                 }
             }
         }
@@ -764,16 +779,6 @@ impl Frame {
     }
 }
 
-/// Spawn animation progress, 0 to 1, easing out over GROW_SECONDS after a process appears.
-fn growth(births: &HashMap<Identity, f32>, id: Identity, time: f32) -> f32 {
-    let born = births.get(&id).copied().unwrap_or(f32::NEG_INFINITY);
-    if time < born {
-        return 1.0;
-    }
-    let t = ((time - born) / GROW_SECONDS).min(1.0);
-    1.0 - (1.0 - t).powi(3)
-}
-
 /// What a view module draws with and reports back to the scene.
 pub(crate) struct Stage<'a> {
     pub frame: &'a mut Frame,
@@ -835,34 +840,6 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
     let mut cut: String = name.chars().take(LABEL_NAME_CELLS - 2).collect();
     cut.push_str("..");
     Cow::Owned(cut)
-}
-
-pub fn tint(color: Color, scale: f32) -> Color {
-    color.map(|v| (v as f32 * scale).clamp(0.0, 255.0) as u8)
-}
-
-fn process_color(process: &Process, group: usize) -> Color {
-    match process.state {
-        'Z' => [213, 97, 126],
-        'T' | 't' => [225, 161, 75],
-        'D' => [222, 94, 73],
-        _ => PALETTE[group % PALETTE.len()],
-    }
-}
-
-/// Orbit colours by role: slate kernel, teal system, amber session, violet containers.
-pub(crate) fn kind_color(process: &Process) -> Color {
-    let base = match (process.state, process.kind) {
-        ('Z', _) => return [213, 97, 126],
-        ('T' | 't', _) => return [225, 161, 75],
-        ('D', _) => return [222, 94, 73],
-        (_, Kind::Kernel) => [104, 122, 156],
-        (_, Kind::System) => [72, 183, 199],
-        (_, Kind::Session) => [236, 178, 92],
-        (_, Kind::Container) => [178, 136, 232],
-    };
-    let jitter = (process.id.pid.wrapping_mul(2_654_435_761) >> 24) as f32 / 255.0;
-    tint(base, 0.86 + 0.24 * jitter)
 }
 
 #[derive(Clone, Copy)]
@@ -1137,7 +1114,8 @@ impl Scene {
     }
 
     /// Records a frame; call `Frame::rasterize` (or a GPU backend) to turn it into pixels.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #70 (A11)")]
+    #[expect(clippy::too_many_lines, reason = "split in #70 (A11)")]
     pub fn render(
         &mut self,
         snapshot: &Snapshot,
@@ -1156,7 +1134,7 @@ impl Scene {
             self.resources.clear();
         }
         self.last_time = Some(time);
-        let alpha = 1.0 - (-dt.max(0.0) / 0.3).exp();
+        let alpha = smoothing(dt.max(0.0), 0.3);
         let alive: HashSet<_> = snapshot.processes.iter().map(|p| p.id).collect();
         self.resources.retain(|id, _| alive.contains(id));
         self.births.retain(|id, _| alive.contains(id));
@@ -1374,7 +1352,11 @@ impl Scene {
             let strength = if glowing { 0.9 } else { 0.35 };
             frame.glow(camera, curve(t), 5.0, color, strength);
         }
-        for (id, &count) in &snapshot.outside {
+        // Overlapping beams blend in drawing order, and a `HashMap` iterates in a different order
+        // every run.
+        let mut outside: Vec<_> = snapshot.outside.iter().collect();
+        outside.sort_unstable_by_key(|&(id, _)| *id);
+        for (id, &count) in outside {
             let Some(&p) = self.positions.get(id) else {
                 continue;
             };
@@ -1392,6 +1374,7 @@ impl Scene {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in #73 (A14)")]
     fn draw_city(
         &mut self,
         frame: &mut Frame,
@@ -1417,7 +1400,7 @@ impl Scene {
                 [18, 29, 43],
                 NONE,
             );
-            let color = tint(PALETTE[district % 8], 0.35);
+            let color = tint(DISTRICTS[district % 8], 0.35);
             for i in 0..=4 {
                 let offset = i as f32 * 4.0;
                 frame.line(
@@ -1818,7 +1801,8 @@ impl Scene {
             }
             // Saturn-style rings in a plane tilted towards the viewer, so the front arc passes over
             // the body while the depth buffer hides the back arc behind it.
-            let yaw = (process.id.pid.wrapping_mul(2_246_822_519) >> 20) as f32 / 4096.0 * TAU;
+            // pid only: kept for pixel stability, see A33
+            let yaw = (hash::xxhash_prime2(process.id.pid) >> 20) as f32 / 4096.0 * TAU;
             let (ys, yc) = yaw.sin_cos();
             let (ts, tc) = 0.45_f32.sin_cos();
             let across = [yc, ys, 0.0];
@@ -1845,7 +1829,6 @@ impl Scene {
     /// ripples at its own pitch, so a cluster's rings interfere with each other and spread over
     /// open water to the next. Buoys float on the surface sized by memory; every patch of water
     /// belongs to its nearest process; births drip and exits splash. Pressure raises a swell.
-    #[allow(clippy::too_many_arguments)]
     fn draw_ripples(
         &mut self,
         frame: &mut Frame,
@@ -1887,7 +1870,8 @@ impl Scene {
             .filter(|(body, _)| processes[body.index].cpu > 0.3)
             .map(|(body, &at)| {
                 let process = processes[body.index];
-                let hash = process.id.pid.wrapping_mul(2_654_435_761);
+                // pid only: kept for pixel stability, see A33
+                let hash = hash::knuth(process.id.pid);
                 let frequency = 0.35 + 0.9 * (hash >> 24) as f32 / 255.0;
                 let phase = (hash >> 8 & 0xffff) as f32 / 65536.0 * TAU;
                 (
@@ -1998,7 +1982,8 @@ impl Scene {
     /// Spacetime weather: memory bends a sheet into gravity wells, CPU spins whirlpools, sockets
     /// become two-lane rivers between the wells of processes that talk, and connections leaving
     /// the machine send sparks up off the sheet. Particles in each emitter's colour trace it all.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #74 (A15)")]
+    #[expect(clippy::too_many_lines, reason = "split in #74 (A15)")]
     fn draw_flow(
         &mut self,
         frame: &mut Frame,
@@ -2093,7 +2078,11 @@ impl Scene {
                 }
             }
         }
-        for (id, &count) in &snapshot.outside {
+        // A `HashMap` iterates in a different order every run; the particles draw from one random
+        // stream, so a fixed order keeps the frame repeatable.
+        let mut outside: Vec<_> = snapshot.outside.iter().collect();
+        outside.sort_unstable_by_key(|&(id, _)| *id);
+        for (id, &count) in outside {
             if let Some(index) = processes.iter().position(|p| p.id == *id)
                 && let Some(slot) = bodies.iter().position(|b| b.index == index)
             {
@@ -2465,9 +2454,9 @@ impl Scene {
             let (group, slot) = &self.pebbles[&process.id];
             let cluster = &self.clusters[group];
             let k = *slot as f32;
-            let distance = cluster.spacing * (k + 0.5).sqrt();
-            let angle = k * GOLDEN_ANGLE + spin(group);
-            let hash = process.id.pid.wrapping_mul(2_654_435_761);
+            let (distance, angle) = spiral(cluster.spacing, 0.5, k, spin(group));
+            // pid only: kept for pixel stability, see A33
+            let hash = hash::knuth(process.id.pid);
             let jitter = cluster.spacing * 0.1 * (hash & 0xffff) as f32 / 65536.0;
             let toss = (hash >> 16) as f32 / 65536.0 * TAU;
             self.positions.insert(
@@ -2635,7 +2624,7 @@ impl Scene {
 
     /// Places a body and its descendants. `target` is the settled position used for layout,
     /// picking and labels; `drawn` includes the spawn animation that flies bodies out of parents.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #74 (A15)")]
     fn orbit_branch(
         &mut self,
         tree: &Tree,
@@ -2711,24 +2700,6 @@ impl Scene {
     }
 }
 
-/// The first point on a golden-angle spiral out from the origin where a disc of `radius` clears
-/// every placed (centre, radius) disc.
-pub(crate) fn vacant(placed: &[([f32; 2], f32)], radius: f32) -> [f32; 2] {
-    let step = (radius * 0.4).max(1.0);
-    (0_u32..)
-        .map(|k| {
-            let distance = step * (k as f32).sqrt();
-            let angle = k as f32 * GOLDEN_ANGLE;
-            [distance * angle.cos(), distance * angle.sin()]
-        })
-        .find(|c| {
-            placed
-                .iter()
-                .all(|(o, r)| (c[0] - o[0]).hypot(c[1] - o[1]) >= radius + r)
-        })
-        .expect("the spiral eventually clears every placed disc")
-}
-
 /// One cgroup's processes on the ripple pond: pebbles on a sunflower spiral around the centre,
 /// slot k at sqrt(k + 1/2) spacings out and k golden angles round.
 #[derive(Default)]
@@ -2740,14 +2711,6 @@ struct Cluster {
     /// Radius of open water reserved around the centre; zero until placed.
     reserved: f32,
     slots: HashMap<usize, Identity>,
-}
-
-/// A stable angle per name, so clusters don't all share one spiral orientation.
-pub(crate) fn spin(name: &str) -> f32 {
-    let hash = name.bytes().fold(2_166_136_261_u32, |h, b| {
-        (h ^ b as u32).wrapping_mul(16_777_619)
-    });
-    (hash >> 8) as f32 / 16_777_216.0 * TAU
 }
 
 /// A socket link as a two-lane river in the flow field.
@@ -2802,19 +2765,9 @@ fn territories(grid: &Grid, bodies: &[Body], located: &[[f32; 2]], radii: &[f32]
     owners
 }
 
-pub(crate) fn dot(a: Point, b: Point) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn normalize(a: Point) -> Point {
-    let length = dot(a, a).sqrt().max(1e-6);
-    a.map(|v| v / length)
-}
-
 const MAX_DEPTH: usize = 3;
 const ORBIT_GAP: f32 = 0.6;
 const SYSTEM_GAP: f32 = 2.5;
-pub(crate) const GOLDEN_ANGLE: f32 = 2.399_963;
 /// Clearance between neighbouring ripple pebbles, and open water around each cluster.
 const PEBBLE_GAP: f32 = 1.0;
 const POND_GAP: f32 = 3.0;
@@ -2837,34 +2790,12 @@ pub fn is_hub(id: &Identity) -> bool {
 /// The stand-in for a parent isotop cannot read, with nothing measured.
 fn hub(shadow: &Shadow) -> Process {
     Process {
-        id: Identity {
-            pid: shadow.pid,
-            start: HUB_START,
-        },
         parent: shadow.pid,
         name: shadow.name.clone(),
-        command: String::new(),
-        group: String::new(),
-        kind: Kind::System,
-        state: 'S',
-        cpu: 0.0,
-        memory: 0,
-        io_rate: None,
-        read_rate: None,
-        write_rate: None,
-        written: None,
-        priority: 0,
-        nice: 0,
-        threads: 0,
-        gpu_memory: 0,
-        core: 0,
-        cpu_time: 0.0,
-        cgroup: String::new(),
-        performance_share: None,
-        waiting: None,
-        files: Measured::Unreadable,
-        locks_held: Measured::Unreadable,
-        blocked_on: None,
+        ..Process::placeholder(Identity {
+            pid: shadow.pid,
+            start: HUB_START,
+        })
     }
 }
 
@@ -2916,7 +2847,8 @@ fn arc(extent: f32) -> f32 {
 /// Eccentricity and periapsis direction shared by all of one parent's shells. Confocal ellipses
 /// with the same shape are scaled copies of each other, so neighbouring shells never cross.
 fn elements(pid: u32) -> (f32, f32) {
-    let hash = pid.wrapping_mul(2_654_435_761);
+    // pid only: kept for pixel stability, see A33
+    let hash = hash::knuth(pid);
     let e = 0.06 + 0.16 * (hash >> 24) as f32 / 255.0;
     let omega = TAU * ((hash >> 8) & 0xffff) as f32 / 65536.0;
     (e, omega)
@@ -3061,40 +2993,9 @@ pub fn descendants(snapshot: &Snapshot, root: Identity) -> HashSet<Identity> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::demo;
-
-    fn process(pid: u32, parent: u32) -> Process {
-        Process {
-            id: Identity {
-                pid,
-                start: pid as u64,
-            },
-            parent,
-            name: format!("p{pid}"),
-            command: String::new(),
-            group: "g".into(),
-            kind: Kind::System,
-            state: 'S',
-            cpu: 0.0,
-            memory: 1 << 20,
-            io_rate: None,
-            read_rate: None,
-            write_rate: None,
-            written: None,
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
-            cgroup: "/system.slice/g.service".into(),
-            performance_share: None,
-            waiting: None,
-            files: crate::model::Measured::Pending,
-            locks_held: crate::model::Measured::Pending,
-            blocked_on: None,
-        }
-    }
+    use crate::model::testing::process;
+    use crate::model::{Kind, demo};
+    use crate::simulation::GROW_SECONDS;
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, view: View, time: f32) -> Frame {
         let mut frame = scene.render(

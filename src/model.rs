@@ -8,16 +8,18 @@ use std::time::{Duration, Instant};
 use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{self, RawProcess};
+use crate::simulation::smoothing;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
     pub pid: u32,
     pub start: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Kind {
     Kernel,
+    #[default]
     System,
     Session,
     Container,
@@ -71,6 +73,53 @@ pub struct Process {
     /// The pid holding the file lock this process is waiting for, or `platform::UNNAMED` when no
     /// process can be named for it (an OFD lock, or a holder in another pid namespace).
     pub blocked_on: Option<u32>,
+}
+
+impl Default for Process {
+    /// A harmless placeholder: pid 0 (never a real process), a sleeping system process, and
+    /// nothing measured yet.
+    fn default() -> Self {
+        Process {
+            id: Identity::default(),
+            parent: 0,
+            name: String::new(),
+            command: String::new(),
+            group: String::new(),
+            kind: Kind::default(),
+            state: 'S',
+            cpu: 0.0,
+            memory: 0,
+            io_rate: None,
+            read_rate: None,
+            write_rate: None,
+            written: None,
+            priority: 0,
+            nice: 0,
+            threads: 0,
+            gpu_memory: 0,
+            core: 0,
+            cpu_time: 0.0,
+            cgroup: String::new(),
+            performance_share: None,
+            waiting: None,
+            files: Measured::Pending,
+            locks_held: Measured::Pending,
+            blocked_on: None,
+        }
+    }
+}
+
+impl Process {
+    /// A synthetic row that stands in for a process isotop cannot read, such as a hub: nothing
+    /// is measured, and nothing can be, so the background fields are unreadable rather than pending.
+    pub fn placeholder(id: Identity) -> Process {
+        Process {
+            id,
+            files: Measured::Unreadable,
+            locks_held: Measured::Unreadable,
+            ..Process::default()
+        }
+    }
 }
 
 /// A measurement taken on the background thread, which may not have reached a process yet.
@@ -579,7 +628,7 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
     let waited = runnable_ticks.map(|runnable| i128::from(runnable) - i128::from(ticks));
     if let Some(previous) = previous {
         let raw = ticks.saturating_sub(previous.ticks) as f32 / hz / dt * 100.0;
-        let alpha = 1.0 - (-dt / 1.5).exp();
+        let alpha = smoothing(dt, 1.5);
         process.cpu = previous.cpu + alpha * (raw - previous.cpu);
         if let Some([total, read, write]) = io
             .zip(previous.io)
@@ -718,6 +767,7 @@ fn demo_files(index: usize, kind: Kind) -> (platform::Files, u32, Option<usize>)
     (files, held, waiting)
 }
 
+#[expect(clippy::too_many_lines, reason = "split in #90 (A31)")]
 pub fn demo(time: f64, count: usize) -> Snapshot {
     let names = [
         "init",
@@ -764,6 +814,7 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         let stalled = (time * 0.3 + i as f64 * 2.1).sin() > 0.7;
         let core = ((i * 7 + (time / (5.0 + (i % 5) as f64)) as usize) % 16) as u32;
         let (files, locks_held, waiting_for) = demo_files(i, kind);
+        // Exhaustive on purpose: a new field must be decided here.
         processes.push(Process {
             id: Identity {
                 pid: 1000 + i as u32,
@@ -1036,6 +1087,32 @@ pub fn describe(process: &Process) -> String {
         }),
     };
     text.into()
+}
+
+/// Constructors shared by the tests of every module.
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+
+    /// A quiet sleeping process with a 1 MiB footprint, a normal priority and one thread, in
+    /// the group `g`; its background measurements are pending. Tests set what they care about
+    /// with struct update.
+    pub fn process(pid: u32, parent: u32) -> Process {
+        Process {
+            id: Identity {
+                pid,
+                start: pid as u64,
+            },
+            parent,
+            name: format!("p{pid}"),
+            group: "g".into(),
+            memory: 1 << 20,
+            priority: 20,
+            threads: 1,
+            cgroup: "/system.slice/g.service".into(),
+            ..Process::default()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1508,5 +1585,20 @@ mod tests {
         task.files = Measured::Pending;
         merge_files(&mut task, &HashMap::from([(0, None)]), &Measured::Pending);
         assert_eq!(task.files, Measured::Unreadable, "without root");
+    }
+
+    #[test]
+    fn default_process_is_a_harmless_placeholder() {
+        let process = Process::default();
+        assert_eq!(
+            process.id.pid, 0,
+            "pid 0 is never looked up as a real process"
+        );
+        assert_eq!(process.kind, Kind::System);
+        assert_eq!(process.files, Measured::Pending);
+        let hub = Process::placeholder(Identity { pid: 7, start: 1 });
+        assert_eq!((hub.id.pid, hub.kind), (7, Kind::System));
+        assert_eq!(hub.files, Measured::Unreadable);
+        assert_eq!(hub.locks_held, Measured::Unreadable);
     }
 }

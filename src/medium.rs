@@ -2,6 +2,7 @@
 //! flow over a cached velocity field. Rendering lives in render.rs; this module is pure state.
 
 use crate::render::{Color, Point};
+use crate::simulation::{GOLDEN_RATIO_32, XorShift32};
 
 /// Wave speed in grid cells per second.
 const WAVE_SPEED: f32 = 14.0;
@@ -202,7 +203,7 @@ pub struct Flow {
     pub particles: Vec<Particle>,
     pub field_time: f32,
     pub time: f32,
-    seed: u32,
+    random: XorShift32,
 }
 
 impl Flow {
@@ -214,16 +215,13 @@ impl Flow {
             particles: Vec::new(),
             field_time: f32::NEG_INFINITY,
             time,
-            seed: 0x9e37_79b9,
+            random: XorShift32::new(GOLDEN_RATIO_32),
         }
     }
 
     /// Uniform random number in [0, 1) from a xorshift generator.
     pub fn random(&mut self) -> f32 {
-        self.seed ^= self.seed << 13;
-        self.seed ^= self.seed >> 17;
-        self.seed ^= self.seed << 5;
-        (self.seed >> 8) as f32 / (1 << 24) as f32
+        self.random.unit()
     }
 
     pub fn depth_at(&self, p: [f32; 2]) -> f32 {

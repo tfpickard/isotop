@@ -7,13 +7,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::OnceLock;
 
+use crate::geometry::{cuboid, normalize_or_zero, shade};
+use crate::layout::{Discs, Seats, spin};
 use crate::model::{CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot, bounded, bytes};
-use crate::pack::{Discs, Seats};
+use crate::palette::{core_color, core_name, kind_color, tint};
 use crate::platform::{DeletedFile, UNNAMED};
-use crate::render::{
-    Camera, Color, Frame, NONE, Point, SCALE, Stage, kind_color, spin, tint, without_apple_prefix,
-};
-use crate::simulation::{Rng, SpatialHash};
+use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, without_apple_prefix};
+use crate::simulation::hash::unit_from as fraction;
+use crate::simulation::{Rng, SpatialHash, hash, sprout};
 
 /// Fixed simulation step in seconds. The yard advances on wall-clock time in whole steps, so
 /// every frame rate follows the same trajectory.
@@ -102,9 +103,6 @@ const YARD_MARGIN: f32 = 2.5;
 /// The narrowest yard, wide enough for a row of feeders.
 const MIN_YARD: f32 = 24.0;
 
-const PERFORMANCE: Color = [236, 178, 92];
-const EFFICIENCY: Color = [72, 183, 199];
-const UNKNOWN: Color = [140, 160, 196];
 const GRASS: Color = [70, 118, 60];
 const DIRT: Color = [118, 94, 66];
 const WOOD: Color = [156, 120, 82];
@@ -281,19 +279,11 @@ fn keep_inside(point: [f32; 2], radius: f32, low: [f32; 2], high: [f32; 2]) -> [
     })
 }
 
-fn unit(v: [f32; 2]) -> [f32; 2] {
-    let length = v[0].hypot(v[1]);
-    if length > 1e-6 {
-        [v[0] / length, v[1] / length]
-    } else {
-        [0.0, 0.0]
-    }
-}
-
 /// A fixed direction for two coincident chickens, opposite for each of the pair.
 fn parting(a: Identity, b: Identity) -> [f32; 2] {
     let (low, high, sign) = if a < b { (a, b, 1.0) } else { (b, a, -1.0) };
-    let angle = (low.pid.wrapping_mul(2_654_435_761) ^ high.pid) as f32 / u32::MAX as f32 * TAU;
+    // pid only: kept for pixel stability, see A33
+    let angle = (hash::knuth(low.pid) ^ high.pid) as f32 / u32::MAX as f32 * TAU;
     [sign * angle.cos(), sign * angle.sin()]
 }
 
@@ -360,7 +350,8 @@ impl Yard {
             );
             peers.sort_unstable_by_key(|&(k, _)| self.chickens[k].id);
             for &(k, weight) in &peers {
-                let toward = unit([positions[k][0] - here[0], positions[k][1] - here[1]]);
+                let toward =
+                    normalize_or_zero([positions[k][0] - here[0], positions[k][1] - here[1]]);
                 sum[0] += weight * (headings[k].cos() + 0.5 * toward[0]);
                 sum[1] += weight * (headings[k].sin() + 0.5 * toward[1]);
             }
@@ -369,7 +360,7 @@ impl Yard {
                 let distance = away[0].hypot(away[1]);
                 if distance > home.range {
                     let pull = 0.6 * ((distance - home.range) / 4.0).min(1.0);
-                    let direction = unit(away);
+                    let direction = normalize_or_zero(away);
                     sum[0] += pull * direction[0];
                     sum[1] += pull * direction[1];
                 }
@@ -379,7 +370,7 @@ impl Yard {
                 let distance = away[0].hypot(away[1]);
                 if distance < FLEE {
                     let push = 1.5 * (1.0 - distance / FLEE);
-                    let direction = unit(away);
+                    let direction = normalize_or_zero(away);
                     sum[0] += push * direction[0];
                     sum[1] += push * direction[1];
                 }
@@ -932,22 +923,6 @@ fn home_range(radius: f32) -> f32 {
     (2.5 * radius).max(6.0)
 }
 
-fn feeder_color(kind: CoreKind) -> Color {
-    match kind {
-        CoreKind::Performance => PERFORMANCE,
-        CoreKind::Efficiency => EFFICIENCY,
-        CoreKind::Unknown => UNKNOWN,
-    }
-}
-
-fn kind_name(kind: CoreKind) -> &'static str {
-    match kind {
-        CoreKind::Performance => "performance",
-        CoreKind::Efficiency => "efficiency",
-        CoreKind::Unknown => "unknown",
-    }
-}
-
 /// Feeders in rows below the houses, between `left` and `right`, the first row's troughs just
 /// south of `top`, sorted by kind then id. With `shared`, one more trough follows in a row of its
 /// own, centred in the yard and as wide as the CPUs are many (3 to 8 slots). Returns the feeders
@@ -1042,18 +1017,6 @@ fn peer_weight(traffic: Option<f32>, cpu: f32, other: f32) -> f32 {
 
 fn rate(value: f32) -> String {
     bytes(value.max(0.0) as u64)
-}
-
-fn hash(value: u32) -> u32 {
-    let mut x = value.wrapping_mul(0x9e37_79b9) ^ 0x85eb_ca6b;
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x2c1b_3c6d);
-    x ^= x >> 12;
-    x
-}
-
-fn fraction(value: u32) -> f32 {
-    (hash(value) >> 8) as f32 / 16_777_216.0
 }
 
 impl Coop {
@@ -1335,6 +1298,7 @@ impl Coop {
 
     /// Lays out houses, perches and feeders and decides each chicken's role, target, speed, noise
     /// and peers from the measured sample. Runs once per new sample or when the drawn set changes.
+    #[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
     fn decide(
         &mut self,
         processes: &[&Process],
@@ -1717,7 +1681,7 @@ impl Coop {
                 let place = if feeder.shared {
                     "the shared trough (no last CPU on this OS)".to_owned()
                 } else {
-                    format!("cpu{} ({})", feeder.cpu, kind_name(feeder.kind))
+                    format!("cpu{} ({})", feeder.cpu, core_name(feeder.kind))
                 };
                 let mut note = format!(
                     "feeding at {place}, pecking rank {} of {} by {standing}",
@@ -1965,7 +1929,7 @@ impl Coop {
         let time = stage.time;
         let grows: Vec<f32> = order
             .iter()
-            .map(|&index| 0.3 + 0.7 * stage.growth(processes[index].id))
+            .map(|&index| sprout(stage.growth(processes[index].id)))
             .collect();
         let frame = &mut *stage.frame;
         let (low, high) = (self.yard.low, self.yard.high);
@@ -2121,43 +2085,6 @@ fn puffs(read: f32) -> usize {
     (1 + (read / DUST_RATE).log2().max(0.0) as usize).min(MAX_PUFFS)
 }
 
-/// Shading of a vertical face by its outward direction, from a fixed light in the north west.
-fn shade(color: Color, normal: [f32; 2]) -> Color {
-    tint(color, 0.72 + 0.2 * (-0.6 * normal[0] + 0.8 * normal[1]))
-}
-
-/// An axis-aligned box: its top and four sides, each shaded by facing.
-fn cuboid(frame: &mut Frame, camera: &Camera, low: Point, high: Point, color: Color) {
-    let [x0, y0, z0] = low;
-    let [x1, y1, z1] = high;
-    frame.quad(
-        camera,
-        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
-        tint(color, 1.05),
-        NONE,
-    );
-    for (points, normal) in [
-        (
-            [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
-            [0.0, -1.0],
-        ),
-        (
-            [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
-            [0.0, 1.0],
-        ),
-        (
-            [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]],
-            [-1.0, 0.0],
-        ),
-        (
-            [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
-            [1.0, 0.0],
-        ),
-    ] {
-        frame.quad(camera, points, shade(color, normal), NONE);
-    }
-}
-
 /// Grass inside and around the fence, with packed earth under the feeders. Decorative.
 fn draw_ground(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2], band_top: f32) {
     let margin = HEDGE + 2.5;
@@ -2291,7 +2218,7 @@ fn draw_hedge(frame: &mut Frame, camera: &Camera, low: [f32; 2], high: [f32; 2])
 fn draw_feeder(frame: &mut Frame, camera: &Camera, feeder: &Feeder) {
     let [x, y] = feeder.center;
     let half = [feeder.length() * 0.5, TROUGH_DEPTH * 0.5];
-    let color = feeder_color(feeder.kind);
+    let color = core_color(feeder.kind);
     cuboid(
         frame,
         camera,
@@ -2565,7 +2492,8 @@ fn offset(base: Point, forward: [f32; 2], f: f32, side: f32, up: f32) -> Point {
 
 /// Draws one chicken in the pose of its role and returns its body centre: a plump body of
 /// three spheres, neck, head with comb, beak, wattle and eyes, wings, a tail fan and legs.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "split in #78 (A19)")]
+#[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
 fn draw_chicken(
     frame: &mut Frame,
     camera: &Camera,
@@ -2944,19 +2872,19 @@ fn draw_fox(frame: &mut Frame, camera: &Camera, fox: &Fox, time: f32) {
     let (at, heading, carrying) = if u < 0.42 {
         (
             lerp(fox.entry, fox.prey, ease(u / 0.42)),
-            unit([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
+            normalize_or_zero([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
             false,
         )
     } else if u < 0.55 {
         (
             fox.prey,
-            unit([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
+            normalize_or_zero([fox.prey[0] - fox.entry[0], fox.prey[1] - fox.entry[1]]),
             true,
         )
     } else {
         (
             lerp(fox.prey, fox.exit, ease((u - 0.55) / 0.45)),
-            unit([fox.exit[0] - fox.prey[0], fox.exit[1] - fox.prey[1]]),
+            normalize_or_zero([fox.exit[0] - fox.prey[0], fox.exit[1] - fox.prey[1]]),
             true,
         )
     };
@@ -3065,31 +2993,18 @@ mod tests {
 
     fn process(pid: u32, cgroup: &str) -> Process {
         Process {
-            id: identity(pid),
-            parent: 1,
             name: format!("hen-{pid}"),
-            command: String::new(),
             group: cgroup.rsplit('/').next().unwrap_or("").into(),
-            kind: Kind::System,
-            state: 'S',
             cpu: 5.0,
             memory: 20 << 20,
             io_rate: Some(0.0),
             read_rate: Some(0.0),
             write_rate: Some(0.0),
             written: Some(0),
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
             cgroup: cgroup.into(),
-            performance_share: None,
-            waiting: None,
             files: Measured::Known(crate::platform::Files::default()),
             locks_held: Measured::Known(0),
-            blocked_on: None,
+            ..crate::model::testing::process(pid, 1)
         }
     }
 

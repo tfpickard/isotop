@@ -36,8 +36,11 @@ impl Sampler {
         Self {
             cpu_previous: HashMap::new(),
             core_kinds: core_kinds(),
-            // These sysconf selectors return positive values on supported Linux systems.
+            // SAFETY: sysconf takes no pointers and has no preconditions; for a selector it
+            // does not know it returns -1, which max(1) clamps. These selectors return positive
+            // values on supported Linux systems.
             hz: unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f32,
+            // SAFETY: as above.
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
         }
     }
@@ -420,6 +423,7 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, u64)> {
         Measured::Pending
     };
     Some((
+        // Exhaustive on purpose: a new field must be decided here.
         Process {
             id: Identity {
                 pid,

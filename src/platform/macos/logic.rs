@@ -1,9 +1,6 @@
 //! The macOS collector's decisions, kept free of FFI so they compile and are tested on Linux
 //! too (`platform/mod.rs` includes this file in Linux test builds).
 
-// On Linux only the tests below use these items.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
