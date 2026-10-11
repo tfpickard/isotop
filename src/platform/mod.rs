@@ -386,6 +386,20 @@ pub enum LifeSource {
 }
 
 impl LifeSource {
+    /// Every mechanism, most detailed first: with `source`, what picks the delivering ones out of
+    /// `Snapshot::sources`, which also holds the demanded stream (`Source::LifeEvents`) and other
+    /// views' sources.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first read by the necropolis view (#45)")
+    )]
+    pub const ALL: [LifeSource; 4] = [
+        LifeSource::Taskstats,
+        LifeSource::Connector,
+        LifeSource::Kqueue,
+        LifeSource::Diff,
+    ];
+
     /// The `Source` that `Snapshot::sources` lists while this one delivers.
     pub fn source(self) -> Source {
         match self {
@@ -679,6 +693,20 @@ mod tests {
         assert_eq!(
             named,
             ["proc connector", "taskstats", "kqueue", "sample diff"]
+        );
+        let reported: Sources = LifeSource::ALL
+            .map(LifeSource::source)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            reported.iter().collect::<Vec<_>>(),
+            [
+                Source::ProcConnector,
+                Source::Taskstats,
+                Source::Kqueue,
+                Source::SampleDiff
+            ],
+            "every mechanism is listed once, and none is the demanded stream"
         );
     }
 
