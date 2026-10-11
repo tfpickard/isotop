@@ -606,6 +606,12 @@ reports presented frame throughput after restoring the terminal.
 The scene admits at most 1024 processes by default (`--limit` changes this).
 Selection can bring a process beyond the cap into the scene.
 
+<!-- metrics:start -->
+## By the numbers
+
+29,640 lines of Rust (19,017 production, 10,623 test) in 37 files, 382 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+<!-- metrics:end -->
+
 ## Development
 
 ```sh
@@ -614,7 +620,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 python3 scripts/smoke_terminal.py
+python3 scripts/code_report.py --check
 ```
+
+`python3 scripts/code_report.py` regenerates `docs/METRICS.md` and the block above; it needs
+[tokei](https://github.com/XAMPPRocky/tokei) (`brew install tokei`, `paru -S tokei` or
+`cargo install tokei --locked`).
 
 The smoke test emulates a graphics-capable terminal through a pseudo-terminal,
 reads frames both inline and through shared memory, and exercises interactive
