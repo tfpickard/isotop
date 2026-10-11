@@ -44,8 +44,9 @@ use terminal::{Label, Popup, Terminal, Tone};
 use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, When};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
-/// How long the journal follower keeps running after a view that reads the journal (Matrix) was
-/// last shown, so a look at another view does not restart it, and with it the rain's backlog.
+/// How long the journal follower keeps running after the demand last contained
+/// `Source::Journal` (Matrix was shown), so a look at another view does not restart it, and with
+/// it the rain's backlog.
 const JOURNAL_LINGER: Duration = Duration::from_secs(30);
 /// Terminal rows of the status panel under the scene.
 const PANEL_ROWS: u16 = 5;
@@ -337,8 +338,8 @@ struct App {
     gpu: Option<gpu::Gpu>,
     /// Which rasterizer drew the last frame, for the status strip.
     renderer: String,
-    /// When a view that reads the journal was last shown; None while none has been.
-    journal_shown: Option<Instant>,
+    /// When the demand last contained `Source::Journal`; None while it has not.
+    journal_demanded: Option<Instant>,
     /// Whether each of the scene's views runs on this platform, in row order.
     available: Vec<bool>,
 }
@@ -379,7 +380,7 @@ impl App {
             tour: None,
             gpu: None,
             renderer: "cpu".into(),
-            journal_shown: None,
+            journal_demanded: None,
             available,
         };
         app.switch(view);
@@ -391,13 +392,13 @@ impl App {
         self.scene.row(self.view)
     }
 
-    /// Whether the journal follower should run at `now`: while a view that reads the journal is
-    /// shown and for `JOURNAL_LINGER` after one was last shown.
+    /// Whether the journal follower should run at `now`: while the demand contains
+    /// `Source::Journal` and for `JOURNAL_LINGER` after it last did.
     fn journal_wanted(&mut self, now: Instant) -> bool {
-        if self.row().sources.contains(Source::Journal) {
-            self.journal_shown = Some(now);
+        if self.demand().contains(Source::Journal) {
+            self.journal_demanded = Some(now);
         }
-        self.journal_shown
+        self.journal_demanded
             .is_some_and(|shown| now.saturating_duration_since(shown) < JOURNAL_LINGER)
     }
 
@@ -1423,11 +1424,10 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     if options.duration.is_some_and(|v| !v.is_finite() || v <= 0.0) {
         return Err("--duration must be finite and positive".into());
     }
-    let sources = view.info().sources;
+    let demand = Demand::from(view.info().sources);
     let mut collector = Collector::new(options.geoip.clone(), options.home);
-    collector.demand(Demand::from(sources));
-    collector.locate(sources.contains(Source::Locations));
-    let mut journal = (sources.contains(Source::Journal) && !options.demo).then(Journal::start);
+    collector.demand(demand);
+    let mut journal = (demand.contains(Source::Journal) && !options.demo).then(Journal::start);
     let mut snapshot = if options.demo {
         demo_snapshot(
             view.info(),
@@ -1513,7 +1513,6 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                         options.processes as usize,
                     )
                 } else {
-                    collector.locate(app.row().sources.contains(Source::Locations));
                     collector.sample()?
                 };
                 app.scene.record(&snapshot, app.animation);
@@ -1536,7 +1535,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                 journal = Some(Journal::start());
             }
         }
-        if app.row().sources.contains(Source::Journal) {
+        if app.demand().contains(Source::Journal) {
             let now = origin.elapsed().as_secs_f64();
             // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
             if !app.paused {

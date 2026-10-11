@@ -404,10 +404,6 @@ impl Demand {
 
     /// Runs `read` and returns what it read when `source` is demanded; None, without running
     /// it, when it is not. Every optional background source reads through this.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no optional source reads through it yet")
-    )]
     pub fn read_if<T>(self, source: Source, read: impl FnOnce() -> T) -> Option<T> {
         self.contains(source).then(read)
     }
@@ -441,10 +437,6 @@ impl Reads {
     /// Reads `source` through `Demand::read_if` and records the outcome: `read` returns None
     /// when the source cannot be read (permissions, kernel, hardware, platform), which makes it
     /// missing instead of active. A source that is not demanded is neither.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no optional source reads through it yet")
-    )]
     fn read<T>(&mut self, source: Source, read: impl FnOnce() -> Option<T>) -> Option<T> {
         let value = self.demand.read_if(source, read)?;
         match value {
@@ -697,9 +689,9 @@ pub struct Collector {
     origin: Instant,
     background: Option<Background>,
     /// Cgroup paths the background thread should account, and the optional sources it should
-    /// read (`Collector::demand`).
+    /// read (`Collector::demand`): remote locations, for one, which only the globe shows and
+    /// whose first lookup loads the GeoIP database.
     wanted: Arc<Mutex<HashSet<String>>>,
-    locating: Arc<AtomicBool>,
     demand: Arc<Mutex<Demand>>,
     /// The processes of the latest sample by pid, which the background scans are joined against.
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
@@ -714,7 +706,6 @@ pub struct Collector {
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
-    locating: Arc<AtomicBool>,
     demand: Arc<Mutex<Demand>>,
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
 ) -> Option<Background> {
@@ -734,7 +725,7 @@ fn background(
             let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
             // Once per cycle, so a view change takes effect at the next cycle and no source is
             // half read.
-            let reads = Reads::new(
+            let mut reads = Reads::new(
                 demand
                     .lock()
                     .map_or_else(|error| *error.into_inner(), |d| *d),
@@ -742,10 +733,12 @@ fn background(
             let paths = accounted(wanted_now, &mut retained);
             let mut latency = Vec::new();
             let network = timed(&mut latency, Source::Sockets, platform::network);
-            let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
-            let remotes = timed(&mut latency, Source::Locations, || {
-                remotes(&network.remotes, &mut sockets, locator)
+            let places = reads.read(Source::Locations, || {
+                timed(&mut latency, Source::Locations, || {
+                    located(&mut geo, &network.remotes)
+                })
             });
+            let remotes = remotes(&network.remotes, &mut sockets, places.as_deref());
             let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
             let gpu_memory = timed(&mut latency, Source::GpuMemory, || {
                 gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default()
@@ -921,17 +914,30 @@ fn merge_files(
     };
 }
 
-/// Byte rates from the change in each socket's counters since the previous scan, and locations.
+/// Where each of `sockets` is, in order, from the GeoIP database; None when no database can be
+/// read, which makes `Source::Locations` missing. The database loads on the first public
+/// address, so a machine with none to look up is not judged yet.
+fn located(geo: &mut geo::Geo, sockets: &[platform::Remote]) -> Option<Vec<Option<Place>>> {
+    let places = sockets
+        .iter()
+        .map(|socket| geo.locate(socket.address))
+        .collect();
+    (!geo.lacks_database()).then_some(places)
+}
+
+/// Byte rates from the change in each socket's counters since the previous scan, and `places`,
+/// where each of them is when the locations were read.
 fn remotes(
     sockets: &[platform::Remote],
     previous: &mut HashMap<u64, (Instant, u64, u64)>,
-    mut geo: Option<&mut geo::Geo>,
+    places: Option<&[Option<Place>]>,
 ) -> Vec<Remote> {
     let now = Instant::now();
     let mut next = HashMap::new();
     let found = sockets
         .iter()
-        .map(|socket| {
+        .enumerate()
+        .map(|(index, socket)| {
             let rate = |now_bytes: u64, then_bytes: u64, dt: f32| {
                 now_bytes
                     .checked_sub(then_bytes)
@@ -958,7 +964,7 @@ fn remotes(
                 rtt: socket.rtt as f32 / 1000.0,
                 up,
                 down,
-                place: geo.as_mut().and_then(|geo| geo.locate(socket.address)),
+                place: places.and_then(|places| places[index].clone()),
             }
         })
         .collect();
@@ -1042,18 +1048,12 @@ impl Collector {
             origin: Instant::now(),
             background: None,
             wanted: Arc::new(Mutex::new(HashSet::new())),
-            locating: Arc::new(AtomicBool::new(false)),
             demand: Arc::new(Mutex::new(Demand::default())),
             identities: Arc::new(Mutex::new(HashMap::new())),
             geoip,
             home: geo::home(home),
             started: false,
         }
-    }
-
-    /// Turns locating remote addresses on or off for the following samples.
-    pub fn locate(&self, on: bool) {
-        self.locating.store(on, Ordering::Relaxed);
     }
 
     /// Sets the optional sources the background thread reads from its next cycle on. `main` calls
@@ -1113,7 +1113,6 @@ impl Collector {
             self.background = background(
                 self.geoip.clone(),
                 Arc::clone(&self.wanted),
-                Arc::clone(&self.locating),
                 Arc::clone(&self.demand),
                 Arc::clone(&self.identities),
             );
@@ -4065,7 +4064,6 @@ mod tests {
         let thread = background(
             None,
             Arc::new(Mutex::new(HashSet::new())),
-            Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(Demand::default())),
             Arc::new(Mutex::new(HashMap::new())),
         )
@@ -4077,6 +4075,69 @@ mod tests {
         let extras = thread.extras();
         assert!(extras.finished.is_some(), "the first cycle finished");
         assert!(extras.sources.is_empty());
+        assert_eq!(
+            extras.geo, "loading the GeoIP database",
+            "no lookup, so the database was never opened"
+        );
+        assert!(
+            extras
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::Locations),
+            "no location scan ran"
+        );
+    }
+
+    #[test]
+    fn remotes_carry_the_places_that_were_read_and_none_when_locations_were_not() {
+        let place = Place {
+            latitude: 35.7,
+            longitude: 139.7,
+            name: "Tokyo, JP".into(),
+        };
+        let sockets = [socket(5, 0, 0), socket(6, 0, 0)];
+        let located = remotes(
+            &sockets,
+            &mut HashMap::new(),
+            Some(&[None, Some(place.clone())]),
+        );
+        assert_eq!(
+            located.iter().map(|r| r.place.clone()).collect::<Vec<_>>(),
+            [None, Some(place)]
+        );
+        let unlocated = remotes(&sockets, &mut HashMap::new(), None);
+        assert!(unlocated.iter().all(|remote| remote.place.is_none()));
+    }
+
+    #[test]
+    fn locations_are_missing_only_when_demanded_and_no_database_can_be_read() {
+        let public = platform::Remote {
+            address: IpAddr::from([8, 8, 8, 8]),
+            ..socket(5, 0, 0)
+        };
+        let mut geo = geo::Geo::open(Some(std::path::Path::new("/nonexistent/none.mmdb")));
+        assert!(!geo.lacks_database(), "nothing was looked up yet");
+        // Not demanded: the database is not touched and the source is neither active nor missing.
+        let mut idle = Reads::new(Demand::default());
+        assert!(
+            idle.read(Source::Locations, || located(
+                &mut geo,
+                std::slice::from_ref(&public)
+            ))
+            .is_none()
+        );
+        assert!(idle.active.is_empty() && idle.missing.is_empty());
+        assert!(!geo.lacks_database());
+        // Demanded: active when a database answers, missing when none could be read. Which of
+        // the two depends on the machine; the pair always agrees with what the database says.
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::Locations)));
+        let places = reads.read(Source::Locations, || {
+            located(&mut geo, std::slice::from_ref(&public))
+        });
+        let absent = geo.source == "no GeoIP database (see --geoip)";
+        assert_eq!(places.is_none(), absent, "{}", geo.source);
+        assert_eq!(reads.missing.contains(Source::Locations), absent);
+        assert_eq!(reads.active.contains(Source::Locations), !absent);
     }
 
     #[test]

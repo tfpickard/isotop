@@ -330,7 +330,7 @@ lists each connection with its round-trip time and rates (from the kernel's
 `tcp_info` through sock_diag).
 
 Locations come from a local GeoIP database, read the first time the globe is
-shown; nothing is sent anywhere.
+shown and looked up only while it is shown; nothing is sent anywhere.
 
 - A city-level MaxMind-format database gives cities: pass `--geoip PATH`, or put
   one in `~/.local/share/isotop/` (any `*.mmdb`). DB-IP's free

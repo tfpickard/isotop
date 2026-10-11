@@ -19,7 +19,10 @@ The README covers usage. This file covers how to work on the code.
    them: `main.rs` hands `Collector::demand` the `sources` of the shown view's registry row at
    startup and on every view change, the thread takes a copy of that `Demand` at the start of
    each cycle, and reads an optional source through `Demand::read_if` (or `Reads::read`, which
-   also records it as active or, when it cannot be read, missing). `Snapshot.sources` lists the
+   also records it as active or, when it cannot be read, missing). Remote locations
+   (`Source::Locations`, the GeoIP lookups the globe draws) go through it, and the journal
+   follower in `main.rs` runs while the demand contains `Source::Journal` and for
+   `JOURNAL_LINGER` (30 s) after; no view is special-cased. `Snapshot.sources` lists the
    optional sources read for the sample, and `Snapshot.missing` those demanded and unreadable;
    one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there. On Linux
    the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
