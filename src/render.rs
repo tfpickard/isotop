@@ -1383,8 +1383,7 @@ impl Scene {
                 self.draw_orbits(frame, &processes, camera, selected, time, snapshot);
             }
             Some(BuiltIn::Ripple) => {
-                let stir = bounded(cpu + io, 20.0);
-                self.draw_ripples(frame, processes, camera, selected, time, snapshot, stir);
+                self.draw_ripples(frame, processes, camera, selected, time, snapshot);
             }
             Some(BuiltIn::Flow) => {
                 let stir = bounded(cpu + memory + io, 25.0);
@@ -2023,8 +2022,9 @@ impl Scene {
         selected: Option<Identity>,
         time: f32,
         snapshot: &Snapshot,
-        stir: f32,
     ) {
+        let [cpu, _, io] = snapshot.pressure;
+        let stir = bounded(cpu + io, 20.0);
         let radii = self.scatter(processes, snapshot);
         let bodies: Vec<Body> = processes
             .iter()

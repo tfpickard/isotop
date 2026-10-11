@@ -85,68 +85,8 @@ impl Dishes {
                 .filter(|p| p.kind != Kind::Kernel)
                 .map(|p| (p.id, cell_name(p))),
         );
-        let mut cells: [Vec<Cell>; 3] = Default::default();
-        for (dish, (kind, _, _)) in DISHES.iter().enumerate() {
-            let mut groups: HashMap<&str, (Vec<usize>, Vec<&Process>)> = HashMap::new();
-            for (index, p) in processes
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.kind == *kind)
-            {
-                groups.entry(cell_name(p)).or_default().0.push(index);
-            }
-            for p in hidden.iter().filter(|p| p.kind == *kind) {
-                groups.entry(cell_name(p)).or_default().1.push(p);
-            }
-            for (name, (members, absent)) in groups {
-                let unit = snapshot.units.get(name);
-                let memory = unit.map_or_else(
-                    || {
-                        members.iter().map(|&i| processes[i].memory).sum::<u64>()
-                            + absent.iter().map(|p| p.memory).sum::<u64>()
-                    },
-                    |unit| unit.memory,
-                );
-                let cpu = members.iter().map(|&i| processes[i].cpu).sum::<f32>()
-                    + absent.iter().map(|p| p.cpu).sum::<f32>();
-                let largest = |p: &Process| (p.memory, std::cmp::Reverse(p.id));
-                let shown = members
-                    .iter()
-                    .copied()
-                    .max_by_key(|&i| largest(processes[i]));
-                let away = absent.iter().copied().max_by_key(|p| largest(p));
-                let (nucleus, core) = match (shown, away) {
-                    (Some(i), Some(p)) if largest(p) > largest(processes[i]) => (None, p.memory),
-                    (Some(i), _) => (Some(i), processes[i].memory),
-                    (None, p) => (None, p.map_or(0, |p| p.memory)),
-                };
-                let span = self.seats.span(name) as f32;
-                let by_memory = 1.3 + 0.16 * (memory as f32 / 1048576.0).sqrt();
-                let by_members = SEAT * (span + 1.0).sqrt() + 1.0;
-                cells[dish].push(Cell {
-                    name: name.to_owned(),
-                    tasks: members.len() + absent.len(),
-                    members,
-                    nucleus,
-                    core,
-                    unit,
-                    memory,
-                    cpu,
-                    radius: by_memory.max(by_members),
-                    named: false,
-                });
-            }
-            let mut sizes: Vec<u64> = cells[dish]
-                .iter()
-                .filter(|c| !c.members.is_empty())
-                .map(|c| c.memory)
-                .collect();
-            sizes.sort_unstable_by(|a, b| b.cmp(a));
-            let smallest = sizes.get(NAMED - 1).copied().unwrap_or(0);
-            for cell in &mut cells[dish] {
-                cell.named = cell.memory >= smallest;
-            }
-        }
+        let cells: [Vec<Cell>; 3] =
+            DISHES.map(|(kind, _, _)| self.dish_cells(kind, processes, &hidden, snapshot));
         let mut offsets: [HashMap<String, [f32; 2]>; 3] = Default::default();
         for dish in 0..3 {
             // Room for the limit ring and CPU gauge drawn outside each membrane.
@@ -234,6 +174,74 @@ impl Dishes {
             stage.bounds.extend(ring_bounds(*center, radius, 0.0, 1.5));
         }
         shown
+    }
+
+    /// The cells of the dish for `kind`: one per cgroup with a member, drawn or hidden, sized and
+    /// ranked over every member, drawn or not.
+    fn dish_cells<'a>(
+        &self,
+        kind: Kind,
+        processes: &[&Process],
+        hidden: &[&Process],
+        snapshot: &'a Snapshot,
+    ) -> Vec<Cell<'a>> {
+        let mut cells = Vec::new();
+        let mut groups: HashMap<&str, (Vec<usize>, Vec<&Process>)> = HashMap::new();
+        for (index, p) in processes.iter().enumerate().filter(|(_, p)| p.kind == kind) {
+            groups.entry(cell_name(p)).or_default().0.push(index);
+        }
+        for p in hidden.iter().filter(|p| p.kind == kind) {
+            groups.entry(cell_name(p)).or_default().1.push(p);
+        }
+        for (name, (members, absent)) in groups {
+            let unit = snapshot.units.get(name);
+            let memory = unit.map_or_else(
+                || {
+                    members.iter().map(|&i| processes[i].memory).sum::<u64>()
+                        + absent.iter().map(|p| p.memory).sum::<u64>()
+                },
+                |unit| unit.memory,
+            );
+            let cpu = members.iter().map(|&i| processes[i].cpu).sum::<f32>()
+                + absent.iter().map(|p| p.cpu).sum::<f32>();
+            let largest = |p: &Process| (p.memory, std::cmp::Reverse(p.id));
+            let shown = members
+                .iter()
+                .copied()
+                .max_by_key(|&i| largest(processes[i]));
+            let away = absent.iter().copied().max_by_key(|p| largest(p));
+            let (nucleus, core) = match (shown, away) {
+                (Some(i), Some(p)) if largest(p) > largest(processes[i]) => (None, p.memory),
+                (Some(i), _) => (Some(i), processes[i].memory),
+                (None, p) => (None, p.map_or(0, |p| p.memory)),
+            };
+            let span = self.seats.span(name) as f32;
+            let by_memory = 1.3 + 0.16 * (memory as f32 / 1048576.0).sqrt();
+            let by_members = SEAT * (span + 1.0).sqrt() + 1.0;
+            cells.push(Cell {
+                name: name.to_owned(),
+                tasks: members.len() + absent.len(),
+                members,
+                nucleus,
+                core,
+                unit,
+                memory,
+                cpu,
+                radius: by_memory.max(by_members),
+                named: false,
+            });
+        }
+        let mut sizes: Vec<u64> = cells
+            .iter()
+            .filter(|c| !c.members.is_empty())
+            .map(|c| c.memory)
+            .collect();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        let smallest = sizes.get(NAMED - 1).copied().unwrap_or(0);
+        for cell in &mut cells {
+            cell.named = cell.memory >= smallest;
+        }
+        cells
     }
 
     #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]

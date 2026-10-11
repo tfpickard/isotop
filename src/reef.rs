@@ -137,52 +137,7 @@ impl Reef {
                 }
             }
         }
-        for (index, process) in processes
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.kind == Kind::Kernel)
-        {
-            // pid only: kept for pixel stability, see A33
-            let h = hash::knuth_xor_rotated_prime2(process.id.pid);
-            let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0;
-            let drift = [
-                (time * 0.07 + unit(0) * TAU).sin() * 3.0,
-                (time * 0.05 + unit(8) * TAU).cos() * 3.0,
-                (time * 0.11 + unit(16) * TAU).sin() * 0.8,
-            ];
-            let position = [
-                (unit(4) * 2.0 - 1.0) * reach * 0.8 + drift[0],
-                (unit(12) * 2.0 - 1.0) * reach * 0.8 + drift[1],
-                2.0 + unit(20) * (DEPTH - 4.0) + drift[2],
-            ];
-            let heading = [
-                (time * 0.07 + unit(0) * TAU).cos(),
-                -(time * 0.05 + unit(8) * TAU).sin(),
-                0.0,
-            ];
-            let tail = [0, 1, 2].map(|k| position[k] - heading[k] * 0.5);
-            // Idle kernel threads are faint glints; busy ones become motes you can click.
-            if process.cpu < 0.5 && stage.selected != Some(process.id) {
-                stage
-                    .frame
-                    .beam(stage.camera, position, tail, [150, 210, 220], 0.12);
-                continue;
-            }
-            let glow = 0.4 + 0.6 * bounded(process.cpu, 5.0);
-            stage
-                .frame
-                .beam(stage.camera, position, tail, [150, 210, 220], glow * 0.6);
-            stage.frame.sphere(
-                stage.camera,
-                position,
-                0.05,
-                tint([140, 200, 210], 0.6 + glow),
-                index as u32,
-                stage.selected == Some(process.id),
-            );
-            stage.positions.insert(process.id, position);
-            shown += 1;
-        }
+        shown += kernel_motes(stage, processes, reach, time);
         for (index, process) in processes.iter().enumerate() {
             if process.io_rate.is_some_and(|rate| rate > 4096.0)
                 && let Some(&from) = stage.positions.get(&process.id)
@@ -587,6 +542,59 @@ fn habitat(process: &Process) -> String {
         &process.cgroup
     };
     format!("{:?} {path}", process.kind)
+}
+
+/// Kernel threads drift through the water: idle ones as faint glints, busy ones as motes you
+/// can click. Returns how many motes are shown.
+fn kernel_motes(stage: &mut Stage, processes: &[&Process], reach: f32, time: f32) -> usize {
+    let mut shown = 0;
+    for (index, process) in processes
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.kind == Kind::Kernel)
+    {
+        // pid only: kept for pixel stability, see A33
+        let h = hash::knuth_xor_rotated_prime2(process.id.pid);
+        let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0;
+        let drift = [
+            (time * 0.07 + unit(0) * TAU).sin() * 3.0,
+            (time * 0.05 + unit(8) * TAU).cos() * 3.0,
+            (time * 0.11 + unit(16) * TAU).sin() * 0.8,
+        ];
+        let position = [
+            (unit(4) * 2.0 - 1.0) * reach * 0.8 + drift[0],
+            (unit(12) * 2.0 - 1.0) * reach * 0.8 + drift[1],
+            2.0 + unit(20) * (DEPTH - 4.0) + drift[2],
+        ];
+        let heading = [
+            (time * 0.07 + unit(0) * TAU).cos(),
+            -(time * 0.05 + unit(8) * TAU).sin(),
+            0.0,
+        ];
+        let tail = [0, 1, 2].map(|k| position[k] - heading[k] * 0.5);
+        // Idle kernel threads are faint glints; busy ones become motes you can click.
+        if process.cpu < 0.5 && stage.selected != Some(process.id) {
+            stage
+                .frame
+                .beam(stage.camera, position, tail, [150, 210, 220], 0.12);
+            continue;
+        }
+        let glow = 0.4 + 0.6 * bounded(process.cpu, 5.0);
+        stage
+            .frame
+            .beam(stage.camera, position, tail, [150, 210, 220], glow * 0.6);
+        stage.frame.sphere(
+            stage.camera,
+            position,
+            0.05,
+            tint([140, 200, 210], 0.6 + glow),
+            index as u32,
+            stage.selected == Some(process.id),
+        );
+        stage.positions.insert(process.id, position);
+        shown += 1;
+    }
+    shown
 }
 
 #[cfg(test)]
