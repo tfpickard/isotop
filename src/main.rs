@@ -2026,6 +2026,8 @@ mod tests {
             &name,
         ]);
         let mut app = App::new(view, model::demo(options.time, options.processes as usize));
+        // The matrix greets `$USER`, which differs between machines.
+        app.scene.matrix.user = Some("Neo".into());
         warm_up(&mut app, &options, None);
         app.animation = options.time as f32;
         let frame = app.render(

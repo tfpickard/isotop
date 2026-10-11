@@ -79,6 +79,8 @@ pub struct Rain {
     greeted: bool,
     /// Lines dropped because they arrived faster than the log could show them.
     pub skipped: u64,
+    /// The name in the greeting; `None` reads `$USER`.
+    pub user: Option<String>,
 }
 
 impl Rain {
@@ -176,7 +178,11 @@ impl Rain {
     fn advance(&mut self, time: f32) {
         if !self.greeted {
             self.greeted = true;
-            let user = std::env::var("USER").unwrap_or_else(|_| "Neo".into());
+            let user = self
+                .user
+                .clone()
+                .or_else(|| std::env::var("USER").ok())
+                .unwrap_or_else(|| "Neo".into());
             for text in [
                 "Follow the white rabbit.".into(),
                 "The Matrix has you...".into(),
