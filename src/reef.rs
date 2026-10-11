@@ -583,7 +583,7 @@ fn habitat(process: &Process) -> String {
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::{Camera, RenderInput, Scene};
+    use crate::render::{Camera, RenderInput, Scene, hiding};
     use crate::views::view;
 
     #[test]
@@ -684,5 +684,10 @@ mod tests {
         let restored = draw(&mut scene, &sample, time, 4096, None, None);
         assert_eq!(restored.len(), before.len());
         in_place(&restored, &before);
+    }
+
+    #[test]
+    fn the_camera_fit_ignores_what_focus_and_the_limit_hide() {
+        hiding::bounds_ignore_hiding(view("reef"), &demo(30.0, 160));
     }
 }
