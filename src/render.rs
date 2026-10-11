@@ -828,6 +828,8 @@ pub(crate) struct Stage<'a> {
     )]
     pub dt: f32,
     births: &'a HashMap<Identity, f32>,
+    /// CPU and memory as eased for every sampled process, drawn or not.
+    resources: &'a HashMap<Identity, (f32, f32)>,
     /// Where each drawn process is, for picking anchors, labels and the tour.
     pub positions: &'a mut HashMap<Identity, Point>,
     /// World-anchored text labels.
@@ -855,6 +857,17 @@ pub(crate) struct Stage<'a> {
 impl Stage<'_> {
     pub fn growth(&self, id: Identity) -> f32 {
         growth(self.births, id, self.time)
+    }
+
+    /// A sampled process's CPU and memory as the scene eases them, whether it is drawn or not.
+    /// A drawn process carries these very figures, so a view that sizes or ranks by processes it
+    /// hides measures them as it measures the ones it shows.
+    pub fn eased(&self, process: &Process) -> (f32, u64) {
+        self.resources
+            .get(&process.id)
+            .map_or((process.cpu, process.memory), |&(cpu, memory)| {
+                (cpu, memory as u64)
+            })
     }
 }
 
@@ -1414,6 +1427,7 @@ impl Scene {
                     time,
                     dt,
                     births: &self.births,
+                    resources: &self.resources,
                     positions: &mut self.positions,
                     places: &mut self.places,
                     bounds: &mut self.bounds,
