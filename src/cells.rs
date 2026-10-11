@@ -7,17 +7,19 @@
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
+use crate::layout::{Discs, Seats, spin, spiral};
 use crate::model::{Identity, Kind, Process, Snapshot, Unit, bounded, bytes};
-use crate::pack::{Discs, Seats};
+use crate::palette::{CONTAINER, SESSION, SYSTEM, kind_color, mix, tint};
+use crate::platform::{GROUP_LABEL, Source, WITHOUT_CGROUPS};
 use crate::render::{
-    Color, GOLDEN_ANGLE, NONE, Point, Stage, WARM, kind_color, mass_radius, ring_bounds, spin,
-    tint, without_apple_prefix,
+    Color, NONE, Point, Stage, WARM, mass_radius, ring_bounds, without_apple_prefix,
 };
+use crate::simulation::sprout;
 
 const DISHES: [(Kind, &str, Color); 3] = [
-    (Kind::System, "system services", [72, 183, 199]),
-    (Kind::Session, "your session", [236, 178, 92]),
-    (Kind::Container, "containers", [178, 136, 232]),
+    (Kind::System, "system services", SYSTEM),
+    (Kind::Session, "your session", SESSION),
+    (Kind::Container, "containers", CONTAINER),
 ];
 const SEAT: f32 = 0.75;
 /// Widest a memory limit ring is drawn, as a multiple of the cell radius.
@@ -169,14 +171,16 @@ impl Dishes {
         self.kills.retain(|name, _| present.contains(name.as_str()));
         // Kills are counted for hidden cells too, so a cell shown again during a burst shows the
         // rest of it, and one shown long after a kill does not burst for it then.
+        // An unreadable count changes nothing: the last known count stays the one to compare to.
         for cell in cells.iter().flatten() {
-            let kills = cell.unit.map_or(0, |unit| unit.oom_kills);
-            let seen = self
-                .kills
-                .entry(cell.name.clone())
-                .or_insert((kills, f32::NEG_INFINITY));
-            if kills > seen.0 {
-                *seen = (kills, time);
+            if let Some(kills) = cell.unit.and_then(|unit| unit.oom_kills) {
+                let seen = self
+                    .kills
+                    .entry(cell.name.clone())
+                    .or_insert((kills, f32::NEG_INFINITY));
+                if kills > seen.0 {
+                    *seen = (kills, time);
+                }
             }
         }
         let camera = stage.camera;
@@ -232,6 +236,7 @@ impl Dishes {
         shown
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     fn draw_cell(
         &mut self,
         stage: &mut Stage,
@@ -248,7 +253,11 @@ impl Dishes {
         };
         let nucleus = cell.nucleus;
         let unit = cell.unit.cloned().unwrap_or_default();
-        let pressure = unit.pressure.iter().fold(0.0_f32, |a, &b| a.max(b));
+        let pressure = unit
+            .pressure
+            .iter()
+            .flatten()
+            .fold(0.0_f32, |a, &b| a.max(b));
         let phase = spin(&cell.name);
         let wobble = 0.03 + 0.22 * bounded(pressure, 15.0);
         let edge = |angle: f32| {
@@ -256,7 +265,7 @@ impl Dishes {
                 + wobble * (5.0 * angle + time * 2.2 + phase).sin()
                 + wobble * 0.5 * (3.0 * angle - time * 1.7).sin())
         };
-        let cytoplasm = tint(color, 0.16 + 0.14 * bounded(unit.cpu, 50.0));
+        let cytoplasm = tint(color, 0.16 + 0.14 * bounded(unit.cpu.unwrap_or(0.0), 50.0));
         for k in 0..64 {
             let (a, b) = (k as f32 / 64.0 * TAU, (k + 1) as f32 / 64.0 * TAU);
             stage.frame.facet(
@@ -266,7 +275,7 @@ impl Dishes {
                 nucleus.map_or(NONE, |i| i as u32),
             );
         }
-        let flash = if unit.throttled {
+        let flash = if unit.throttled == Some(true) {
             0.5 + 0.5 * (time * 12.0).sin()
         } else {
             0.0
@@ -301,7 +310,7 @@ impl Dishes {
                     .line(camera, at(a, limit, 0.1), at(b, limit, 0.1), shade);
             }
         }
-        let share = unit.cpu / unit.cpu_max.unwrap_or(100.0);
+        let share = unit.cpu.unwrap_or(0.0) / unit.cpu_max.unwrap_or(100.0);
         if share > 0.01 {
             let sweep = share.min(1.0) * TAU;
             let gauge = if unit.cpu_max.is_some() && share > 0.9 {
@@ -318,11 +327,10 @@ impl Dishes {
                     .line(camera, at(a, r + 0.35, 0.15), at(b, r + 0.35, 0.15), gauge);
             }
         }
-        let burst = self
+        let age = self
             .kills
             .get(&cell.name)
-            .map_or(f32::NEG_INFINITY, |k| k.1);
-        let age = (time - burst) / LYSIS_SECONDS;
+            .map_or(f32::INFINITY, |&(_, at)| (time - at) / LYSIS_SECONDS);
         if (0.0..1.0).contains(&age) {
             for k in 0..24 {
                 let angle = k as f32 / 24.0 * TAU + phase;
@@ -351,8 +359,7 @@ impl Dishes {
                 ([x, y, 0.4], core)
             } else {
                 let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-                let distance = spacing * (seat + 1.0).sqrt();
-                let angle = seat * GOLDEN_ANGLE + phase;
+                let (distance, angle) = spiral(spacing, 1.0, seat, phase);
                 let position = at(angle, distance.min(r - 0.4), 0.3);
                 stage
                     .frame
@@ -362,7 +369,7 @@ impl Dishes {
                     (0.8 * mass_radius(process.memory as f32)).min(spacing * 0.42),
                 )
             };
-            let grown = size * (0.3 + 0.7 * stage.growth(process.id));
+            let grown = size * sprout(stage.growth(process.id));
             if process.cpu > 1.0 {
                 stage.frame.glow(
                     camera,
@@ -444,7 +451,8 @@ fn describe(cell: &Cell, nucleus: bool) -> Vec<String> {
     let quota = unit
         .cpu_max
         .map_or_else(String::new, |max| format!(" of a {max:.0}% quota"));
-    let tasks = unit.pids.max(cell.tasks as u64);
+    let members = cell.tasks as u64;
+    let tasks = unit.pids.map_or(members, |pids| pids.max(members));
     let tasks = unit.pids_max.map_or_else(
         || format!("{tasks} tasks"),
         |max| format!("{tasks}/{max} tasks"),
@@ -452,28 +460,26 @@ fn describe(cell: &Cell, nucleus: bool) -> Vec<String> {
     lines.push(format!(
         "cell memory {} ({limit}) | CPU {:.0}%{quota} | {tasks}",
         bytes(cell.memory),
-        unit.cpu,
+        unit.cpu.unwrap_or(0.0),
     ));
-    let [cpu, memory, io] = unit.pressure;
+    let [cpu, memory, io] = unit.pressure.map(|percent| percent.unwrap_or(0.0));
     let mut status = format!("pressure cpu {cpu:.0}% mem {memory:.0}% io {io:.0}%");
-    if unit.throttled {
+    if unit.throttled == Some(true) {
         status.push_str(" | throttled");
     }
-    if unit.oom_kills > 0 {
-        status.push_str(&format!(" | {} OOM kills", unit.oom_kills));
+    if let Some(kills) = unit.oom_kills.filter(|&kills| kills > 0) {
+        status.push_str(&format!(" | {kills} OOM kills"));
     }
     lines.push(status);
     lines
 }
 
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t) as u8)
-}
-
 /// The status legend, saying what the snapshot's platform leaves out.
 pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(&"cgroups") {
-        " Cell = app or user group, size = memory | groups by app and user; macOS has no cgroups, so no limits, quotas or pressure | organelles = processes".into()
+    if snapshot.missing.contains(Source::Cgroups) {
+        format!(
+            " Cell = {GROUP_LABEL}, size = memory | {WITHOUT_CGROUPS}, so no limits, quotas or pressure | organelles = processes"
+        )
     } else {
         " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
     }
@@ -483,16 +489,17 @@ pub fn legend(snapshot: &Snapshot) -> String {
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::{View, hiding};
+    use crate::render::hiding;
+    use crate::views::view;
 
     #[test]
     fn focusing_and_clearing_focus_keeps_every_cell_in_place() {
-        hiding::focus_and_clear(View::Cells, &demo(30.0, 160));
+        hiding::focus_and_clear(view("cells"), &demo(30.0, 160));
     }
 
     #[test]
     fn processes_beyond_the_limit_keep_their_cell_place() {
-        hiding::limit_and_lift(View::Cells, &demo(30.0, 160));
+        hiding::limit_and_lift(view("cells"), &demo(30.0, 160));
     }
 
     #[test]
@@ -500,17 +507,17 @@ mod tests {
         // A cell sized by its members' own memory must count the hidden ones too, or the
         // organelle swapped in across the limit would sit closer to a shrunken nucleus.
         let mut sample = demo(30.0, 160);
-        sample.missing = vec!["cgroups"];
+        sample.missing = Source::Cgroups.into();
         sample.units.clear();
         for process in &mut sample.processes {
             process.cgroup.clear();
         }
-        hiding::limit_and_lift(View::Cells, &sample);
+        hiding::limit_and_lift(view("cells"), &sample);
     }
 
     #[test]
     fn a_hidden_nucleus_leaves_the_centre_of_its_cell_dark() {
-        use crate::render::{Camera, Item, Scene};
+        use crate::render::{Camera, Item, RenderInput, Scene};
         let mut snapshot = demo(30.0, 2);
         let [parent, child] = [0, 1].map(|i| snapshot.processes[i].id);
         assert_eq!(snapshot.processes[1].parent, parent.pid);
@@ -520,17 +527,10 @@ mod tests {
             process.cgroup = "/system.slice/one.service".into();
         }
         let cores = |focus| {
-            let frame = Scene::new().render(
-                &snapshot,
-                View::Cells,
-                &Camera::default(),
-                320,
-                180,
-                None,
-                30.0,
-                512,
+            let frame = Scene::new().render(&RenderInput {
                 focus,
-            );
+                ..RenderInput::small(&snapshot, view("cells"), &Camera::default(), 30.0)
+            });
             frame
                 .items
                 .iter()
@@ -545,31 +545,33 @@ mod tests {
     fn legend_drops_limits_quotas_and_pressure_without_cgroups() {
         let mut snapshot = demo(1.0, 8);
         assert!(legend(&snapshot).contains("dashed ring = memory limit | arc = CPU vs quota"));
-        snapshot.missing = vec!["cgroups"];
+        snapshot.missing = Source::Cgroups.into();
         let text = legend(&snapshot);
-        assert!(text.contains(
-            "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
-        ));
+        assert!(text.contains(&format!(
+            " Cell = {GROUP_LABEL}, size = memory | {WITHOUT_CGROUPS}, so no limits, quotas or \
+             pressure | "
+        )));
+        if cfg!(target_os = "macos") {
+            assert!(text.contains(
+                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
+            ));
+        }
         assert!(!text.contains("dashed ring") && !text.contains("throttled"));
     }
 
     #[test]
     fn popups_hold_only_measured_numbers_without_cgroup_accounting() {
-        use crate::render::{Camera, Scene, View};
+        use crate::render::{Camera, RenderInput, Scene};
+        use crate::views::view;
         let mut snapshot = demo(10.0, 64);
         let render = |snapshot: &Snapshot| {
             let mut scene = Scene::new();
-            scene.render(
+            scene.render(&RenderInput::small(
                 snapshot,
-                View::Cells,
+                view("cells"),
                 &Camera::default(),
-                320,
-                180,
-                None,
                 10.0,
-                512,
-                None,
-            );
+            ));
             scene.notes
         };
         let with_units = render(&snapshot);
@@ -578,7 +580,7 @@ mod tests {
                 .values()
                 .any(|lines| lines.iter().any(|l| l.starts_with("pressure cpu")))
         );
-        snapshot.missing = vec!["cgroups"];
+        snapshot.missing = Source::Cgroups.into();
         snapshot.units.clear();
         for process in &mut snapshot.processes {
             process.cgroup.clear();

@@ -2,41 +2,56 @@ mod cells;
 mod coop;
 mod cores;
 mod geo;
+mod geometry;
 mod globe;
 mod glyphs;
 mod gpu;
+#[cfg(test)]
+mod harness;
 mod journal;
+mod layout;
 mod matrix;
 mod medium;
 mod model;
-mod pack;
+mod palette;
+mod picker;
 mod places;
 mod platform;
 mod reef;
 mod render;
 mod simulation;
+mod status;
 mod strata;
 mod terminal;
+mod views;
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::f32::consts::FRAC_PI_2;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
 use journal::Journal;
-use model::{Collector, Identity, Process, Snapshot, bytes, describe};
-use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name};
+use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, describe};
+use picker::{Entry, Picker, Toggle};
+use platform::Source;
+use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, Scene, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
+use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, When};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
+/// How long the journal follower keeps running after the demand last contained
+/// `Source::Journal` (Matrix was shown), so a look at another view does not restart it, and with
+/// it the rain's backlog.
+const JOURNAL_LINGER: Duration = Duration::from_secs(30);
 /// Terminal rows of the status panel under the scene.
 const PANEL_ROWS: u16 = 5;
 
@@ -64,9 +79,19 @@ struct Options {
     /// Use a deterministic synthetic workload instead of /proc
     #[arg(long)]
     demo: bool,
-    /// Initial visualization
-    #[arg(long, value_enum, default_value_t = View::City)]
-    view: View,
+    /// Initial visualization (city, or the first of --views)
+    #[arg(long, value_parser = view_parser())]
+    view: Option<View>,
+    /// The views Tab and Shift+Tab cycle, as a comma-separated list such as reef,city: a name
+    /// repeated or not supported on this platform is dropped. Without it, every supported view
+    #[arg(long, value_delimiter = ',', value_parser = view_parser())]
+    views: Vec<View>,
+    /// Print the views this platform supports, one per line, and exit
+    #[arg(long)]
+    list_views: bool,
+    /// Print startup notes to stderr, such as each view this platform does not support
+    #[arg(long)]
+    verbose: bool,
     /// Number of synthetic processes
     #[arg(long, default_value_t = 192, value_parser = clap::value_parser!(u32).range(1..=10000))]
     processes: u32,
@@ -119,6 +144,25 @@ struct Options {
     /// This machine's location as LAT,LON for the globe; defaults to the system time zone's city
     #[arg(long, value_parser = parse_home, allow_hyphen_values = true)]
     home: Option<(f32, f32)>,
+}
+
+impl Options {
+    /// Height of a headless frame: 16:9 at the requested width.
+    fn headless_height(&self) -> u32 {
+        self.width * 9 / 16
+    }
+
+    /// Whether the run draws without a terminal: `--output` or `--benchmark`.
+    fn headless(&self) -> bool {
+        self.output.is_some() || self.benchmark.is_some()
+    }
+}
+
+/// Parses `--view` from the registry's names, so its help lists them and any other name is a
+/// usage error.
+fn view_parser() -> impl TypedValueParser<Value = View> {
+    PossibleValuesParser::new(REGISTRY.iter().map(|row| row.name))
+        .map(|name| View::named(&name).expect("the parser accepts only the registry's names"))
 }
 
 fn parse_home(text: &str) -> Result<(f32, f32), String> {
@@ -302,12 +346,25 @@ struct App {
     gpu: Option<gpu::Gpu>,
     /// Which rasterizer drew the last frame, for the status strip.
     renderer: String,
+    /// When the demand last contained `Source::Journal`; None while it has not.
+    journal_demanded: Option<Instant>,
+    /// Whether each of the scene's views runs on this platform, in row order.
+    available: Vec<bool>,
+    /// The views Tab and Shift+Tab cycle; never empty while any view is available.
+    playlist: Vec<View>,
+    /// The view picker, while `v` has it open.
+    picker: Option<Picker>,
 }
 
 impl App {
-    fn new(view: View, snapshot: Snapshot) -> Self {
-        Self {
-            scene: Scene::new(),
+    fn new(view: View, snapshot: Snapshot, available: Vec<bool>) -> Self {
+        Self::with_scene(Scene::new(), view, snapshot, available)
+    }
+
+    /// An app drawing `scene`'s rows that starts on `view` as a switch to it would leave it.
+    fn with_scene(scene: Scene, view: View, snapshot: Snapshot, available: Vec<bool>) -> Self {
+        let mut app = Self {
+            scene,
             camera: Camera::default(),
             goal: Camera::default(),
             view,
@@ -335,6 +392,109 @@ impl App {
             tour: None,
             gpu: None,
             renderer: "cpu".into(),
+            journal_demanded: None,
+            playlist: picker::playlist(&[], &available),
+            picker: None,
+            available,
+        };
+        app.switch(view);
+        app
+    }
+
+    /// The shown view's registry row.
+    fn row(&self) -> &'static ViewInfo {
+        self.scene.row(self.view)
+    }
+
+    /// Whether the journal follower should run at `now`: while the demand contains
+    /// `Source::Journal` and for `JOURNAL_LINGER` after it last did.
+    fn journal_wanted(&mut self, now: Instant) -> bool {
+        if self.demand().contains(Source::Journal) {
+            self.journal_demanded = Some(now);
+        }
+        self.journal_demanded
+            .is_some_and(|shown| now.saturating_duration_since(shown) < JOURNAL_LINGER)
+    }
+
+    /// The optional sources the shown view reads.
+    fn demand(&self) -> Demand {
+        Demand::from(self.row().sources)
+    }
+
+    /// The view Tab (or Shift+Tab, when `forward` is false) goes to: the shown view's neighbour
+    /// in the playlist, or the shown view itself when the playlist is empty.
+    fn cycle(&self, forward: bool) -> View {
+        picker::cycle(&self.playlist, self.view, forward).unwrap_or(self.view)
+    }
+
+    /// The views the picker lists: every available one, in registry order.
+    fn entries(&self) -> Vec<Entry> {
+        View::all()
+            .filter(|view| self.available.get(view.index()) == Some(&true))
+            .map(|view| {
+                let row = self.scene.row(view);
+                Entry {
+                    view,
+                    name: row.name,
+                    title: row.title,
+                }
+            })
+            .collect()
+    }
+
+    /// Handles a key while the picker is open: it takes every key, so nothing reaches the scene
+    /// or the shown view. Returns whether to quit.
+    fn picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let entries = self.entries();
+        let Some(picker) = self.picker.as_mut() else {
+            return false;
+        };
+        match code {
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Enter => {
+                if let Some(view) = picker.highlighted(&entries) {
+                    self.picker = None;
+                    self.switch(view);
+                }
+            }
+            KeyCode::Up => picker.step(&entries, false),
+            KeyCode::Down => picker.step(&entries, true),
+            KeyCode::Backspace => picker.backspace(&entries),
+            KeyCode::Char(' ') => match picker.highlighted(&entries) {
+                Some(view) => {
+                    if picker::toggle(&mut self.playlist, view) == Toggle::Refused {
+                        picker.refuse();
+                    } else {
+                        picker.quiet();
+                    }
+                }
+                None => picker.quiet(),
+            },
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
+                picker.type_character(&entries, character);
+            }
+            _ => picker.quiet(),
+        }
+        false
+    }
+
+    /// The picker as a popup in the scene's top right corner, listing as many rows as fit.
+    fn picker_popup(&self, layout: &Layout) -> Option<Popup> {
+        let picker = self.picker.as_ref()?;
+        // The popup also holds a border above and below, the filter line and the key line.
+        let capacity = usize::from(layout.rows).saturating_sub(4).max(1);
+        let lines = picker.lines(&self.entries(), &self.playlist, capacity);
+        place_panel(lines, None, layout, false, 40)
+    }
+
+    /// Shows `view`, framed, at its row's pitch if it has one.
+    fn switch(&mut self, view: View) {
+        self.view = view;
+        self.fit = true;
+        if let Some(pitch) = self.row().pitch {
+            self.goal.pitch = pitch;
         }
     }
 
@@ -393,34 +553,28 @@ impl App {
         .into_iter()
         .flatten()
         .collect();
-        let mut frame = self.scene.render(
-            &self.history[index],
-            self.view,
-            &self.camera,
+        let mut input = RenderInput {
+            snapshot: &self.history[index],
+            view: self.view,
+            camera: &self.camera,
             width,
             height,
-            self.selected,
+            selected: self.selected,
             time,
             limit,
-            self.focus,
-        );
+            focus: self.focus,
+            paused: self.paused,
+        };
+        let mut frame = self.scene.render(&input);
         if self.fit {
             self.scene.fit(&mut self.goal, width, height);
             self.fit_zoom = self.goal.zoom;
             self.fit = false;
             if std::mem::take(&mut self.snap) {
+                // The camera snaps to the fitted goal, and this frame is drawn from there.
+                input.camera = &self.goal;
+                frame = self.scene.render(&input);
                 self.camera = self.goal.clone();
-                frame = self.scene.render(
-                    &self.history[index],
-                    self.view,
-                    &self.camera,
-                    width,
-                    height,
-                    self.selected,
-                    time,
-                    limit,
-                    self.focus,
-                );
             }
         }
         let failure = match self.gpu.as_mut() {
@@ -480,7 +634,8 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: system stars, the busiest and the largest. Hubs
+    /// Notable processes to visit while idle: the view's own targets (Orbit's system stars, and
+    /// a module view's `Stage::tour`), heaviest first, then the busiest and the largest. Hubs
     /// are not processes, so they have no callout to show and are passed over.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
@@ -493,9 +648,20 @@ impl App {
         busiest.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         let mut largest = visible;
         largest.sort_by_key(|p| Reverse(p.memory));
-        let mut stars = self.scene.stars.clone();
-        stars.retain(|(id, _, _)| !render::is_hub(id));
-        stars.sort_by_key(|&(_, members, _)| Reverse(members));
+        let mut stars: Vec<(Identity, f32)> = self
+            .scene
+            .stars
+            .iter()
+            .map(|&(id, members, _)| (id, members as f32))
+            .chain(
+                self.scene
+                    .tour
+                    .iter()
+                    .map(|target| (target.id, target.weight)),
+            )
+            .filter(|(id, _)| !render::is_hub(id))
+            .collect();
+        stars.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut targets = Vec::new();
         for i in 0..6 {
             let picks = [
@@ -513,31 +679,47 @@ impl App {
     }
 
     fn update_tour(&mut self, after: Option<Duration>) {
+        if !self.row().tour {
+            self.tour = None;
+            return;
+        }
         let now = Instant::now();
         let due = match &self.tour {
             None => after.is_some_and(|after| now.duration_since(self.last_input) >= after),
             Some(tour) => {
                 now.duration_since(tour.since) >= TOUR_STEP
-                    || !self.scene.positions.contains_key(&tour.target)
+                    || self.tour_point(tour.target).is_none()
             }
         };
         if due {
             self.visit(self.tour.as_ref().map_or(0, |tour| tour.index + 1));
         }
         if let Some(tour) = &self.tour
-            && let Some(&p) = self.scene.positions.get(&tour.target)
+            && let Some(p) = self.tour_point(tour.target)
         {
             self.goal.center = [p[0], p[1]];
             self.face(p);
         }
     }
 
-    /// On the globe, turns the camera so `point` is on the near side and centres the point
-    /// itself: the world spins, so a process above home is behind the earth for half of every
-    /// turn, and it floats far above the ground the camera otherwise centres on.
+    /// Where the tour shows `id`: the point the view gave with it as a tour target, or else
+    /// where the process is drawn; None once it is neither.
+    fn tour_point(&self, id: Identity) -> Option<Point> {
+        self.scene
+            .tour
+            .iter()
+            .find(|target| target.id == id)
+            .map(|target| target.position)
+            .or_else(|| self.scene.positions.get(&id).copied())
+    }
+
+    /// In a view whose row can face a point, turns the camera so `point` is on the near side
+    /// and centres the point itself. On the globe the world spins, so a process above home is
+    /// behind the earth for half of every turn, and it floats far above the ground the camera
+    /// otherwise centres on.
     fn face(&mut self, point: [f32; 3]) {
-        if self.view == View::Globe {
-            (self.goal.rotation, self.goal.pitch) = globe::face(point, &self.goal);
+        if let Some(face) = self.row().face {
+            (self.goal.rotation, self.goal.pitch) = face(point, &self.goal);
             self.goal.look_at(point);
         }
     }
@@ -557,36 +739,35 @@ impl App {
 
     fn text(&self, render_ms: f32, transport: &str, fps: u32, limit: usize) -> Vec<String> {
         let s = self.snapshot();
-        let view = match self.view {
-            View::City => "CITY",
-            View::Orbit => "ORBIT",
-            View::Ripple => "RIPPLE",
-            View::Flow => "FLOW",
-            View::Cores => "CORES",
-            View::Cells => "CELLS",
-            View::Strata => "STRATA",
-            View::Globe => "GLOBE",
-            View::Reef => "REEF",
-            View::Matrix => "MATRIX",
-            View::Coop => "COOP",
-        };
+        let row = self.row();
+        let (visible, collapsed) = row
+            .header
+            .map_or((self.scene.visible, self.scene.collapsed), |header| {
+                header(&self.scene)
+            });
         let mode = match (self.paused, &self.tour) {
             (true, _) => "PAUSED",
             (false, Some(_)) => "TOUR",
             (false, None) => "LIVE",
         };
         let mut lines = vec![format!(
-            " ISOTOP / {view} / {mode}   {} processes{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
+            " ISOTOP / {} / {mode}   {} processes{}{} | {visible} visible | {collapsed} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
+            row.title,
             s.processes.len(),
             unreadable_text(s),
-            self.scene.visible,
-            self.scene.collapsed,
+            sampler_text(s),
             s.processes.iter().map(|p| p.cpu).sum::<f32>() / 100.0,
             s.cores,
-            bytes(s.memory_total.saturating_sub(s.memory_available)),
-            bytes(s.memory_total)
+            known_bytes(
+                s.memory_total
+                    .zip(s.memory_available)
+                    .map(|(total, available)| total.saturating_sub(available))
+            ),
+            known_bytes(s.memory_total)
         )];
-        let inspector = if let Some(id) = self.inspected() {
+        let inspector = if let Some(line) = self.scene.inspector_line(self.view) {
+            line
+        } else if let Some(id) = self.inspected() {
             if let Some(p) = s.processes.iter().find(|p| p.id == id) {
                 format!(
                     " {} [pid {} / parent {} / {}] CPU {:.1}%  {} {}  IO {}  {}",
@@ -606,48 +787,29 @@ impl App {
             } else {
                 format!(" pid {} exited / unavailable in this snapshot", id.pid)
             }
-        } else if self.view == View::Matrix {
-            format!(
-                " > {}",
-                self.scene
-                    .matrix
-                    .latest()
-                    .unwrap_or("waiting for the journal...")
-            )
         } else {
             " Click or hover a building/body to inspect; / searches name, command or PID".into()
         };
         lines.push(inspector);
-        lines.push(self.inspected().and_then(|id| s.processes.iter().find(|p| p.id == id)).map_or_else(
-            || match self.view {
-                View::City => format!(" Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO", platform::MEMORY_LABEL),
-                View::Orbit => format!(" Size = memory (stars: whole system) | rings = threads | glow + trail = CPU | green = NVIDIA GPU | cyan arcs = sockets, pink = outside{}", hub_note(&self.scene)),
-                View::Ripple => " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into(),
-                View::Flow => format!(" Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}", hub_note(&self.scene)),
-                View::Cores => cores::legend(s),
-                View::Cells => cells::legend(s),
-                View::Strata => " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into(),
-                View::Globe => globe::legend(s),
-                View::Reef => " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into(),
-                View::Coop => self.scene.coop.legend(),
-                View::Matrix => format!(
-                    " Journal lines decode as the rain passes | red = error, amber = warning, green = info, teal = debug | {} queued{}",
-                    self.scene.matrix.pending(),
-                    match self.scene.matrix.skipped {
-                        0 => String::new(),
-                        skipped => format!(", {skipped} skipped"),
-                    }
+        lines.push(
+            self.inspected()
+                .and_then(|id| s.processes.iter().find(|p| p.id == id))
+                .map_or_else(
+                    || self.scene.legend(self.view, s),
+                    |p| format!(" {}", p.command),
                 ),
-            }, |p| format!(" {}", p.command)));
+        );
         if let Some(search) = &self.search {
             lines.push(format!(
                 " /{search}_  {} matches | Enter accept | Esc cancel | Tab next",
                 self.matches.len()
             ));
+        } else if self.picker.is_some() {
+            lines.push(" Type to filter views | Up/Down move | Enter show | Space add or remove from the Tab playlist | Esc close".into());
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | g tour | f focus | l labels | c links".into());
+            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links".into());
         } else {
-            lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
+            lines.push(" Tab next view | v views | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
         }
         let links = match self.scene.links {
             Links::All => "",
@@ -667,10 +829,11 @@ impl App {
         frame.locate(&self.camera, p)
     }
 
-    /// The selected process, unless the view draws no processes; the selection itself is kept for
-    /// when a process view returns.
+    /// The selected process, unless the view draws no processes and shows a line of its own in
+    /// place of the inspector; the selection itself is kept for when a process view returns.
     fn inspected(&self) -> Option<Identity> {
-        self.selected.filter(|_| self.view != View::Matrix)
+        self.selected
+            .filter(|_| self.scene.inspector_line(self.view).is_none())
     }
 
     fn popup(&self, frame: &Frame, layout: &Layout) -> Option<Popup> {
@@ -701,9 +864,13 @@ impl App {
                     ),
                 ];
                 match p.gpu_memory {
-                    0 => {}
-                    1 => lines.push("NVIDIA GPU in use (memory not reported)".into()),
-                    gpu => lines.push(format!("NVIDIA GPU memory {}", bytes(gpu))),
+                    None => {}
+                    Some(GpuMemory::Unreported) => {
+                        lines.push("NVIDIA GPU in use (memory not reported)".into());
+                    }
+                    Some(GpuMemory::Bytes(gpu)) => {
+                        lines.push(format!("NVIDIA GPU memory {}", bytes(gpu)));
+                    }
                 }
                 if let Some(&(total, count)) = self.scene.mass.get(&id) {
                     lines.push(format!(
@@ -712,6 +879,13 @@ impl App {
                         bytes(total)
                     ));
                 }
+                lines.extend(
+                    self.scene
+                        .popup
+                        .iter()
+                        .filter(|(owner, _)| *owner == id)
+                        .map(|(_, line)| line.clone()),
+                );
                 let local = snapshot
                     .links
                     .iter()
@@ -781,13 +955,21 @@ impl App {
         let mut board = Board::default();
         let mut labels = Vec::new();
         let mut panels = Vec::new();
-        if let Some(popup) = self.popup(frame, layout) {
+        // The open picker covers the inspector popup, which comes back when it closes.
+        let popup = if self.picker.is_some() {
+            self.picker_popup(layout)
+        } else {
+            self.popup(frame, layout)
+        };
+        if let Some(popup) = popup {
             board.reserve(popup.column, popup.row, popup.width, popup.height());
             panels.push(popup);
         }
         if let Some(tour) = &self.tour
             && let Some(p) = lookup.get(&tour.target)
-            && let Some(anchor) = self.screen(frame, tour.target)
+            && let Some(anchor) = self
+                .tour_point(tour.target)
+                .and_then(|point| frame.locate(&self.camera, point))
         {
             let lines = vec![
                 p.name.clone(),
@@ -921,6 +1103,9 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             return true;
         }
+        if self.picker.is_some() {
+            return self.picker_key(code, modifiers);
+        }
         if self.search.is_some() {
             match code {
                 KeyCode::Esc | KeyCode::Enter => self.search = None,
@@ -942,16 +1127,18 @@ impl App {
             }
             return false;
         }
+        if let Some(key) = view_key(code) {
+            let consumed = self.scene.key(self.view, key);
+            match key {
+                ViewKey::Local(_) => return false,
+                ViewKey::Escape if consumed => return false,
+                ViewKey::Escape | ViewKey::Reset => {}
+            }
+        }
         match code {
             KeyCode::Char('q') => return true,
-            KeyCode::Tab => {
-                self.view.next();
-                self.fit = true;
-            }
-            KeyCode::BackTab => {
-                self.view.previous();
-                self.fit = true;
-            }
+            KeyCode::Tab => self.switch(self.cycle(true)),
+            KeyCode::BackTab => self.switch(self.cycle(false)),
             KeyCode::Left | KeyCode::Char('a') => self.goal.pan(-step, 0.0),
             KeyCode::Right | KeyCode::Char('d') => self.goal.pan(step, 0.0),
             KeyCode::Up | KeyCode::Char('w') => self.goal.pan(0.0, -step),
@@ -969,17 +1156,26 @@ impl App {
                     FRAC_PI_2
                 };
             }
+            KeyCode::Char('v') => {
+                self.picker = Some(Picker::open(&self.entries(), self.view));
+            }
             KeyCode::Char('l') => self.labels = !self.labels,
             KeyCode::Char('h') => self.panel = !self.panel,
             KeyCode::Char(digit @ '0'..='9') => {
-                self.view = View::ALL[(digit as usize + 10 - '1' as usize) % 10];
-                self.fit = true;
+                // 1 to 9 pick the first nine rows and 0 the tenth.
+                let index = (digit as usize + 10 - '1' as usize) % 10;
+                if self.available.get(index) == Some(&true) {
+                    self.switch(View::at(index));
+                }
             }
-            KeyCode::Char('g') if !touring => self.visit(0),
+            KeyCode::Char('g') if !touring && self.row().tour => self.visit(0),
             KeyCode::Char('c') => self.scene.links.cycle(),
             KeyCode::Home => self.fit = true,
             KeyCode::Char('r') => {
                 self.goal = Camera::default();
+                if let Some(pitch) = self.row().pitch {
+                    self.goal.pitch = pitch;
+                }
                 self.fit = true;
             }
             KeyCode::Char('?') => self.show_help = !self.show_help,
@@ -1032,6 +1228,9 @@ impl App {
         panels: &[Popup],
         pixels: bool,
     ) {
+        if self.picker.is_some() {
+            return;
+        }
         let before = self.goal.clone();
         self.pointer_event(mouse, layout, frame, panels, pixels);
         self.follow(&before);
@@ -1160,14 +1359,16 @@ fn place_panel(
     })
 }
 
+/// A byte count for the status line, `n/a` when it was not measured.
+fn known_bytes(value: Option<u64>) -> String {
+    value.map_or_else(|| "n/a".to_owned(), bytes)
+}
+
 /// The pressure readings for the status line, `n/a` for each one the platform cannot measure.
 fn pressure_text(snapshot: &Snapshot) -> String {
     let [cpu, memory, io] = snapshot.pressure;
-    let reading = |name: &str, value: f32| {
-        if snapshot
-            .missing
-            .contains(&format!("{name} pressure").as_str())
-        {
+    let reading = |source: Source, value: f32| {
+        if snapshot.missing.contains(source) {
             "n/a".to_owned()
         } else {
             format!("{value:.0}%")
@@ -1175,9 +1376,9 @@ fn pressure_text(snapshot: &Snapshot) -> String {
     };
     format!(
         "pressure cpu {} mem {} io {}",
-        reading("cpu", cpu),
-        reading("memory", memory),
-        reading("io", io)
+        reading(Source::CpuPressure, cpu),
+        reading(Source::MemoryPressure, memory),
+        reading(Source::IoPressure, io)
     )
 }
 
@@ -1191,13 +1392,29 @@ fn unreadable_text(snapshot: &Snapshot) -> String {
     }
 }
 
-/// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
-/// focused subtree or a platform that reads every process gets the legend it always had.
-fn hub_note(scene: &Scene) -> &'static str {
-    if scene.hub_names.is_empty() {
-        ""
+/// A short note beside the process count when the background sampler has stopped or stalled:
+/// sockets, GPU memory, cgroups, open files and locks then keep what it measured last.
+fn sampler_text(snapshot: &Snapshot) -> String {
+    let sampler = &snapshot.sampler;
+    if !sampler.running {
+        " (background sampler stopped: links, files and cgroups frozen)".into()
+    } else if sampler.stalled() {
+        let seconds = sampler.quiet.as_secs();
+        format!(" (background sampler stalled {seconds}s)")
     } else {
-        " | hollow star = a parent isotop can't read (run with sudo)"
+        String::new()
+    }
+}
+
+/// What a key press offers the shown view's key hook, if anything.
+fn view_key(code: KeyCode) -> Option<ViewKey> {
+    match code {
+        KeyCode::Char(character) if LOCAL_KEYS.contains(character) => {
+            Some(ViewKey::Local(character))
+        }
+        KeyCode::Home | KeyCode::Char('r') => Some(ViewKey::Reset),
+        KeyCode::Esc => Some(ViewKey::Escape),
+        _ => None,
     }
 }
 
@@ -1219,19 +1436,97 @@ fn pointer(frame: &mut Frame, from: [f32; 2], to: [f32; 2]) {
     frame.circle(to, 10.0, COLOR);
 }
 
-fn run(options: Options) -> Result<(), Box<dyn Error>> {
+/// What `run` does after the startup that comes before the terminal is touched.
+#[derive(Debug, PartialEq, Eq)]
+enum Preflight {
+    /// Exit at once with this status.
+    Exit(i32),
+    /// Run, starting on this view.
+    Start(View),
+}
+
+/// The startup before the terminal is touched. With `--verbose` it names each view this platform
+/// does not support on `err`; `--list-views` lists the supported ones on `out`. A headless run
+/// of an unsupported `--view` fails with status 1. An interactive one, and any run without
+/// `--view` whose default (city) is unsupported, starts on the first supported view instead (the
+/// first of `--views` when given). `--views` with no supported name fails with status 1. `available` holds each registry row's answer.
+fn preflight(
+    options: &Options,
+    available: &[bool],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Preflight {
+    // Writes to the standard streams only fail when they are closed; there is no one to tell.
+    let supported = |view: View| available.get(view.index()) == Some(&true);
+    if options.verbose {
+        for view in View::all().filter(|&view| !supported(view)) {
+            let _ = writeln!(
+                err,
+                "skipping view {}: not supported on this platform",
+                view.name()
+            );
+        }
+    }
+    if options.list_views {
+        for view in View::all().filter(|&view| supported(view)) {
+            let _ = writeln!(out, "{}", view.name());
+        }
+        return Preflight::Exit(0);
+    }
+    let playlist = picker::playlist(&options.views, available);
+    if !options.views.is_empty() && playlist.is_empty() {
+        let _ = writeln!(err, "isotop: no available view in --views");
+        return Preflight::Exit(1);
+    }
+    let requested = options.view.unwrap_or_else(|| {
+        if options.views.is_empty() {
+            View::named("city").expect("the registry has the city view")
+        } else {
+            playlist[0]
+        }
+    });
+    if supported(requested) {
+        return Preflight::Start(requested);
+    }
+    if options.headless() && options.view.is_some() {
+        let _ = writeln!(
+            err,
+            "isotop: view {} is not supported on this platform",
+            requested.name()
+        );
+        return Preflight::Exit(1);
+    }
+    match playlist.first() {
+        Some(&view) => Preflight::Start(view),
+        None => {
+            let _ = writeln!(err, "isotop: no view is supported on this platform");
+            Preflight::Exit(1)
+        }
+    }
+}
+
+/// Runs isotop and returns the exit status for `main`.
+#[expect(clippy::too_many_lines, reason = "split in #79 (A20)")]
+fn run(options: Options) -> Result<i32, Box<dyn Error>> {
+    let available = views::availability();
+    let view = match preflight(&options, &available, &mut io::stdout(), &mut io::stderr()) {
+        Preflight::Exit(status) => return Ok(status),
+        Preflight::Start(view) => view,
+    };
     if !options.time.is_finite() || options.time < 0.0 {
         return Err("--time must be finite and nonnegative".into());
     }
     if options.duration.is_some_and(|v| !v.is_finite() || v <= 0.0) {
         return Err("--duration must be finite and positive".into());
     }
+    let demand = Demand::from(view.info().sources);
     let mut collector = Collector::new(options.geoip.clone(), options.home);
-    collector.locate(options.view == View::Globe);
-    let mut journal = (options.view == View::Matrix && !options.demo).then(Journal::start);
+    collector.demand(demand);
+    let mut journal = (demand.contains(Source::Journal) && !options.demo).then(Journal::start);
     let mut snapshot = if options.demo {
-        model::demo(
-            if options.output.is_some() || options.benchmark.is_some() {
+        demo_snapshot(
+            view.info(),
+            if options.headless() {
                 options.time
             } else {
                 0.0
@@ -1241,60 +1536,18 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     } else {
         collector.sample()?
     };
-    if !options.demo && (options.output.is_some() || options.benchmark.is_some()) {
+    if !options.demo && options.headless() {
         std::thread::sleep(Duration::from_millis(options.sample_ms as u64));
         snapshot = collector.sample()?;
     }
-    let mut app = App::new(options.view, snapshot);
+    let playlist = picker::playlist(&options.views, &available);
+    let mut app = App::new(view, snapshot, available);
+    app.playlist = playlist;
     app.choose_renderer(options.renderer, options.gpu_power)?;
     let limit = options.limit as usize;
-    if options.output.is_some() || options.benchmark.is_some() {
-        let height = options.width * 9 / 16;
-        // Simulated media (ripple, flow, the reef's fish) start empty: let them develop before
-        // the captured frame. Strata needs a history, which the demo workload can replay.
-        if options.view == View::Strata && options.demo && options.output.is_some() {
-            for back in (1..=60).rev() {
-                let at = options.time - back as f64;
-                app.history = VecDeque::from([model::demo(at, options.processes as usize)]);
-                app.animation = at as f32;
-                let warmup = app.render(options.width, height, limit);
-                app.scene.spare = warmup.release();
-            }
-            app.history = VecDeque::from([model::demo(options.time, options.processes as usize)]);
-        }
-        // The coop's CPU history and fox baselines come from the samples before the frame.
-        if options.view == View::Coop && options.demo && options.output.is_some() {
-            for back in (1..=30).rev() {
-                let at = options.time - back as f64;
-                if at >= 0.0 {
-                    let snapshot = model::demo(at, options.processes as usize);
-                    app.scene.record(&snapshot, at as f32);
-                }
-            }
-        }
-        if matches!(
-            options.view,
-            View::Ripple | View::Flow | View::Reef | View::Cores | View::Coop
-        ) && options.output.is_some()
-        {
-            for step in 0..80 {
-                app.animation = options.time as f32 - 4.0 + step as f32 * 0.05;
-                let warmup = app.render(options.width, height, limit);
-                app.scene.spare = warmup.release();
-            }
-        }
-        // The rain needs several seconds to fill the screen.
-        if options.view == View::Matrix {
-            let mut fed = options.time - 8.0;
-            for step in 0..=160 {
-                let at = options.time - 8.0 + step as f64 * 0.05;
-                feed(&mut app, journal.as_ref(), options.demo, fed, at);
-                fed = at;
-                app.animation = at as f32;
-                let warmup = app.render(options.width, height, limit);
-                app.scene.spare = warmup.release();
-            }
-        }
+    if options.headless() {
+        let height = options.headless_height();
+        warm_up(&mut app, &options, journal.as_ref());
         app.animation = options.time as f32;
         let mut frame = app.render(options.width, height, limit);
         if let Some(count) = options.benchmark {
@@ -1327,7 +1580,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 app.scene.visible
             );
         }
-        return Ok(());
+        return Ok(0);
     }
     let mut terminal = Terminal::enter(options.force_graphics, options.direct)?;
     app.scene.intro = true;
@@ -1342,6 +1595,7 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
     let mut frames = 0_u64;
     let mut total_wire = 0_u64;
     let mut fed = 0.0;
+    let mut demanded = app.demand();
     while !quit {
         let frame_start = Instant::now();
         let elapsed = last_frame.elapsed().as_secs_f32();
@@ -1350,9 +1604,12 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             app.animation += elapsed;
             if last_sample.elapsed() >= Duration::from_millis(options.sample_ms as u64) {
                 let snapshot = if options.demo {
-                    model::demo(origin.elapsed().as_secs_f64(), options.processes as usize)
+                    demo_snapshot(
+                        app.row(),
+                        origin.elapsed().as_secs_f64(),
+                        options.processes as usize,
+                    )
                 } else {
-                    collector.locate(app.view == View::Globe);
                     collector.sample()?
                 };
                 app.scene.record(&snapshot, app.animation);
@@ -1367,10 +1624,15 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
         }
         let goal = app.goal.clone();
-        if app.view == View::Matrix {
-            if !options.demo && journal.is_none() {
+        if !options.demo {
+            if !app.journal_wanted(Instant::now()) {
+                // Dropping it stops the follower and its reader.
+                journal = None;
+            } else if journal.is_none() {
                 journal = Some(Journal::start());
             }
+        }
+        if app.demand().contains(Source::Journal) {
             let now = origin.elapsed().as_secs_f64();
             // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
             if !app.paused {
@@ -1379,7 +1641,8 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 fed = now;
             }
         }
-        app.camera.approach(&goal, 1.0 - (-elapsed / 0.2).exp());
+        app.camera
+            .approach(&goal, simulation::smoothing(elapsed, 0.2));
         app.update_tour(tour_after);
         let mut frame = app.render(layout.width, layout.height, limit);
         let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
@@ -1431,6 +1694,10 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
                 break;
             }
         }
+        if app.demand() != demanded {
+            demanded = app.demand();
+            collector.demand(demanded);
+        }
         if options
             .duration
             .is_some_and(|duration| origin.elapsed().as_secs_f64() >= duration)
@@ -1448,7 +1715,75 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             total_wire as f64 / 1048576.0 / seconds
         );
     }
-    Ok(())
+    Ok(0)
+}
+
+/// The demo workload at `time` for `count` processes, with what `row`, the shown view's registry
+/// row, asks the demo to synthesize. Every demo snapshot goes through here, so a view sees the
+/// same workload whether it is the first sample, a warm-up replay or a live one.
+fn demo_snapshot(row: &ViewInfo, time: f64, count: usize) -> Snapshot {
+    model::demo_with(time, count, row.demo)
+}
+
+/// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured,
+/// by running the shown view's warm-up phases (`ViewInfo::warmup`) whose condition holds. The
+/// golden render test runs this too, so the hashes it checks are the PNGs' frames.
+fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
+    let (width, height, limit) = (
+        options.width,
+        options.headless_height(),
+        options.limit as usize,
+    );
+    let count = options.processes as usize;
+    let row = app.row();
+    for warmup in row.warmup {
+        let due = match warmup.when {
+            When::DemoOutput => options.demo && options.output.is_some(),
+            When::Output => options.output.is_some(),
+            When::Headless => options.headless(),
+        };
+        if !due {
+            continue;
+        }
+        match warmup.phase {
+            Phase::History { seconds } => {
+                for back in (1..=seconds).rev() {
+                    let at = options.time - back as f64;
+                    app.history = VecDeque::from([demo_snapshot(row, at, count)]);
+                    app.animation = at as f32;
+                    let frame = app.render(width, height, limit);
+                    app.scene.spare = frame.release();
+                }
+                app.history = VecDeque::from([demo_snapshot(row, options.time, count)]);
+            }
+            Phase::Record { seconds } => {
+                for back in (1..=seconds).rev() {
+                    let at = options.time - back as f64;
+                    if at >= 0.0 {
+                        app.scene.record(&demo_snapshot(row, at, count), at as f32);
+                    }
+                }
+            }
+            Phase::Settle { frames, step, lead } => {
+                for index in 0..frames {
+                    app.animation = options.time as f32 - lead + index as f32 * step;
+                    let frame = app.render(width, height, limit);
+                    app.scene.spare = frame.release();
+                }
+            }
+            Phase::Journal { frames, step, lead } => {
+                let mut fed = options.time - lead;
+                for index in 0..frames {
+                    let at = options.time - lead + index as f64 * step;
+                    feed(app, journal, options.demo, fed, at);
+                    fed = at;
+                    app.animation = at as f32;
+                    let frame = app.render(width, height, limit);
+                    app.scene.spare = frame.release();
+                }
+            }
+        }
+    }
 }
 
 /// Hands the matrix view its journal lines: synthetic ones arriving in `(from, to]` demo seconds,
@@ -1468,15 +1803,27 @@ fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64)
 }
 
 fn main() {
-    if let Err(error) = run(Options::parse()) {
-        eprintln!("isotop: {error}");
-        std::process::exit(1);
+    match run(Options::parse()) {
+        Ok(0) => {}
+        Ok(status) => std::process::exit(status),
+        Err(error) => {
+            eprintln!("isotop: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::DemoOptions;
+    use crate::simulation::hash::fnv1a_64_bytes as fnv1a;
+    use crate::views::view;
+
+    /// Every registered view available, as on Linux and macOS today.
+    fn all_available() -> Vec<bool> {
+        vec![true; REGISTRY.len()]
+    }
 
     #[test]
     fn labels_on_one_row_keep_a_free_column_between_them() {
@@ -1510,7 +1857,7 @@ mod tests {
             process.cpu = 30.0;
         }
         let hovered = snapshot.processes[0].id;
-        let mut app = App::new(View::Orbit, snapshot);
+        let mut app = App::new(view("orbit"), snapshot, all_available());
         let mut frame = app.render(1600, 900, 512);
         frame.rasterize();
         let layout = Layout {
@@ -1569,8 +1916,8 @@ mod tests {
             height: 900,
             cell: None,
         };
-        for view in [View::Orbit, View::Flow] {
-            let mut app = App::new(view, snapshot.clone());
+        for view in [view("orbit"), view("flow")] {
+            let mut app = App::new(view, snapshot.clone(), all_available());
             let mut frame = app.render(1600, 900, 512);
             frame.rasterize();
             let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
@@ -1589,7 +1936,7 @@ mod tests {
             app.render(1600, 900, 512);
             let legend = &app.text(0.0, "test", 20, 512)[2];
             assert!(!legend.contains("hollow star"), "focused: {legend}");
-            let mut app = App::new(view, plain.clone());
+            let mut app = App::new(view, plain.clone(), all_available());
             app.render(1600, 900, 512);
             let legend = &app.text(0.0, "test", 20, 512)[2];
             assert!(!legend.contains("hollow star"), "{legend}");
@@ -1619,8 +1966,8 @@ mod tests {
             height: 900,
             cell: None,
         };
-        for view in [View::Orbit, View::Flow] {
-            let mut app = App::new(view, snapshot.clone());
+        for view in [view("orbit"), view("flow")] {
+            let mut app = App::new(view, snapshot.clone(), all_available());
             app.render(1600, 900, 512);
             assert!(!app.scene.hub_names.is_empty(), "{view:?} draws the hub");
             let targets = app.tour_targets();
@@ -1641,7 +1988,7 @@ mod tests {
 
     #[test]
     fn tour_key_toggles_a_tour_that_runs_even_with_the_idle_tour_off() {
-        let mut app = App::new(View::Orbit, model::demo(1.0, 64));
+        let mut app = App::new(view("orbit"), model::demo(1.0, 64), all_available());
         app.render(320, 180, 512);
         let press = |app: &mut App, c: char| app.key(KeyCode::Char(c), KeyModifiers::NONE, 10.0);
         press(&mut app, 'g');
@@ -1664,7 +2011,7 @@ mod tests {
     fn globe_tour_turns_the_earth_so_its_target_faces_the_viewer() {
         // The world turns once in five minutes, so these times put home on every side of it.
         for time in [0.0, 75.0, 150.0, 225.0] {
-            let mut app = App::new(View::Globe, model::demo(1.0, 64));
+            let mut app = App::new(view("globe"), model::demo(1.0, 64), all_available());
             app.animation = time;
             app.render(640, 360, 512);
             app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
@@ -1689,18 +2036,18 @@ mod tests {
 
     #[test]
     fn shift_tab_steps_back_through_the_views_and_wraps() {
-        let mut app = App::new(View::City, model::demo(1.0, 16));
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT, 10.0);
-        assert_eq!(app.view, *View::ALL.last().unwrap());
+        assert_eq!(app.view, View::all().last().unwrap());
         app.key(KeyCode::Tab, KeyModifiers::NONE, 10.0);
-        assert_eq!(app.view, View::City);
+        assert_eq!(app.view, view("city"));
     }
 
     #[test]
     fn matrix_status_ignores_a_process_selected_in_another_view() {
         let snapshot = model::demo(1.0, 16);
         let selected = snapshot.processes[0].id;
-        let mut app = App::new(View::Matrix, snapshot);
+        let mut app = App::new(view("matrix"), snapshot, all_available());
         app.selected = Some(selected);
         app.scene
             .matrix
@@ -1724,7 +2071,7 @@ mod tests {
     fn memory_is_labelled_with_what_the_platform_measures() {
         let snapshot = model::demo(1.0, 16);
         let selected = snapshot.processes[0].id;
-        let mut app = App::new(View::City, snapshot);
+        let mut app = App::new(view("city"), snapshot, all_available());
         let label = platform::MEMORY_LABEL;
         assert!(app.text(0.0, "test", 20, 512)[2].contains(&format!("footprint = {label} |")));
         app.selected = Some(selected);
@@ -1757,7 +2104,7 @@ mod tests {
 
     #[test]
     fn h_hides_the_panel_except_while_typing_a_search() {
-        let mut app = App::new(View::City, model::demo(1.0, 16));
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
         let press = |app: &mut App, c: char| app.key(KeyCode::Char(c), KeyModifiers::NONE, 10.0);
         assert!(app.panel_shown());
         press(&mut app, 'h');
@@ -1774,37 +2121,38 @@ mod tests {
 
     #[test]
     fn camera_follows_growing_views_until_moved_by_hand() {
-        let mut app = App::new(View::Cells, model::demo(1.0, 64));
+        let mut app = App::new(view("cells"), model::demo(1.0, 64), all_available());
         app.render(320, 180, 512);
         assert!(app.framed && app.scene.bounded());
         app.key(KeyCode::Left, KeyModifiers::NONE, 10.0);
         assert!(!app.framed, "panning takes over the camera");
         app.key(KeyCode::Char('8'), KeyModifiers::NONE, 10.0);
         assert!(
-            app.framed && app.view == View::Globe,
+            app.framed && app.view == view("globe"),
             "switching view frames it again"
         );
     }
 
-    /// The macOS gaps, as the collector reports them.
-    const MACOS: [&str; 8] = [
-        "cpu pressure",
-        "io pressure",
-        "last cpu",
-        "cpu clock",
-        "run queue",
-        "cgroups",
-        "socket traffic",
-        "file locks",
+    /// The macOS gaps, as the collector reports them on a Mac without cluster clocks.
+    const MACOS: [Source; 9] = [
+        Source::CpuPressure,
+        Source::IoPressure,
+        Source::LastCpu,
+        Source::CpuClock,
+        Source::RunQueue,
+        Source::Cgroups,
+        Source::SocketTraffic,
+        Source::FileLocks,
+        Source::GpuMemory,
     ];
 
     /// The status text of `view` over the demo workload with the given gaps, after one frame so
     /// views that learn the gaps while drawing have seen them.
-    fn lines_with(view: View, missing: &[&'static str], unreadable: usize) -> Vec<String> {
+    fn lines_with(view: View, missing: &[Source], unreadable: usize) -> Vec<String> {
         let mut snapshot = model::demo(1.0, 16);
-        snapshot.missing = missing.to_vec();
+        snapshot.missing = missing.iter().copied().collect();
         snapshot.unreadable = unreadable;
-        if missing.contains(&"last cpu") {
+        if missing.contains(&Source::LastCpu) {
             // A Mac without the rusage counters that place marbles by cluster: no share of
             // performance-core time and no waiting threads.
             for process in &mut snapshot.processes {
@@ -1812,7 +2160,7 @@ mod tests {
                 process.waiting = None;
             }
         }
-        if missing.contains(&"file locks") {
+        if missing.contains(&Source::FileLocks) {
             // No lock table: every process's locks are unreadable and none waits on one.
             for process in &mut snapshot.processes {
                 process.locks_held = model::Measured::Unreadable;
@@ -1820,9 +2168,32 @@ mod tests {
             }
             snapshot.unattributed_locks = 0;
         }
-        let mut app = App::new(view, snapshot);
+        let mut app = App::new(view, snapshot, all_available());
         app.render(320, 180, 512);
         app.text(0.0, "test", 20, 512)
+    }
+
+    #[test]
+    fn status_line_shows_n_a_for_memory_it_could_not_read() {
+        let status = |total: Option<u64>, available: Option<u64>| {
+            let mut snapshot = model::demo(1.0, 16);
+            (snapshot.memory_total, snapshot.memory_available) = (total, available);
+            let mut app = App::new(view("city"), snapshot, all_available());
+            app.render(320, 180, 512);
+            app.text(0.0, "test", 20, 512).swap_remove(0)
+        };
+        let line = status(Some(3 << 30), Some(1 << 30));
+        assert!(
+            line.ends_with(&format!("RAM {} / {}", bytes(2 << 30), bytes(3 << 30))),
+            "{line}"
+        );
+        let line = status(Some(3 << 30), None);
+        assert!(
+            line.ends_with(&format!("RAM n/a / {}", bytes(3 << 30))),
+            "{line}"
+        );
+        let line = status(None, None);
+        assert!(line.ends_with("RAM n/a / n/a"), "{line}");
     }
 
     #[test]
@@ -1830,21 +2201,25 @@ mod tests {
         let [cpu, memory, io] = model::demo(1.0, 16)
             .pressure
             .map(|value| format!("{value:.0}%"));
-        let full = lines_with(View::City, &[], 0);
+        let full = lines_with(view("city"), &[], 0);
         assert!(
             full[4].contains(&format!("pressure cpu {cpu} mem {memory} io {io}")),
             "{}",
             full[4]
         );
-        let mac = lines_with(View::City, &MACOS, 0);
+        let mac = lines_with(view("city"), &MACOS, 0);
         assert!(
             mac[4].contains(&format!("pressure cpu n/a mem {memory} io n/a")),
             "{}",
             mac[4]
         );
         let none = lines_with(
-            View::City,
-            &["cpu pressure", "memory pressure", "io pressure"],
+            view("city"),
+            &[
+                Source::CpuPressure,
+                Source::MemoryPressure,
+                Source::IoPressure,
+            ],
             0,
         );
         assert!(
@@ -1855,16 +2230,82 @@ mod tests {
     }
 
     #[test]
+    fn status_line_says_when_the_background_sampler_stopped_or_stalled() {
+        let status = |sampler: model::SamplerHealth| {
+            let mut snapshot = model::demo(1.0, 16);
+            snapshot.sampler = sampler;
+            App::new(view("city"), snapshot, all_available()).text(0.0, "test", 20, 512)[0].clone()
+        };
+        let healthy = status(model::demo(1.0, 16).sampler);
+        assert!(!healthy.contains("sampler"), "{healthy}");
+        let stopped = status(model::SamplerHealth::default());
+        assert!(
+            stopped.contains(" processes (background sampler stopped: "),
+            "{stopped}"
+        );
+        let stalled = status(model::SamplerHealth {
+            running: true,
+            last_cycle: Some(Duration::from_secs(95)),
+            quiet: Duration::from_secs(95),
+            scan_latency: Vec::new(),
+        });
+        assert!(
+            stalled.contains("(background sampler stalled 95s)"),
+            "{stalled}"
+        );
+    }
+
+    #[test]
+    fn the_journal_stops_after_matrix_has_been_hidden_for_a_while() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        assert!(!app.journal_wanted(at(0)), "Matrix was never shown");
+        app.view = view("matrix");
+        assert!(app.journal_wanted(at(10)));
+        assert!(app.journal_wanted(at(500)), "shown all along");
+        app.view = view("globe");
+        assert!(app.journal_wanted(at(501)));
+        assert!(app.journal_wanted(at(529)), "a look at another view");
+        assert!(!app.journal_wanted(at(530)));
+        assert!(!app.journal_wanted(at(900)));
+        app.view = view("matrix");
+        assert!(app.journal_wanted(at(901)), "back on Matrix");
+    }
+
+    #[test]
+    fn changing_views_updates_the_demand() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        assert!(app.demand().is_empty(), "City reads no optional source");
+        app.switch(view("globe"));
+        assert!(app.demand().contains(Source::Locations));
+        assert!(!app.demand().contains(Source::Journal));
+        app.switch(view("matrix"));
+        assert!(app.demand().contains(Source::Journal));
+        assert!(
+            !app.demand().contains(Source::Locations),
+            "only the shown view"
+        );
+        app.switch(view("cores"));
+        assert!(app.demand().is_empty());
+        // Every view demands exactly what its registry row declares.
+        for (index, row) in REGISTRY.iter().enumerate() {
+            app.switch(View::at(index));
+            assert_eq!(app.demand(), Demand::from(row.sources));
+        }
+    }
+
+    #[test]
     fn status_line_counts_unreadable_processes_only_when_there_are_some() {
-        let none = lines_with(View::City, &[], 0);
+        let none = lines_with(view("city"), &[], 0);
         assert!(!none[0].contains("unreadable") && !none[4].contains("unreadable"));
-        let one = lines_with(View::City, &[], 1);
+        let one = lines_with(view("city"), &[], 1);
         assert!(
             one[0].contains(" processes (+1 unreadable: run with sudo) | "),
             "{}",
             one[0]
         );
-        let many = lines_with(View::City, &MACOS, 37);
+        let many = lines_with(view("city"), &MACOS, 37);
         assert!(
             many[0].contains(" processes (+37 unreadable: run with sudo) | "),
             "{}",
@@ -1875,7 +2316,7 @@ mod tests {
 
     #[test]
     fn unreadable_notice_survives_an_80_column_terminal() {
-        let first = &lines_with(View::City, &MACOS, 212)[0];
+        let first = &lines_with(view("city"), &MACOS, 212)[0];
         let visible: String = first.chars().take(80).collect();
         assert!(
             visible.contains("(+212 unreadable: run with sudo)"),
@@ -1885,26 +2326,32 @@ mod tests {
 
     #[test]
     fn legends_name_what_the_platform_cannot_measure() {
-        let cores = lines_with(View::Cores, &MACOS, 0)[2].clone();
+        let cores = lines_with(view("cores"), &MACOS, 0)[2].clone();
         assert!(
             cores.contains("lanes = load; macOS reports no last CPU per process, so no marbles"),
             "{cores}"
         );
         assert!(cores.contains("no clock readings"), "{cores}");
         assert!(!cores.contains("marble ="), "{cores}");
-        let cells = lines_with(View::Cells, &MACOS, 0)[2].clone();
+        let cells = lines_with(view("cells"), &MACOS, 0)[2].clone();
         assert!(
-            cells.contains(
-                "groups by app and user; macOS has no cgroups, so no limits, quotas or pressure"
-            ),
+            cells.contains(&format!(
+                "{}, so no limits, quotas or pressure",
+                platform::WITHOUT_CGROUPS
+            )),
             "{cells}"
         );
-        let globe = lines_with(View::Globe, &MACOS, 0)[2].clone();
+        let orbit = lines_with(view("orbit"), &MACOS, 0)[2].clone();
+        assert!(
+            orbit.contains("glow + trail = CPU | cyan arcs") && !orbit.contains("NVIDIA"),
+            "{orbit}"
+        );
+        let globe = lines_with(view("globe"), &MACOS, 0)[2].clone();
         assert!(
             globe.contains("no per-connection rates or RTT on macOS"),
             "{globe}"
         );
-        let coop = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        let coop = lines_with(view("coop"), &MACOS, 0)[2].clone();
         assert!(
             coop.contains("no last CPU: running chickens share one trough"),
             "{coop}"
@@ -1914,8 +2361,11 @@ mod tests {
 
     #[test]
     fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
-        let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
-        assert!(mac.contains("flock = app or user group"), "{mac}");
+        let mac = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        assert!(
+            mac.contains(&format!("flock = {} | ", platform::GROUP_LABEL)),
+            "{mac}"
+        );
         assert!(
             mac.contains("dust = reads | eyes = memory pressure"),
             "{mac}"
@@ -1925,7 +2375,7 @@ mod tests {
             !mac.contains("flock = cgroup") && !mac.contains("fox ="),
             "{mac}"
         );
-        let linux = lines_with(View::Coop, &[], 0)[2].clone();
+        let linux = lines_with(view("coop"), &[], 0)[2].clone();
         assert!(
             linux.contains("flock = cgroup | ") && linux.contains("fox = OOM kill, eyes = "),
             "{linux}"
@@ -1935,7 +2385,7 @@ mod tests {
 
     #[test]
     fn coop_legend_on_macos_counts_open_files_but_has_no_brooding() {
-        let mac = lines_with(View::Coop, &MACOS, 0)[2].clone();
+        let mac = lines_with(view("coop"), &MACOS, 0)[2].clone();
         assert!(
             mac.contains("eggs = open files (log2), cracked = deleted but open | chicks = threads"),
             "{mac}"
@@ -1949,7 +2399,7 @@ mod tests {
             "{mac}"
         );
         assert!(!mac.contains("without a process (OFD)"), "{mac}");
-        let linux = lines_with(View::Coop, &[], 0)[2].clone();
+        let linux = lines_with(view("coop"), &[], 0)[2].clone();
         assert!(
             linux.contains("brooding = holds a file lock, queue at a nest = blocked on one"),
             "{linux}"
@@ -1961,10 +2411,1180 @@ mod tests {
     fn legends_keep_their_full_text_when_nothing_is_missing() {
         let text = |view| lines_with(view, &[], 0)[2].clone();
         assert!(
-            text(View::Cores).contains("chevrons = clock | red queue = waiting tasks | marble =")
+            text(view("cores")).contains("chevrons = clock | red queue = waiting tasks | marble =")
         );
-        assert!(text(View::Cells).contains("dashed ring = memory limit | arc = CPU vs quota"));
-        assert!(text(View::Globe).contains("brighter with traffic | cyan = mostly download"));
-        assert!(!text(View::Coop).contains("share one trough"));
+        assert!(text(view("cells")).contains("dashed ring = memory limit | arc = CPU vs quota"));
+        assert!(text(view("globe")).contains("brighter with traffic | cyan = mostly download"));
+        assert!(
+            text(view("orbit")).contains("glow + trail = CPU | green = NVIDIA GPU | cyan arcs")
+        );
+        assert!(!text(view("coop")).contains("share one trough"));
+    }
+
+    /// Options as `isotop` parses `arguments`.
+    fn options(arguments: &[&str]) -> Options {
+        Options::parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
+    }
+
+    /// What `preflight` returns and writes to standard output and error for `arguments`, with
+    /// the views named in `missing` unavailable.
+    fn preflight_with(arguments: &[&str], missing: &[&str]) -> (Preflight, String, String) {
+        let available: Vec<bool> = View::all()
+            .map(|view| !missing.contains(&view.name()))
+            .collect();
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = preflight(&options(arguments), &available, &mut out, &mut err);
+        let text = |bytes: Vec<u8>| String::from_utf8(bytes).expect("the output is text");
+        (result, text(out), text(err))
+    }
+
+    /// An app over the test module views of `views::testing::ROWS`, showing `probe`.
+    fn probe_app() -> App {
+        let rows = views::testing::ROWS;
+        let mut app = App::new(View::at(0), model::demo(1.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        app.render(320, 180, 512);
+        app
+    }
+
+    #[test]
+    fn demo_snapshots_follow_the_shown_views_options() {
+        let rows = views::testing::DEMO_ROWS;
+        let (plain, demanding) = (View::at(0), View::at(1));
+        let asked = DemoOptions {
+            churn: true,
+            exact_cpu_time: true,
+        };
+        let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        assert_eq!(app.row().demo, DemoOptions::default());
+        assert_eq!(app.scene.row(demanding).demo, asked);
+        let processes = |app: &App, time: f64| {
+            let row = app.row();
+            demo_snapshot(row, time, 64).processes
+        };
+        // The first view asks for nothing, so it gets `demo` exactly.
+        assert_eq!(
+            format!("{:?}", processes(&app, 40.0)),
+            format!("{:?}", model::demo(40.0, 64).processes)
+        );
+        // Switching to a view that asks for more changes the next sample, not the history.
+        let kept = app.history.len();
+        app.switch(demanding);
+        assert_eq!(app.history.len(), kept, "the history is kept as it was");
+        let busy = processes(&app, 40.0);
+        assert!(busy.len() > 64, "transients follow the base processes");
+        assert_eq!(
+            f64::from(busy[5].cpu_time),
+            f64::from(model::demo_cpu_seconds(40.0, 5) as f32)
+        );
+        assert_eq!(
+            format!("{:?}", demo_snapshot(app.row(), 40.0, 64).processes),
+            format!("{:?}", model::demo_with(40.0, 64, asked).processes)
+        );
+        // And back again.
+        app.switch(plain);
+        assert_eq!(processes(&app, 40.0).len(), 64);
+        // The headless warm-up replays history through the same options.
+        app.switch(demanding);
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "12",
+            "--processes",
+            "64",
+            "--width",
+            "160",
+            "--output",
+            "warm.png",
+        ]);
+        warm_up(&mut app, &options, None);
+        assert_eq!(app.history.len(), 1);
+        assert_eq!(
+            format!("{:?}", app.history[0].processes),
+            format!("{:?}", model::demo_with(12.0, 64, asked).processes)
+        );
+    }
+
+    #[test]
+    fn registry_names_are_unique_lowercase_and_parse_on_the_command_line() {
+        let names: Vec<&str> = View::all().map(View::name).collect();
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "{names:?}");
+        for view in View::all() {
+            let name = view.name();
+            assert!(
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()),
+                "{name}"
+            );
+            assert_eq!(options(&["--view", name]).view, Some(view));
+        }
+        let error = Options::try_parse_from(["isotop", "--view", "atlantis"])
+            .err()
+            .expect("an unknown view is a usage error");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert!(
+            error
+                .to_string()
+                .contains("[possible values: city, orbit, ripple"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn existing_views_keep_their_names_titles_tab_order_and_digits() {
+        let existing = [
+            ("city", "CITY"),
+            ("orbit", "ORBIT"),
+            ("ripple", "RIPPLE"),
+            ("flow", "FLOW"),
+            ("cores", "CORES"),
+            ("cells", "CELLS"),
+            ("strata", "STRATA"),
+            ("globe", "GLOBE"),
+            ("reef", "REEF"),
+            ("matrix", "MATRIX"),
+            ("coop", "COOP"),
+        ];
+        let rows: Vec<(&str, &str)> = REGISTRY.iter().map(|row| (row.name, row.title)).collect();
+        assert_eq!(rows[..existing.len()], existing);
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        let press = |app: &mut App, code: KeyCode| app.key(code, KeyModifiers::NONE, 10.0);
+        for (name, title) in existing {
+            assert_eq!(app.view.name(), name);
+            assert!(
+                app.text(0.0, "test", 20, 512)[0].starts_with(&format!(" ISOTOP / {title} / "))
+            );
+            press(&mut app, KeyCode::Tab);
+        }
+        for (digit, (name, _)) in "1234567890".chars().zip(existing) {
+            press(&mut app, KeyCode::Char(digit));
+            assert_eq!(app.view.name(), name, "digit {digit}");
+        }
+    }
+
+    #[test]
+    fn view_defaults_to_city() {
+        assert_eq!(options(&[]).view, None);
+        assert_eq!(preflight_with(&[], &[]).0, Preflight::Start(view("city")));
+    }
+
+    #[test]
+    fn tab_skips_views_that_are_unavailable() {
+        let shown = ["city", "flow", "matrix"];
+        let available = View::all()
+            .map(|view| shown.contains(&view.name()))
+            .collect();
+        let mut app = App::new(view("city"), model::demo(1.0, 16), available);
+        let press = |app: &mut App, code: KeyCode| {
+            app.key(code, KeyModifiers::NONE, 10.0);
+            app.view.name()
+        };
+        assert_eq!(press(&mut app, KeyCode::Tab), "flow");
+        assert_eq!(press(&mut app, KeyCode::Tab), "matrix");
+        assert_eq!(press(&mut app, KeyCode::Tab), "city", "wraps round");
+        assert_eq!(press(&mut app, KeyCode::BackTab), "matrix");
+        assert_eq!(press(&mut app, KeyCode::BackTab), "flow");
+        let mut alone = App::new(
+            view("reef"),
+            model::demo(1.0, 16),
+            vec![false; REGISTRY.len()],
+        );
+        alone.available[view("reef").index()] = true;
+        assert_eq!(
+            press(&mut alone, KeyCode::Tab),
+            "reef",
+            "nowhere else to go"
+        );
+    }
+
+    #[test]
+    fn a_digit_bound_to_an_unavailable_row_does_nothing() {
+        let mut available = all_available();
+        available[view("orbit").index()] = false;
+        let mut app = App::new(view("cells"), model::demo(1.0, 16), available);
+        app.render(320, 180, 512);
+        assert!(!app.fit);
+        app.key(KeyCode::Char('2'), KeyModifiers::NONE, 10.0);
+        assert_eq!((app.view, app.fit), (view("cells"), false));
+        app.key(KeyCode::Char('3'), KeyModifiers::NONE, 10.0);
+        assert_eq!((app.view, app.fit), (view("ripple"), true));
+    }
+
+    #[test]
+    fn verbose_names_each_unavailable_view_once() {
+        let (result, out, err) = preflight_with(&["--verbose"], &["orbit", "reef"]);
+        assert_eq!(result, Preflight::Start(view("city")));
+        assert_eq!(out, "");
+        assert_eq!(
+            err,
+            "skipping view orbit: not supported on this platform\n\
+             skipping view reef: not supported on this platform\n"
+        );
+        assert_eq!(
+            preflight_with(&[], &["orbit"]).2,
+            "",
+            "silent without --verbose"
+        );
+        assert_eq!(preflight_with(&["--verbose"], &[]).2, "");
+    }
+
+    #[test]
+    fn list_views_prints_only_available_views_in_registry_order() {
+        let (result, out, err) = preflight_with(&["--list-views"], &["orbit", "matrix"]);
+        assert_eq!(result, Preflight::Exit(0));
+        let expected: String = REGISTRY
+            .iter()
+            .filter(|row| !["orbit", "matrix"].contains(&row.name))
+            .map(|row| format!("{}\n", row.name))
+            .collect();
+        assert_eq!(out, expected);
+        assert!(out.starts_with("city\nripple\nflow\n"), "{out}");
+        assert_eq!(err, "");
+        let (_, every, _) = preflight_with(&["--list-views", "--view", "globe"], &[]);
+        assert_eq!(
+            every.lines().collect::<Vec<_>>(),
+            View::all().map(View::name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_unavailable_view_on_the_command_line_falls_back_to_the_first_available() {
+        let (result, out, err) = preflight_with(&["--view", "orbit"], &["city", "orbit"]);
+        assert_eq!(result, Preflight::Start(view("ripple")));
+        assert_eq!((out.as_str(), err.as_str()), ("", ""));
+        assert_eq!(
+            preflight_with(&["--view", "coop"], &["city"]).0,
+            Preflight::Start(view("coop")),
+            "an available view starts as asked"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_view_in_a_headless_run_exits_with_status_one() {
+        for headless in [["--output", "orbit.png"], ["--benchmark", "5"]] {
+            let arguments = [&["--view", "orbit"][..], &headless].concat();
+            let (result, out, err) = preflight_with(&arguments, &["orbit"]);
+            assert_eq!(result, Preflight::Exit(1), "{arguments:?}");
+            assert_eq!(out, "");
+            assert_eq!(
+                err,
+                "isotop: view orbit is not supported on this platform\n"
+            );
+        }
+        let (result, _, err) = preflight_with(&["--view", "orbit", "--output", "x.png"], &["city"]);
+        assert_eq!(
+            (result, err.as_str()),
+            (Preflight::Start(view("orbit")), "")
+        );
+    }
+
+    #[test]
+    fn a_headless_run_without_view_falls_back_when_the_default_is_unavailable() {
+        for headless in [["--output", "x.png"], ["--benchmark", "5"]] {
+            let (result, out, err) = preflight_with(&headless, &["city"]);
+            assert_eq!(result, Preflight::Start(view("orbit")), "{headless:?}");
+            assert_eq!((out.as_str(), err.as_str()), ("", ""));
+        }
+    }
+
+    #[test]
+    fn view_local_keys_reach_only_the_shown_view_and_never_during_search() {
+        let mut app = probe_app();
+        let (probe, quiet) = (View::at(0), View::at(1));
+        let press = |app: &mut App, code: KeyCode| app.key(code, KeyModifiers::NONE, 10.0);
+        let keys = |app: &App, view: View| {
+            let legend = app.scene.legend(view, app.snapshot());
+            let start = legend.find("keys [").expect("the probe lists its keys") + 6;
+            legend[start..legend.len() - 1].to_owned()
+        };
+        for character in "x,z".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        let center = app.goal.center;
+        press(&mut app, KeyCode::Char('a'));
+        assert_ne!(app.goal.center, center, "a global key keeps its meaning");
+        assert_eq!(
+            (keys(&app, probe), keys(&app, quiet)),
+            ("x,z".into(), "".into())
+        );
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('y'));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            (keys(&app, probe), keys(&app, quiet)),
+            ("x,z".into(), "y".into())
+        );
+        for code in [KeyCode::Char('/'), KeyCode::Char('b'), KeyCode::Char('k')] {
+            press(&mut app, code);
+        }
+        assert_eq!(app.search.as_deref(), Some("bk"), "typed into the search");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            keys(&app, probe),
+            "x,z",
+            "nothing reached the view during the search"
+        );
+        app.fit = false;
+        press(&mut app, KeyCode::Char('r'));
+        assert!(app.fit, "the global reset happens as well");
+        press(&mut app, KeyCode::Home);
+        assert_eq!(keys(&app, probe), "x,zRR");
+        // The probe's mode takes the first Esc; the next one closes the selection as usual.
+        let selected = app.snapshot().processes[0].id;
+        app.selected = Some(selected);
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.selected,
+            Some(selected),
+            "the view consumed the first Esc"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.selected, None);
+        assert_eq!(keys(&app, probe), "x,zRRmEE");
+    }
+
+    #[test]
+    fn optional_row_fields_set_the_tour_pitch_counts_and_inspector() {
+        let mut app = probe_app();
+        let press = |app: &mut App, code: KeyCode| app.key(code, KeyModifiers::NONE, 10.0);
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.tour.is_some(), "the probe takes part in the tour");
+        let pitch = app.goal.pitch;
+        app.view = View::at(1);
+        app.update_tour(Some(Duration::ZERO));
+        assert!(
+            app.tour.is_none(),
+            "showing a view without the tour ends it"
+        );
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.tour.is_none());
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            (app.view, app.goal.pitch),
+            (View::at(0), pitch),
+            "no pitch of its own"
+        );
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.goal.pitch, FRAC_PI_2, "switching sets the row's pitch");
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.goal.pitch, ISOMETRIC);
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.goal.pitch, FRAC_PI_2, "so does r");
+        let rows = views::testing::ROWS;
+        let started = App::with_scene(
+            Scene::with_rows(rows),
+            View::at(1),
+            model::demo(1.0, 16),
+            vec![true; rows.len()],
+        );
+        assert_eq!(started.goal.pitch, FRAC_PI_2, "and so does starting on it");
+        app.render(320, 180, 512);
+        app.selected = Some(app.snapshot().processes[0].id);
+        let text = app.text(0.0, "test", 20, 512);
+        assert!(
+            text[0].contains(" | 7 visible | 3 collapsed | "),
+            "{}",
+            text[0]
+        );
+        assert_eq!(text[1], " > quiet");
+        assert!(
+            text[2].starts_with(" probe: "),
+            "the legend, not the command line"
+        );
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let frame = app.render(320, 180, 512);
+        assert!(app.popup(&frame, &layout).is_none());
+    }
+
+    /// An app over `views::testing::GUIDED`, showing `guide`, and the process in its last seat,
+    /// which the guide tours. That process is made idle and small, so that nothing but the
+    /// guide's target puts it first.
+    fn guided_app() -> (App, Identity) {
+        let mut snapshot = model::demo(1.0, 16);
+        let last = snapshot
+            .processes
+            .iter()
+            .map(|p| p.id)
+            .max()
+            .expect("the demo has processes");
+        for process in snapshot.processes.iter_mut().filter(|p| p.id == last) {
+            process.cpu = 0.0;
+            process.memory = 1;
+            process.gpu_memory = None;
+        }
+        let rows = views::testing::GUIDED;
+        let mut app = App::new(View::at(0), snapshot, vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        app.render(320, 180, 512);
+        (app, last)
+    }
+
+    #[test]
+    fn tour_targets_from_stage_outputs_reach_the_app() {
+        let (mut app, last) = guided_app();
+        assert_eq!(
+            app.tour_targets().first(),
+            Some(&last),
+            "the view's target leads, though it is neither busy nor large"
+        );
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        assert_eq!(app.tour.as_ref().map(|tour| tour.target), Some(last));
+        app.update_tour(None);
+        let seat = app.scene.positions[&last];
+        assert_eq!(
+            app.goal.center,
+            [seat[0], 3.0],
+            "the camera goes to the point the view gave, beside the seat"
+        );
+        app.view = View::at(1);
+        app.render(320, 180, 512);
+        assert!(app.scene.tour.is_empty());
+        assert_ne!(
+            app.tour_targets().first(),
+            Some(&last),
+            "a view that gives no targets leaves the busiest first"
+        );
+    }
+
+    #[test]
+    fn popup_lines_from_stage_outputs_reach_the_inspector() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let popup = |app: &mut App, id: Identity| {
+            app.selected = Some(id);
+            let frame = app.render(320, 180, 512);
+            app.popup(&frame, &layout)
+                .expect("the selection has a popup")
+                .lines
+        };
+        let lines = popup(&mut app, last);
+        let at = lines
+            .iter()
+            .position(|line| line == views::testing::GUIDE_LINE)
+            .expect("the view's line is in the popup");
+        assert!(
+            lines[at - 1].starts_with("CPU "),
+            "right after the process's own figures: {lines:?}"
+        );
+        let other = app.snapshot().processes[0].id;
+        assert!(
+            !popup(&mut app, other)
+                .iter()
+                .any(|line| line == views::testing::GUIDE_LINE)
+        );
+    }
+
+    /// The checked-in golden hashes, which are those of Linux on x86_64.
+    const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden.txt");
+
+    /// FNV-1a 64 of a render's colour, pick and depth buffers.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Hashes {
+        pixels: u64,
+        picks: u64,
+        depth: u64,
+    }
+
+    /// The frame `isotop --demo --time 12 --renderer cpu --width 480 --output` writes for `view`.
+    fn golden_render(view: View) -> Hashes {
+        let name = view.name();
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "12",
+            "--renderer",
+            "cpu",
+            "--width",
+            "480",
+            "--output",
+            "golden.png",
+            "--view",
+            name,
+        ]);
+        let mut app = App::new(
+            view,
+            demo_snapshot(view.info(), options.time, options.processes as usize),
+            all_available(),
+        );
+        // The matrix greets `$USER`, which differs between machines.
+        app.scene.matrix.user = Some("Neo".into());
+        warm_up(&mut app, &options, None);
+        app.animation = options.time as f32;
+        let frame = app.render(
+            options.width,
+            options.headless_height(),
+            options.limit as usize,
+        );
+        Hashes {
+            pixels: fnv1a(frame.pixels.iter().copied()),
+            picks: crate::simulation::hash::fnv1a_64_bytes(
+                frame.picks.iter().flat_map(|pick| pick.to_le_bytes()),
+            ),
+            depth: fnv1a(
+                frame
+                    .depth()
+                    .iter()
+                    .flat_map(|depth| depth.to_bits().to_le_bytes()),
+            ),
+        }
+    }
+
+    /// Every registered view's golden render, in registry order, each view on its own thread.
+    fn render_every_view() -> Vec<(String, Hashes)> {
+        std::thread::scope(|scope| {
+            let renders: Vec<_> = View::all()
+                .map(|view| scope.spawn(move || (view.name().to_owned(), golden_render(view))))
+                .collect();
+            renders
+                .into_iter()
+                .map(|render| render.join().expect("the view renders"))
+                .collect()
+        })
+    }
+
+    /// The renders shared by the tests below, so each view is rendered once for both of them.
+    fn first_renders() -> &'static [(String, Hashes)] {
+        static RENDERS: std::sync::OnceLock<Vec<(String, Hashes)>> = std::sync::OnceLock::new();
+        RENDERS.get_or_init(render_every_view)
+    }
+
+    fn golden_line(hashes: &Hashes) -> String {
+        format!(
+            "{:016x} {:016x} {:016x}",
+            hashes.pixels, hashes.picks, hashes.depth
+        )
+    }
+
+    /// Compares `renders` with the golden file at `path`, or rewrites the file when `bless` is set.
+    fn check_golden(
+        path: &std::path::Path,
+        renders: &[(String, Hashes)],
+        bless: bool,
+    ) -> Result<(), String> {
+        if bless {
+            let mut text = String::from(
+                "# view pixels picks depth: FNV-1a 64 of `--demo --time 12 --renderer cpu --width 480`\n",
+            );
+            for (name, hashes) in renders {
+                text += &format!("{name} {}\n", golden_line(hashes));
+            }
+            return std::fs::write(path, text)
+                .map_err(|error| format!("{}: {error}", path.display()));
+        }
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let stored: HashMap<&str, Vec<&str>> = text
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((fields.next()?, fields.collect()))
+            })
+            .collect();
+        let mut changed = Vec::new();
+        for (name, hashes) in renders {
+            let rendered = golden_line(hashes);
+            match stored.get(name.as_str()) {
+                None => changed.push(format!("{name}: no golden hash")),
+                Some(fields) => {
+                    let buffers: Vec<&str> = ["pixels", "picks", "depth"]
+                        .into_iter()
+                        .zip(rendered.split(' '))
+                        .enumerate()
+                        .filter(|(index, (_, hash))| fields.get(*index) != Some(hash))
+                        .map(|(_, (buffer, _))| buffer)
+                        .collect();
+                    if !buffers.is_empty() {
+                        changed.push(format!("{name}: {} changed", buffers.join(", ")));
+                    }
+                }
+            }
+        }
+        let mut retired: Vec<&str> = stored
+            .keys()
+            .copied()
+            .filter(|name| !renders.iter().any(|(rendered, _)| rendered == name))
+            .collect();
+        retired.sort_unstable();
+        changed.extend(
+            retired
+                .iter()
+                .map(|name| format!("{name}: no longer a view")),
+        );
+        if changed.is_empty() {
+            return Ok(());
+        }
+        Err(format!(
+            "golden render hashes in {} differ:\n  {}\nIf the change is intended, rewrite the file with \
+             `ISOTOP_BLESS=1 cargo test every_view_matches` and say why in the PR description, with the renders.",
+            path.display(),
+            changed.join("\n  ")
+        ))
+    }
+
+    /// Renders every view as a headless `--output` run does and compares the FNV-1a 64 hashes of
+    /// its colour, pick and depth buffers with `tests/golden.txt`. `ISOTOP_BLESS=1` rewrites it.
+    ///
+    /// Transcendental functions (`sin`, `exp`, `powf`) are not guaranteed to round the same way
+    /// across libm implementations and architectures, so the checked-in hashes are those of Linux
+    /// on x86_64, which CI's `ubuntu-latest` runs, and only that platform compares them. Elsewhere
+    /// every view still renders, which catches panics, and the comparison is skipped.
+    ///
+    /// `ISOTOP_GOLDEN_FILE=<path>` reads, and in bless mode writes, that file instead, and compares
+    /// on any platform: bless a local baseline before a change and compare against it after.
+    #[test]
+    fn every_view_matches_its_golden_hash() {
+        let renders = first_renders();
+        let bless = std::env::var_os("ISOTOP_BLESS").is_some_and(|value| value == "1");
+        let (path, compare) = match std::env::var_os("ISOTOP_GOLDEN_FILE") {
+            Some(path) => (PathBuf::from(path), true),
+            None => (
+                PathBuf::from(GOLDEN),
+                cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            ),
+        };
+        if !compare {
+            assert!(
+                !bless,
+                "the checked-in hashes are blessed on Linux x86_64 only; \
+                 set ISOTOP_GOLDEN_FILE to bless a local baseline"
+            );
+            return;
+        }
+        if let Err(message) = check_golden(&path, renders, bless) {
+            panic!("{message}");
+        }
+    }
+
+    #[test]
+    fn every_view_renders_the_same_frame_twice() {
+        let second = render_every_view();
+        for ((name, first), (_, second)) in first_renders().iter().zip(&second) {
+            assert_eq!(
+                first, second,
+                "{name} drew a different frame from the same inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn bless_mode_rewrites_the_golden_file() {
+        let path = std::env::temp_dir().join(format!("isotop-golden-{}.txt", std::process::id()));
+        std::fs::write(&path, "city 0 0 0\nretired 0 0 0\n").expect("the file is written");
+        let hashes = |pixels, picks, depth| Hashes {
+            pixels,
+            picks,
+            depth,
+        };
+        let mut renders = vec![
+            ("city".to_owned(), hashes(1, 2, 3)),
+            ("orbit".to_owned(), hashes(4, 5, 6)),
+        ];
+        let stale = check_golden(&path, &renders, false);
+        let blessed = check_golden(&path, &renders, true);
+        let written = std::fs::read_to_string(&path).unwrap_or_default();
+        let fresh = check_golden(&path, &renders, false);
+        renders[1].1.picks = 7;
+        let changed = check_golden(&path, &renders, false);
+        std::fs::remove_file(&path).ok();
+        let stale = stale.expect_err("a stale file fails");
+        assert!(
+            stale.contains("city: pixels, picks, depth changed"),
+            "{stale}"
+        );
+        assert!(stale.contains("orbit: no golden hash"), "{stale}");
+        assert!(stale.contains("retired: no longer a view"), "{stale}");
+        assert!(stale.contains("ISOTOP_BLESS=1"), "{stale}");
+        assert_eq!(blessed, Ok(()));
+        assert!(
+            written.contains("\norbit 0000000000000004 0000000000000005 0000000000000006\n"),
+            "{written}"
+        );
+        assert!(!written.contains("retired"), "{written}");
+        assert_eq!(fresh, Ok(()));
+        let changed = changed.expect_err("a changed buffer fails");
+        assert!(changed.contains("orbit: picks changed"), "{changed}");
+        assert!(!changed.contains("city:"), "{changed}");
+    }
+
+    /// Paths relative to `src/` that the first column of AGENTS.md's tables names. Only table rows
+    /// count, so a path mentioned in prose does not.
+    fn agents_table_paths() -> Vec<String> {
+        let guide = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/AGENTS.md"))
+            .expect("AGENTS.md is readable");
+        guide
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .filter_map(|line| line.split('|').nth(1))
+            .flat_map(|cell| cell.split('`').skip(1).step_by(2))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn source_files(directory: &std::path::Path, prefix: &str, found: &mut Vec<String>) {
+        for entry in std::fs::read_dir(directory).expect("src is readable") {
+            let entry = entry.expect("directory entries are readable");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if path.is_dir() {
+                source_files(&path, &format!("{prefix}{name}/"), found);
+            } else if name.ends_with(".rs") {
+                found.push(format!("{prefix}{name}"));
+            }
+        }
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> bool {
+        app.key(code, KeyModifiers::NONE, 10.0)
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    /// Opens the picker, types `name` and presses Enter, as the smoke test does.
+    fn pick(app: &mut App, name: &str) {
+        press(app, KeyCode::Char('v'));
+        type_text(app, name);
+        press(app, KeyCode::Enter);
+    }
+
+    fn playlist_names(app: &App) -> Vec<&'static str> {
+        app.playlist.iter().map(|view| view.name()).collect()
+    }
+
+    /// The picker's popup lines in a layout of `rows` scene rows.
+    fn picker_lines(app: &App, rows: u16) -> Vec<String> {
+        let layout = Layout {
+            columns: 120,
+            rows,
+            width: 960,
+            height: rows as u32 * 16,
+            cell: None,
+        };
+        app.picker_popup(&layout).expect("the picker fits").lines
+    }
+
+    #[test]
+    fn the_picker_filters_by_name_and_title_ignoring_case() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        press(&mut app, KeyCode::Char('v'));
+        let lines = picker_lines(&app, 31);
+        assert_eq!(lines.len(), REGISTRY.len() + 2, "{lines:?}");
+        assert!(lines[1].starts_with("> "), "the highlight starts on city");
+        type_text(&mut app, "RE");
+        let entries = app.entries();
+        let matching = |text: &str| {
+            let names: Vec<_> = picker::filter(&entries, text)
+                .iter()
+                .map(|entry| entry.name)
+                .collect();
+            names
+        };
+        assert_eq!(matching("RE"), ["cores", "reef"]);
+        assert_eq!(matching("CoRe"), ["cores"]);
+        assert_eq!(matching("matrix"), ["matrix"]);
+        let lines = picker_lines(&app, 31);
+        assert!(lines[0].starts_with("View: RE_"), "{lines:?}");
+        assert!(lines[1].contains("cores") && lines[1].contains("CORES"));
+        assert!(lines[2].contains("reef") && lines[2].contains("REEF"));
+        assert!(
+            lines[2].contains(" 9 "),
+            "reef is the ninth view: {lines:?}"
+        );
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "eef");
+        assert_eq!(picker_lines(&app, 31)[1].trim_end(), "> *  9 reef   REEF");
+        assert_eq!(app.view, view("city"), "typing never switches");
+    }
+
+    #[test]
+    fn an_empty_filter_shows_no_view_matches_and_enter_does_nothing() {
+        let mut app = App::new(view("orbit"), model::demo(1.0, 16), all_available());
+        app.render(320, 180, 512);
+        press(&mut app, KeyCode::Char('v'));
+        type_text(&mut app, "zzz");
+        let lines = picker_lines(&app, 31);
+        assert_eq!(lines[1], "no view matches", "{lines:?}");
+        assert_eq!(lines.len(), 3);
+        assert!(!app.fit);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.picker.is_some(), "Enter keeps the picker open");
+        assert_eq!((app.view, app.fit), (view("orbit"), false));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            playlist_names(&app).len(),
+            REGISTRY.len(),
+            "nothing toggled"
+        );
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(picker_lines(&app, 31).len(), REGISTRY.len() + 2);
+    }
+
+    #[test]
+    fn tab_cycles_the_playlist_and_resumes_after_a_picked_view() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist =
+            picker::playlist(&[view("city"), view("flow"), view("reef")], &app.available);
+        for expected in ["flow", "reef", "city", "flow"] {
+            press(&mut app, KeyCode::Tab);
+            assert_eq!(app.view.name(), expected);
+        }
+        pick(&mut app, "orbit");
+        assert_eq!(app.view, view("orbit"), "not in the playlist");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.view.name(),
+            "flow",
+            "the first playlist view after orbit"
+        );
+        pick(&mut app, "coop");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "city", "wraps round past the last row");
+        pick(&mut app, "ripple");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "flow");
+    }
+
+    #[test]
+    fn shift_tab_mirrors_tab_around_a_view_outside_the_playlist() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist = picker::playlist(&[view("flow"), view("reef")], &app.available);
+        pick(&mut app, "orbit");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(
+            app.view.name(),
+            "reef",
+            "wraps round to the last playlist view"
+        );
+        pick(&mut app, "ripple");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(
+            app.view.name(),
+            "reef",
+            "nothing before ripple, so the last"
+        );
+        pick(&mut app, "matrix");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "reef", "the nearest before matrix");
+        pick(&mut app, "coop");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "reef");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "flow", "inside the playlist it steps back");
+        pick(&mut app, "cells");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "flow", "the nearest before cells");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "reef");
+    }
+
+    #[test]
+    fn the_playlist_cannot_be_emptied() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist = picker::playlist(&[view("city"), view("orbit")], &app.available);
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app), ["orbit"], "city leaves");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app), ["orbit"], "the last view stays");
+        let lines = picker_lines(&app, 31);
+        assert!(
+            lines.last().unwrap().contains("keeps at least one view"),
+            "{lines:?}"
+        );
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app), ["orbit", "ripple"]);
+        assert!(!picker_lines(&app, 31).last().unwrap().contains("keeps"));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            playlist_names(&app),
+            ["city", "orbit", "ripple"],
+            "back in registry order"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.picker.is_none());
+        assert_eq!(app.view, view("city"), "Esc leaves the view as it was");
+    }
+
+    #[test]
+    fn digits_ignore_the_playlist() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist = picker::playlist(&[view("reef")], &app.available);
+        for (digit, name) in [
+            ('2', "orbit"),
+            ('7', "strata"),
+            ('0', "matrix"),
+            ('1', "city"),
+        ] {
+            press(&mut app, KeyCode::Char(digit));
+            assert_eq!(app.view.name(), name, "digit {digit}");
+        }
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "reef");
+        assert_eq!(
+            playlist_names(&app),
+            ["reef"],
+            "digits leave the playlist alone"
+        );
+    }
+
+    #[test]
+    fn views_flag_rejects_unknown_names_and_drops_duplicates() {
+        let parse = |arguments: &[&str]| {
+            Options::try_parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
+        };
+        let error = parse(&["--views", "city,nope"])
+            .err()
+            .expect("nope is unknown");
+        let message = error.to_string();
+        assert!(message.contains("nope"), "{message}");
+        assert!(
+            message.contains("[possible values: city, orbit, ripple"),
+            "{message}"
+        );
+        let named = options(&["--views", "reef,city,reef,coop,city"]);
+        let every = all_available();
+        let names: Vec<_> = picker::playlist(&named.views, &every)
+            .iter()
+            .map(|view| view.name())
+            .collect();
+        assert_eq!(
+            names,
+            ["reef", "city", "coop"],
+            "first occurrences, in order"
+        );
+        let (result, _, err) = preflight_with(&["--views", "reef,city,reef"], &[]);
+        assert_eq!((result, err.as_str()), (Preflight::Start(view("reef")), ""));
+        let (result, _, _) = preflight_with(&["--views", "reef,city", "--view", "orbit"], &[]);
+        assert_eq!(result, Preflight::Start(view("orbit")), "--view wins");
+        let (result, _, err) = preflight_with(&["--views", "orbit,reef", "--verbose"], &["orbit"]);
+        assert_eq!(result, Preflight::Start(view("reef")), "orbit is skipped");
+        assert!(
+            err.contains("skipping view orbit: not supported on this platform\n"),
+            "{err}"
+        );
+        let headless = ["--views", "coop,city", "--output", "x.png"];
+        assert_eq!(
+            preflight_with(&headless, &[]).0,
+            Preflight::Start(view("coop"))
+        );
+        let mut app = App::new(view("reef"), model::demo(1.0, 16), every);
+        app.playlist = picker::playlist(&named.views, &app.available);
+        assert_eq!(playlist_names(&app), ["reef", "city", "coop"]);
+    }
+
+    #[test]
+    fn views_flag_with_no_available_name_exits_with_an_error() {
+        let (result, out, err) = preflight_with(&["--views", "orbit,matrix"], &["orbit", "matrix"]);
+        assert_eq!(result, Preflight::Exit(1));
+        assert_eq!(out, "");
+        assert_eq!(err, "isotop: no available view in --views\n");
+        let (result, _, err) = preflight_with(
+            &["--views", "orbit", "--verbose", "--output", "x.png"],
+            &["orbit"],
+        );
+        assert_eq!(result, Preflight::Exit(1));
+        assert_eq!(
+            err,
+            "skipping view orbit: not supported on this platform\n\
+             isotop: no available view in --views\n"
+        );
+        let (result, _, err) = preflight_with(&["--views", "orbit", "--view", "city"], &["orbit"]);
+        assert_eq!(
+            (result, err.as_str()),
+            (Preflight::Exit(1), "isotop: no available view in --views\n")
+        );
+    }
+
+    #[test]
+    fn keys_typed_into_the_picker_do_not_reach_the_scene() {
+        let mut app = probe_app();
+        let legend = |app: &App| app.scene.legend(View::at(0), app.snapshot());
+        let before = (
+            legend(&app),
+            app.goal.clone(),
+            (app.labels, app.panel, app.paused),
+        );
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.picker.is_some());
+        for code in [
+            KeyCode::Char('q'),
+            KeyCode::Char('x'),
+            KeyCode::Char('a'),
+            KeyCode::Char('m'),
+        ] {
+            assert!(!press(&mut app, code), "{code:?} must not quit");
+        }
+        for code in [
+            KeyCode::Char('1'),
+            KeyCode::Char('/'),
+            KeyCode::Char('+'),
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Home,
+            KeyCode::PageUp,
+            KeyCode::Left,
+        ] {
+            assert!(!press(&mut app, code));
+        }
+        assert_eq!(app.view, View::at(0));
+        assert_eq!(app.search, None);
+        let lines = picker_lines(&app, 31);
+        assert!(lines[0].starts_with("View: qxam1/+lh_"), "{lines:?}");
+        assert_eq!(legend(&app), before.0, "the view saw no key");
+        assert!(app.goal == before.1, "the camera did not move");
+        assert_eq!((app.labels, app.panel, app.paused), before.2);
+        assert!(
+            app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0),
+            "Ctrl-C still quits"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.picker.is_none());
+        assert!(!press(&mut app, KeyCode::Char('x')));
+        assert_ne!(
+            legend(&app),
+            before.0,
+            "closed, the key reaches the view again"
+        );
+        let mut plain = App::new(view("city"), model::demo(1.0, 16), all_available());
+        press(&mut plain, KeyCode::Char('v'));
+        assert!(
+            !press(&mut plain, KeyCode::Char('q')),
+            "q filters and does not quit"
+        );
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/11");
+    }
+
+    #[test]
+    fn the_mouse_is_ignored_while_the_picker_is_open() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        let frame = app.render(320, 180, 512);
+        let layout = Layout {
+            columns: 40,
+            rows: 12,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let scroll = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        let center = app.goal.center;
+        press(&mut app, KeyCode::Char('v'));
+        app.mouse(scroll, &layout, &frame, &[], false);
+        assert_eq!((app.goal.center, app.hover.is_none()), (center, true));
+        press(&mut app, KeyCode::Esc);
+        app.mouse(scroll, &layout, &frame, &[], false);
+        assert_ne!(
+            app.goal.center, center,
+            "the same event pans once it is closed"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_picker_switches_through_the_usual_path() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.render(320, 180, 512);
+        assert!(app.demand().is_empty());
+        pick(&mut app, "matrix");
+        assert_eq!(app.view, view("matrix"));
+        assert!(app.picker.is_none() && app.fit);
+        assert_eq!(app.demand(), Demand::from(view("matrix").info().sources));
+        assert!(app.demand().contains(Source::Journal));
+        pick(&mut app, "ripple");
+        assert_eq!(app.goal.pitch, app.row().pitch.unwrap_or(app.goal.pitch));
+        assert!(app.demand().is_empty());
+    }
+
+    #[test]
+    fn the_picker_scrolls_to_keep_the_highlight_visible() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        press(&mut app, KeyCode::Char('v'));
+        for _ in 0..REGISTRY.len() - 1 {
+            press(&mut app, KeyCode::Down);
+        }
+        let lines = picker_lines(&app, 8);
+        assert_eq!(lines.len(), 6, "filter, four rows and the keys: {lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("> ") && line.contains("coop"))
+        );
+        press(&mut app, KeyCode::Down);
+        let lines = picker_lines(&app, 8);
+        assert!(
+            lines[1].starts_with("> ")
+                || lines
+                    .iter()
+                    .any(|line| line.starts_with("> ") && line.contains("city")),
+            "{lines:?}"
+        );
+        press(&mut app, KeyCode::Up);
+        assert!(
+            picker_lines(&app, 8)
+                .iter()
+                .any(|line| line.starts_with("> ") && line.contains("coop"))
+        );
+    }
+
+    #[test]
+    fn agents_file_table_lists_every_source_file() {
+        let listed = agents_table_paths();
+        let mut found = Vec::new();
+        source_files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            "",
+            &mut found,
+        );
+        found.sort();
+        let missing: Vec<&String> = found.iter().filter(|file| !listed.contains(file)).collect();
+        assert!(
+            missing.is_empty(),
+            "AGENTS.md's file table has no row for: {missing:?}. Add one, naming the file by its \
+             path under src/ in the first column"
+        );
+    }
+
+    #[test]
+    fn agents_file_table_names_only_files_that_exist() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let gone: Vec<String> = agents_table_paths()
+            .into_iter()
+            .filter(|file| !source.join(file).is_file())
+            .collect();
+        assert!(
+            gone.is_empty(),
+            "AGENTS.md's file table names files that do not exist under src/: {gone:?}"
+        );
     }
 }

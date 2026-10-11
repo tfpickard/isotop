@@ -2,12 +2,14 @@
 //! Metal on Apple GPUs, DX12 on Windows. It renders colour, picking and depth like the CPU
 //! rasterizer and reads colour and picking back for the terminal and mouse hit-testing.
 
+use std::mem::{offset_of, size_of};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, mpsc};
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::render::{Color, Frame, Item, NONE};
+use crate::render::shared::{self, LINE_DEPTH_BIAS, NONE};
+use crate::render::{Color, Frame, Item};
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const PICK: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -58,6 +60,62 @@ struct Glyph {
     scale: f32,
     color: [u8; 4],
     bits: [u32; 4],
+}
+
+// Layout assertions. Each struct is uploaded as raw bytes and read through a vertex layout made
+// of tightly packed attributes (see `vertex_attr_array!` below), so its size and field offsets
+// must match the WGSL struct of the same name in shaders.wgsl.
+
+// Globals: uniform buffer; WGSL `Globals` (vec2, vec2, vec4, vec4), 48 bytes.
+const _: () = {
+    assert!(size_of::<Globals>() == 48);
+    assert!(offset_of!(Globals, size) == 0);
+    assert!(offset_of!(Globals, depth) == 8);
+    assert!(offset_of!(Globals, haze) == 16);
+    assert!(offset_of!(Globals, sky) == 32);
+};
+
+// Vertex: WGSL `Vertex`, attributes Float32x2, Float32, Unorm8x4, Uint32.
+const _: () = {
+    assert!(size_of::<Vertex>() == 20);
+    assert!(offset_of!(Vertex, position) == 0);
+    assert!(offset_of!(Vertex, depth) == 8);
+    assert!(offset_of!(Vertex, color) == 12);
+    assert!(offset_of!(Vertex, pick) == 16);
+};
+
+// Ball: WGSL `Ball`, attributes Float32x3, Float32, Float32, Unorm8x4, Uint32, Uint32.
+const _: () = {
+    assert!(size_of::<Ball>() == 32);
+    assert!(offset_of!(Ball, center) == 0);
+    assert!(offset_of!(Ball, radius) == 12);
+    assert!(offset_of!(Ball, world) == 16);
+    assert!(offset_of!(Ball, color) == 20);
+    assert!(offset_of!(Ball, pick) == 24);
+    assert!(offset_of!(Ball, selected) == 28);
+};
+
+// Glow: WGSL `Glow`, attributes Float32x2, Float32, Float32, Unorm8x4.
+const _: () = {
+    assert!(size_of::<Glow>() == 20);
+    assert!(offset_of!(Glow, center) == 0);
+    assert!(offset_of!(Glow, radius) == 8);
+    assert!(offset_of!(Glow, strength) == 12);
+    assert!(offset_of!(Glow, color) == 16);
+};
+
+// Glyph: WGSL `Glyph`, attributes Float32x2, Float32, Unorm8x4, Uint32x4.
+const _: () = {
+    assert!(size_of::<Glyph>() == 32);
+    assert!(offset_of!(Glyph, origin) == 0);
+    assert!(offset_of!(Glyph, scale) == 8);
+    assert!(offset_of!(Glyph, color) == 12);
+    assert!(offset_of!(Glyph, bits) == 16);
+};
+
+/// The shader source: the generated constants from `render::shared`, then `shaders.wgsl`.
+fn shader_source() -> String {
+    format!("{}{}", shared::prelude(), include_str!("shaders.wgsl"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -138,6 +196,7 @@ pub struct Gpu {
 impl Gpu {
     /// Opens the preferred hardware adapter. Software adapters are refused: the CPU rasterizer
     /// is faster than an emulated GPU.
+    #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
     pub fn new(power: wgpu::PowerPreference) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -167,7 +226,7 @@ impl Gpu {
         }));
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("isotop shaders"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader_source().into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
@@ -403,6 +462,7 @@ impl Gpu {
     }
 
     /// Rasterizes the frame's display list into its pixels, and its picking buffer around `pointer`.
+    #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
     pub fn render(&mut self, frame: &mut Frame, pointer: Option<[f32; 2]>) -> Result<(), String> {
         let (width, height) = (frame.width, frame.height);
         let mut vertices = Vec::with_capacity(frame.items.len() * 2);
@@ -440,10 +500,10 @@ impl Gpu {
                 }
                 Item::Line(a, b, color) => {
                     for p in [a, b] {
-                        track(p[2] + 0.02);
+                        track(p[2] + LINE_DEPTH_BIAS);
                         vertices.push(Vertex {
                             position: [p[0], p[1]],
-                            depth: p[2] + 0.02,
+                            depth: p[2] + LINE_DEPTH_BIAS,
                             color: rgba(color, 255),
                             pick: NONE,
                         });

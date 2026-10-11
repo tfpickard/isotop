@@ -5,9 +5,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::f32::consts::TAU;
 
+use crate::geometry::normalize;
+use crate::layout::{Discs, Seats, spin, spiral};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::pack::{Discs, Seats};
-use crate::render::{Color, GOLDEN_ANGLE, NONE, Point, Stage, normalize, spin, tint};
+use crate::palette::{CONTAINER, tint};
+use crate::render::{Color, NONE, Point, Stage};
+use crate::simulation::{hash, sprout};
 
 /// Height of the water surface above the sand.
 const DEPTH: f32 = 14.0;
@@ -26,7 +29,6 @@ const FISH: [Color; 6] = [
     [240, 120, 170],
     [150, 160, 255],
 ];
-const CRAB: Color = [178, 136, 232];
 const ZOMBIE: Color = [150, 150, 150];
 
 #[derive(Default)]
@@ -140,7 +142,8 @@ impl Reef {
             .enumerate()
             .filter(|(_, p)| p.kind == Kind::Kernel)
         {
-            let h = hash(process.id.pid);
+            // pid only: kept for pixel stability, see A33
+            let h = hash::knuth_xor_rotated_prime2(process.id.pid);
             let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0;
             let drift = [
                 (time * 0.07 + unit(0) * TAU).sin() * 3.0,
@@ -249,7 +252,7 @@ impl Reef {
             }
         }
         for strand in 0..28_u32 {
-            let h = hash(strand + 1);
+            let h = hash::knuth_xor_rotated_prime2(strand + 1);
             let angle = (h & 0xffff) as f32 / 65536.0 * TAU;
             let distance = reach * (0.82 + 0.12 * ((h >> 16) & 0xff) as f32 / 255.0);
             let root = [distance * angle.cos(), distance * angle.sin(), 0.0];
@@ -278,7 +281,7 @@ impl Reef {
     }
 
     /// A school of fish around its home, steered by cohesion, separation and alignment.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #71 (A12)")]
     fn school(
         &mut self,
         stage: &mut Stage,
@@ -298,7 +301,8 @@ impl Reef {
         ];
         for &index in members {
             let id = processes[index].id;
-            let h = hash(id.pid);
+            // pid only: kept for pixel stability, see A33
+            let h = hash::knuth_xor_rotated_prime2(id.pid);
             self.fish.entry(id).or_insert_with(|| Swimmer {
                 position: [
                     target[0] + ((h & 0xff) as f32 / 255.0 - 0.5) * 4.0,
@@ -376,8 +380,8 @@ impl Reef {
                 [0.0, 0.0, 1.0]
             };
             let grow = stage.growth(process.id);
-            let length = (1.0 + 2.2 * bounded(process.memory as f32 / 1048576.0, 300.0))
-                * (0.3 + 0.7 * grow);
+            let length =
+                (1.0 + 2.2 * bounded(process.memory as f32 / 1048576.0, 300.0)) * sprout(grow);
             let girth = length * 0.26;
             let body = if zombie { ZOMBIE } else { color };
             let p = fish.position;
@@ -445,20 +449,19 @@ impl Reef {
         let process = processes[index];
         let time = stage.time;
         let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-        let angle = seat * GOLDEN_ANGLE + spin(group);
-        let distance = 1.3 * (seat + 0.5).sqrt();
+        let (distance, angle) = spiral(1.3, 0.5, seat, spin(group));
         let pace = 0.4 + 2.0 * bounded(process.cpu, 40.0);
         let stride = (time * pace + seat).sin() * 0.9;
         let heading = angle + std::f32::consts::FRAC_PI_2;
         let size = (0.35 + 0.5 * bounded(process.memory as f32 / 1048576.0, 200.0))
-            * (0.3 + 0.7 * stage.growth(process.id));
+            * sprout(stage.growth(process.id));
         let center = [
             home[0] + distance * angle.cos() + stride * heading.cos(),
             home[1] + distance * angle.sin() + stride * heading.sin(),
             size * 0.7,
         ];
         let zombie = process.state == 'Z';
-        let shell = if zombie { ZOMBIE } else { CRAB };
+        let shell = if zombie { ZOMBIE } else { CONTAINER };
         let pick = index as u32;
         let (s, c) = heading.sin_cos();
         let local = |forward: f32, across: f32, z: f32| -> Point {
@@ -512,7 +515,7 @@ impl Reef {
 
     /// One polyp of a coral colony: a stalk rising from the colony's base, taller near the middle,
     /// topped by a polyp sized by memory that glows with CPU.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "split in #71 (A12)")]
     fn polyp(
         &self,
         stage: &mut Stage,
@@ -526,8 +529,7 @@ impl Reef {
         let process = processes[index];
         let time = stage.time;
         let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-        let distance = 1.6 * (seat + 0.5).sqrt();
-        let angle = seat * GOLDEN_ANGLE + spin(group);
+        let (distance, angle) = spiral(1.6, 0.5, seat, spin(group));
         let tall = 1.5 + 5.0 * (1.0 - distance / room.max(1.0)).max(0.0);
         let sway = (time * 0.6 + seat).sin() * 0.15;
         let top = [
@@ -554,7 +556,7 @@ impl Reef {
         };
         let size = (0.18 + 0.32 * crate::render::mass_radius(process.memory as f32)).min(0.75)
             * breathe
-            * (0.3 + 0.7 * stage.growth(process.id));
+            * sprout(stage.growth(process.id));
         if process.cpu > 1.0 {
             stage.frame.glow(
                 stage.camera,
@@ -587,44 +589,22 @@ fn habitat(process: &Process) -> String {
     format!("{:?} {path}", process.kind)
 }
 
-fn hash(value: u32) -> u32 {
-    value.wrapping_mul(2_654_435_761) ^ value.wrapping_mul(2_246_822_519).rotate_left(13)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::{View, hiding};
+    use crate::render::hiding;
+    use crate::views::view;
 
     #[test]
     fn same_named_units_of_different_cgroups_live_apart() {
         let unit = |kind: Kind, cgroup: &str| Process {
-            id: Identity { pid: 1, start: 1 },
-            parent: 0,
             name: "dbus-daemon".into(),
-            command: String::new(),
             group: "dbus.service".into(),
             kind,
-            state: 'S',
-            cpu: 0.0,
             memory: 0,
-            io_rate: None,
-            read_rate: None,
-            write_rate: None,
-            written: None,
-            priority: 20,
-            nice: 0,
-            threads: 1,
-            gpu_memory: 0,
-            core: 0,
-            cpu_time: 0.0,
             cgroup: cgroup.into(),
-            performance_share: None,
-            waiting: None,
-            files: crate::model::Measured::Pending,
-            locks_held: crate::model::Measured::Pending,
-            blocked_on: None,
+            ..crate::model::testing::process(1, 0)
         };
         let system = unit(Kind::System, "/system.slice/dbus.service");
         let session = unit(
@@ -637,11 +617,11 @@ mod tests {
 
     #[test]
     fn focusing_and_clearing_focus_keeps_every_reef_cluster_in_place() {
-        hiding::focus_and_clear(View::Reef, &demo(30.0, 160));
+        hiding::focus_and_clear(view("reef"), &demo(30.0, 160));
     }
 
     #[test]
     fn processes_beyond_the_limit_keep_their_reef_place() {
-        hiding::limit_and_lift(View::Reef, &demo(30.0, 160));
+        hiding::limit_and_lift(view("reef"), &demo(30.0, 160));
     }
 }

@@ -290,16 +290,12 @@ fn tcp_socket(message: &[u8]) -> Option<Remote> {
     };
     let inode = u32_at(message, 68)? as u64;
     // tcp_info: rtt (microseconds) at 68, bytes_acked at 120 and bytes_received at 128.
+    // A socket without readable statistics is left out rather than shown with zero counters,
+    // which the next scan would turn into a huge rate.
     let info = attributes(message, 72)
         .find(|&(kind, _)| kind == INET_DIAG_INFO)
-        .map(|(_, payload)| payload);
-    let (rtt, sent, received) = info.map_or((0, 0, 0), |info| {
-        (
-            u32_at(info, 68).unwrap_or(0),
-            u64_at(info, 120).unwrap_or(0),
-            u64_at(info, 128).unwrap_or(0),
-        )
-    });
+        .map(|(_, payload)| payload)?;
+    let (rtt, sent, received) = (u32_at(info, 68)?, u64_at(info, 120)?, u64_at(info, 128)?);
     (inode != 0).then_some(Remote {
         pid: 0,
         inode,
@@ -371,5 +367,19 @@ mod tests {
         assert_eq!(remote.address, IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)));
         assert_eq!((remote.port, remote.inode, remote.rtt), (443, 77, 25_000));
         assert_eq!((remote.sent, remote.received), (1000, 5000));
+    }
+
+    #[test]
+    fn a_tcp_socket_without_readable_statistics_is_left_out_not_counted_as_zero() {
+        let mut message = vec![0_u8; 72];
+        message[0] = libc::AF_INET as u8;
+        message[68..72].copy_from_slice(&77_u32.to_ne_bytes());
+        assert_eq!(tcp_socket(&message), None, "no tcp_info attribute");
+        // A tcp_info from a kernel too old to count bytes ends before the byte counters.
+        let info = vec![0_u8; 100];
+        message.extend_from_slice(&(4 + info.len() as u16).to_ne_bytes());
+        message.extend_from_slice(&2_u16.to_ne_bytes());
+        message.extend_from_slice(&info);
+        assert_eq!(tcp_socket(&message), None);
     }
 }

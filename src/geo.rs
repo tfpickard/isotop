@@ -94,6 +94,12 @@ impl Geo {
         self.city = city.map(|(_, reader)| reader);
     }
 
+    /// Whether the databases have been looked for, and none could be read. False until the first
+    /// lookup of a public address loads them.
+    pub fn lacks_database(&self) -> bool {
+        self.loaded && self.city.is_none() && self.legacy.iter().all(Option::is_none)
+    }
+
     pub fn locate(&mut self, address: IpAddr) -> Option<Place> {
         let address = match address {
             IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(address, IpAddr::V4),

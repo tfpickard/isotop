@@ -7,12 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
+use crate::geometry::{dot, normalize};
+use crate::layout::{GOLDEN_ANGLE, Seats, spiral};
 use crate::model::{Identity, Place, Process, Remote, Snapshot, bounded, bytes};
-use crate::pack::Seats;
-use crate::render::{
-    Camera, Color, GOLDEN_ANGLE, LOWEST_PITCH, NONE, Point, SCALE, Stage, dot, kind_color,
-    mass_radius, normalize, tint,
-};
+use crate::palette::{kind_color, tint};
+use crate::platform::Source;
+use crate::render::{Camera, Color, LOWEST_PITCH, NONE, Point, SCALE, Stage, mass_radius};
+use crate::simulation::hash;
 
 const RADIUS: f32 = 20.0;
 const SPIN_SECONDS: f32 = 300.0;
@@ -57,6 +58,7 @@ enum Spot {
 }
 
 impl Globe {
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
         stage: &mut Stage,
@@ -142,7 +144,7 @@ impl Globe {
             .enumerate()
             .map(|(i, p)| (p.id, i))
             .collect();
-        let has_rates = !snapshot.missing.contains(&"socket traffic");
+        let has_rates = !snapshot.missing.contains(Source::SocketTraffic);
         let mut endpoints: HashMap<Spot, Endpoint> = HashMap::new();
         let mut per_process: HashMap<Identity, Vec<&Remote>> = HashMap::new();
         for remote in snapshot
@@ -158,7 +160,8 @@ impl Globe {
                 ),
                 None => Spot::Address(remote.address),
             };
-            let traffic = remote.up + remote.down;
+            let (up, down) = (remote.up.unwrap_or(0.0), remote.down.unwrap_or(0.0));
+            let traffic = up + down;
             let endpoint = endpoints.entry(key).or_insert_with(|| Endpoint {
                 place: remote.place.clone(),
                 up: 0.0,
@@ -166,13 +169,13 @@ impl Globe {
                 count: 0,
                 top: (-1.0, remote.id),
                 key,
-                phase: hash(&match key {
+                phase: hash::fnv1a_64(&match key {
                     Spot::Place(lat, lon) => format!("{lat},{lon}"),
                     Spot::Address(address) => address.to_string(),
                 }),
             });
-            endpoint.up += remote.up;
-            endpoint.down += remote.down;
+            endpoint.up += up;
+            endpoint.down += down;
             endpoint.count += 1;
             if traffic > endpoint.top.0 {
                 endpoint.top = (traffic, remote.id);
@@ -273,8 +276,7 @@ impl Globe {
         for id in &talkers {
             let process = processes[index[id]];
             let k = self.seats.seat(*id).unwrap_or(0);
-            let distance = 0.9 * (k as f32 + 0.5).sqrt();
-            let angle = k as f32 * GOLDEN_ANGLE;
+            let (distance, angle) = spiral(0.9, 0.5, k as f32, 0.0);
             let offset =
                 [0, 1, 2].map(|i| (east[i] * angle.cos() + north[i] * angle.sin()) * distance);
             let base = at(up, RADIUS + 2.5);
@@ -300,12 +302,12 @@ impl Globe {
                     let place = r.place.as_ref().map_or("unlocated", |p| p.name.as_str());
                     if has_rates {
                         format!(
-                            "{}:{} {place} | {:.0} ms | up {}/s down {}/s",
+                            "{}:{} {place} | {:.0} ms | up {} down {}",
                             r.address,
                             r.port,
                             r.rtt,
-                            bytes(r.up as u64),
-                            bytes(r.down as u64)
+                            rate(r.up),
+                            rate(r.down)
                         )
                     } else {
                         format!("{}:{} {place}", r.address, r.port)
@@ -335,6 +337,15 @@ impl Globe {
 }
 
 /// Spherical interpolation between unit vectors `a` and `b`, `angle` apart.
+/// A connection's byte rate for its note; `n/a` before the scan has an interval to measure over,
+/// rather than a rate of zero.
+fn rate(bytes_per_second: Option<f32>) -> String {
+    bytes_per_second.map_or_else(
+        || "n/a".to_owned(),
+        |value| format!("{}/s", bytes(value as u64)),
+    )
+}
+
 fn slerp(a: Point, b: Point, angle: f32, t: f32) -> Point {
     if angle < 1e-4 {
         return a;
@@ -388,12 +399,6 @@ fn tangents(up: Point) -> (Point, Point) {
     (east, north)
 }
 
-fn hash(text: &str) -> u64 {
-    text.bytes().fold(14_695_981_039_346_656_037_u64, |h, b| {
-        (h ^ b as u64).wrapping_mul(1_099_511_628_211)
-    })
-}
-
 /// Coastlines as polylines of (longitude, latitude) in degrees.
 fn coastline() -> Vec<Vec<[f32; 2]>> {
     let mut lines = Vec::new();
@@ -417,7 +422,7 @@ fn coastline() -> Vec<Vec<[f32; 2]>> {
 
 /// The status legend, saying what the snapshot's platform leaves out.
 pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(&"socket traffic") {
+    if snapshot.missing.contains(Source::SocketTraffic) {
         format!(
             " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
             snapshot.geo
@@ -434,16 +439,24 @@ pub fn legend(snapshot: &Snapshot) -> String {
 mod tests {
     use super::*;
     use crate::model::demo;
-    use crate::render::{View, hiding};
+    use crate::render::hiding;
+    use crate::views::view;
 
     #[test]
     fn focusing_and_clearing_focus_keeps_every_process_in_its_place_above_home() {
-        hiding::focus_and_clear(View::Globe, &demo(30.0, 160));
+        hiding::focus_and_clear(view("globe"), &demo(30.0, 160));
     }
 
     #[test]
     fn processes_beyond_the_limit_keep_their_globe_place() {
-        hiding::limit_and_lift(View::Globe, &demo(30.0, 160));
+        hiding::limit_and_lift(view("globe"), &demo(30.0, 160));
+    }
+
+    #[test]
+    fn a_connection_rate_not_yet_measured_reads_n_a_not_zero() {
+        assert_eq!(rate(None), "n/a");
+        assert_eq!(rate(Some(0.0)), format!("{}/s", bytes(0)));
+        assert_eq!(rate(Some(2048.0)), format!("{}/s", bytes(2048)));
     }
 
     #[test]
@@ -487,7 +500,7 @@ mod tests {
         let full = legend(&snapshot);
         assert!(full.contains("brighter with traffic | cyan = mostly download"));
         assert!(full.ends_with("| demo locations"));
-        snapshot.missing = vec!["socket traffic"];
+        snapshot.missing = Source::SocketTraffic.into();
         let text = legend(&snapshot);
         assert!(text.contains("no per-connection rates or RTT on macOS"));
         assert!(!text.contains("cyan") && text.ends_with("| demo locations"));
@@ -496,30 +509,26 @@ mod tests {
     #[test]
     fn notes_and_arcs_carry_no_invented_rates_without_socket_traffic() {
         use crate::model::demo;
-        use crate::render::{Camera, Item, Scene, View};
+        use crate::render::{Camera, Item, RenderInput, Scene};
+        use crate::views::view;
         let mut snapshot = demo(10.0, 128);
         for remote in &mut snapshot.remotes {
-            (remote.rtt, remote.up, remote.down) = (0.0, 0.0, 0.0);
+            (remote.rtt, remote.up, remote.down) = (0.0, None, None);
         }
         let id = snapshot.remotes[0].id;
         let render = |snapshot: &Snapshot| {
             let mut scene = Scene::new();
-            let frame = scene.render(
+            let frame = scene.render(&RenderInput::small(
                 snapshot,
-                View::Globe,
+                view("globe"),
                 &Camera::default(),
-                320,
-                180,
-                None,
                 10.0,
-                512,
-                None,
-            );
+            ));
             (scene.notes, frame.items)
         };
         let (notes, _) = render(&snapshot);
         assert!(notes[&id][0].contains(" ms | up "));
-        snapshot.missing = vec!["socket traffic"];
+        snapshot.missing = Source::SocketTraffic.into();
         let (notes, items) = render(&snapshot);
         let lines = &notes[&id];
         assert!(!lines.is_empty());

@@ -5,7 +5,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
-use crate::render::{Point, Stage, kind_color, label_name, tint};
+use crate::palette::{kind_color, tint};
+use crate::render::{Point, Stage, label_name};
 
 const WINDOW: f64 = 60.0;
 const SAMPLES: usize = 240;
@@ -51,6 +52,7 @@ impl Strata {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     pub fn draw(
         &mut self,
         stage: &mut Stage,
@@ -250,7 +252,8 @@ impl Strata {
 #[cfg(test)]
 mod tests {
     use crate::model::{Identity, Snapshot, demo};
-    use crate::render::{Scene, View, hiding};
+    use crate::render::{Scene, hiding};
+    use crate::views::view;
 
     /// Few enough processes that every busy one gets one of the forty rows. With more, a drawn
     /// process takes a hidden one's row, and the hidden one finds none free when it is back.
@@ -263,12 +266,12 @@ mod tests {
 
     #[test]
     fn focusing_and_clearing_focus_keeps_every_ridge_in_its_row() {
-        hiding::focus_and_clear(View::Strata, &sample());
+        hiding::focus_and_clear(view("strata"), &sample());
     }
 
     #[test]
     fn processes_beyond_the_limit_keep_their_strata_row() {
-        hiding::limit_and_lift(View::Strata, &sample());
+        hiding::limit_and_lift(view("strata"), &sample());
     }
 
     /// With more busy processes than rows, the ones still drawn under a focus or a limit get
@@ -282,9 +285,9 @@ mod tests {
             .filter(|p| p.cpu >= super::BUSY)
             .count();
         assert!(busy > super::ROWS);
-        let (mut scene, time, _) = hiding::settled(View::Strata, &sample);
+        let (mut scene, time, _) = hiding::settled(view("strata"), &sample);
         let drawn = |scene: &mut Scene, limit: usize, focus: Option<Identity>| {
-            hiding::place(scene, &sample, View::Strata, time, limit, None, focus).len()
+            hiding::place(scene, &sample, view("strata"), time, limit, None, focus).len()
         };
         let hides = sample
             .processes
