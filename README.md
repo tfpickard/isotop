@@ -171,6 +171,7 @@ cache is stale.
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
+| Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
 (pid 0) is the kernel. A process is a container if its executable is a
@@ -492,6 +493,33 @@ New processes fly out of their parent (orbit) or rise from their plot (city).
 The processes already running when isotop starts bloom in the same way. Exiting
 processes leave a brief flash and an expanding ring.
 
+### Fork, exec and exit events
+
+A view that shows births and deaths as they happen asks for life events, and isotop
+then takes each fork, exec and exit from the best source the machine allows. The
+status strip names the sources in use, and what is missing:
+
+| Source | What it adds | Needs |
+|---|---|---|
+| proc connector | Every fork, exec and exit with its exact time, its parent and its exit status or signal, including processes that live and die between two samples | Linux 6.6 or later (CAP_NET_ADMIN before), and the initial PID and user namespaces |
+| taskstats | A record of every exit: command, start, run time, CPU time of all its threads, peak memory, storage I/O, context switches, and whether it forked without ever calling exec | CAP_NET_ADMIN, and the initial namespaces |
+| kqueue (macOS) | The exact time of each exec and exit of your own processes, without the exit status | Nothing |
+| sample diff | Births, exits and execs found by comparing two samples, always on; it misses a process that lives between them | Nothing |
+
+isotop never raises its own privileges. Taskstats records, and the connector on a
+kernel older than 6.6, need CAP_NET_ADMIN, which you may choose to grant the binary
+yourself:
+
+```sh
+sudo setcap cap_net_admin+ep ./target/release/isotop
+```
+
+Inside a container with its own PID namespace only sample diffing works, and the
+status strip says "no fork events" and "no exit records". Without the connector,
+Linux has no exec counter, so sample diffing counts a process whose name changed as
+an exec; a process that renames itself (`prctl(PR_SET_NAME)`) counts too. The events
+reach a sample through a queue of 4096; what does not fit is dropped and counted.
+
 ### Labels, hover, and the tour
 
 System names (`init`, `systemd --user`, `kthreadd`, ...) and the busiest
@@ -613,7 +641,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-30,691 lines of Rust (19,362 production, 11,329 test) in 38 files, 400 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+33,115 lines of Rust (20,665 production, 12,450 test) in 40 files, 421 tests, 11 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

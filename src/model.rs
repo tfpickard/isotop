@@ -7,8 +7,11 @@ use std::time::{Duration, Instant};
 
 use crate::geo;
 use crate::places::COUNTRIES;
-use crate::platform::{self, RawProcess, Source, Sources};
-use crate::simulation::{Rng, hash_identity, smoothing};
+use crate::platform::{
+    self, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation, Observed,
+    OpenEvents, RawProcess, Source, Sources,
+};
+use crate::simulation::{Rng, hash, hash_identity, smoothing};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -399,6 +402,13 @@ pub struct Snapshot {
     pub shadows: Vec<platform::Shadow>,
     /// How the background thread that measures the slow sources is doing.
     pub sampler: SamplerHealth,
+    /// The forks, execs and exits since the previous sample, ordered by `LifeEvent::at`; filled
+    /// only while `Source::LifeEvents` is demanded, and in `--demo` for a view whose demo has
+    /// churn (`demo_events`).
+    pub life: Vec<LifeEvent>,
+    /// The events the event thread's queue dropped since the previous sample because it was
+    /// full.
+    pub life_dropped: u32,
 }
 
 /// The optional sources the shown view wants read. The background thread reads an optional
@@ -530,6 +540,7 @@ impl SamplerHealth {
 }
 
 /// What the collector keeps of a process between samples.
+#[cfg_attr(test, derive(Default))]
 struct Counters {
     ticks: u64,
     io: Option<IoBytes>,
@@ -544,6 +555,11 @@ struct Counters {
     system_ticks: u64,
     syscalls: Option<SyscallCounts>,
     major_faults: Option<u64>,
+    /// `RawProcess::generation`, which exec changes.
+    generation: Option<i64>,
+    /// A hash of the process's name: on a platform without a generation, exec shows as a new
+    /// name.
+    name: u64,
 }
 
 /// Cumulative bytes a process has read from and written to storage.
@@ -721,6 +737,13 @@ pub struct Collector {
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
+    /// CLOCK_MONOTONIC at `origin`, which event timestamps count from.
+    origin_ns: u64,
+    /// The fork, exec and exit stream while `Source::LifeEvents` is demanded.
+    life: Life,
+    /// Opens the event sources and starts their thread: `platform::open_events`, which the tests
+    /// replace with a source that always opens.
+    open_events: OpenEvents,
 }
 
 /// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every
@@ -1080,6 +1103,406 @@ fn traffic(
     rates
 }
 
+/// How long a proc connector exit waits for its taskstats record, and a record for its exit, in
+/// seconds of `Snapshot::elapsed`. Whichever is left then is reported alone.
+const RECORD_WAIT: f64 = 0.5;
+
+/// How long the life merge remembers what it reported, in seconds of `Snapshot::elapsed`, so that
+/// sample diffing does not report it again.
+const LIFE_MEMORY: f64 = 10.0;
+
+/// The kinds of life event, as the merge remembers what it reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Happening {
+    Fork,
+    Exec,
+    Exit,
+}
+
+/// One sample as the life merge sees it.
+struct Moment<'a> {
+    elapsed: f64,
+    /// CLOCK_MONOTONIC at the collector's origin, in nanoseconds.
+    origin_ns: u64,
+    /// `Sampler::hz`: one second of a Linux `Identity::start`.
+    hz: f32,
+    previous: &'a HashMap<Identity, Counters>,
+    current: &'a HashMap<Identity, Counters>,
+    /// The processes of `current`, sorted by identity.
+    processes: &'a [Process],
+}
+
+/// The seconds of `Snapshot::elapsed` at monotonic `at` nanoseconds, for a collector whose origin
+/// was at `origin_ns`.
+fn seconds_since(origin_ns: u64, at: u64) -> f64 {
+    (i128::from(at) - i128::from(origin_ns)) as f64 / 1e9
+}
+
+/// The fork, exec and exit stream: the event thread's queue, and what the merge of its
+/// observations with sample diffing keeps between samples. Reset whenever `Source::LifeEvents`
+/// is not demanded, which drops the queue and so ends the thread.
+#[derive(Default)]
+struct Life {
+    /// The queue the event thread fills; None when no event source opened.
+    queue: Option<Arc<LifeQueue>>,
+    /// The event sources the thread opened.
+    opened: Sources,
+    /// The sources have been tried since the demand began; each opens once.
+    tried: bool,
+    /// The previous sample was taken while life events were demanded, so sample diffing has a
+    /// population to compare with.
+    running: bool,
+    /// `Snapshot::elapsed` of the previous sample.
+    last: f64,
+    /// Every process forked during the previous interval, by pid: with the previous sample they
+    /// are the processes an observation's pid can name.
+    forked: HashMap<u32, (Identity, bool)>,
+    /// Proc connector exits waiting for their taskstats record.
+    exits: HashMap<Identity, LifeEvent>,
+    /// Taskstats records waiting for their proc connector exit, with when they came.
+    records: HashMap<Identity, (ExitRecord, Cause, f64, bool)>,
+    /// What was reported, by kind and identity, with its time.
+    reported: HashMap<(Happening, Identity), f64>,
+}
+
+impl Life {
+    /// Opens the event sources and starts their thread, once per demand.
+    fn start(&mut self, open: OpenEvents, identities: &Arc<Mutex<HashMap<u32, Identity>>>) {
+        if std::mem::replace(&mut self.tried, true) {
+            return;
+        }
+        let queue = Arc::new(LifeQueue::default());
+        if let Some(opened) = open(Arc::clone(&queue), Arc::clone(identities)) {
+            self.queue = Some(queue);
+            self.opened = opened;
+        }
+    }
+
+    /// The event sources delivering: those opened, while their thread still holds the queue.
+    fn active(&self) -> Sources {
+        match &self.queue {
+            Some(queue) if Arc::strong_count(queue) > 1 => self.opened,
+            _ => Sources::default(),
+        }
+    }
+
+    /// What `Snapshot::sources` and `Snapshot::missing` get while life events are demanded: the
+    /// stream itself, sample diffing and the active event sources, and the detail none of them
+    /// gives.
+    fn reported(&self) -> (Sources, Sources) {
+        let active = self.active();
+        let sources = active.union(Sources::from([Source::LifeEvents, Source::SampleDiff]));
+        let mut missing = Sources::default();
+        if !active.contains(Source::ProcConnector) {
+            missing.insert(Source::ForkEvents);
+        }
+        if !active.contains(Source::Taskstats) {
+            missing.insert(Source::ExitRecords);
+        }
+        (sources, missing)
+    }
+
+    /// Adds `event` to `events` and remembers it, unless an identity in it is estimated: an
+    /// estimated identity never matches a sampled process.
+    fn report(&mut self, events: &mut Vec<LifeEvent>, event: LifeEvent) {
+        if !event.estimated {
+            let key = match &event.kind {
+                LifeKind::Fork { child, .. } => (Happening::Fork, *child),
+                LifeKind::Exec { id } => (Happening::Exec, *id),
+                LifeKind::Exit { id, .. } => (Happening::Exit, *id),
+            };
+            self.reported.insert(key, event.at);
+        }
+        events.push(event);
+    }
+
+    /// Whether an exit of `id` was reported, or is waiting for its other half.
+    fn claimed(&self, id: Identity) -> bool {
+        self.reported.contains_key(&(Happening::Exit, id))
+            || self.exits.contains_key(&id)
+            || self.records.contains_key(&id)
+    }
+
+    /// The events since the previous sample: the event thread's `observed`, in the order they
+    /// arrived, then sample diffing for what they did not report, ordered by time. An event is
+    /// never revised once reported, and an identity exits once.
+    fn merge(&mut self, observed: Vec<Observed>, moment: &Moment) -> Vec<LifeEvent> {
+        let active = self.active();
+        let mut events = Vec::new();
+        let sampled: HashMap<u32, Identity> = moment
+            .processes
+            .iter()
+            .map(|process| (process.id.pid, process.id))
+            .collect();
+        let mut known: HashMap<u32, (Identity, bool)> = moment
+            .previous
+            .keys()
+            .map(|&id| (id.pid, (id, false)))
+            .collect();
+        known.extend(std::mem::take(&mut self.forked));
+        let name =
+            |known: &HashMap<u32, (Identity, bool)>, pid: u32, start: Option<u64>| match start {
+                Some(start) => (Identity { pid, start }, false),
+                None => known
+                    .get(&pid)
+                    .copied()
+                    .or_else(|| sampled.get(&pid).map(|&id| (id, false)))
+                    .unwrap_or((Identity { pid, start: 0 }, true)),
+            };
+        for Observed { at, source, what } in observed {
+            let at = seconds_since(moment.origin_ns, at);
+            match what {
+                Observation::Fork {
+                    parent,
+                    child,
+                    parent_start,
+                    child_start,
+                    estimated_start,
+                } => {
+                    let (parent, parent_estimated) = name(&known, parent, parent_start);
+                    let child = Identity {
+                        pid: child,
+                        start: child_start.unwrap_or(estimated_start),
+                    };
+                    known.insert(child.pid, (child, child_start.is_none()));
+                    self.forked
+                        .insert(child.pid, (child, child_start.is_none()));
+                    let event = LifeEvent {
+                        at,
+                        kind: LifeKind::Fork { parent, child },
+                        source,
+                        estimated: parent_estimated || child_start.is_none(),
+                    };
+                    self.report(&mut events, event);
+                }
+                Observation::Exec { pid, start } => {
+                    let (id, estimated) = name(&known, pid, start);
+                    let event = LifeEvent {
+                        at,
+                        kind: LifeKind::Exec { id },
+                        source,
+                        estimated,
+                    };
+                    self.report(&mut events, event);
+                }
+                Observation::Exit { pid, start, cause } => {
+                    let (id, estimated) = name(&known, pid, start);
+                    if self.reported.contains_key(&(Happening::Exit, id))
+                        || self.exits.contains_key(&id)
+                    {
+                        continue;
+                    }
+                    let mut event = LifeEvent {
+                        at,
+                        kind: LifeKind::Exit {
+                            id,
+                            cause,
+                            record: None,
+                        },
+                        source,
+                        estimated,
+                    };
+                    if source == LifeSource::Connector && active.contains(Source::Taskstats) {
+                        match self.records.remove(&id) {
+                            Some((record, ..)) => {
+                                attach(&mut event, record);
+                                self.report(&mut events, event);
+                            }
+                            None => {
+                                self.exits.insert(id, event);
+                            }
+                        }
+                    } else {
+                        self.report(&mut events, event);
+                    }
+                }
+                Observation::Record {
+                    tgid,
+                    record,
+                    cause,
+                    start,
+                } => {
+                    // The process it names: one whose exit waits for it, or the one its pid named.
+                    let held = self.exits.keys().find(|id| id.pid == tgid);
+                    let Some((id, estimated)) = held
+                        .map(|&id| (id, false))
+                        .or_else(|| known.get(&tgid).copied())
+                    else {
+                        continue;
+                    };
+                    // A begin time more than a second off belongs to another process.
+                    let off =
+                        start.is_some_and(|start| start.abs_diff(id.start) as f32 > moment.hz);
+                    if off || self.reported.contains_key(&(Happening::Exit, id)) {
+                        continue;
+                    }
+                    if let Some(mut event) = self.exits.remove(&id) {
+                        attach(&mut event, record);
+                        self.report(&mut events, event);
+                    } else if active.contains(Source::ProcConnector) {
+                        self.records.insert(id, (record, cause, at, estimated));
+                    } else {
+                        let event = LifeEvent {
+                            at,
+                            kind: LifeKind::Exit {
+                                id,
+                                cause,
+                                record: Some(record),
+                            },
+                            source: LifeSource::Taskstats,
+                            estimated,
+                        };
+                        self.report(&mut events, event);
+                    }
+                }
+            }
+        }
+        self.expire(&mut events, moment.elapsed);
+        if self.running {
+            self.diff(&mut events, moment, active, &sampled);
+        }
+        self.running = true;
+        self.last = moment.elapsed;
+        self.reported
+            .retain(|_, at| *at >= moment.elapsed - LIFE_MEMORY);
+        events.sort_by(|a, b| a.at.total_cmp(&b.at));
+        events
+    }
+
+    /// Reports the exits and records whose other half did not come within `RECORD_WAIT`.
+    fn expire(&mut self, events: &mut Vec<LifeEvent>, elapsed: f64) {
+        let due = |at: f64| at + RECORD_WAIT <= elapsed;
+        let mut exits: Vec<Identity> = self
+            .exits
+            .iter()
+            .filter(|(_, exit)| due(exit.at))
+            .map(|(&id, _)| id)
+            .collect();
+        exits.sort();
+        for id in exits {
+            if let Some(exit) = self.exits.remove(&id) {
+                self.report(events, exit);
+            }
+        }
+        let mut records: Vec<Identity> = self
+            .records
+            .iter()
+            .filter(|(_, (_, _, at, _))| due(*at))
+            .map(|(&id, _)| id)
+            .collect();
+        records.sort();
+        for id in records {
+            if let Some((record, cause, at, estimated)) = self.records.remove(&id) {
+                let event = LifeEvent {
+                    at,
+                    kind: LifeKind::Exit {
+                        id,
+                        cause,
+                        record: Some(record),
+                    },
+                    source: LifeSource::Taskstats,
+                    estimated,
+                };
+                self.report(events, event);
+            }
+        }
+    }
+
+    /// Sample diffing: births, execs and exits between the previous sample and this one that the
+    /// event sources did not report. On a platform with `RawProcess::generation` an exec is a new
+    /// generation; on one without, a new name, and only while the proc connector, which reports
+    /// every exec, is not active.
+    fn diff(
+        &mut self,
+        events: &mut Vec<LifeEvent>,
+        moment: &Moment,
+        active: Sources,
+        sampled: &HashMap<u32, Identity>,
+    ) {
+        let at = moment.elapsed;
+        for process in moment.processes {
+            let id = process.id;
+            let Some(now) = moment.current.get(&id) else {
+                continue;
+            };
+            match moment.previous.get(&id) {
+                None if !self.reported.contains_key(&(Happening::Fork, id)) => {
+                    // The parent as this sample lists it, or as the previous did if it has
+                    // exited since.
+                    let parent = sampled.get(&process.parent).copied().or_else(|| {
+                        moment
+                            .previous
+                            .keys()
+                            .find(|before| before.pid == process.parent)
+                            .copied()
+                    });
+                    let estimated = parent.is_none();
+                    let parent = parent.unwrap_or(Identity {
+                        pid: process.parent,
+                        start: 0,
+                    });
+                    let event = LifeEvent {
+                        at,
+                        kind: LifeKind::Fork { parent, child: id },
+                        source: LifeSource::Diff,
+                        estimated,
+                    };
+                    self.report(events, event);
+                }
+                None => {}
+                Some(before) => {
+                    let execed = match (before.generation, now.generation) {
+                        (Some(before), Some(now)) => before != now,
+                        _ => before.name != now.name && !active.contains(Source::ProcConnector),
+                    };
+                    let seen = self
+                        .reported
+                        .get(&(Happening::Exec, id))
+                        .is_some_and(|&reported| reported >= self.last);
+                    if execed && !seen {
+                        let event = LifeEvent {
+                            at,
+                            kind: LifeKind::Exec { id },
+                            source: LifeSource::Diff,
+                            estimated: false,
+                        };
+                        self.report(events, event);
+                    }
+                }
+            }
+        }
+        let mut gone: Vec<Identity> = moment
+            .previous
+            .keys()
+            .filter(|id| !moment.current.contains_key(id) && !self.claimed(**id))
+            .copied()
+            .collect();
+        gone.sort();
+        for id in gone {
+            let event = LifeEvent {
+                at,
+                kind: LifeKind::Exit {
+                    id,
+                    cause: Cause::Unknown,
+                    record: None,
+                },
+                source: LifeSource::Diff,
+                estimated: false,
+            };
+            self.report(events, event);
+        }
+    }
+}
+
+/// Attaches a taskstats record to a proc connector exit, which keeps its exact time and cause;
+/// the record makes it the more detailed taskstats event.
+fn attach(exit: &mut LifeEvent, with: ExitRecord) {
+    if let LifeKind::Exit { record, .. } = &mut exit.kind {
+        *record = Some(with);
+        exit.source = LifeSource::Taskstats;
+    }
+}
+
 impl Collector {
     pub fn new(geoip: Option<PathBuf>, home: Option<(f32, f32)>) -> Self {
         Self {
@@ -1094,6 +1517,9 @@ impl Collector {
             geoip,
             home: geo::home(home),
             started: false,
+            origin_ns: platform::monotonic_ns(),
+            life: Life::default(),
+            open_events: platform::open_events,
         }
     }
 
@@ -1162,6 +1588,36 @@ impl Collector {
             snapshot.sampler = background.health(Instant::now());
             merge(&mut snapshot, &background.extras());
         }
+        let demand = self
+            .demand
+            .lock()
+            .map_or_else(|error| *error.into_inner(), |demand| *demand);
+        if demand.contains(Source::LifeEvents) {
+            // After the identities are published, which kqueue watches.
+            self.life.start(self.open_events, &self.identities);
+            let (observed, dropped) = self
+                .life
+                .queue
+                .as_ref()
+                .map(|queue| queue.drain())
+                .unwrap_or_default();
+            let moment = Moment {
+                elapsed: snapshot.elapsed,
+                origin_ns: self.origin_ns,
+                hz,
+                previous: &self.previous,
+                current: &next,
+                processes: &snapshot.processes,
+            };
+            snapshot.life = self.life.merge(observed, &moment);
+            snapshot.life_dropped = dropped;
+            let (sources, missing) = self.life.reported();
+            snapshot.sources = snapshot.sources.union(sources);
+            snapshot.missing = snapshot.missing.union(missing);
+        } else {
+            // Dropping the queue ends the event thread.
+            self.life = Life::default();
+        }
         self.previous = next;
         self.last = now;
         Ok(snapshot)
@@ -1180,6 +1636,7 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         system_ticks,
         syscalls,
         major_faults,
+        generation,
     } = raw;
     process.cpu_time = ticks as f32 / hz;
     // Runnable time counts running time too, so what remains after the CPU time is waiting.
@@ -1251,6 +1708,8 @@ fn measure(raw: RawProcess, previous: Option<&Counters>, hz: f32, dt: f32) -> (P
         system_ticks,
         syscalls,
         major_faults,
+        generation,
+        name: hash::fnv1a_64(&process.name),
     };
     (process, counters)
 }
@@ -1434,8 +1893,9 @@ pub struct DemoOptions {
     /// Adds transient processes after the base population, so base indices, pids and links stay
     /// as they are. There is one family per 16 base processes, and each family repeats a cycle
     /// of 24, 26, 28 or 30 seconds (by family number, staggered): a parent forks 1 to 6 children
-    /// over 2 to 4 seconds, each child runs for 3 to 12 seconds and exits, and the parent exits
-    /// 0.4 s after its last child. Some exits leave a `'Z'` entry for `DEMO_ZOMBIE_SECONDS`, one
+    /// over 2 to 4 seconds, each child runs for 3 to 12 seconds and exits (one in 16 is killed
+    /// with signal 15, and one in 16 crashes with signal 11), and the parent exits 0.4 s after
+    /// its last child. Some exits leave a `'Z'` entry for `DEMO_ZOMBIE_SECONDS`, one
     /// sample at the default rate. Once per 90 seconds, 60 s into its cycle, one more transient
     /// that grew above 1 GiB is killed with signal 9 (the out-of-memory case). Every transient
     /// lives inside its own cycle, so cycles never overlap, and pids come from a fixed pool
@@ -1470,6 +1930,12 @@ const DEMO_TRANSIENT_START: i64 = 1 << 40;
 /// Seeds the generator of a (family, epoch) cycle, apart from other uses of the same identity.
 const DEMO_CHURN_SALT: u64 = 0x5334_c4a2_d3e1;
 
+/// Picks the signal, if any, that ends a transient child, from its identity.
+const DEMO_SIGNAL_SALT: u64 = 0xb351_67a1;
+
+/// Picks the parts of a transient's exit record that its life does not give, from its identity.
+const DEMO_RECORD_SALT: u64 = 0xb37e_c04d;
+
 /// The part a transient plays in its cycle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
@@ -1483,13 +1949,6 @@ enum Role {
 
 /// One transient process of one cycle: when it is listed and everything else fixed about it.
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only demo_life reads the exit status, for B3 (#30)"
-    )
-)]
 struct Transient {
     id: Identity,
     /// Its parent: the cycle's parent for a child, a base process otherwise.
@@ -1544,6 +2003,23 @@ fn demo_transient_identity(count: usize, slot: usize, birth: f64) -> Identity {
     Identity {
         pid: 1001 + (count + slot) as u32,
         start: (DEMO_TRANSIENT_START + ticks) as u64,
+    }
+}
+
+/// When a transient born at demo second `birth` started, in seconds since the Unix epoch: demo
+/// time 0 is the instant after the last of `count` base processes started.
+fn demo_transient_started(count: usize, birth: f64) -> f64 {
+    DEMO_BOOT_TIME + (count as u64 + 1) as f64 * DEMO_START_SPACING + birth
+}
+
+/// The signal that ends a transient child, if any: one in 16 is terminated (15) and one in 16
+/// crashes (11, which dumps core). It comes from the identity, not the cycle's generator, so the
+/// cycle's draws, and with them every process, stay as they were.
+fn demo_child_signal(id: Identity) -> Option<i32> {
+    match hash_identity(id, DEMO_SIGNAL_SALT) % 16 {
+        0 => Some(15),
+        1 => Some(11),
+        _ => None,
     }
 }
 
@@ -1616,8 +2092,10 @@ fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
         let zombie = rng.unit() < 0.35;
         let code = i32::from(rng.unit() < 0.15);
         last_exit = last_exit.max(exit);
+        let id = demo_transient_identity(count, slot + child, birth);
+        let signal = demo_child_signal(id);
         cycle.push(Transient {
-            id: demo_transient_identity(count, slot + child, birth),
+            id,
             parent: parent_id,
             family,
             role: Role::Child,
@@ -1626,8 +2104,9 @@ fn demo_cycle(count: usize, family: usize, epoch: i64) -> Vec<Transient> {
             birth,
             exit,
             end: exit + if zombie { DEMO_ZOMBIE_SECONDS } else { 0.0 },
-            code,
-            signal: None,
+            // A process a signal ended has no exit status.
+            code: if signal.is_some() { 0 } else { code },
+            signal,
             peak_memory: None,
         });
     }
@@ -1665,6 +2144,19 @@ fn demo_listed(time: f64, count: usize) -> Vec<Transient> {
 }
 
 impl Transient {
+    /// The program it runs, which says the part it plays.
+    fn stem(&self) -> &'static str {
+        match self.role {
+            Role::Parent => ["make", "cargo", "ninja", "pytest"][self.family % 4],
+            Role::Child => ["cc1", "rustc", "ld", "test"][self.shape % 4],
+            Role::Victim => "leak",
+        }
+    }
+
+    fn name(&self) -> String {
+        format!("{}-{}", self.stem(), self.id.pid)
+    }
+
     /// Whether it has exited by `time`; a zombie is listed from then on.
     fn exited(&self, time: f64) -> bool {
         time >= self.exit
@@ -1708,11 +2200,6 @@ impl Transient {
         let kind = [Kind::System, Kind::Session, Kind::Container, Kind::Kernel][family % 4];
         let group = format!("district-{:02}.service", family);
         let cgroup = demo_slice(kind).map_or_else(String::new, |slice| format!("{slice}/{group}"));
-        let stem = match self.role {
-            Role::Parent => ["make", "cargo", "ninja", "pytest"][self.family % 4],
-            Role::Child => ["cc1", "rustc", "ld", "test"][index % 4],
-            Role::Victim => "leak",
-        };
         let (priority, nice) = demo_priority(index, kind);
         let io_rate = if index.is_multiple_of(7) {
             cpu * 65536.0
@@ -1731,8 +2218,8 @@ impl Transient {
         Process {
             id: self.id,
             parent: self.parent.pid,
-            name: format!("{stem}-{}", self.id.pid),
-            command: format!("{stem} --demo --job {}", self.id.pid),
+            name: self.name(),
+            command: format!("{} --demo --job {}", self.stem(), self.id.pid),
             cgroup,
             group,
             kind,
@@ -1779,21 +2266,13 @@ impl Transient {
             policy: demo_policy(index, priority, nice),
             syscall_io: running.then(|| demo_syscall_io(index, io_rate, write_rate)),
             major_faults: running.then(|| demo_major_faults(index, phase)),
-            // Demo time 0 is the instant after the last base process started.
-            started: DEMO_BOOT_TIME + (count as u64 + 1) as f64 * DEMO_START_SPACING + self.birth,
+            started: demo_transient_started(count, self.birth),
         }
     }
 }
 
 /// What happened to a transient process, for the event stream of `demo_life`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "B3 (#30) builds its demo event stream from demo_life"
-    )
-)]
 pub enum DemoLifeKind {
     Fork,
     Exit,
@@ -1801,17 +2280,12 @@ pub enum DemoLifeKind {
 
 /// One fork or exit of a transient process.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "B3 (#30) builds its demo event stream from demo_life"
-    )
-)]
 pub struct DemoLife {
     pub kind: DemoLifeKind,
     pub id: Identity,
     pub parent: Identity,
+    /// Its name, as the snapshots list it.
+    pub name: String,
     /// Demo seconds: the birth for a fork; for an exit, the moment the process stops being
     /// listed, which is `DEMO_ZOMBIE_SECONDS` after it died when it left a zombie.
     pub time: f64,
@@ -1839,13 +2313,6 @@ pub struct DemoLife {
 /// events are exactly the difference between the two populations. The cycles are 24 to 30 s long
 /// (90 s for the one process that outgrows 1 GiB and is killed with signal 9), so an interval of
 /// that length or more holds every kind of event.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "B3 (#30) builds its demo event stream from demo_life"
-    )
-)]
 pub fn demo_life(from: f64, to: f64, count: usize) -> Vec<DemoLife> {
     let families = demo_families(count);
     let mut events = Vec::new();
@@ -1856,6 +2323,7 @@ pub fn demo_life(from: f64, to: f64, count: usize) -> Vec<DemoLife> {
                 kind,
                 id: transient.id,
                 parent: transient.parent,
+                name: transient.name(),
                 time,
                 memory: transient.running_memory(running_at) as u64,
                 cpu_seconds,
@@ -1891,6 +2359,64 @@ pub fn demo_life(from: f64, to: f64, count: usize) -> Vec<DemoLife> {
     }
     events.sort_by(|a, b| a.time.total_cmp(&b.time));
     events
+}
+
+/// The life events of the demo's transient processes in `(from, to]` among `count` base
+/// processes: `demo_life` one to one, so they are what the populations at `from` and `to` differ
+/// by. Forks come from the proc connector; exits from taskstats, with a record made from the
+/// process's life and identity.
+pub fn demo_events(from: f64, to: f64, count: usize) -> Vec<LifeEvent> {
+    demo_life(from, to, count)
+        .into_iter()
+        .map(|life| LifeEvent {
+            at: life.time,
+            kind: match life.kind {
+                DemoLifeKind::Fork => LifeKind::Fork {
+                    parent: life.parent,
+                    child: life.id,
+                },
+                DemoLifeKind::Exit => LifeKind::Exit {
+                    id: life.id,
+                    cause: match life.signal {
+                        // The signals whose default action dumps core (signal(7)).
+                        Some(number) => Cause::Signal {
+                            number,
+                            core: matches!(number, 3..=8 | 11 | 24 | 25 | 31),
+                        },
+                        None => Cause::Code(life.code),
+                    },
+                    record: Some(demo_record(&life, count)),
+                },
+            },
+            source: match life.kind {
+                DemoLifeKind::Fork => LifeSource::Connector,
+                DemoLifeKind::Exit => LifeSource::Taskstats,
+            },
+            estimated: false,
+        })
+        .collect()
+}
+
+/// The exit record of a transient's `life` among `count` base processes. What its life does not
+/// say (I/O and context switches, and whether it ever called exec) follows from its CPU time,
+/// its lifetime and its identity.
+fn demo_record(life: &DemoLife, count: usize) -> ExitRecord {
+    let birth = (life.id.start as i64 - DEMO_TRANSIENT_START) as f64 / 100.0;
+    let lifetime = (life.time - birth).max(0.0);
+    let cpu = life.cpu_seconds.max(0.0);
+    ExitRecord {
+        comm: life.name.clone(),
+        btime: demo_transient_started(count, birth) as u64,
+        etime: (lifetime * 1e6) as u64,
+        cpu: (cpu * 1e6) as u64,
+        hiwater_rss: life.memory,
+        read_bytes: (cpu * 4.0 * 1048576.0) as u64,
+        write_bytes: (cpu * 1048576.0) as u64,
+        nvcsw: (lifetime * 40.0) as u64,
+        nivcsw: (cpu * 25.0) as u64,
+        forked_never_execd: hash_identity(life.id, DEMO_RECORD_SALT).is_multiple_of(3),
+        threads: life.threads,
+    }
 }
 
 /// The thread count of demo process `index`: one, or a power of two times four for every fifth.
@@ -2173,6 +2699,8 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
+        life: Vec::new(),
+        life_dropped: 0,
         sampler: SamplerHealth {
             running: true,
             last_cycle: Some(Duration::ZERO),
@@ -2320,6 +2848,7 @@ pub mod testing {
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn resource_scale_is_monotonic_and_bounded_for_multicore_cpu() {
@@ -2610,6 +3139,7 @@ mod tests {
             system_ticks: 0,
             syscalls: None,
             major_faults: None,
+            generation: None,
         }
     }
 
@@ -3639,6 +4169,8 @@ mod tests {
             unreadable: 0,
             per_cluster: Sources::default(),
             shadows: Vec::new(),
+            life: Vec::new(),
+            life_dropped: 0,
             sampler: SamplerHealth {
                 running: true,
                 last_cycle: Some(Duration::ZERO),
@@ -3681,6 +4213,8 @@ mod tests {
             per_cluster,
             shadows,
             sampler,
+            life,
+            life_dropped,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
         let unix_links: BTreeSet<_> = unix_links.iter().collect();
@@ -3690,7 +4224,7 @@ mod tests {
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {pressure:?}\n\
              {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
-             {per_cluster:?}\n{shadows:?}\n{sampler:?}"
+             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}"
         )
     }
 
@@ -4361,5 +4895,773 @@ mod tests {
         let restarted = [numbered(6, 2), numbered(6, 1)];
         let picked = top_n(&restarted, 1, |_| 1.0);
         assert_eq!(picked[0].id, Identity { pid: 6, start: 1 });
+    }
+
+    const ORIGIN: u64 = 1_000_000_000_000;
+
+    /// One sample of processes `(pid, start, parent, name, generation)`: what the collector keeps
+    /// of them, and the processes, sorted.
+    fn population(
+        entries: &[(u32, u64, u32, &str, Option<i64>)],
+    ) -> (HashMap<Identity, Counters>, Vec<Process>) {
+        let mut processes: Vec<Process> = entries
+            .iter()
+            .map(|&(pid, start, parent, name, _)| Process {
+                id: Identity { pid, start },
+                name: name.into(),
+                ..testing::process(pid, parent)
+            })
+            .collect();
+        processes.sort_by_key(|process| process.id);
+        let counters = entries
+            .iter()
+            .map(|&(pid, start, _, name, generation)| {
+                let kept = Counters {
+                    generation,
+                    name: hash::fnv1a_64(name),
+                    ..Counters::default()
+                };
+                (Identity { pid, start }, kept)
+            })
+            .collect();
+        (counters, processes)
+    }
+
+    type Population = (HashMap<Identity, Counters>, Vec<Process>);
+
+    fn merged(
+        life: &mut Life,
+        observed: Vec<Observed>,
+        elapsed: f64,
+        before: &Population,
+        after: &Population,
+    ) -> Vec<LifeEvent> {
+        let moment = Moment {
+            elapsed,
+            origin_ns: ORIGIN,
+            hz: 100.0,
+            previous: &before.0,
+            current: &after.0,
+            processes: &after.1,
+        };
+        life.merge(observed, &moment)
+    }
+
+    /// A merge whose event thread opened `opened`; the queue returned stands for the thread's
+    /// hold on it, so the sources count as active while it lives.
+    fn listening(opened: Sources) -> (Life, Arc<LifeQueue>) {
+        let queue = Arc::new(LifeQueue::default());
+        let life = Life {
+            queue: Some(Arc::clone(&queue)),
+            opened,
+            tried: true,
+            running: true,
+            ..Life::default()
+        };
+        (life, queue)
+    }
+
+    fn observed(seconds: f64, source: LifeSource, what: Observation) -> Observed {
+        Observed {
+            at: ORIGIN + (seconds * 1e9) as u64,
+            source,
+            what,
+        }
+    }
+
+    fn id(pid: u32, start: u64) -> Identity {
+        Identity { pid, start }
+    }
+
+    fn event(at: f64, kind: LifeKind, source: LifeSource) -> LifeEvent {
+        LifeEvent {
+            at,
+            kind,
+            source,
+            estimated: false,
+        }
+    }
+
+    fn exit(pid: u32, start: u64, cause: Cause) -> LifeKind {
+        LifeKind::Exit {
+            id: id(pid, start),
+            cause,
+            record: None,
+        }
+    }
+
+    fn connector_exit(seconds: f64, pid: u32, cause: Cause) -> Observed {
+        observed(
+            seconds,
+            LifeSource::Connector,
+            Observation::Exit {
+                pid,
+                start: None,
+                cause,
+            },
+        )
+    }
+
+    #[test]
+    fn sample_diffing_reports_births_and_exits() {
+        let before = population(&[
+            (1, 1, 0, "init", None),
+            (10, 100, 1, "a", None),
+            (11, 110, 1, "b", None),
+        ]);
+        let after = population(&[
+            (1, 1, 0, "init", None),
+            (10, 100, 1, "a", None),
+            (12, 120, 10, "c", None),
+        ]);
+        let mut life = Life::default();
+        // The first sample has nothing to compare with.
+        assert!(merged(&mut life, Vec::new(), 1.0, &population(&[]), &before).is_empty());
+        assert_eq!(
+            merged(&mut life, Vec::new(), 2.0, &before, &after),
+            [
+                event(
+                    2.0,
+                    LifeKind::Fork {
+                        parent: id(10, 100),
+                        child: id(12, 120)
+                    },
+                    LifeSource::Diff
+                ),
+                event(2.0, exit(11, 110, Cause::Unknown), LifeSource::Diff),
+            ]
+        );
+        assert!(merged(&mut life, Vec::new(), 3.0, &after, &after).is_empty());
+        assert_eq!(
+            life.reported(),
+            (
+                Sources::from([Source::LifeEvents, Source::SampleDiff]),
+                Sources::from([Source::ForkEvents, Source::ExitRecords])
+            )
+        );
+    }
+
+    #[test]
+    fn linux_exec_by_name_is_suppressed_while_the_connector_is_active() {
+        let before = population(&[(10, 100, 1, "bash", None)]);
+        let after = population(&[(10, 100, 1, "make", None)]);
+        let execed = |at, source| event(at, LifeKind::Exec { id: id(10, 100) }, source);
+        let mut life = Life {
+            running: true,
+            ..Life::default()
+        };
+        assert_eq!(
+            merged(&mut life, Vec::new(), 2.0, &before, &after),
+            [execed(2.0, LifeSource::Diff)]
+        );
+        // The connector reports every exec itself, so a new name alone (prctl) is none.
+        let (mut life, _thread) = listening(Source::ProcConnector.into());
+        assert!(merged(&mut life, Vec::new(), 2.0, &before, &after).is_empty());
+        let exec = observed(
+            2.5,
+            LifeSource::Connector,
+            Observation::Exec {
+                pid: 10,
+                start: None,
+            },
+        );
+        assert_eq!(
+            merged(&mut life, vec![exec], 3.0, &before, &after),
+            [execed(2.5, LifeSource::Connector)]
+        );
+    }
+
+    #[test]
+    fn macos_exec_is_reported_when_the_generation_changes() {
+        let before = population(&[(10, 100, 1, "zsh", Some(1)), (11, 110, 1, "zsh", Some(5))]);
+        let after = population(&[(10, 100, 1, "zsh", Some(2)), (11, 110, 1, "login", Some(5))]);
+        let mut life = Life {
+            running: true,
+            ..Life::default()
+        };
+        // A new generation under the same name is an exec; a new name in the same generation is
+        // not.
+        assert_eq!(
+            merged(&mut life, Vec::new(), 2.0, &before, &after),
+            [event(
+                2.0,
+                LifeKind::Exec { id: id(10, 100) },
+                LifeSource::Diff
+            )]
+        );
+        // kqueue saw it since the previous sample, so diffing does not report it again.
+        let (mut life, _thread) = listening(Source::Kqueue.into());
+        life.last = 1.0;
+        let exec = observed(
+            1.5,
+            LifeSource::Kqueue,
+            Observation::Exec {
+                pid: 10,
+                start: Some(100),
+            },
+        );
+        assert_eq!(
+            merged(&mut life, vec![exec], 2.0, &before, &after),
+            [event(
+                1.5,
+                LifeKind::Exec { id: id(10, 100) },
+                LifeSource::Kqueue
+            )]
+        );
+    }
+
+    #[test]
+    fn a_reused_pid_is_a_new_identity() {
+        let before = population(&[(1, 1, 0, "init", None), (10, 100, 1, "old", None)]);
+        let after = population(&[(1, 1, 0, "init", None), (10, 190, 1, "new", None)]);
+        let born = LifeKind::Fork {
+            parent: id(1, 1),
+            child: id(10, 190),
+        };
+        let mut life = Life {
+            running: true,
+            ..Life::default()
+        };
+        assert_eq!(
+            merged(&mut life, Vec::new(), 2.0, &before, &after),
+            [
+                event(2.0, born.clone(), LifeSource::Diff),
+                event(2.0, exit(10, 100, Cause::Unknown), LifeSource::Diff),
+            ]
+        );
+        // The exit names the process the pid was, the fork the one that took it.
+        let (mut life, _thread) = listening(Source::ProcConnector.into());
+        let fork = observed(
+            1.4,
+            LifeSource::Connector,
+            Observation::Fork {
+                parent: 1,
+                child: 10,
+                parent_start: Some(1),
+                child_start: Some(190),
+                estimated_start: 190,
+            },
+        );
+        assert_eq!(
+            merged(
+                &mut life,
+                vec![connector_exit(1.2, 10, Cause::Code(0)), fork],
+                2.0,
+                &before,
+                &after
+            ),
+            [
+                event(1.2, exit(10, 100, Cause::Code(0)), LifeSource::Connector),
+                event(1.4, born, LifeSource::Connector),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_exit_seen_by_two_sources_is_reported_once() {
+        let before = population(&[(10, 100, 1, "a", None), (11, 110, 1, "b", None)]);
+        let gone = population(&[]);
+        let by_diffing = event(2.0, exit(11, 110, Cause::Unknown), LifeSource::Diff);
+        // The proc connector and sample diffing: the connector's.
+        let (mut life, _thread) = listening(Source::ProcConnector.into());
+        assert_eq!(
+            merged(
+                &mut life,
+                vec![connector_exit(1.5, 10, Cause::Code(2))],
+                2.0,
+                &before,
+                &gone
+            ),
+            [
+                event(1.5, exit(10, 100, Cause::Code(2)), LifeSource::Connector),
+                by_diffing.clone()
+            ]
+        );
+        // Taskstats and the connector: one exit with the record, at the connector's time.
+        let record = ExitRecord {
+            comm: "a".into(),
+            threads: 2,
+            ..ExitRecord::default()
+        };
+        let recorded = |at| {
+            observed(
+                at,
+                LifeSource::Taskstats,
+                Observation::Record {
+                    tgid: 10,
+                    record: record.clone(),
+                    cause: Cause::Code(2),
+                    start: Some(150),
+                },
+            )
+        };
+        let with_record = event(
+            1.5,
+            LifeKind::Exit {
+                id: id(10, 100),
+                cause: Cause::Code(2),
+                record: Some(record.clone()),
+            },
+            LifeSource::Taskstats,
+        );
+        let both = Sources::from([Source::ProcConnector, Source::Taskstats]);
+        let (mut life, _thread) = listening(both);
+        assert_eq!(
+            merged(
+                &mut life,
+                vec![recorded(1.3), connector_exit(1.5, 10, Cause::Code(2))],
+                2.0,
+                &before,
+                &gone
+            ),
+            [with_record.clone(), by_diffing.clone()]
+        );
+        // The exit first: it waits for its record, and diffing leaves it alone meanwhile.
+        let (mut life, _thread) = listening(both);
+        assert_eq!(
+            merged(
+                &mut life,
+                vec![connector_exit(1.5, 10, Cause::Code(2))],
+                1.8,
+                &before,
+                &gone
+            ),
+            [event(1.8, exit(11, 110, Cause::Unknown), LifeSource::Diff)]
+        );
+        assert_eq!(
+            merged(&mut life, vec![recorded(1.9)], 2.8, &gone, &gone),
+            [with_record]
+        );
+        // A record that comes after its exit was reported alone is dropped.
+        let (mut life, _thread) = listening(both);
+        merged(
+            &mut life,
+            vec![connector_exit(1.5, 10, Cause::Code(2))],
+            1.8,
+            &before,
+            &gone,
+        );
+        assert_eq!(
+            merged(&mut life, Vec::new(), 2.0, &gone, &gone),
+            [event(
+                1.5,
+                exit(10, 100, Cause::Code(2)),
+                LifeSource::Connector
+            )]
+        );
+        assert!(merged(&mut life, vec![recorded(2.2)], 3.0, &gone, &gone).is_empty());
+        // So is one whose begin time is more than a second off the process it would name.
+        let (mut life, _thread) = listening(Source::Taskstats.into());
+        let late = Observation::Record {
+            tgid: 10,
+            record,
+            cause: Cause::Code(2),
+            start: Some(100 + 150),
+        };
+        assert_eq!(
+            merged(
+                &mut life,
+                vec![observed(1.6, LifeSource::Taskstats, late)],
+                2.0,
+                &before,
+                &gone
+            ),
+            [
+                event(2.0, exit(10, 100, Cause::Unknown), LifeSource::Diff),
+                by_diffing
+            ]
+        );
+    }
+
+    #[test]
+    fn a_late_diffing_exit_is_suppressed_after_a_connector_exit() {
+        let before = population(&[(10, 100, 1, "a", None)]);
+        let gone = population(&[]);
+        let (mut life, _thread) = listening(Source::ProcConnector.into());
+        // It exited after the scan of the sample at 2 s, so that sample still lists it.
+        assert_eq!(
+            merged(
+                &mut life,
+                vec![connector_exit(2.25, 10, Cause::Code(0))],
+                2.0,
+                &before,
+                &before
+            ),
+            [event(
+                2.25,
+                exit(10, 100, Cause::Code(0)),
+                LifeSource::Connector
+            )]
+        );
+        assert!(merged(&mut life, Vec::new(), 3.0, &before, &gone).is_empty());
+    }
+
+    #[test]
+    fn connector_timestamps_map_onto_elapsed() {
+        assert_eq!(seconds_since(ORIGIN, ORIGIN + 61_500_000_000), 61.5);
+        assert_eq!(seconds_since(ORIGIN, ORIGIN - 500_000_000), -0.5);
+        let (mut life, _thread) = listening(Source::ProcConnector.into());
+        let exec = observed(
+            61.5,
+            LifeSource::Connector,
+            Observation::Exec {
+                pid: 10,
+                start: Some(1),
+            },
+        );
+        let events = merged(
+            &mut life,
+            vec![exec],
+            62.0,
+            &population(&[]),
+            &population(&[]),
+        );
+        assert_eq!(events[0].at, 61.5);
+    }
+
+    #[test]
+    fn a_full_event_queue_counts_what_it_dropped() {
+        let exec = |pid: usize| {
+            observed(
+                0.0,
+                LifeSource::Connector,
+                Observation::Exec {
+                    pid: pid as u32,
+                    start: Some(1),
+                },
+            )
+        };
+        let queue = LifeQueue::default();
+        for pid in 0..LifeQueue::CAPACITY + 5 {
+            queue.push(exec(pid));
+        }
+        let (kept, dropped) = queue.drain();
+        assert_eq!((kept.len(), dropped), (LifeQueue::CAPACITY, 5));
+        assert_eq!(
+            kept.last(),
+            Some(&exec(LifeQueue::CAPACITY - 1)),
+            "the earliest are kept"
+        );
+        assert_eq!(queue.drain(), (Vec::new(), 0), "a drain empties it");
+        // The collector passes the count on with the sample.
+        let mut collector = Collector::new(None, None);
+        collector.open_events = |queue, _| {
+            for pid in 0..LifeQueue::CAPACITY + 3 {
+                queue.push(Observed {
+                    at: 0,
+                    source: LifeSource::Connector,
+                    what: Observation::Exec {
+                        pid: pid as u32,
+                        start: Some(1),
+                    },
+                });
+            }
+            Some(Source::ProcConnector.into())
+        };
+        collector.demand(Demand::from(Sources::from(Source::LifeEvents)));
+        let Ok(snapshot) = collector.sample() else {
+            return;
+        };
+        assert_eq!(snapshot.life_dropped, 3);
+        assert_eq!(snapshot.life.len(), LifeQueue::CAPACITY);
+    }
+
+    static OPENED: AtomicUsize = AtomicUsize::new(0);
+    static RUNNING: AtomicUsize = AtomicUsize::new(0);
+    static REFUSED: AtomicUsize = AtomicUsize::new(0);
+
+    /// An event source that always opens, so the test runs where no real one does: its thread
+    /// runs while the collector holds the queue.
+    fn always_opens(
+        queue: Arc<LifeQueue>,
+        _: Arc<Mutex<HashMap<u32, Identity>>>,
+    ) -> Option<Sources> {
+        OPENED.fetch_add(1, Ordering::SeqCst);
+        RUNNING.fetch_add(1, Ordering::SeqCst);
+        std::thread::spawn(move || {
+            while Arc::strong_count(&queue) > 1 {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            RUNNING.fetch_sub(1, Ordering::SeqCst);
+        });
+        Some(Source::ProcConnector.into())
+    }
+
+    fn never_opens(_: Arc<LifeQueue>, _: Arc<Mutex<HashMap<u32, Identity>>>) -> Option<Sources> {
+        REFUSED.fetch_add(1, Ordering::SeqCst);
+        None
+    }
+
+    #[test]
+    fn event_threads_run_only_while_life_events_are_demanded() {
+        let mut collector = Collector::new(None, None);
+        collector.open_events = always_opens;
+        let Ok(snapshot) = collector.sample() else {
+            return;
+        };
+        let opened = || OPENED.load(Ordering::SeqCst);
+        let running = || RUNNING.load(Ordering::SeqCst);
+        assert_eq!((opened(), running()), (0, 0));
+        assert!(!snapshot.sources.contains(Source::LifeEvents));
+        assert!(!snapshot.missing.contains(Source::ForkEvents));
+        let life = Demand::from(Sources::from(Source::LifeEvents));
+        collector.demand(life);
+        let snapshot = collector.sample().expect("sampled once already");
+        assert_eq!((opened(), running()), (1, 1));
+        for source in [
+            Source::LifeEvents,
+            Source::ProcConnector,
+            Source::SampleDiff,
+        ] {
+            assert!(snapshot.sources.contains(source), "{:?}", snapshot.sources);
+        }
+        assert!(snapshot.missing.contains(Source::ExitRecords));
+        assert!(!snapshot.missing.contains(Source::ForkEvents));
+        collector.sample().expect("sampled");
+        assert_eq!((opened(), running()), (1, 1), "one thread");
+        collector.demand(Demand::default());
+        let snapshot = collector.sample().expect("sampled");
+        assert!(!snapshot.sources.contains(Source::LifeEvents));
+        assert!(!snapshot.missing.contains(Source::ExitRecords));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while running() > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(running(), 0, "the thread ends with the demand");
+        collector.demand(life);
+        collector.sample().expect("sampled");
+        assert_eq!((opened(), running()), (2, 1), "and starts again with it");
+        // A source that cannot open is tried once per demand, and the stream is diffing alone.
+        collector.demand(Demand::default());
+        collector.sample().expect("sampled");
+        collector.open_events = never_opens;
+        collector.demand(life);
+        for _ in 0..3 {
+            let snapshot = collector.sample().expect("sampled");
+            assert_eq!(
+                (
+                    snapshot.sources.contains(Source::SampleDiff),
+                    snapshot.missing.contains(Source::ForkEvents)
+                ),
+                (true, true)
+            );
+        }
+        assert_eq!(REFUSED.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn demo_events_cover_every_cause_and_repeat_for_the_same_time() {
+        let events = demo_events(0.0, 600.0, 192);
+        assert_eq!(events, demo_events(0.0, 600.0, 192));
+        assert!(events.windows(2).all(|pair| pair[0].at <= pair[1].at));
+        let mut causes = Vec::new();
+        let mut never_execd = Vec::new();
+        for event in &events {
+            match &event.kind {
+                LifeKind::Fork { .. } => assert_eq!(event.source, LifeSource::Connector),
+                LifeKind::Exit { cause, record, .. } => {
+                    assert_eq!(event.source, LifeSource::Taskstats);
+                    let record = record.as_ref().expect("every demo exit has a record");
+                    assert!(!record.comm.is_empty() && record.threads >= 1);
+                    causes.push(*cause);
+                    never_execd.push(record.forked_never_execd);
+                }
+                LifeKind::Exec { .. } => panic!("the demo has no execs"),
+            }
+        }
+        assert!(causes.contains(&Cause::Code(0)));
+        assert!(
+            causes
+                .iter()
+                .any(|cause| matches!(cause, Cause::Code(code) if *code != 0))
+        );
+        assert!(causes.contains(&Cause::Signal {
+            number: 15,
+            core: false
+        }));
+        assert!(causes.contains(&Cause::Signal {
+            number: 9,
+            core: false
+        }));
+        assert!(
+            causes
+                .iter()
+                .any(|cause| matches!(cause, Cause::Signal { core: true, .. }))
+        );
+        assert!(never_execd.contains(&true) && never_execd.contains(&false));
+    }
+
+    #[test]
+    fn demo_events_match_the_churn_population() {
+        let count = 64;
+        let identities = |time: f64| -> HashSet<Identity> {
+            demo_with(time, count, CHURN)
+                .processes
+                .iter()
+                .map(|process| process.id)
+                .collect()
+        };
+        let mut seen = 0;
+        for second in 0..120 {
+            let (from, to) = (f64::from(second), f64::from(second) + 1.0);
+            let (before, after) = (identities(from), identities(to));
+            let mut forks = HashSet::new();
+            let mut exits = HashSet::new();
+            for event in demo_events(from, to, count) {
+                assert!(from < event.at && event.at <= to);
+                match event.kind {
+                    LifeKind::Fork { parent, child } => {
+                        assert!(
+                            after.contains(&parent) || before.contains(&parent),
+                            "{parent:?}"
+                        );
+                        forks.insert(child);
+                    }
+                    LifeKind::Exit { id, .. } => {
+                        exits.insert(id);
+                    }
+                    LifeKind::Exec { .. } => panic!("the demo has no execs"),
+                }
+            }
+            assert_eq!(forks, &after - &before, "births in ({from}, {to}]");
+            assert_eq!(exits, &before - &after, "exits in ({from}, {to}]");
+            seen += forks.len() + exits.len();
+        }
+        assert!(seen > 50, "{seen} events in two minutes");
+    }
+
+    /// Serializes the live tests: each looks at the threads and sockets of the whole process.
+    #[cfg(target_os = "linux")]
+    static LIVE: Mutex<()> = Mutex::new(());
+
+    #[test]
+    #[ignore = "live: needs the proc connector (Linux 6.6 or later, initial namespaces)"]
+    #[cfg(target_os = "linux")]
+    fn live_proc_connector_reports_a_child_fork_and_exit() {
+        let _serial = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut collector = Collector::new(None, None);
+        collector.demand(Demand::from(Sources::from(Source::LifeEvents)));
+        let first = collector.sample().expect("live sampling works");
+        println!("sources: {:?}\nmissing: {:?}", first.sources, first.missing);
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .spawn()
+            .expect("sh runs");
+        let pid = child.id();
+        child.wait().expect("sh exits");
+        // Past RECORD_WAIT, should taskstats hold the exit for its record.
+        std::thread::sleep(Duration::from_millis(700));
+        let snapshot = collector.sample().expect("sampled");
+        println!(
+            "sources: {:?}\nmissing: {:?}\ndropped: {}",
+            snapshot.sources, snapshot.missing, snapshot.life_dropped
+        );
+        let mine: Vec<&LifeEvent> = snapshot
+            .life
+            .iter()
+            .filter(|event| match &event.kind {
+                LifeKind::Fork { child, .. } => child.pid == pid,
+                LifeKind::Exec { id } | LifeKind::Exit { id, .. } => id.pid == pid,
+            })
+            .collect();
+        for event in &mine {
+            println!("{event:?}");
+        }
+        assert!(
+            snapshot.sources.contains(Source::ProcConnector),
+            "{:?}",
+            snapshot.sources
+        );
+        let forked = mine.iter().find_map(|event| match event.kind {
+            LifeKind::Fork { parent, child } => Some((parent, child)),
+            _ => None,
+        });
+        let (parent, child) = forked.expect("the fork is reported");
+        assert_eq!(parent.pid, std::process::id());
+        let exit = mine.iter().find_map(|event| match &event.kind {
+            LifeKind::Exit { id, cause, .. } => Some((*id, *cause, event.source)),
+            _ => None,
+        });
+        let (id, cause, source) = exit.expect("the exit is reported");
+        assert_eq!((id, cause), (child, Cause::Code(3)));
+        assert!(matches!(
+            source,
+            LifeSource::Connector | LifeSource::Taskstats
+        ));
+    }
+
+    /// The threads named `isotop-events` and the proc connector and generic netlink sockets this
+    /// process holds.
+    #[cfg(target_os = "linux")]
+    fn event_threads_and_sockets() -> (usize, usize) {
+        let threads = std::fs::read_dir("/proc/self/task")
+            .expect("tasks")
+            .flatten()
+            .filter(|task| {
+                std::fs::read_to_string(task.path().join("comm"))
+                    .is_ok_and(|comm| comm.trim() == "isotop-events")
+            })
+            .count();
+        // /proc/net/netlink: sk Eth Pid Groups Rmem Wmem Dump Locks Drops Inode; Eth is the
+        // protocol (11 NETLINK_CONNECTOR, 16 NETLINK_GENERIC).
+        let netlink: HashSet<String> = std::fs::read_to_string("/proc/net/netlink")
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let protocol = fields.get(1).copied();
+                fields
+                    .last()
+                    .filter(|_| matches!(protocol, Some("11" | "16")))
+                    .map(|inode| format!("socket:[{inode}]"))
+            })
+            .collect();
+        let sockets = std::fs::read_dir("/proc/self/fd")
+            .expect("descriptors")
+            .flatten()
+            .filter(|fd| {
+                std::fs::read_link(fd.path())
+                    .is_ok_and(|link| netlink.contains(&link.to_string_lossy().into_owned()))
+            })
+            .count();
+        (threads, sockets)
+    }
+
+    #[test]
+    #[ignore = "live: reads this process's threads and sockets"]
+    #[cfg(target_os = "linux")]
+    fn live_no_event_thread_or_socket_exists_without_demand() {
+        let _serial = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        let settled = |expected: (usize, usize)| {
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while event_threads_and_sockets() != expected && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            event_threads_and_sockets()
+        };
+        let mut collector = Collector::new(None, None);
+        for _ in 0..3 {
+            collector.sample().expect("live sampling works");
+        }
+        assert_eq!(settled((0, 0)), (0, 0), "nothing without demand");
+        collector.demand(Demand::from(Sources::from(Source::LifeEvents)));
+        let snapshot = collector.sample().expect("sampled");
+        let opened = [Source::ProcConnector, Source::Taskstats]
+            .into_iter()
+            .filter(|source| snapshot.sources.contains(*source))
+            .count();
+        println!(
+            "demanded: sources {:?}, threads and sockets {:?}",
+            snapshot.sources,
+            event_threads_and_sockets()
+        );
+        assert_eq!(
+            event_threads_and_sockets(),
+            (usize::from(opened > 0), opened)
+        );
+        collector.demand(Demand::default());
+        collector.sample().expect("sampled");
+        assert_eq!(settled((0, 0)), (0, 0), "gone once the demand is");
     }
 }

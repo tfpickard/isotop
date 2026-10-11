@@ -1,13 +1,14 @@
 //! macOS: processes from libproc and `KERN_PROCARGS2`, CPU time in Mach absolute time, CPUs and
 //! memory from Mach host statistics, P/E cores from the IORegistry, the memory pressure level,
-//! sockets and open files from `proc_pidfdinfo`, and the unified log. Other users' processes are
-//! counted but not measured unless isotop runs as root. macOS has no stall accounting, last CPU,
-//! per-CPU clock readings, run queues, cgroups, per-socket byte counters or file lock table;
-//! `Sampler::missing` names them. What it has instead is per process and per cluster:
-//! `proc_pid_rusage` splits CPU time and cycles between the performance and efficiency cores and
-//! counts runnable time, which give each process's share of performance-core time, its waiting
-//! threads and each cluster's clock.
+//! sockets and open files from `proc_pidfdinfo`, the unified log, and exec and exit events from
+//! kqueue. Other users' processes are counted but not measured unless isotop runs as root. macOS
+//! has no stall accounting, last CPU, per-CPU clock readings, run queues, cgroups, per-socket byte
+//! counters or file lock table; `Sampler::missing` names them. What it has instead is per process
+//! and per cluster: `proc_pid_rusage` splits CPU time and cycles between the performance and
+//! efficiency cores and counts runnable time, which give each process's share of performance-core
+//! time, its waiting threads and each cluster's clock.
 
+mod events;
 mod ffi;
 mod journal;
 mod logic;
@@ -23,6 +24,7 @@ use std::time::Instant;
 use crate::model::{CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Process, Unit};
 use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources};
 
+pub use events::{monotonic_ns, open_events};
 pub use journal::{JOURNAL, journal};
 
 /// What `Process::memory` measures here: the physical footprint, which counts compressed and
@@ -318,6 +320,7 @@ impl Sampler {
                 syscalls: None,
                 // The kernel's page-in count wraps as an i32.
                 major_faults: Some(u64::from(task.pti_pageins as u32)),
+                generation: Some(i64::from(version)),
             },
             logic::Lineage {
                 pid: id.pid,

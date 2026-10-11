@@ -140,9 +140,10 @@ impl Session {
     }
 }
 
-/// The demo sample a run of `view` starts from: what `--demo --time TIME` gives the view.
+/// The demo sample a run of `view` starts from: what `--demo --time TIME` gives the view, a
+/// default `--sample-ms` after the sample before.
 fn base(rows: &'static [ViewInfo], view: View) -> Snapshot {
-    demo_snapshot(&rows[view.index()], TIME, PROCESSES)
+    demo_snapshot(&rows[view.index()], TIME - 1.0, TIME, PROCESSES)
 }
 
 /// `snapshot` with each process's CPU scaled by a factor between 0.25 and 4 and its memory by

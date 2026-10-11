@@ -161,6 +161,11 @@ impl Options {
     fn headless(&self) -> bool {
         self.output.is_some() || self.benchmark.is_some()
     }
+
+    /// `--sample-ms` in seconds: how far back the sample before the first one is.
+    fn sample_seconds(&self) -> f64 {
+        f64::from(self.sample_ms) / 1000.0
+    }
 }
 
 /// Parses `--view` from the registry's names, so its help lists them and any other name is a
@@ -1664,14 +1669,17 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     let mut collector = Collector::new(options.geoip.clone(), options.home);
     collector.demand(demand);
     let mut journal = (demand.contains(Source::Journal) && !options.demo).then(Journal::start);
+    // The demo's clock: the time of its latest sample.
+    let mut demo_time = if options.headless() {
+        options.time
+    } else {
+        0.0
+    };
     let mut snapshot = if options.demo {
         demo_snapshot(
             view.info(),
-            if options.headless() {
-                options.time
-            } else {
-                0.0
-            },
+            demo_time - options.sample_seconds(),
+            demo_time,
             options.processes as usize,
         )
     } else {
@@ -1745,11 +1753,9 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
             app.animation += elapsed;
             if last_sample.elapsed() >= Duration::from_millis(options.sample_ms as u64) {
                 let snapshot = if options.demo {
-                    demo_snapshot(
-                        app.row(),
-                        origin.elapsed().as_secs_f64(),
-                        options.processes as usize,
-                    )
+                    let previous = demo_time;
+                    demo_time = origin.elapsed().as_secs_f64();
+                    demo_snapshot(app.row(), previous, demo_time, options.processes as usize)
                 } else {
                     collector.sample()?
                 };
@@ -1859,9 +1865,14 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
 
 /// The demo workload at `time` for `count` processes, with what `row`, the shown view's registry
 /// row, asks the demo to synthesize. Every demo snapshot goes through here, so a view sees the
-/// same workload whether it is the first sample, a warm-up replay or a live one.
-fn demo_snapshot(row: &ViewInfo, time: f64, count: usize) -> Snapshot {
-    model::demo_with(time, count, row.demo)
+/// same workload whether it is the first sample, a warm-up replay or a live one. `previous` is
+/// the time of the sample before: with churn, the snapshot's life events are those in between.
+fn demo_snapshot(row: &ViewInfo, previous: f64, time: f64, count: usize) -> Snapshot {
+    let mut snapshot = model::demo_with(time, count, row.demo);
+    if row.demo.churn {
+        snapshot.life = model::demo_events(previous, time, count);
+    }
+    snapshot
 }
 
 /// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured:
@@ -1901,7 +1912,7 @@ fn replay_history(app: &mut App, options: &Options) {
         if at >= 0.0 {
             app.scene
                 .history
-                .record(&demo_snapshot(row, at, count), at as f32);
+                .record(&demo_snapshot(row, at - 1.0, at, count), at as f32);
         }
     }
 }
@@ -1923,18 +1934,24 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
             Phase::History { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
-                    app.history = VecDeque::from([demo_snapshot(row, at, count)]);
+                    app.history = VecDeque::from([demo_snapshot(row, at - 1.0, at, count)]);
                     app.animation = at as f32;
                     let frame = app.render(width, height, limit);
                     app.scene.spare = frame.release();
                 }
-                app.history = VecDeque::from([demo_snapshot(row, options.time, count)]);
+                app.history = VecDeque::from([demo_snapshot(
+                    row,
+                    options.time - options.sample_seconds(),
+                    options.time,
+                    count,
+                )]);
             }
             Phase::Record { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
                     if at >= 0.0 {
-                        app.scene.record(&demo_snapshot(row, at, count), at as f32);
+                        let snapshot = demo_snapshot(row, at - 1.0, at, count);
+                        app.scene.record(&snapshot, at as f32);
                     }
                 }
             }
@@ -2635,7 +2652,7 @@ mod tests {
         assert_eq!(app.scene.row(demanding).demo, asked);
         let processes = |app: &App, time: f64| {
             let row = app.row();
-            demo_snapshot(row, time, 64).processes
+            demo_snapshot(row, time - 1.0, time, 64).processes
         };
         // The first view asks for nothing, so it gets `demo` exactly.
         assert_eq!(
@@ -2653,7 +2670,7 @@ mod tests {
             f64::from(model::demo_cpu_seconds(40.0, 5) as f32)
         );
         assert_eq!(
-            format!("{:?}", demo_snapshot(app.row(), 40.0, 64).processes),
+            format!("{:?}", demo_snapshot(app.row(), 39.0, 40.0, 64).processes),
             format!("{:?}", model::demo_with(40.0, 64, asked).processes)
         );
         // And back again.
@@ -2679,6 +2696,13 @@ mod tests {
             format!("{:?}", app.history[0].processes),
             format!("{:?}", model::demo_with(12.0, 64, asked).processes)
         );
+        // With churn a sample carries the life events since the one a `--sample-ms` before it;
+        // without, none.
+        assert_eq!(app.history[0].life, model::demo_events(11.0, 12.0, 64));
+        let interval = |view| demo_snapshot(app.scene.row(view), 0.0, 120.0, 64).life;
+        assert_eq!(interval(demanding), model::demo_events(0.0, 120.0, 64));
+        assert!(!interval(demanding).is_empty());
+        assert!(interval(plain).is_empty());
     }
 
     /// The frame a headless demo run of `name` captures, and the app it came from.
@@ -2702,7 +2726,7 @@ mod tests {
         let view = View::all().find(|view| view.name() == name).unwrap();
         let mut app = App::new(
             view,
-            demo_snapshot(view.info(), options.time, 64),
+            demo_snapshot(view.info(), options.time - 1.0, options.time, 64),
             all_available(),
         );
         if replay {
@@ -3141,7 +3165,12 @@ mod tests {
         ]);
         let mut app = App::new(
             view,
-            demo_snapshot(view.info(), options.time, options.processes as usize),
+            demo_snapshot(
+                view.info(),
+                options.time - options.sample_seconds(),
+                options.time,
+                options.processes as usize,
+            ),
             all_available(),
         );
         // The matrix greets `$USER`, which differs between machines.

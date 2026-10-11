@@ -24,8 +24,12 @@ The README covers usage. This file covers how to work on the code.
    follower in `main.rs` runs while the demand contains `Source::Journal` and for
    `JOURNAL_LINGER` (30 s) after; no view is special-cased. `Snapshot.sources` lists the
    optional sources read for the sample, and `Snapshot.missing` those demanded and unreadable;
-   one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there. On Linux
-   the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
+   one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there.
+   While the demand contains `Source::LifeEvents`, `Collector::sample` also runs a second thread,
+   `isotop-events` (`platform/linux/events.rs`: the proc connector and taskstats;
+   `platform/macos/events.rs`: kqueue), which fills a bounded `LifeQueue` that each sample drains
+   and merges with sample diffing into `Snapshot.life`; dropping the queue when the demand ends
+   stops it. On Linux the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
@@ -40,14 +44,15 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`), headless PNG and benchmark, and `warm_up`, which replays the shared history (headless demo runs, unless the row's `Phase::History` fills it) and runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
-| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`, and the time of the sample before, for the life events in between), headless PNG and benchmark, and `warm_up`, which replays the shared history (headless demo runs, unless the row's `Phase::History` fills it) and runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), `Life` (merges the event thread's observations with sample diffing into `Snapshot.life`: one exit per `Identity`, never revised), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists and `demo_events` turns into life events, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
+| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `open_events`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, the platform-neutral `Network`, `Files` and `Locks`, and the life event types (`LifeEvent`, `Cause`, `ExitRecord`, what an event source `Observed`, and the `LifeQueue` it fills); selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `platform/linux/files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
+| `platform/linux/events.rs` | The `isotop-events` thread on Linux: proc connector fork, exec and exit events and taskstats exit records over netlink, decoded by byte offset from the uapi headers, thread records summed per process |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
@@ -72,6 +77,7 @@ The README covers usage. This file covers how to work on the code.
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
 | `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, the Mach scheduling policy, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
 | `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
+| `platform/macos/events.rs` | The `isotop-events` thread on macOS: exec and exit of the sampled processes from kqueue (`EVFILT_PROC`) |
 
 `agents_file_table_lists_every_source_file` fails when a `.rs` file under `src/` has no row. Name
 files by path relative to `src/` in the first column; a row may list several.

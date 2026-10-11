@@ -1,7 +1,8 @@
 //! Linux: processes from /proc, CPUs from /proc/stat, /proc/schedstat and cpufreq, pressure
-//! stall information, cgroup v2 accounting, sockets, open files and file locks, NVML and the
-//! systemd journal.
+//! stall information, cgroup v2 accounting, sockets, open files and file locks, NVML, the
+//! systemd journal, and fork, exec and exit events.
 
+mod events;
 mod files;
 mod journal;
 mod net;
@@ -18,6 +19,7 @@ use crate::model::{
 };
 use crate::platform::{Files, Network, RawProcess, Shadow, Source, Sources};
 
+pub use events::{monotonic_ns, open_events};
 pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};
 pub use nvml::Nvml as Gpu;
@@ -189,6 +191,7 @@ impl Sampler {
                 system_ticks: counters.system_ticks,
                 syscalls,
                 major_faults: Some(counters.major_faults),
+                generation: None,
             });
         }
         self.grouped = processes.iter().any(|raw| !raw.process.cgroup.is_empty());

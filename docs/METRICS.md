@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 38 | 30,687 | 621 | 1,761 |
+| Rust | 40 | 33,111 | 697 | 1,897 |
 | Python | 28 | 12,168 | 615 | 1,395 |
 | WebGPU Shader Language | 1 | 198 | 13 | 32 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,175 | 453 |
+| Markdown | 6 | 0 | 2,203 | 459 |
 | Plain Text | 1 | 0 | 12 | 0 |
-| **Total** | **78** | **43,119** | **3,437** | **3,652** |
+| **Total** | **80** | **45,543** | **3,541** | **3,794** |
 
 ## Rust by module
 
@@ -24,12 +24,13 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 |:--|--:|--:|
 | `src/render.rs` | 2,958 | 1,097 |
 | `src/coop.rs` | 2,706 | 1,363 |
-| `src/model.rs` | 1,747 | 1,819 |
-| `src/main.rs` | 1,713 | 1,860 |
-| `src/platform/macos/mod.rs` | 916 | 365 |
+| `src/model.rs` | 2,173 | 2,539 |
+| `src/main.rs` | 1,726 | 1,870 |
+| `src/platform/macos/mod.rs` | 919 | 365 |
 | `src/gpu.rs` | 834 | 82 |
 | `src/simulation.rs` | 673 | 752 |
-| `src/platform/linux/mod.rs` | 573 | 370 |
+| `src/platform/linux/events.rs` | 581 | 317 |
+| `src/platform/linux/mod.rs` | 576 | 370 |
 | `src/views.rs` | 571 | 389 |
 | `src/reef.rs` | 541 | 22 |
 | `src/platform/macos/ffi.rs` | 540 | 12 |
@@ -37,13 +38,13 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/macos/logic.rs` | 466 | 607 |
 | `src/terminal.rs` | 425 | 79 |
 | `src/cells.rs` | 408 | 71 |
+| `src/platform/mod.rs` | 383 | 66 |
 | `src/globe.rs` | 382 | 119 |
 | `src/matrix.rs` | 299 | 219 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
 | `src/places.rs` | 270 | 0 |
 | `src/platform/linux/net.rs` | 270 | 71 |
 | `src/medium.rs` | 240 | 66 |
-| `src/platform/mod.rs` | 213 | 52 |
 | `src/geo.rs` | 211 | 38 |
 | `src/platform/linux/files.rs` | 198 | 187 |
 | `src/picker.rs` | 195 | 44 |
@@ -52,6 +53,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/stellar.rs` | 156 | 161 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
 | `src/glyphs.rs` | 107 | 0 |
+| `src/platform/macos/events.rs` | 107 | 60 |
 | `src/layout.rs` | 105 | 76 |
 | `src/platform/linux/journal.rs` | 101 | 53 |
 | `src/history.rs` | 86 | 107 |
@@ -60,7 +62,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/geometry.rs` | 50 | 15 |
 | `src/status.rs` | 20 | 43 |
 | `src/harness.rs` | 0 | 559 |
-| **Total** | **19,362** | **11,329** |
+| **Total** | **20,665** | **12,450** |
 
 ## Largest files
 
@@ -68,16 +70,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
+| `src/model.rs` | 5,524 | over limit |
 | `src/render.rs` | 4,519 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
-| `src/model.rs` | 4,222 | over limit |
-| `src/main.rs` | 3,920 | over limit |
+| `src/main.rs` | 3,949 | over limit |
 | `src/simulation.rs` | 1,751 | over limit |
-| `src/platform/macos/mod.rs` | 1,581 | over limit |
+| `src/platform/macos/mod.rs` | 1,584 | over limit |
 | `src/platform/macos/logic.rs` | 1,283 | over limit |
 | `src/views.rs` | 1,217 | over limit |
-| `src/platform/linux/mod.rs` | 1,101 |  |
-| `src/gpu.rs` | 982 |  |
+| `src/platform/linux/mod.rs` | 1,104 |  |
+| `src/platform/linux/events.rs` | 1,057 |  |
 
 ## Debt counters
 
@@ -87,7 +89,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 |:--|--:|
 | `#[expect(clippy::too_many_lines` | 13 |
 | `#[expect(clippy::too_many_arguments` | 6 |
-| `unsafe` blocks | 81 |
+| `unsafe` blocks | 98 |
 | `unwrap_or(0` sites | 23 |
 | `unwrap_or(0.0` sites | 15 |
 | `known_unstable` harness entries | 9 |
@@ -98,7 +100,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 400 |
+| `#[test]` functions | 421 |
 | Views in the registry | 11 |
 | Views with a README mapping table | 1 of 11 |
 | Direct crate dependencies | 10 |

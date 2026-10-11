@@ -213,7 +213,7 @@ fn messages(buffer: &[u8], each: &mut impl FnMut(&[u8])) -> Option<bool> {
 }
 
 /// Netlink attributes after a fixed header: (type, payload) pairs.
-fn attributes(message: &[u8], start: usize) -> impl Iterator<Item = (u16, &[u8])> {
+pub(super) fn attributes(message: &[u8], start: usize) -> impl Iterator<Item = (u16, &[u8])> {
     let mut at = start;
     std::iter::from_fn(move || {
         let size = u16_at(message, at)? as usize;
@@ -227,15 +227,15 @@ fn attributes(message: &[u8], start: usize) -> impl Iterator<Item = (u16, &[u8])
     })
 }
 
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
+pub(super) fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_ne_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
 }
 
-fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+pub(super) fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_ne_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn u64_at(bytes: &[u8], at: usize) -> Option<u64> {
+pub(super) fn u64_at(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_ne_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
