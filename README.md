@@ -529,6 +529,9 @@ reads frames both inline and through shared memory, and exercises interactive
 controls and restoration. Visual quality, flicker, and display latency should
 also be checked in Ghostty.
 
+The Rust toolchain is pinned in `rust-toolchain.toml` (and `rust-version` in
+`Cargo.toml`). To bump it, change both in one pull request and fix any new lints.
+
 CI builds and tests on Linux and on macOS (`macos-15`, Apple Silicon). The macOS
 code can be type-checked from Linux with
 `cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings`.

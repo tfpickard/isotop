@@ -85,6 +85,8 @@ cargo build --release
 python3 scripts/smoke_terminal.py
 ```
 
+The toolchain is pinned in `rust-toolchain.toml`; to bump it, change that file and `rust-version` in `Cargo.toml` together in a dedicated PR.
+
 macOS code cannot run on Linux. Type-check it locally with
 `cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings` (give it its own
 `CARGO_TARGET_DIR`); CI runs the gates and the live renders on `macos-15`. The pure logic in

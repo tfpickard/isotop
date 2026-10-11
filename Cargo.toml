@@ -2,6 +2,7 @@
 name = "isotop"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99.0"
 description = "A living process city and orbital observatory inside your terminal"
 license = "MPL-2.0"
 
