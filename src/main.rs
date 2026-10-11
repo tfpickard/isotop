@@ -12,6 +12,7 @@ mod matrix;
 mod medium;
 mod model;
 mod palette;
+mod picker;
 mod places;
 mod platform;
 mod reef;
@@ -38,6 +39,7 @@ use crossterm::event::{
 
 use journal::Journal;
 use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, describe};
+use picker::{Entry, Picker, Toggle};
 use platform::Source;
 use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, Scene, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
@@ -75,9 +77,13 @@ struct Options {
     /// Use a deterministic synthetic workload instead of /proc
     #[arg(long)]
     demo: bool,
-    /// Initial visualization
-    #[arg(long, default_value = "city", value_parser = view_parser())]
-    view: View,
+    /// Initial visualization (city, or the first of --views)
+    #[arg(long, value_parser = view_parser())]
+    view: Option<View>,
+    /// The views Tab and Shift+Tab cycle, as a comma-separated list such as reef,city: a name
+    /// repeated or not supported on this platform is dropped. Without it, every supported view
+    #[arg(long, value_delimiter = ',', value_parser = view_parser())]
+    views: Vec<View>,
     /// Print the views this platform supports, one per line, and exit
     #[arg(long)]
     list_views: bool,
@@ -342,6 +348,10 @@ struct App {
     journal_demanded: Option<Instant>,
     /// Whether each of the scene's views runs on this platform, in row order.
     available: Vec<bool>,
+    /// The views Tab and Shift+Tab cycle; never empty while any view is available.
+    playlist: Vec<View>,
+    /// The view picker, while `v` has it open.
+    picker: Option<Picker>,
 }
 
 impl App {
@@ -381,6 +391,8 @@ impl App {
             gpu: None,
             renderer: "cpu".into(),
             journal_demanded: None,
+            playlist: picker::playlist(&[], &available),
+            picker: None,
             available,
         };
         app.switch(view);
@@ -407,21 +419,72 @@ impl App {
         Demand::from(self.row().sources)
     }
 
-    /// The next available view after the shown one in Tab order, or before it when `forward` is
-    /// false, wrapping round; the shown view itself when no other is available.
+    /// The view Tab (or Shift+Tab, when `forward` is false) goes to: the shown view's neighbour
+    /// in the playlist, or the shown view itself when the playlist is empty.
     fn cycle(&self, forward: bool) -> View {
-        let count = self.available.len();
-        let shown = self.view.index();
-        (1..=count)
-            .map(|offset| {
-                if forward {
-                    (shown + offset) % count
-                } else {
-                    (shown + count - offset) % count
+        picker::cycle(&self.playlist, self.view, forward).unwrap_or(self.view)
+    }
+
+    /// The views the picker lists: every available one, in registry order.
+    fn entries(&self) -> Vec<Entry> {
+        View::all()
+            .filter(|view| self.available.get(view.index()) == Some(&true))
+            .map(|view| {
+                let row = self.scene.row(view);
+                Entry {
+                    view,
+                    name: row.name,
+                    title: row.title,
                 }
             })
-            .find(|&index| self.available[index])
-            .map_or(self.view, View::at)
+            .collect()
+    }
+
+    /// Handles a key while the picker is open: it takes every key, so nothing reaches the scene
+    /// or the shown view. Returns whether to quit.
+    fn picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let entries = self.entries();
+        let Some(picker) = self.picker.as_mut() else {
+            return false;
+        };
+        match code {
+            KeyCode::Esc => self.picker = None,
+            KeyCode::Enter => {
+                if let Some(view) = picker.highlighted(&entries) {
+                    self.picker = None;
+                    self.switch(view);
+                }
+            }
+            KeyCode::Up => picker.step(&entries, false),
+            KeyCode::Down => picker.step(&entries, true),
+            KeyCode::Backspace => picker.backspace(&entries),
+            KeyCode::Char(' ') => match picker.highlighted(&entries) {
+                Some(view) => {
+                    if picker::toggle(&mut self.playlist, view) == Toggle::Refused {
+                        picker.refuse();
+                    } else {
+                        picker.quiet();
+                    }
+                }
+                None => picker.quiet(),
+            },
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
+                picker.type_character(&entries, character);
+            }
+            _ => picker.quiet(),
+        }
+        false
+    }
+
+    /// The picker as a popup in the scene's top right corner, listing as many rows as fit.
+    fn picker_popup(&self, layout: &Layout) -> Option<Popup> {
+        let picker = self.picker.as_ref()?;
+        // The popup also holds a border above and below, the filter line and the key line.
+        let capacity = usize::from(layout.rows).saturating_sub(4).max(1);
+        let lines = picker.lines(&self.entries(), &self.playlist, capacity);
+        place_panel(lines, None, layout, false, 40)
     }
 
     /// Shows `view`, framed, at its row's pitch if it has one.
@@ -739,10 +802,12 @@ impl App {
                 " /{search}_  {} matches | Enter accept | Esc cancel | Tab next",
                 self.matches.len()
             ));
+        } else if self.picker.is_some() {
+            lines.push(" Type to filter views | Up/Down move | Enter show | Space add or remove from the Tab playlist | Esc close".into());
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | g tour | f focus | l labels | c links".into());
+            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links".into());
         } else {
-            lines.push(" Tab next view | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
+            lines.push(" Tab next view | v views | g tour | scroll pan | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit".into());
         }
         let links = match self.scene.links {
             Links::All => "",
@@ -888,7 +953,13 @@ impl App {
         let mut board = Board::default();
         let mut labels = Vec::new();
         let mut panels = Vec::new();
-        if let Some(popup) = self.popup(frame, layout) {
+        // The open picker covers the inspector popup, which comes back when it closes.
+        let popup = if self.picker.is_some() {
+            self.picker_popup(layout)
+        } else {
+            self.popup(frame, layout)
+        };
+        if let Some(popup) = popup {
             board.reserve(popup.column, popup.row, popup.width, popup.height());
             panels.push(popup);
         }
@@ -1030,6 +1101,9 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             return true;
         }
+        if self.picker.is_some() {
+            return self.picker_key(code, modifiers);
+        }
         if self.search.is_some() {
             match code {
                 KeyCode::Esc | KeyCode::Enter => self.search = None,
@@ -1079,6 +1153,9 @@ impl App {
                 } else {
                     FRAC_PI_2
                 };
+            }
+            KeyCode::Char('v') => {
+                self.picker = Some(Picker::open(&self.entries(), self.view));
             }
             KeyCode::Char('l') => self.labels = !self.labels,
             KeyCode::Char('h') => self.panel = !self.panel,
@@ -1149,6 +1226,9 @@ impl App {
         panels: &[Popup],
         pixels: bool,
     ) {
+        if self.picker.is_some() {
+            return;
+        }
         let before = self.goal.clone();
         self.pointer_event(mouse, layout, frame, panels, pixels);
         self.follow(&before);
@@ -1365,8 +1445,9 @@ enum Preflight {
 
 /// The startup before the terminal is touched. With `--verbose` it names each view this platform
 /// does not support on `err`; `--list-views` lists the supported ones on `out`. A headless run
-/// of an unsupported `--view` fails with status 1, and an interactive one starts on the first
-/// supported view instead. `available` holds each registry row's answer.
+/// of an unsupported `--view` fails with status 1. An interactive one, and any run without
+/// `--view` whose default (city) is unsupported, starts on the first supported view instead (the
+/// first of `--views` when given). `--views` with no supported name fails with status 1. `available` holds each registry row's answer.
 fn preflight(
     options: &Options,
     available: &[bool],
@@ -1390,19 +1471,31 @@ fn preflight(
         }
         return Preflight::Exit(0);
     }
-    if supported(options.view) {
-        return Preflight::Start(options.view);
+    let playlist = picker::playlist(&options.views, available);
+    if !options.views.is_empty() && playlist.is_empty() {
+        let _ = writeln!(err, "isotop: no available view in --views");
+        return Preflight::Exit(1);
     }
-    if options.headless() {
+    let requested = options.view.unwrap_or_else(|| {
+        if options.views.is_empty() {
+            View::named("city").expect("the registry has the city view")
+        } else {
+            playlist[0]
+        }
+    });
+    if supported(requested) {
+        return Preflight::Start(requested);
+    }
+    if options.headless() && options.view.is_some() {
         let _ = writeln!(
             err,
             "isotop: view {} is not supported on this platform",
-            options.view.name()
+            requested.name()
         );
         return Preflight::Exit(1);
     }
-    match View::all().find(|&view| supported(view)) {
-        Some(view) => Preflight::Start(view),
+    match playlist.first() {
+        Some(&view) => Preflight::Start(view),
         None => {
             let _ = writeln!(err, "isotop: no view is supported on this platform");
             Preflight::Exit(1)
@@ -1445,7 +1538,9 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
         std::thread::sleep(Duration::from_millis(options.sample_ms as u64));
         snapshot = collector.sample()?;
     }
+    let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
+    app.playlist = playlist;
     app.choose_renderer(options.renderer, options.gpu_power)?;
     let limit = options.limit as usize;
     if options.headless() {
@@ -2421,7 +2516,7 @@ mod tests {
                 !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase()),
                 "{name}"
             );
-            assert_eq!(options(&["--view", name]).view, view);
+            assert_eq!(options(&["--view", name]).view, Some(view));
         }
         let error = Options::try_parse_from(["isotop", "--view", "atlantis"])
             .err()
@@ -2469,7 +2564,7 @@ mod tests {
 
     #[test]
     fn view_defaults_to_city() {
-        assert_eq!(options(&[]).view, view("city"));
+        assert_eq!(options(&[]).view, None);
         assert_eq!(preflight_with(&[], &[]).0, Preflight::Start(view("city")));
     }
 
@@ -2581,6 +2676,15 @@ mod tests {
             (result, err.as_str()),
             (Preflight::Start(view("orbit")), "")
         );
+    }
+
+    #[test]
+    fn a_headless_run_without_view_falls_back_when_the_default_is_unavailable() {
+        for headless in [["--output", "x.png"], ["--benchmark", "5"]] {
+            let (result, out, err) = preflight_with(&headless, &["city"]);
+            assert_eq!(result, Preflight::Start(view("orbit")), "{headless:?}");
+            assert_eq!((out.as_str(), err.as_str()), ("", ""));
+        }
     }
 
     #[test]
@@ -3041,6 +3145,414 @@ mod tests {
                 found.push(format!("{prefix}{name}"));
             }
         }
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> bool {
+        app.key(code, KeyModifiers::NONE, 10.0)
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    /// Opens the picker, types `name` and presses Enter, as the smoke test does.
+    fn pick(app: &mut App, name: &str) {
+        press(app, KeyCode::Char('v'));
+        type_text(app, name);
+        press(app, KeyCode::Enter);
+    }
+
+    fn playlist_names(app: &App) -> Vec<&'static str> {
+        app.playlist.iter().map(|view| view.name()).collect()
+    }
+
+    /// The picker's popup lines in a layout of `rows` scene rows.
+    fn picker_lines(app: &App, rows: u16) -> Vec<String> {
+        let layout = Layout {
+            columns: 120,
+            rows,
+            width: 960,
+            height: rows as u32 * 16,
+            cell: None,
+        };
+        app.picker_popup(&layout).expect("the picker fits").lines
+    }
+
+    #[test]
+    fn the_picker_filters_by_name_and_title_ignoring_case() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        press(&mut app, KeyCode::Char('v'));
+        let lines = picker_lines(&app, 31);
+        assert_eq!(lines.len(), REGISTRY.len() + 2, "{lines:?}");
+        assert!(lines[1].starts_with("> "), "the highlight starts on city");
+        type_text(&mut app, "RE");
+        let entries = app.entries();
+        let matching = |text: &str| {
+            let names: Vec<_> = picker::filter(&entries, text)
+                .iter()
+                .map(|entry| entry.name)
+                .collect();
+            names
+        };
+        assert_eq!(matching("RE"), ["cores", "reef"]);
+        assert_eq!(matching("CoRe"), ["cores"]);
+        assert_eq!(matching("matrix"), ["matrix"]);
+        let lines = picker_lines(&app, 31);
+        assert!(lines[0].starts_with("View: RE_"), "{lines:?}");
+        assert!(lines[1].contains("cores") && lines[1].contains("CORES"));
+        assert!(lines[2].contains("reef") && lines[2].contains("REEF"));
+        assert!(
+            lines[2].contains(" 9 "),
+            "reef is the ninth view: {lines:?}"
+        );
+        press(&mut app, KeyCode::Backspace);
+        type_text(&mut app, "eef");
+        assert_eq!(picker_lines(&app, 31)[1].trim_end(), "> *  9 reef   REEF");
+        assert_eq!(app.view, view("city"), "typing never switches");
+    }
+
+    #[test]
+    fn an_empty_filter_shows_no_view_matches_and_enter_does_nothing() {
+        let mut app = App::new(view("orbit"), model::demo(1.0, 16), all_available());
+        app.render(320, 180, 512);
+        press(&mut app, KeyCode::Char('v'));
+        type_text(&mut app, "zzz");
+        let lines = picker_lines(&app, 31);
+        assert_eq!(lines[1], "no view matches", "{lines:?}");
+        assert_eq!(lines.len(), 3);
+        assert!(!app.fit);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.picker.is_some(), "Enter keeps the picker open");
+        assert_eq!((app.view, app.fit), (view("orbit"), false));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            playlist_names(&app).len(),
+            REGISTRY.len(),
+            "nothing toggled"
+        );
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(picker_lines(&app, 31).len(), REGISTRY.len() + 2);
+    }
+
+    #[test]
+    fn tab_cycles_the_playlist_and_resumes_after_a_picked_view() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist =
+            picker::playlist(&[view("city"), view("flow"), view("reef")], &app.available);
+        for expected in ["flow", "reef", "city", "flow"] {
+            press(&mut app, KeyCode::Tab);
+            assert_eq!(app.view.name(), expected);
+        }
+        pick(&mut app, "orbit");
+        assert_eq!(app.view, view("orbit"), "not in the playlist");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.view.name(),
+            "flow",
+            "the first playlist view after orbit"
+        );
+        pick(&mut app, "coop");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "city", "wraps round past the last row");
+        pick(&mut app, "ripple");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "flow");
+    }
+
+    #[test]
+    fn shift_tab_mirrors_tab_around_a_view_outside_the_playlist() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist = picker::playlist(&[view("flow"), view("reef")], &app.available);
+        pick(&mut app, "orbit");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(
+            app.view.name(),
+            "reef",
+            "wraps round to the last playlist view"
+        );
+        pick(&mut app, "ripple");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(
+            app.view.name(),
+            "reef",
+            "nothing before ripple, so the last"
+        );
+        pick(&mut app, "matrix");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "reef", "the nearest before matrix");
+        pick(&mut app, "coop");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "reef");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "flow", "inside the playlist it steps back");
+        pick(&mut app, "cells");
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.view.name(), "flow", "the nearest before cells");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "reef");
+    }
+
+    #[test]
+    fn the_playlist_cannot_be_emptied() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist = picker::playlist(&[view("city"), view("orbit")], &app.available);
+        press(&mut app, KeyCode::Char('v'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app), ["orbit"], "city leaves");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app), ["orbit"], "the last view stays");
+        let lines = picker_lines(&app, 31);
+        assert!(
+            lines.last().unwrap().contains("keeps at least one view"),
+            "{lines:?}"
+        );
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app), ["orbit", "ripple"]);
+        assert!(!picker_lines(&app, 31).last().unwrap().contains("keeps"));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            playlist_names(&app),
+            ["city", "orbit", "ripple"],
+            "back in registry order"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.picker.is_none());
+        assert_eq!(app.view, view("city"), "Esc leaves the view as it was");
+    }
+
+    #[test]
+    fn digits_ignore_the_playlist() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.playlist = picker::playlist(&[view("reef")], &app.available);
+        for (digit, name) in [
+            ('2', "orbit"),
+            ('7', "strata"),
+            ('0', "matrix"),
+            ('1', "city"),
+        ] {
+            press(&mut app, KeyCode::Char(digit));
+            assert_eq!(app.view.name(), name, "digit {digit}");
+        }
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view.name(), "reef");
+        assert_eq!(
+            playlist_names(&app),
+            ["reef"],
+            "digits leave the playlist alone"
+        );
+    }
+
+    #[test]
+    fn views_flag_rejects_unknown_names_and_drops_duplicates() {
+        let parse = |arguments: &[&str]| {
+            Options::try_parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
+        };
+        let error = parse(&["--views", "city,nope"])
+            .err()
+            .expect("nope is unknown");
+        let message = error.to_string();
+        assert!(message.contains("nope"), "{message}");
+        assert!(
+            message.contains("[possible values: city, orbit, ripple"),
+            "{message}"
+        );
+        let named = options(&["--views", "reef,city,reef,coop,city"]);
+        let every = all_available();
+        let names: Vec<_> = picker::playlist(&named.views, &every)
+            .iter()
+            .map(|view| view.name())
+            .collect();
+        assert_eq!(
+            names,
+            ["reef", "city", "coop"],
+            "first occurrences, in order"
+        );
+        let (result, _, err) = preflight_with(&["--views", "reef,city,reef"], &[]);
+        assert_eq!((result, err.as_str()), (Preflight::Start(view("reef")), ""));
+        let (result, _, _) = preflight_with(&["--views", "reef,city", "--view", "orbit"], &[]);
+        assert_eq!(result, Preflight::Start(view("orbit")), "--view wins");
+        let (result, _, err) = preflight_with(&["--views", "orbit,reef", "--verbose"], &["orbit"]);
+        assert_eq!(result, Preflight::Start(view("reef")), "orbit is skipped");
+        assert!(
+            err.contains("skipping view orbit: not supported on this platform\n"),
+            "{err}"
+        );
+        let headless = ["--views", "coop,city", "--output", "x.png"];
+        assert_eq!(
+            preflight_with(&headless, &[]).0,
+            Preflight::Start(view("coop"))
+        );
+        let mut app = App::new(view("reef"), model::demo(1.0, 16), every);
+        app.playlist = picker::playlist(&named.views, &app.available);
+        assert_eq!(playlist_names(&app), ["reef", "city", "coop"]);
+    }
+
+    #[test]
+    fn views_flag_with_no_available_name_exits_with_an_error() {
+        let (result, out, err) = preflight_with(&["--views", "orbit,matrix"], &["orbit", "matrix"]);
+        assert_eq!(result, Preflight::Exit(1));
+        assert_eq!(out, "");
+        assert_eq!(err, "isotop: no available view in --views\n");
+        let (result, _, err) = preflight_with(
+            &["--views", "orbit", "--verbose", "--output", "x.png"],
+            &["orbit"],
+        );
+        assert_eq!(result, Preflight::Exit(1));
+        assert_eq!(
+            err,
+            "skipping view orbit: not supported on this platform\n\
+             isotop: no available view in --views\n"
+        );
+        let (result, _, err) = preflight_with(&["--views", "orbit", "--view", "city"], &["orbit"]);
+        assert_eq!(
+            (result, err.as_str()),
+            (Preflight::Exit(1), "isotop: no available view in --views\n")
+        );
+    }
+
+    #[test]
+    fn keys_typed_into_the_picker_do_not_reach_the_scene() {
+        let mut app = probe_app();
+        let legend = |app: &App| app.scene.legend(View::at(0), app.snapshot());
+        let before = (
+            legend(&app),
+            app.goal.clone(),
+            (app.labels, app.panel, app.paused),
+        );
+        press(&mut app, KeyCode::Char('v'));
+        assert!(app.picker.is_some());
+        for code in [
+            KeyCode::Char('q'),
+            KeyCode::Char('x'),
+            KeyCode::Char('a'),
+            KeyCode::Char('m'),
+        ] {
+            assert!(!press(&mut app, code), "{code:?} must not quit");
+        }
+        for code in [
+            KeyCode::Char('1'),
+            KeyCode::Char('/'),
+            KeyCode::Char('+'),
+            KeyCode::Char('l'),
+            KeyCode::Char('h'),
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Home,
+            KeyCode::PageUp,
+            KeyCode::Left,
+        ] {
+            assert!(!press(&mut app, code));
+        }
+        assert_eq!(app.view, View::at(0));
+        assert_eq!(app.search, None);
+        let lines = picker_lines(&app, 31);
+        assert!(lines[0].starts_with("View: qxam1/+lh_"), "{lines:?}");
+        assert_eq!(legend(&app), before.0, "the view saw no key");
+        assert!(app.goal == before.1, "the camera did not move");
+        assert_eq!((app.labels, app.panel, app.paused), before.2);
+        assert!(
+            app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0),
+            "Ctrl-C still quits"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert!(app.picker.is_none());
+        assert!(!press(&mut app, KeyCode::Char('x')));
+        assert_ne!(
+            legend(&app),
+            before.0,
+            "closed, the key reaches the view again"
+        );
+        let mut plain = App::new(view("city"), model::demo(1.0, 16), all_available());
+        press(&mut plain, KeyCode::Char('v'));
+        assert!(
+            !press(&mut plain, KeyCode::Char('q')),
+            "q filters and does not quit"
+        );
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/11");
+    }
+
+    #[test]
+    fn the_mouse_is_ignored_while_the_picker_is_open() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        let frame = app.render(320, 180, 512);
+        let layout = Layout {
+            columns: 40,
+            rows: 12,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let scroll = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        let center = app.goal.center;
+        press(&mut app, KeyCode::Char('v'));
+        app.mouse(scroll, &layout, &frame, &[], false);
+        assert_eq!((app.goal.center, app.hover.is_none()), (center, true));
+        press(&mut app, KeyCode::Esc);
+        app.mouse(scroll, &layout, &frame, &[], false);
+        assert_ne!(
+            app.goal.center, center,
+            "the same event pans once it is closed"
+        );
+    }
+
+    #[test]
+    fn enter_in_the_picker_switches_through_the_usual_path() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.render(320, 180, 512);
+        assert!(app.demand().is_empty());
+        pick(&mut app, "matrix");
+        assert_eq!(app.view, view("matrix"));
+        assert!(app.picker.is_none() && app.fit);
+        assert_eq!(app.demand(), Demand::from(view("matrix").info().sources));
+        assert!(app.demand().contains(Source::Journal));
+        pick(&mut app, "ripple");
+        assert_eq!(app.goal.pitch, app.row().pitch.unwrap_or(app.goal.pitch));
+        assert!(app.demand().is_empty());
+    }
+
+    #[test]
+    fn the_picker_scrolls_to_keep_the_highlight_visible() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        press(&mut app, KeyCode::Char('v'));
+        for _ in 0..REGISTRY.len() - 1 {
+            press(&mut app, KeyCode::Down);
+        }
+        let lines = picker_lines(&app, 8);
+        assert_eq!(lines.len(), 6, "filter, four rows and the keys: {lines:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("> ") && line.contains("coop"))
+        );
+        press(&mut app, KeyCode::Down);
+        let lines = picker_lines(&app, 8);
+        assert!(
+            lines[1].starts_with("> ")
+                || lines
+                    .iter()
+                    .any(|line| line.starts_with("> ") && line.contains("city")),
+            "{lines:?}"
+        );
+        press(&mut app, KeyCode::Up);
+        assert!(
+            picker_lines(&app, 8)
+                .iter()
+                .any(|line| line.starts_with("> ") && line.contains("coop"))
+        );
     }
 
     #[test]

@@ -28,6 +28,7 @@ cargo build --release
 ./target/release/isotop
 ./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix
 ./target/release/isotop --list-views      # the views this platform supports, one per line
+./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
 
 Each view knows whether it runs on the platform; every view runs on Linux and macOS
@@ -37,6 +38,14 @@ with such a view starts on the first view that does instead, except in a headles
 `--list-views` prints the supported views in Tab order and exits, and `--verbose`
 prints `skipping view <name>: not supported on this platform` to stderr at
 startup for each view it passes over. isotop never shows a "not supported" screen.
+
+`--views a,b,c` sets the Tab playlist. An unknown name is a usage error that lists the
+valid ones; a name repeated is kept once, at its first place; a name this platform does
+not support is skipped (`--verbose` says so), and if none is left isotop prints
+`isotop: no available view in --views` and exits with status 1. The run starts on
+`--view` when given and otherwise on the first playlist entry, which is also the view a
+headless `--output` or `--benchmark` run renders. Without the flag the playlist is every
+supported view. The `v` picker adds views to it and removes them while isotop runs.
 
 Run directly in a graphics-capable terminal such as Ghostty or Kitty; tmux does
 not pass the graphics protocol through. The app queries graphics support on
@@ -479,9 +488,10 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view: city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
-| Shift + Tab | Previous view |
-| `1`-`9`, `0` | Jump to a view in that order |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
+| Shift + Tab | Previous view in the playlist |
+| `v` | Open the view picker (below) |
+| `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
 | Two-finger scroll / wheel | Pan (vertical and horizontal) |
 | Ctrl + scroll | Zoom towards the pointer |
 | Alt + scroll | Rotate |
@@ -510,6 +520,25 @@ Any key or mouse movement ends the tour.
 | `[` / `]` | Previous / next retained snapshot |
 | `?` | Toggle help |
 | `q` / Ctrl-C | Quit |
+
+**View picker.** `v` lists the views this platform supports, one row each, such as
+`> * 11 coop   COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
+the number the view's place in the list. The picker takes every key until it closes:
+
+| Key | Action |
+| --- | --- |
+| Letters and digits | Filter by name or title, ignoring case; `q` filters rather than quits |
+| Backspace | Delete a filter character |
+| Up / Down | Move the highlight among the matches |
+| Enter | Show the highlighted view, fitted, and close the picker (nothing happens when no view matches) |
+| Space | Add the highlighted view to the Tab playlist or remove it; the last view cannot be removed |
+| Esc | Close without switching |
+| Ctrl-C | Quit |
+
+A view picked with `v` that is not in the playlist is not part of the cycle: Tab goes to
+the first playlist view after it in the list, Shift+Tab to the last one before it, and
+both wrap round. The mouse is ignored while the picker is open. The playlist lasts for
+the run; `--views` sets it at the start.
 
 Terminals deliver touchpad scrolling as wheel events but do not forward pinch or
 rotate gestures, so Ctrl-scroll and Alt-scroll stand in for them. Camera moves

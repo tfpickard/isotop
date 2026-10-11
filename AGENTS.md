@@ -60,6 +60,7 @@ The README covers usage. This file covers how to work on the code.
 | `status.rs` | The legend wording for optional sources, so every view says it alike: `missing_note` (` \| no <source>: <consequence>`) and `sources_note` (` \| sources: a, b`) |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
+| `picker.rs` | The view picker opened by `v` and the Tab playlist: `Picker` (filter, highlight, popup lines), the name and title filter, `playlist` (the `--views` rules) and the `cycle` and `toggle` rules; pure, so the tests drive it without a terminal |
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
@@ -243,8 +244,8 @@ match your own shell.
     `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `sources` (none)
-    and `demo` (`DemoOptions::default()`). Tab, Shift+Tab, `--view`, `--list-views` and
-    `--verbose` follow from the table. Never reorder the first ten rows: the digits pick them.
+    and `demo` (`DemoOptions::default()`). Tab, Shift+Tab, the `v` picker, `--view`, `--views`,
+    `--list-views` and `--verbose` follow from the table. Never reorder the first ten rows: the digits pick them.
   - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
     . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
     (returning true consumes that press). Every other key is global, and no key reaches the view
