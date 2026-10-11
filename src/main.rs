@@ -1971,12 +1971,15 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
                     }
                 }
             }
-            Phase::Replay { seconds } => {
+            Phase::Replay {
+                seconds,
+                before_start,
+            } => {
                 let step = options.sample_seconds();
                 let samples = (f64::from(seconds) / step).round() as u32;
                 for back in (1..=samples).rev() {
                     let at = options.time - f64::from(back) * step;
-                    if at >= 0.0 {
+                    if at >= 0.0 || before_start {
                         let snapshot = demo_snapshot(row, at - step, at, count);
                         app.scene.record(&snapshot, at as f32);
                     }
@@ -3256,6 +3259,22 @@ mod tests {
             counted(0),
             "only headless runs warm up"
         );
+    }
+
+    #[test]
+    fn a_replay_from_before_the_start_feeds_the_demo_samples_before_time_zero_too() {
+        let rows = views::testing::REMEMBERING;
+        let records = |arguments: &[&str]| {
+            let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+            app.scene = Scene::with_rows(rows);
+            let mut all = vec!["--time", "12", "--processes", "16"];
+            all.extend_from_slice(arguments);
+            warm_up(&mut app, &options(&all), None);
+            app.scene.legend(app.view, app.snapshot())
+        };
+        let counted = |count: usize| format!(" probe: 0 draws | {count} records | keys []");
+        assert_eq!(records(&["--demo", "--output", "x.png"]), counted(20));
+        assert_eq!(records(&["--output", "x.png"]), counted(0));
     }
 
     /// The checked-in golden hashes, which are those of Linux on x86_64.

@@ -359,7 +359,10 @@ pub enum Phase {
     /// skipping those before 0, without rasterizing.
     Record { seconds: u32 },
     /// The same as `Record`, with the samples `--sample-ms` apart, as a live run takes them.
-    Replay { seconds: u32 },
+    /// With `before_start`, the samples before time 0 are replayed too (the demo workload is
+    /// defined there as well), so a view whose record hook keeps minutes is settled at the
+    /// reference time of 12 s.
+    Replay { seconds: u32, before_start: bool },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
     /// The same as `Settle`, in `f64` seconds, handing the journal lines that arrived since the
@@ -746,7 +749,10 @@ pub static REGISTRY: &[ViewInfo] = &[
         keys: ", . quarter turn | ; plane | b boost",
         // A minute of worldlines, replayed as a live run would have recorded it.
         warmup: &[Warmup {
-            phase: Phase::Replay { seconds: 60 },
+            phase: Phase::Replay {
+                seconds: 60,
+                before_start: false,
+            },
             when: When::DemoHeadless,
         }],
         demo: DemoOptions {
@@ -1355,12 +1361,33 @@ pub mod testing {
     /// run.
     pub static REPLAYING: &[ViewInfo] = &[ViewInfo {
         warmup: &[Warmup {
-            phase: Phase::Replay { seconds: 4 },
+            phase: Phase::Replay {
+                seconds: 4,
+                before_start: false,
+            },
             when: When::DemoHeadless,
         }],
         ..ViewInfo::new(
             "replaying",
             "REPLAYING",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        )
+    }];
+
+    /// `remembering`, which replays twenty seconds of demo samples, those before time 0 as well,
+    /// before a headless frame of a demo run.
+    pub static REMEMBERING: &[ViewInfo] = &[ViewInfo {
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 20,
+                before_start: true,
+            },
+            when: When::DemoHeadless,
+        }],
+        ..ViewInfo::new(
+            "remembering",
+            "REMEMBERING",
             Backdrop::Space,
             Hooks::Module(|| Box::new(Probe::default())),
         )
