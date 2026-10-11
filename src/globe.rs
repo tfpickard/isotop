@@ -4,7 +4,7 @@
 //! a local GeoIP database; addresses that have no place circle the north pole, and a label says
 //! why: no database, not listed, still being located, or private.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use std::net::IpAddr;
 
@@ -292,7 +292,18 @@ impl Globe {
         let (east, north) = tangents(up, pole, tilt([1.0, 0.0, 0.0]));
         let mut talkers: Vec<Identity> = per_process.keys().copied().collect();
         talkers.sort();
-        self.seats.assign(talkers.iter().map(|&id| (id, "home")));
+        // Seats are reserved for every sampled process with remote connections, drawn or not,
+        // so focusing a subtree, or the process limit (and a selection swapped across it)
+        // hiding some, frees none of their seats: clearing it brings every process back to
+        // its place in the cloud. Only the drawn ones are drawn below.
+        let sampled: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        self.seats.assign(
+            snapshot
+                .remotes
+                .iter()
+                .filter(|r| sampled.contains(&r.id) || index.contains_key(&r.id))
+                .map(|r| (r.id, "home")),
+        );
         for id in &talkers {
             let process = processes[index[id]];
             let k = self.seats.seat(*id).unwrap_or(0);
@@ -560,7 +571,19 @@ pub fn legend(snapshot: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::demo;
+    use crate::render::hiding;
     use crate::views::view;
+
+    #[test]
+    fn focusing_and_clearing_focus_keeps_every_process_in_its_place_above_home() {
+        hiding::focus_and_clear(view("globe"), &demo(30.0, 160));
+    }
+
+    #[test]
+    fn processes_beyond_the_limit_keep_their_globe_place() {
+        hiding::limit_and_lift(view("globe"), &demo(30.0, 160));
+    }
 
     #[test]
     fn a_connection_rate_not_yet_measured_reads_n_a_not_zero() {
