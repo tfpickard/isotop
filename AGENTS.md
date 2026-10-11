@@ -49,7 +49,8 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
-| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup` and `LinkRule`; the built-in views' legends and record hooks; and `testing`, module views for tests |
+| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
+| `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
@@ -87,6 +88,8 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
   `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
   `Scene`, `Stage` and `Backdrop` and call the built-in views' legends. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
+- The test-only `harness` imports `main` for `App`, `Options`, `demo_snapshot` and `warm_up`, so
+  it runs a view exactly as a headless `--output` run does.
 - `render` and the views read `platform` types (`Shadow`, `Files`, `DeletedFile`, and `Source`
   and `Sources` from `Snapshot::missing`), and Cells and the coop its `GROUP_LABEL` and
   `WITHOUT_CGROUPS`.
@@ -139,7 +142,8 @@ onto `ViewModule`, so write new views the module way and never add an arm.
   `--renderer gpu` and compare the PNGs.
 - **Layouts are stable.** A process keeps its place when CPU, memory or the population changes.
   Systems and districts are only re-placed when their structure outgrows the reservation, and
-  tests enforce this. Don't introduce a layout that reshuffles every sample.
+  tests enforce this: the view harness checks every registered view (`harness.rs`). Don't
+  introduce a layout that reshuffles every sample.
 - **Picking.** A pickable item carries an index into `frame.identities`. `NONE` means "not
   pickable", and lines clear picking where they draw. Mouse input is cell-coarse, so
   `pick_near` searches a radius.
@@ -243,13 +247,24 @@ match your own shell.
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
     `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
-    `header` (None: the scene's visible and collapsed counts), `face` (None), `sources` (none)
-    and `demo` (`DemoOptions::default()`). Tab, Shift+Tab, the `v` picker, `--view`, `--views`,
+    `header` (None: the scene's visible and collapsed counts), `face` (None), `sources` (none),
+    `demo` (`DemoOptions::default()`) and `contract` (`Contract::DEFAULT`: it draws processes,
+    which may move at most 1 world unit over the ground, checked where they are drawn, and it is
+    known to fail nothing). Tab, Shift+Tab, the `v` picker, `--view`, `--views`,
     `--list-views` and `--verbose` follow from the table. Never reorder the first ten rows: the digits pick them.
   - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
     . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
     (returning true consumes that press). Every other key is global, and no key reaches the view
     while a search is open.
+  - The view harness (`harness.rs`) covers every row: `every_view_satisfies_the_view_contract`
+    checks that two runs from the same inputs draw the same pixels and picks, that the demo
+    shows processes with positions and something to click, that every pick names a process,
+    that no surviving process moves when CPU and memory change (CPU scaled 0.25 to 4, memory 0.5
+    to 2) or when a tenth of the processes exit and as many start, and that an empty machine
+    draws. A new view needs tests only for what is its own beyond that. Set its tolerance on
+    the row's `contract`; a view whose creatures wander declares `anchors` (Coop's seats). Never
+    add a `known_unstable` entry for a new view: those record debt of the views that predate the
+    harness, each with its issue, and the harness reports one that starts to pass.
   - Test the module through `Scene::with_rows` and a table of its own, as `views::testing` does.
   - Outside `src/`: the README section, key table and view lists, and a line in
     `tests/golden.txt` (bless it and say so in the PR). CI renders every view `--list-views`

@@ -1142,6 +1142,23 @@ impl Coop {
         self.calls.drain(..excess);
     }
 
+    /// Where each drawn chicken belongs, wherever it has walked to: its seat on its house's
+    /// perches, on the ground. The view harness checks layout stability here.
+    pub fn anchors(&self) -> HashMap<Identity, Point> {
+        self.yard
+            .chickens
+            .iter()
+            .filter_map(|chicken| {
+                let center = self.flocks.get(chicken.flock)?.center;
+                let (offset, _) = seat_offset(self.seats.seat(chicken.id)?);
+                Some((
+                    chicken.id,
+                    [center[0] + offset[0], center[1] + offset[1], 0.0],
+                ))
+            })
+            .collect()
+    }
+
     /// The status legend, with the yard's order parameter and what could not be measured.
     pub fn legend(&self) -> String {
         let phi = self

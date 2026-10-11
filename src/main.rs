@@ -6,6 +6,8 @@ mod geometry;
 mod globe;
 mod glyphs;
 mod gpu;
+#[cfg(test)]
+mod harness;
 mod journal;
 mod layout;
 mod matrix;

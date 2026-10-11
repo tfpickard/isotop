@@ -7,9 +7,10 @@
 //! fields and draws them in its own arms, picked by `BuiltIn`. A new view is a module view: a type
 //! that implements `ViewModule`, which `Scene` builds from the row and calls through the trait.
 
+use std::collections::HashMap;
 use std::fmt;
 
-use crate::model::{DemoOptions, Process, Snapshot};
+use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Point, Scene, Stage};
 use crate::{cells, cores, globe};
@@ -106,6 +107,13 @@ pub struct ViewInfo {
     /// integral. Every demo snapshot taken while the view is shown follows it. Default: none,
     /// which is `model::demo` exactly.
     pub demo: DemoOptions,
+    /// What the shared view harness expects of the view (`harness.rs`). Default: it draws
+    /// processes, checked where they are drawn within 1 world unit, and fails nothing.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only the view harness reads the contract")
+    )]
+    pub contract: Contract,
 }
 
 /// The visible and collapsed counts a view puts on the status line.
@@ -141,6 +149,106 @@ impl ViewInfo {
                 churn: false,
                 exact_cpu_time: false,
             },
+            contract: Contract::DEFAULT,
+        }
+    }
+}
+
+/// What the shared view harness (`harness.rs`) checks a view against, and the debt it accepts.
+/// Every registered view is checked for every `Property`; only tests read this.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the view harness reads the contract")
+)]
+pub struct Contract {
+    /// Whether the view draws processes, so the demo must show some and leave something to
+    /// click. Default: true. Matrix draws journal lines instead.
+    pub draws_processes: bool,
+    /// How far, in world units, a surviving process may move when resources or the population
+    /// change. Default: 1.
+    pub tolerance: f32,
+    /// Where the stability properties look for a process instead of where it is drawn: its
+    /// anchor (seat, house), for a view whose creatures wander. Default: None, which checks
+    /// `Scene::positions`.
+    pub anchors: Option<Anchors>,
+    /// Properties the view is known to fail, each with the issue that tracks it. The harness
+    /// still checks them, reports one that starts to pass, and does not fail on them.
+    pub known_unstable: &'static [Unstable],
+}
+
+/// Where each drawn process is anchored, read from the scene after a frame.
+pub type Anchors = fn(&Scene) -> HashMap<Identity, Point>;
+
+impl Contract {
+    pub const DEFAULT: Contract = Contract {
+        draws_processes: true,
+        tolerance: 1.0,
+        anchors: None,
+        known_unstable: &[],
+    };
+
+    /// The accepted failure of `property`, if the view has one.
+    #[cfg(test)]
+    pub fn unstable(&self, property: Property) -> Option<&Unstable> {
+        self.known_unstable
+            .iter()
+            .find(|entry| entry.property == property)
+    }
+}
+
+/// A property a view is known to fail today, and why.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the view harness reads the contract")
+)]
+pub struct Unstable {
+    pub property: Property,
+    /// The issue that tracks the fix.
+    pub issue: &'static str,
+    pub reason: &'static str,
+}
+
+/// One behaviour the shared view harness checks for every view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the view harness checks properties")
+)]
+pub enum Property {
+    /// The same inputs give the same pixels and picks.
+    Deterministic,
+    /// The demo shows processes and leaves a pixel to click.
+    NonEmpty,
+    /// Every pick names a process of the frame.
+    ValidPicks,
+    /// No surviving process moves when CPU and memory change.
+    ResourceChange,
+    /// No surviving process moves when a tenth of the processes exit and as many start.
+    Churn,
+    /// An empty machine draws without a panic.
+    EmptyMachine,
+}
+
+#[cfg(test)]
+impl Property {
+    pub const ALL: [Property; 6] = [
+        Property::Deterministic,
+        Property::NonEmpty,
+        Property::ValidPicks,
+        Property::ResourceChange,
+        Property::Churn,
+        Property::EmptyMachine,
+    ];
+
+    /// The name a harness report uses, as in `flow: churn`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Property::Deterministic => "deterministic",
+            Property::NonEmpty => "non-empty",
+            Property::ValidPicks => "valid picks",
+            Property::ResourceChange => "resource change",
+            Property::Churn => "churn",
+            Property::EmptyMachine => "empty machine",
         }
     }
 }
@@ -322,6 +430,21 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         links: LinkRule::All,
+        contract: Contract {
+            known_unstable: &[
+                Unstable {
+                    property: Property::ResourceChange,
+                    issue: "#114",
+                    reason: "orbits and systems are sized by memory, so the galaxy is laid out again",
+                },
+                Unstable {
+                    property: Property::Churn,
+                    issue: "#114",
+                    reason: "an exit or a birth lays the systems and their shells out again",
+                },
+            ],
+            ..Contract::DEFAULT
+        },
         ..ViewInfo::new(
             "orbit",
             "ORBIT",
@@ -337,6 +460,14 @@ pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         links: LinkRule::All,
         warmup: &[SETTLE],
+        contract: Contract {
+            known_unstable: &[Unstable {
+                property: Property::ResourceChange,
+                issue: "#116",
+                reason: "pebble clusters are placed again when memory grows their pebbles",
+            }],
+            ..Contract::DEFAULT
+        },
         ..ViewInfo::new(
             "ripple",
             "RIPPLE",
@@ -351,6 +482,21 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
+        contract: Contract {
+            known_unstable: &[
+                Unstable {
+                    property: Property::ResourceChange,
+                    issue: "#115",
+                    reason: "wells are laid out like Orbit's systems, sized by memory",
+                },
+                Unstable {
+                    property: Property::Churn,
+                    issue: "#115",
+                    reason: "an exit or a birth lays the wells out again, as in Orbit",
+                },
+            ],
+            ..Contract::DEFAULT
+        },
         ..ViewInfo::new(
             "flow",
             "FLOW",
@@ -365,6 +511,14 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
+        contract: Contract {
+            known_unstable: &[Unstable {
+                property: Property::ResourceChange,
+                issue: "#117",
+                reason: "marbles lap at their CPU and no anchor (the lane) is declared",
+            }],
+            ..Contract::DEFAULT
+        },
         ..ViewInfo::new(
             "cores",
             "CORES",
@@ -377,17 +531,34 @@ pub static REGISTRY: &[ViewInfo] = &[
             },
         )
     },
-    ViewInfo::new(
-        "cells",
-        "CELLS",
-        Backdrop::Dusk,
-        Hooks::BuiltIn {
-            arm: BuiltIn::Cells,
-            legend: |_, snapshot| cells::legend(snapshot),
-            record: None,
-            inspector_line: None,
+    ViewInfo {
+        contract: Contract {
+            known_unstable: &[
+                Unstable {
+                    property: Property::ResourceChange,
+                    issue: "#118",
+                    reason: "the largest member is the nucleus at the centre, and memory sizes the cell",
+                },
+                Unstable {
+                    property: Property::Churn,
+                    issue: "#118",
+                    reason: "when the nucleus exits, the next largest member moves to the centre",
+                },
+            ],
+            ..Contract::DEFAULT
         },
-    ),
+        ..ViewInfo::new(
+            "cells",
+            "CELLS",
+            Backdrop::Dusk,
+            Hooks::BuiltIn {
+                arm: BuiltIn::Cells,
+                legend: |_, snapshot| cells::legend(snapshot),
+                record: None,
+                inspector_line: None,
+            },
+        )
+    },
     ViewInfo {
         // A minute of history, so the landscape is full in the captured frame.
         warmup: &[Warmup {
@@ -423,6 +594,14 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
+        contract: Contract {
+            known_unstable: &[Unstable {
+                property: Property::ResourceChange,
+                issue: "#119",
+                reason: "fish swim and crabs scuttle at their CPU and no anchor is declared",
+            }],
+            ..Contract::DEFAULT
+        },
         ..ViewInfo::new(
             "reef",
             "REEF",
@@ -438,6 +617,11 @@ pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         haze: false,
         sources: Sources::of(&[Source::Journal]),
+        // The rain draws journal lines, not processes.
+        contract: Contract {
+            draws_processes: false,
+            ..Contract::DEFAULT
+        },
         // The rain needs several seconds to fill the screen.
         warmup: &[Warmup {
             phase: Phase::Journal {
@@ -468,6 +652,11 @@ pub static REGISTRY: &[ViewInfo] = &[
             },
             SETTLE,
         ],
+        // Chickens walk; their seats and houses are what must stay put.
+        contract: Contract {
+            anchors: Some(|scene| scene.coop.anchors()),
+            ..Contract::DEFAULT
+        },
         ..ViewInfo::new(
             "coop",
             "COOP",
@@ -729,6 +918,72 @@ pub mod testing {
             Backdrop::Space,
             Hooks::Module(|| Box::new(Probe::default())),
         ),
+    ];
+
+    /// A module view that seats each process by its rank in the frame's process order, so one
+    /// exit moves every process after it: the layout the view harness must catch.
+    #[derive(Default)]
+    pub struct Shuffle;
+
+    impl ViewModule for Shuffle {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            for (index, process) in processes.iter().enumerate() {
+                let position = [(index % 16) as f32 * 3.0, (index / 16) as f32 * 3.0, 0.0];
+                stage.positions.insert(process.id, position);
+                stage.frame.sphere(
+                    stage.camera,
+                    position,
+                    1.0,
+                    [200, 200, 200],
+                    index as u32,
+                    false,
+                );
+            }
+            processes.len()
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            " shuffle".into()
+        }
+    }
+
+    /// `shuffle`, then `listed`, the same view with its churn failure listed as known, and a
+    /// resource-change failure it does not have.
+    pub static SHUFFLED: &[ViewInfo] = &[
+        ViewInfo::new(
+            "shuffle",
+            "SHUFFLE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Shuffle)),
+        ),
+        ViewInfo {
+            contract: Contract {
+                known_unstable: &[
+                    Unstable {
+                        property: Property::Churn,
+                        issue: "ISSUE_LISTED_CHURN",
+                        reason: "seats by rank",
+                    },
+                    Unstable {
+                        property: Property::ResourceChange,
+                        issue: "ISSUE_LISTED_RESOURCE_CHANGE",
+                        reason: "listed by mistake",
+                    },
+                ],
+                ..Contract::DEFAULT
+            },
+            ..ViewInfo::new(
+                "listed",
+                "LISTED",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Shuffle)),
+            )
+        },
     ];
 
     /// Two module views: `probe`, with every optional field at its default, then `quiet`, which

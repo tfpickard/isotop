@@ -58,6 +58,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
    - card hook (from [B9 (#36)](https://github.com/tfpickard/isotop/issues/36))
    - `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27))
    - `demo` options (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25))
+   - the harness `contract` (from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)): whether it draws processes, its stability tolerance, and anchors for creatures that wander
 3. Draw with the signature the module views already use (`cells.rs`, `cores.rs`, `strata.rs`, `reef.rs`, `coop.rs`):
    `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
    The return value is the number of processes shown; the rest count as collapsed. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
@@ -218,9 +219,10 @@ These values are provisional until [S1 (#22)](https://github.com/tfpickard/isoto
 ## Tests
 
 - Tests live in a `tests` module at the bottom of the file. Name them as sentences about behaviour, e.g. `worldlines_keep_their_seat_when_resources_change`. Rendering tests use `model::demo` or the `process(pid, parent)` helper in `render.rs`.
-- Every view has a layout-stability test: a process keeps its place when CPU, memory or the population changes. State exactly what is frozen, e.g. "closed rows are frozen; the open row may re-pack".
+- Every view is covered by the view harness (`harness.rs`, from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)) by being registered. `every_view_satisfies_the_view_contract` checks that the same inputs give the same pixels and picks, that the demo shows processes with positions and something to click, that every pick names a process, that an empty machine draws, and layout stability: no surviving process moves more than the row's tolerance (1 world unit over the ground by default) when every CPU is scaled by 0.25 to 4 and every memory by 0.5 to 2, or when a tenth of the processes exit and as many start. A view whose creatures wander declares `anchors` on its row's `contract` (Coop's seats), and the harness checks those instead of the drawn positions. A new view never lands with a `known_unstable` entry.
+- Beyond the harness, a view tests only what is its own. A stability test of its own states exactly what is frozen, e.g. "closed rows are frozen; the open row may re-pack".
 - Every simulation view has a test that 10 fps and 60 fps produce the same state at the same wall-clock time. Coop's `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second` is the model.
-- Every view passes `every_view_renders_the_demo_and_an_empty_machine` in `render.rs`. It must show something, have positions, and have something to click. After [P1 (#17)](https://github.com/tfpickard/isotop/issues/17) the test iterates the registry.
+- Every view passes `every_view_renders_the_demo_and_an_empty_machine` in `render.rs`. It must show something, have positions, and have something to click. The test iterates the registry and skips a view whose row's `contract` says it draws no processes (Matrix).
 - Parsers load fixtures from `src/platform/<os>/fixtures/` with `include_str!` or byte arrays. Each fixture's header states where it came from.
 - Readers of `/proc` and `/sys` take an injectable root path. Tests that build trees use a unique directory under `std::env::temp_dir()` and remove it afterwards.
 - The smoke test, `scripts/smoke_terminal.py`, gets one line per new view in its list of views (from [P2 (#18)](https://github.com/tfpickard/isotop/issues/18)). The view is visited through the `v` picker, and its `/ NAME /` header is asserted. A view that `--list-views` does not report on the runner is skipped. Every existing assertion stays.

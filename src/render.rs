@@ -3473,8 +3473,8 @@ mod tests {
     #[test]
     fn every_view_renders_the_demo_and_an_empty_machine() {
         let snapshot = demo(30.0, 128);
-        // The matrix draws the journal, not processes; its own tests cover it.
-        for view in View::all().filter(|&shown| shown != view("matrix")) {
+        // A view that draws no processes (the matrix draws the journal) has its own tests.
+        for view in View::all().filter(|view| view.info().contract.draws_processes) {
             let mut scene = Scene::new();
             for k in 0..4 {
                 render(&mut scene, &snapshot, view, 30.0 + k as f32 * 0.1);
