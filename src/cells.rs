@@ -4,7 +4,7 @@
 //! when the quota throttles it and bursts when the OOM killer strikes. Processes are organelles,
 //! the largest as the nucleus.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use crate::layout::{Discs, Seats, spin, spiral};
@@ -186,7 +186,8 @@ impl Dishes {
         snapshot: &'a Snapshot,
     ) -> Vec<Cell<'a>> {
         let mut cells = Vec::new();
-        let mut groups: HashMap<&str, (Vec<usize>, Vec<&Process>)> = HashMap::new();
+        // In name order, so the cells are drawn in the same order every run.
+        let mut groups: BTreeMap<&str, (Vec<usize>, Vec<&Process>)> = BTreeMap::new();
         for (index, p) in processes.iter().enumerate().filter(|(_, p)| p.kind == kind) {
             groups.entry(cell_name(p)).or_default().0.push(index);
         }
@@ -246,7 +247,7 @@ impl Dishes {
 
     #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
     fn draw_cell(
-        &mut self,
+        &self,
         stage: &mut Stage,
         cell: &Cell,
         [x, y]: [f32; 2],
@@ -506,6 +507,11 @@ mod tests {
     }
 
     #[test]
+    fn the_camera_fit_ignores_what_focus_and_the_limit_hide() {
+        hiding::bounds_ignore_hiding(view("cells"), &demo(30.0, 160));
+    }
+
+    #[test]
     fn processes_beyond_the_limit_keep_their_cell_place() {
         hiding::limit_and_lift(view("cells"), &demo(30.0, 160));
     }
@@ -523,8 +529,9 @@ mod tests {
         hiding::limit_and_lift(view("cells"), &sample);
     }
 
-    #[test]
-    fn a_hidden_nucleus_leaves_the_centre_of_its_cell_dark() {
+    /// One cell of a big parent and a small child, drawn with `focus`: the glow of a nucleus
+    /// core and the triangles of the cytoplasm that a click on the cell's centre would pick.
+    fn cell_of_two(focus: impl Fn(Identity, Identity) -> Option<Identity>) -> (usize, Vec<u32>) {
         use crate::render::{Camera, Item, RenderInput, Scene};
         let mut snapshot = demo(30.0, 2);
         let [parent, child] = [0, 1].map(|i| snapshot.processes[i].id);
@@ -534,19 +541,140 @@ mod tests {
             process.cpu = 0.0;
             process.cgroup = "/system.slice/one.service".into();
         }
-        let cores = |focus| {
-            let frame = Scene::new().render(&RenderInput {
+        let frame = Scene::new().render(&RenderInput {
+            focus: focus(parent, child),
+            ..RenderInput::small(&snapshot, view("cells"), &Camera::default(), 30.0)
+        });
+        let cores = frame
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::Glow { strength, .. } if *strength == 0.35))
+            .count();
+        let picks = frame
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Triangle(_, _, pick) if *pick != NONE => Some(*pick),
+                _ => None,
+            })
+            .collect();
+        (cores, picks)
+    }
+
+    #[test]
+    fn a_hidden_nucleus_leaves_the_centre_of_its_cell_dark() {
+        assert_eq!(cell_of_two(|_, _| None).0, 1);
+        assert_eq!(cell_of_two(|_, child| Some(child)).0, 0);
+    }
+
+    #[test]
+    fn a_hidden_nucleus_leaves_the_cytoplasm_unpickable() {
+        // The cytoplasm picks the nucleus; with the nucleus hidden, the one organelle drawn
+        // (index 0) is not the nucleus and a click on the cell's centre must not select it.
+        let (_, whole) = cell_of_two(|_, _| None);
+        assert!(whole.contains(&0));
+        let (_, alone) = cell_of_two(|_, child| Some(child));
+        assert!(alone.is_empty(), "{alone:?}");
+    }
+
+    #[test]
+    fn an_oom_kill_in_a_hidden_cell_bursts_when_it_returns_only_while_the_burst_lasts() {
+        use crate::render::{Camera, Item, RenderInput, Scene};
+        let mut snapshot = demo(30.0, 4);
+        for (index, process) in snapshot.processes.iter_mut().enumerate() {
+            process.kind = Kind::System;
+            process.parent = process.id.pid;
+            process.cgroup = format!("/system.slice/{}.service", index / 2);
+        }
+        let near = snapshot.processes[2].id;
+        // The first cell has the kills, the second never does.
+        let kill = |snapshot: &mut Snapshot, kills| {
+            for (name, kills) in [
+                ("/system.slice/0.service", kills),
+                ("/system.slice/1.service", 0),
+            ] {
+                let unit = Unit {
+                    memory: 1 << 30,
+                    oom_kills: Some(kills),
+                    ..Unit::default()
+                };
+                snapshot.units.insert(name.into(), unit);
+            }
+        };
+        let bursts = |scene: &mut Scene, snapshot: &Snapshot, time, focus| {
+            let frame = scene.render(&RenderInput {
                 focus,
-                ..RenderInput::small(&snapshot, view("cells"), &Camera::default(), 30.0)
+                ..RenderInput::small(snapshot, view("cells"), &Camera::default(), time)
             });
             frame
                 .items
                 .iter()
-                .filter(|item| matches!(item, Item::Glow { strength, .. } if *strength == 0.35))
+                .filter(|item| matches!(item, Item::Glow { color, .. } if *color == CRISIS))
                 .count()
         };
-        assert_eq!(cores(None), 1);
-        assert_eq!(cores(Some(child)), 0);
+        for (back, expected) in [(31.2, true), (40.0, false)] {
+            let mut scene = Scene::new();
+            kill(&mut snapshot, 0);
+            assert_eq!(bursts(&mut scene, &snapshot, 30.0, None), 0);
+            // The kill lands in the first cell while focus hides it.
+            kill(&mut snapshot, 1);
+            assert_eq!(bursts(&mut scene, &snapshot, 31.0, Some(near)), 0);
+            assert_eq!(
+                bursts(&mut scene, &snapshot, back, None) > 0,
+                expected,
+                "back at {back}"
+            );
+        }
+    }
+
+    #[test]
+    fn cells_are_drawn_in_the_same_order_every_time() {
+        use crate::render::{Camera, RenderInput, Scene};
+        let snapshot = demo(30.0, 160);
+        let order = || {
+            let mut scene = Scene::new();
+            scene.render(&RenderInput::small(
+                &snapshot,
+                view("cells"),
+                &Camera::default(),
+                30.0,
+            ));
+            scene
+                .places
+                .iter()
+                .map(|(_, text)| text.clone())
+                .collect::<Vec<_>>()
+        };
+        let first = order();
+        assert!(first.len() > 6);
+        for _ in 0..8 {
+            assert_eq!(order(), first);
+        }
+    }
+
+    #[test]
+    fn a_lone_organelle_that_is_not_the_largest_keeps_its_seat_instead_of_becoming_a_nucleus() {
+        let sample = demo(30.0, 160);
+        let (mut scene, time, before) = hiding::settled(view("cells"), &sample);
+        // The smallest of one family of sixteen, which share a cell.
+        let small = sample.processes[32..48]
+            .iter()
+            .min_by_key(|p| p.memory)
+            .expect("a family")
+            .id;
+        let alone = hiding::place(
+            &mut scene,
+            &sample,
+            view("cells"),
+            time,
+            4096,
+            None,
+            Some(small),
+        );
+        assert_eq!(alone.len(), 1);
+        hiding::in_place(&alone, &before);
+        let cleared = hiding::place(&mut scene, &sample, view("cells"), time, 4096, None, None);
+        assert_eq!(cleared, before);
     }
 
     #[test]

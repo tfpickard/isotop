@@ -629,6 +629,11 @@ mod tests {
     }
 
     #[test]
+    fn the_camera_fit_ignores_what_focus_and_the_limit_hide() {
+        hiding::bounds_ignore_hiding(view("reef"), &demo(30.0, 160));
+    }
+
+    #[test]
     fn processes_beyond_the_limit_keep_their_reef_place() {
         hiding::limit_and_lift(view("reef"), &demo(30.0, 160));
     }

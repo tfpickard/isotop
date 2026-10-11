@@ -3442,6 +3442,29 @@ pub(crate) mod hiding {
         assert_eq!(lifted, before);
     }
 
+    /// Asserts that the envelope `view` gives the camera fit does not depend on what is drawn:
+    /// hiding all but one family, or half the population, leaves it as the whole population
+    /// had it, at one time as above. Only for views whose envelope is fixed by their layout.
+    pub fn bounds_ignore_hiding(view: View, sample: &Snapshot) {
+        let (mut scene, time, before) = settled(view, sample);
+        let whole = scene.bounds.clone();
+        assert!(!whole.is_empty(), "the view gives explicit bounds");
+        let root = sample.processes[16].id;
+        assert!(before.contains_key(&root));
+        place(&mut scene, sample, view, time, 4096, None, Some(root));
+        assert_eq!(scene.bounds, whole, "focused");
+        place(
+            &mut scene,
+            sample,
+            view,
+            time,
+            sample.processes.len() / 2,
+            None,
+            None,
+        );
+        assert_eq!(scene.bounds, whole, "limited");
+    }
+
     /// A position on the ground plane, without what a medium lifts it by.
     pub fn ground([x, y, _]: Point) -> Point {
         [x, y, 0.0]
