@@ -371,7 +371,9 @@ session's apps swim in schools whose speed follows their CPU; containers are
 crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
 memory everywhere, I/O rises as bubbles, and zombies float belly-up. Processes
 hidden by focus (`f`) or by `--limit` keep their seats and their cluster's place,
-and a hidden fish waits where it swam, so clearing the focus puts everything back.
+and a hidden fish waits where it swam, so clearing the focus puts everything back. The reef
+keeps room for the clusters of hidden processes, so a limit that hides many leaves empty water,
+and focusing a subtree does not change the framing.
 
 ### Coop
 

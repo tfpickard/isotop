@@ -637,7 +637,7 @@ mod tests {
     }
 
     /// The demo reef grown in two stages, so its clusters stand where they arrived and not where a
-    /// fresh packing would put them, and swum for two seconds, so no fish is still where it
+    /// fresh packing would put them, and swum for at least a second, so no fish is still where it
     /// hatched. Returns the scene, the full sample and the time of the last frame.
     fn settled() -> (Scene, Snapshot, f32) {
         let early = demo(30.0, 32);
@@ -674,8 +674,9 @@ mod tests {
         let limited = draw(&mut scene, &sample, time, 80, None, None);
         assert!(limited.len() < before.len());
         in_place(&limited, &before);
-        // Selecting a process beyond the limit swaps it in for the last one inside it: it comes
-        // back to its own seat, not to a fresh one in a cluster of its own.
+        // Selecting a process beyond the limit swaps it in for the last one inside it: its fish
+        // comes back with the state it had, in its cluster's old home, not hatched anew in a
+        // cluster of its own.
         let selected = sample.processes[150].id;
         let swapped = draw(&mut scene, &sample, time, 80, Some(selected), None);
         assert!(swapped.contains_key(&selected));

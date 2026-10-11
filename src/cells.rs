@@ -42,6 +42,14 @@ pub struct Dishes {
     kills: HashMap<String, (u64, f32)>,
 }
 
+/// A sampled process with the CPU and memory it is measured by.
+#[derive(Clone, Copy)]
+struct Sampled<'a> {
+    process: &'a Process,
+    cpu: f32,
+    memory: u64,
+}
+
 struct Cell<'a> {
     name: String,
     /// The drawn members, as indices into the drawn processes.
@@ -71,43 +79,51 @@ impl Dishes {
         // Seats, cell sizes and places are reserved for every sampled process, drawn or not, so
         // focusing a subtree, or `--limit` hiding some, neither frees their seats nor drops their
         // cells: clearing it puts everything back where it was. Only drawn processes are drawn.
-        // Sizes use a drawn process's smoothed copy, and the sampled one while it is hidden.
+        // Every sampled process is measured as the scene eases it, so hiding one never changes
+        // the figures that size and rank the cells.
         let drawn: HashMap<Identity, usize> = processes
             .iter()
             .enumerate()
             .map(|(index, process)| (process.id, index))
             .collect();
-        let sampled: Vec<&Process> = snapshot
+        let sampled: Vec<Sampled> = snapshot
             .processes
             .iter()
-            .map(|p| drawn.get(&p.id).map_or(p, |&index| processes[index]))
+            .map(|process| {
+                let (cpu, memory) = stage.eased(process);
+                Sampled {
+                    process,
+                    cpu,
+                    memory,
+                }
+            })
             .collect();
         self.seats.assign(
             sampled
                 .iter()
-                .filter(|p| p.kind != Kind::Kernel)
-                .map(|p| (p.id, cell_name(p))),
+                .filter(|s| s.process.kind != Kind::Kernel)
+                .map(|s| (s.process.id, cell_name(s.process))),
         );
         let mut cells: [Vec<Cell>; 3] = Default::default();
         for (dish, (kind, _, _)) in DISHES.iter().enumerate() {
-            let mut groups: BTreeMap<&str, Vec<&Process>> = BTreeMap::new();
-            for &p in sampled.iter().filter(|p| p.kind == *kind) {
-                groups.entry(cell_name(p)).or_default().push(p);
+            let mut groups: BTreeMap<&str, Vec<Sampled>> = BTreeMap::new();
+            for &s in sampled.iter().filter(|s| s.process.kind == *kind) {
+                groups.entry(cell_name(s.process)).or_default().push(s);
             }
             for (name, everyone) in groups {
                 let unit = snapshot.units.get(name);
                 let memory = unit.map_or_else(
-                    || everyone.iter().map(|p| p.memory).sum(),
+                    || everyone.iter().map(|s| s.memory).sum(),
                     |unit| unit.memory,
                 );
                 let nucleus = everyone
                     .iter()
                     .copied()
-                    .max_by_key(|p| (p.memory, Reverse(p.id)))
+                    .max_by_key(|s| (s.memory, Reverse(s.process.id)))
                     .expect("a cell has members");
                 let mut members: Vec<usize> = everyone
                     .iter()
-                    .filter_map(|p| drawn.get(&p.id).copied())
+                    .filter_map(|s| drawn.get(&s.process.id).copied())
                     .collect();
                 members.sort_unstable();
                 let span = self.seats.span(name) as f32;
@@ -117,10 +133,10 @@ impl Dishes {
                     name: name.to_owned(),
                     members,
                     population: everyone.len(),
-                    cpu: everyone.iter().map(|p| p.cpu).sum(),
-                    nucleus: nucleus.id,
+                    cpu: everyone.iter().map(|s| s.cpu).sum(),
+                    nucleus: nucleus.process.id,
                     nucleus_memory: nucleus.memory,
-                    nucleus_index: drawn.get(&nucleus.id).copied(),
+                    nucleus_index: drawn.get(&nucleus.process.id).copied(),
                     unit,
                     memory,
                     radius: by_memory.max(by_members),
@@ -641,5 +657,88 @@ mod tests {
         let restored = draw(&mut scene, &sample, time, 4096, None, None);
         assert_eq!(restored.len(), before.len());
         in_place(&restored, &before);
+    }
+
+    #[test]
+    fn hiding_a_process_does_not_change_which_process_is_the_nucleus_while_memory_eases() {
+        // Leaf 40 is the largest process of its cell and leaf 41 a small one.
+        let mut base = demo(30.0, 160);
+        base.processes[40].memory = 8 << 30;
+        base.processes[41].memory = 1 << 30;
+        let (large, small) = (base.processes[40].id, base.processes[41].id);
+        let mut scene = Scene::new();
+        let mut time = 30.0;
+        for _ in 0..10 {
+            draw(&mut scene, &base, time, 4096, None, None);
+            time += 0.1;
+        }
+        // The small one balloons past it, but the frames repeat the time, so the scene has not
+        // eased towards that yet: the large one is still the nucleus at the centre of its cell.
+        let mut grown = base.clone();
+        grown.processes[41].memory = 20 << 30;
+        let shown = draw(&mut scene, &grown, time, 4096, None, None);
+        // With only the large one drawn, the small one is hidden and must be measured as eased
+        // too, not by its sampled 20 GiB: the large one stays at the centre.
+        let alone = draw(&mut scene, &grown, time, 4096, None, Some(large));
+        assert_eq!(alone.len(), 1);
+        assert_eq!(alone[&large], shown[&large]);
+        assert!(shown.contains_key(&small));
+    }
+
+    #[test]
+    fn popups_and_dish_labels_count_the_whole_cell_while_only_part_of_it_is_shown() {
+        let (mut scene, mut sample, time) = settled();
+        // Without accounting a popup describes the cell by its members' own sums.
+        sample.units.clear();
+        let family = &sample.processes[32..48];
+        let leaf = family[7].id;
+        draw(&mut scene, &sample, time, 4096, None, Some(leaf));
+        let cpu: f32 = family.iter().map(|p| p.cpu).sum();
+        let popup = scene.notes[&leaf].join("\n");
+        assert!(
+            popup.contains(&format!("CPU {cpu:.0}% | 16 tasks")),
+            "{popup}"
+        );
+        assert!(
+            scene
+                .places
+                .iter()
+                .any(|(_, text)| text == "containers: 1 cells, 1 processes"),
+            "{:?}",
+            scene.places
+        );
+    }
+
+    #[test]
+    fn a_kill_in_a_hidden_cell_is_remembered_so_it_does_not_burst_when_the_cell_returns() {
+        // No member is drawn: the cell is hidden, but still sampled.
+        fn hidden(unit: &Unit) -> [Vec<Cell<'_>>; 3] {
+            let cell = Cell {
+                name: "worker.service".into(),
+                members: Vec::new(),
+                population: 3,
+                cpu: 0.0,
+                nucleus: Identity { pid: 1, start: 1 },
+                nucleus_memory: 0,
+                nucleus_index: None,
+                unit: Some(unit),
+                memory: 0,
+                radius: 1.0,
+                named: false,
+            };
+            [vec![cell], Vec::new(), Vec::new()]
+        }
+        let killed = |kills| Unit {
+            oom_kills: Some(kills),
+            ..Unit::default()
+        };
+        let mut dishes = Dishes::default();
+        dishes.watch_kills(&hidden(&killed(1)), 10.0);
+        dishes.watch_kills(&hidden(&killed(2)), 20.0);
+        assert_eq!(dishes.kills["worker.service"], (2, 20.0));
+        // Nothing new, or a count that could not be read, leaves the burst time alone.
+        dishes.watch_kills(&hidden(&killed(2)), 25.0);
+        dishes.watch_kills(&hidden(&Unit::default()), 30.0);
+        assert_eq!(dishes.kills["worker.service"], (2, 20.0));
     }
 }
