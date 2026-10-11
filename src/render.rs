@@ -2613,9 +2613,11 @@ impl Scene {
             .collect()
     }
 
-    /// Turns the systems about their memory-weighted barycenter by the motion time elapsed since
-    /// the last call. The barycenter is taken when systems come or go, so the pivot stays put
-    /// while they turn. Systems whose distances from it, give or take their reserved radius,
+    /// Turns the systems about the memory-weighted barycenter of the drawn ones (those in
+    /// `masses`, or all while none is) by the motion time elapsed since the last call, so a
+    /// focused subtree turns about itself rather than about the hidden rest of the galaxy. The
+    /// barycenter is taken when systems come or go or are shown or hidden, so the pivot stays
+    /// put while they turn. Systems whose distances from it, give or take their reserved radius,
     /// overlap form a band that turns rigidly; bands occupy disjoint annuli, so whatever their
     /// speeds no two systems can collide. Each band turns at its own Kepler rate, outer bands
     /// slower, and phase accumulates, so a band changing speed never makes a system jump.
@@ -2625,12 +2627,21 @@ impl Scene {
         let continuous = self.galaxy_frame + 1 == self.frames;
         self.galaxy_frame = self.frames;
         let weight = |id: &Identity| masses.get(id).copied().unwrap_or(0.0).max(1.0);
-        let mut members: Vec<Identity> = self.systems.keys().copied().collect();
+        let mut members: Vec<Identity> = self
+            .systems
+            .keys()
+            .filter(|id| masses.contains_key(id))
+            .copied()
+            .collect();
+        if members.is_empty() {
+            members = self.systems.keys().copied().collect();
+        }
         members.sort();
         if members != self.galaxy_members {
             let total: f32 = members.iter().map(weight).sum();
             let mut center = [0.0_f32; 2];
-            for (id, (at, _)) in &self.systems {
+            for id in &members {
+                let at = self.systems[id].0;
                 for k in 0..2 {
                     center[k] += at[k] * weight(id) / total.max(1.0);
                 }
@@ -3624,6 +3635,35 @@ mod tests {
                     .flat_map(|&id| [(80, Some(id), None), (80, None, None)])
                     .collect()
             });
+        }
+    }
+
+    #[test]
+    fn a_focused_system_turns_about_what_is_drawn_not_the_hidden_galaxy() {
+        let sample = demo(30.0, 160);
+        let (mut scene, mut time, _) = hiding::settled(View::Orbit, &sample);
+        let root = sample.processes[16].id;
+        assert!(
+            scene.systems.contains_key(&root),
+            "the family's root is a system"
+        );
+        let mut place = |time| {
+            hiding::place(
+                &mut scene,
+                &sample,
+                View::Orbit,
+                time,
+                4096,
+                None,
+                Some(root),
+            )[&root]
+        };
+        let start = place(time);
+        for _ in 0..300 {
+            time += 0.1;
+            let now = place(time);
+            let moved = (now[0] - start[0]).hypot(now[1] - start[1]);
+            assert!(moved < 0.5, "the focused system drifted {moved} at {time}");
         }
     }
 
