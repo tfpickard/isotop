@@ -30,8 +30,8 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, headless PNG and benchmark, and `warm_up`, which runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload, `describe` |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`), headless PNG and benchmark, and `warm_up`, which runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
@@ -201,14 +201,15 @@ match your own shell.
 - Tests live in a `tests` module at the bottom of each file. Name them as sentences about
   behaviour (`city_does_not_relocate_when_resources_or_population_change`). Rendering tests use
   `model::demo` or the shared `process(pid, parent)` helper in `model::testing`.
-- When you add a field to `Process`, decide it in the three exhaustive literals (no
+- When you add a field to `Process`, decide it in the four exhaustive literals (no
   `..Default::default()`, so the compiler insists): `parse_stat` in `platform/linux/mod.rs`,
-  `Sampler::process` in `platform/macos/mod.rs` and `model::demo`. Also set it in `Default for
+  `Sampler::process` in `platform/macos/mod.rs`, `model::demo_with` and `Transient::process`
+  (the demo's churn, `model.rs`). Also set it in `Default for
   Process` in `model.rs`, which `Process::placeholder`, `hub()` and the `model::testing::process`
   test helper build on. Update `RawProcess` in `platform/mod.rs` if the platform supplies it. A
   rate also needs `Counters` and `measure()`; a field filled on the background thread needs
   `Extras`, `background()` and the merge in `Collector::sample` (all in `model.rs`). `Snapshot`
-  derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo`.
+  derives `Default`; set a new `Snapshot` field in `Collector::sample` and `model::demo_with`.
 - A new view is one module plus one registry row (`docs/VIEW_CONVENTIONS.md` has the rules):
   - `src/<name>.rs` with a `#[derive(Default)]` state struct that implements `ViewModule`, a
     `mod` line in `main.rs` and a row in the file table above.

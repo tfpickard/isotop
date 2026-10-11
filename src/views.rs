@@ -102,11 +102,9 @@ pub struct ViewInfo {
     /// GeoIP lookups on while the view is shown, and `Journal` runs the journal follower while it
     /// is shown and for `JOURNAL_LINGER` after. Default: none.
     pub sources: Sources,
-    /// What the demo workload synthesizes for the view. Default: `model::demo` exactly.
-    #[expect(
-        dead_code,
-        reason = "S4 (#25) routes demo snapshots through the shown view's options"
-    )]
+    /// What the demo workload synthesizes for the view: births and exits, an exact CPU-time
+    /// integral. Every demo snapshot taken while the view is shown follows it. Default: none,
+    /// which is `model::demo` exactly.
     pub demo: DemoOptions,
 }
 
@@ -139,7 +137,10 @@ impl ViewInfo {
             header: None,
             face: None,
             sources: Sources::of(&[]),
-            demo: DemoOptions {},
+            demo: DemoOptions {
+                churn: false,
+                exact_cpu_time: false,
+            },
         }
     }
 }
@@ -685,6 +686,40 @@ pub mod testing {
                 "QUIET",
                 Backdrop::Dusk,
                 Hooks::Module(|| Box::new(Quiet::default())),
+            )
+        },
+    ];
+
+    /// Two module views for the demo options: `plain`, which asks for nothing, then `demanding`,
+    /// which asks for births, exits and exact CPU time and replays two seconds of history before
+    /// a captured frame.
+    pub static DEMO_ROWS: &[ViewInfo] = &[
+        ViewInfo::new(
+            "plain",
+            "PLAIN",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        ),
+        ViewInfo {
+            warmup: &[
+                Warmup {
+                    phase: Phase::History { seconds: 2 },
+                    when: When::DemoOutput,
+                },
+                Warmup {
+                    phase: Phase::Record { seconds: 2 },
+                    when: When::DemoOutput,
+                },
+            ],
+            demo: DemoOptions {
+                churn: true,
+                exact_cpu_time: true,
+            },
+            ..ViewInfo::new(
+                "demanding",
+                "DEMANDING",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Probe::default())),
             )
         },
     ];

@@ -1396,7 +1396,8 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     collector.locate(sources.contains(Source::Locations));
     let mut journal = (sources.contains(Source::Journal) && !options.demo).then(Journal::start);
     let mut snapshot = if options.demo {
-        model::demo(
+        demo_snapshot(
+            view.info(),
             if options.headless() {
                 options.time
             } else {
@@ -1472,7 +1473,11 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
             app.animation += elapsed;
             if last_sample.elapsed() >= Duration::from_millis(options.sample_ms as u64) {
                 let snapshot = if options.demo {
-                    model::demo(origin.elapsed().as_secs_f64(), options.processes as usize)
+                    demo_snapshot(
+                        app.row(),
+                        origin.elapsed().as_secs_f64(),
+                        options.processes as usize,
+                    )
                 } else {
                     collector.locate(app.row().sources.contains(Source::Locations));
                     collector.sample()?
@@ -1579,6 +1584,13 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     Ok(0)
 }
 
+/// The demo workload at `time` for `count` processes, with what `row`, the shown view's registry
+/// row, asks the demo to synthesize. Every demo snapshot goes through here, so a view sees the
+/// same workload whether it is the first sample, a warm-up replay or a live one.
+fn demo_snapshot(row: &ViewInfo, time: f64, count: usize) -> Snapshot {
+    model::demo_with(time, count, row.demo)
+}
+
 /// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured,
 /// by running the shown view's warm-up phases (`ViewInfo::warmup`) whose condition holds. The
 /// golden render test runs this too, so the hashes it checks are the PNGs' frames.
@@ -1589,7 +1601,8 @@ fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
         options.limit as usize,
     );
     let count = options.processes as usize;
-    for warmup in app.row().warmup {
+    let row = app.row();
+    for warmup in row.warmup {
         let due = match warmup.when {
             When::DemoOutput => options.demo && options.output.is_some(),
             When::Output => options.output.is_some(),
@@ -1602,18 +1615,18 @@ fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
             Phase::History { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
-                    app.history = VecDeque::from([model::demo(at, count)]);
+                    app.history = VecDeque::from([demo_snapshot(row, at, count)]);
                     app.animation = at as f32;
                     let frame = app.render(width, height, limit);
                     app.scene.spare = frame.release();
                 }
-                app.history = VecDeque::from([model::demo(options.time, count)]);
+                app.history = VecDeque::from([demo_snapshot(row, options.time, count)]);
             }
             Phase::Record { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
                     if at >= 0.0 {
-                        app.scene.record(&model::demo(at, count), at as f32);
+                        app.scene.record(&demo_snapshot(row, at, count), at as f32);
                     }
                 }
             }
@@ -1669,6 +1682,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::DemoOptions;
     use crate::simulation::hash::fnv1a_64_bytes as fnv1a;
     use crate::views::view;
 
@@ -2278,6 +2292,66 @@ mod tests {
     }
 
     #[test]
+    fn demo_snapshots_follow_the_shown_views_options() {
+        let rows = views::testing::DEMO_ROWS;
+        let (plain, demanding) = (View::at(0), View::at(1));
+        let asked = DemoOptions {
+            churn: true,
+            exact_cpu_time: true,
+        };
+        let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        assert_eq!(app.row().demo, DemoOptions::default());
+        assert_eq!(app.scene.row(demanding).demo, asked);
+        let processes = |app: &App, time: f64| {
+            let row = app.row();
+            demo_snapshot(row, time, 64).processes
+        };
+        // The first view asks for nothing, so it gets `demo` exactly.
+        assert_eq!(
+            format!("{:?}", processes(&app, 40.0)),
+            format!("{:?}", model::demo(40.0, 64).processes)
+        );
+        // Switching to a view that asks for more changes the next sample, not the history.
+        let kept = app.history.len();
+        app.switch(demanding);
+        assert_eq!(app.history.len(), kept, "the history is kept as it was");
+        let busy = processes(&app, 40.0);
+        assert!(busy.len() > 64, "transients follow the base processes");
+        assert_eq!(
+            f64::from(busy[5].cpu_time),
+            f64::from(model::demo_cpu_seconds(40.0, 5) as f32)
+        );
+        assert_eq!(
+            format!("{:?}", demo_snapshot(app.row(), 40.0, 64).processes),
+            format!("{:?}", model::demo_with(40.0, 64, asked).processes)
+        );
+        // And back again.
+        app.switch(plain);
+        assert_eq!(processes(&app, 40.0).len(), 64);
+        // The headless warm-up replays history through the same options.
+        app.switch(demanding);
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "12",
+            "--processes",
+            "64",
+            "--width",
+            "160",
+            "--output",
+            "warm.png",
+        ]);
+        warm_up(&mut app, &options, None);
+        assert_eq!(app.history.len(), 1);
+        assert_eq!(
+            format!("{:?}", app.history[0].processes),
+            format!("{:?}", model::demo_with(12.0, 64, asked).processes)
+        );
+    }
+
+    #[test]
     fn registry_names_are_unique_lowercase_and_parse_on_the_command_line() {
         let names: Vec<&str> = View::all().map(View::name).collect();
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
@@ -2596,7 +2670,7 @@ mod tests {
         ]);
         let mut app = App::new(
             view,
-            model::demo(options.time, options.processes as usize),
+            demo_snapshot(view.info(), options.time, options.processes as usize),
             all_available(),
         );
         // The matrix greets `$USER`, which differs between machines.
