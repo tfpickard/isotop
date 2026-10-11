@@ -274,7 +274,8 @@ pub enum ViewKey {
 pub trait ViewModule {
     /// Draws the view onto the stage and returns how many of `processes` it showed; the scene
     /// counts the rest as collapsed. Fill `stage.positions` for every drawn process, and
-    /// `stage.bounds` when the content moves by itself.
+    /// `stage.bounds` when the content moves by itself. Step by `stage.dt`, and tell the app
+    /// anything else only through the other `Stage` outputs, such as `tour` and `popup`.
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize;
 
     /// Takes in each new sample, whichever view is shown, for history the view needs when it
@@ -566,6 +567,7 @@ pub fn view(name: &str) -> View {
 #[cfg(test)]
 pub mod testing {
     use super::*;
+    use crate::render::TourTarget;
 
     /// A module view that seats the first half of the processes on a line and lets the rest
     /// collapse. Its legend counts what reached it through the trait. `m` toggles a mode that
@@ -664,6 +666,70 @@ pub mod testing {
             Some(" > quiet".into())
         }
     }
+
+    /// The line `Guide` adds to the popup of the process it tours.
+    pub const GUIDE_LINE: &str = "guide: the last seat";
+
+    /// A module view that seats every process on a line, asks the tour to visit the last one at
+    /// a point beside its seat and adds a line to its popup. Its legend lists the `dt` of each
+    /// frame it drew.
+    #[derive(Default)]
+    pub struct Guide {
+        steps: Vec<f32>,
+    }
+
+    impl ViewModule for Guide {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            self.steps.push(stage.dt);
+            for (index, process) in processes.iter().enumerate() {
+                let position = [index as f32 * 4.0, 0.0, 0.0];
+                stage.positions.insert(process.id, position);
+                stage.frame.sphere(
+                    stage.camera,
+                    position,
+                    1.0,
+                    [200, 200, 200],
+                    index as u32,
+                    false,
+                );
+            }
+            if let Some((index, last)) = processes.iter().enumerate().next_back() {
+                stage.tour.push(TourTarget {
+                    id: last.id,
+                    position: [index as f32 * 4.0, 3.0, 0.0],
+                    weight: 1.0,
+                });
+                stage.popup.push((last.id, GUIDE_LINE.into()));
+            }
+            processes.len()
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            let steps: Vec<String> = self.steps.iter().map(|dt| format!("{dt:.2}")).collect();
+            format!(" guide: dt [{}]", steps.join(" "))
+        }
+    }
+
+    /// `guide`, then `probe` to switch to and back.
+    pub static GUIDED: &[ViewInfo] = &[
+        ViewInfo::new(
+            "guide",
+            "GUIDE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Guide::default())),
+        ),
+        ViewInfo::new(
+            "probe",
+            "PROBE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        ),
+    ];
 
     /// Two module views: `probe`, with every optional field at its default, then `quiet`, which
     /// sets them otherwise: no links, flash, haze or tour, a pitch of its own and fixed counts.

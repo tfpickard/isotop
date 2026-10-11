@@ -60,8 +60,8 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
    - `demo` options (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25))
 3. Draw with the signature the module views already use (`cells.rs`, `cores.rs`, `strata.rs`, `reef.rs`, `coop.rs`):
    `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
-   The return value is the number of processes shown; the rest count as collapsed.
-4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation.
+   The return value is the number of processes shown; the rest count as collapsed. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
+4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets).
 5. Add a smoke-test line, a README section and the key help. See "Tests", "README section" and "Keys".
 
 `isotop --list-views` (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)) prints the views available on the running platform. [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) and the smoke test use it.
@@ -81,6 +81,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 - Use `simulation::FixedStep` (from [S2 (#23)](https://github.com/tfpickard/isotop/issues/23)). It has a fixed step H, a cap on steps per frame, a maximum gap, and returns an interpolation alpha. Coop uses `FixedStep::new(0.05, 10, 0.5)`, matching its `H` and `MAX_STEPS` today. Choose H per view and state it in the README.
 - When time does not advance (pause, rewind), the simulation does not step.
 - Compute closed-form animation (trails, chains, orbits, swings) from state and time, on a time grid aligned to fixed multiples. Do not accumulate it per frame.
+- Anything that steps by a variable amount uses `stage.dt`: 0 on the first frame, while paused and after a rewind, otherwise the time since the last frame that moved forward, at most `render::MAX_DT` (0.5 s). The scene computes it once per frame, whichever view is shown. A fixed-step simulation feeds `FixedStep` from `stage.time` instead. Never derive a `dt` of your own.
 - Give speeds, delays and radii in world units, never screen pixels, so zoom does not change the dynamics.
 - Simulation cost must not grow without bound with `--processes`. Cap populations (agents, particles, bubbles, bees), state the caps in the README, and count anything hidden by a cap in the legend.
 

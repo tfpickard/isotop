@@ -40,7 +40,7 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup` and `LinkRule`; the built-in views' legends and record hooks; and `testing`, module views for tests |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Stage`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
@@ -83,11 +83,22 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 a state struct and implements `views::ViewModule`:
 `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize` and
 `legend`, and where it needs them `record` (every sample, whichever view is shown), `key` and
-`inspector_line`. `Stage` carries in the frame, camera, selection, time, births and growth. A
-view writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read
-it), `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
-`stage.places` and `stage.notes`, and returns how many processes it showed; the rest count as
-collapsed. The row (`ViewInfo`) holds everything else that sets the view apart, and `Scene`,
+`inspector_line`. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back
+only through `Stage` outputs. `Stage` carries in the frame, camera, selection, time, `dt`, births
+and growth; what the platform could not measure is `snapshot.missing`, which `Stage` does not
+copy. `stage.dt` is the one step policy for new code, computed once per frame by `Scene`: 0 on
+the first frame, while paused and when time goes back (a rewind), otherwise the time since the
+last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulation with it or
+with a fixed-step clock fed from `stage.time`; the older views keep their own clamps. A view
+writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
+`stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
+`stage.places`, `stage.notes` (popup lines after the sockets), `stage.tour` (`TourTarget { id,
+position, weight }`, which the tour visits heaviest first) and `stage.popup` (popup lines right
+after the process's own figures), and returns how many processes it showed; the rest count as
+collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
+time, limit, focus and whether the app is paused). Orbit, Ripple and Flow still report through
+`scene.stars`, `scene.mass` and `scene.hub_names`, which `main.rs` reads besides the outputs
+until they move. The row (`ViewInfo`) holds everything else that sets the view apart, and `Scene`,
 `App` and the headless warm-up read it instead of naming the view. The eleven older views are
 built in (`Hooks::BuiltIn`): `Scene` keeps their state in typed fields and draws them in its own
 arms, City, Orbit, Ripple and Flow as `Scene` methods and Matrix by hand. They are being moved

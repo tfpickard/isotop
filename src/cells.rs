@@ -462,22 +462,17 @@ mod tests {
 
     #[test]
     fn popups_hold_only_measured_numbers_without_cgroup_accounting() {
-        use crate::render::{Camera, Scene};
+        use crate::render::{Camera, RenderInput, Scene};
         use crate::views::view;
         let mut snapshot = demo(10.0, 64);
         let render = |snapshot: &Snapshot| {
             let mut scene = Scene::new();
-            scene.render(
+            scene.render(&RenderInput::small(
                 snapshot,
                 view("cells"),
                 &Camera::default(),
-                320,
-                180,
-                None,
                 10.0,
-                512,
-                None,
-            );
+            ));
             scene.notes
         };
         let with_units = render(&snapshot);

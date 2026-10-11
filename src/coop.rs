@@ -2998,7 +2998,7 @@ mod tests {
     use super::*;
     use crate::model::{Unit, demo};
     use crate::platform::Sources;
-    use crate::render::{Camera, Scene};
+    use crate::render::{Camera, RenderInput, Scene};
     use crate::views::view;
 
     fn identity(pid: u32) -> Identity {
@@ -3086,17 +3086,12 @@ mod tests {
     }
 
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
-        let frame = scene.render(
-            snapshot,
-            view("coop"),
-            &Camera::default(),
-            160,
-            90,
-            None,
-            time,
-            4096,
-            None,
-        );
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
+            limit: 4096,
+            ..RenderInput::small(snapshot, view("coop"), &Camera::default(), time)
+        });
         scene.spare = frame.release();
     }
 
@@ -4335,17 +4330,12 @@ mod tests {
             for k in 0..6 {
                 let sample = demo(20.0 + k as f64, 160);
                 scene.record(&sample, 20.0 + k as f32);
-                let mut frame = scene.render(
+                let mut frame = scene.render(&RenderInput::small(
                     &sample,
                     view("coop"),
                     &Camera::default(),
-                    320,
-                    180,
-                    None,
                     20.0 + k as f32 * 0.7,
-                    512,
-                    None,
-                );
+                ));
                 frame.rasterize();
                 pixels = frame.pixels.clone();
                 scene.spare = frame.release();
@@ -4363,17 +4353,14 @@ mod tests {
         selected: Option<Identity>,
         focus: Option<Identity>,
     ) {
-        let frame = scene.render(
-            snapshot,
-            view("coop"),
-            &Camera::default(),
-            160,
-            90,
+        let frame = scene.render(&RenderInput {
+            width: 160,
+            height: 90,
             selected,
-            time,
             limit,
             focus,
-        );
+            ..RenderInput::small(snapshot, view("coop"), &Camera::default(), time)
+        });
         scene.spare = frame.release();
     }
 

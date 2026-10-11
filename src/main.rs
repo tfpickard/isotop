@@ -38,7 +38,7 @@ use crossterm::event::{
 use journal::Journal;
 use model::{Collector, GpuMemory, Identity, Process, Snapshot, bytes, describe};
 use platform::Source;
-use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, label_name};
+use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, Scene, label_name};
 use terminal::{Label, Popup, Terminal, Tone};
 use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, When};
 
@@ -481,34 +481,28 @@ impl App {
         .into_iter()
         .flatten()
         .collect();
-        let mut frame = self.scene.render(
-            &self.history[index],
-            self.view,
-            &self.camera,
+        let mut input = RenderInput {
+            snapshot: &self.history[index],
+            view: self.view,
+            camera: &self.camera,
             width,
             height,
-            self.selected,
+            selected: self.selected,
             time,
             limit,
-            self.focus,
-        );
+            focus: self.focus,
+            paused: self.paused,
+        };
+        let mut frame = self.scene.render(&input);
         if self.fit {
             self.scene.fit(&mut self.goal, width, height);
             self.fit_zoom = self.goal.zoom;
             self.fit = false;
             if std::mem::take(&mut self.snap) {
+                // The camera snaps to the fitted goal, and this frame is drawn from there.
+                input.camera = &self.goal;
+                frame = self.scene.render(&input);
                 self.camera = self.goal.clone();
-                frame = self.scene.render(
-                    &self.history[index],
-                    self.view,
-                    &self.camera,
-                    width,
-                    height,
-                    self.selected,
-                    time,
-                    limit,
-                    self.focus,
-                );
             }
         }
         let failure = match self.gpu.as_mut() {
@@ -568,7 +562,8 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: system stars, the busiest and the largest. Hubs
+    /// Notable processes to visit while idle: the view's own targets (Orbit's system stars, and
+    /// a module view's `Stage::tour`), heaviest first, then the busiest and the largest. Hubs
     /// are not processes, so they have no callout to show and are passed over.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
@@ -581,9 +576,20 @@ impl App {
         busiest.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         let mut largest = visible;
         largest.sort_by_key(|p| Reverse(p.memory));
-        let mut stars = self.scene.stars.clone();
-        stars.retain(|(id, _, _)| !render::is_hub(id));
-        stars.sort_by_key(|&(_, members, _)| Reverse(members));
+        let mut stars: Vec<(Identity, f32)> = self
+            .scene
+            .stars
+            .iter()
+            .map(|&(id, members, _)| (id, members as f32))
+            .chain(
+                self.scene
+                    .tour
+                    .iter()
+                    .map(|target| (target.id, target.weight)),
+            )
+            .filter(|(id, _)| !render::is_hub(id))
+            .collect();
+        stars.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut targets = Vec::new();
         for i in 0..6 {
             let picks = [
@@ -610,18 +616,29 @@ impl App {
             None => after.is_some_and(|after| now.duration_since(self.last_input) >= after),
             Some(tour) => {
                 now.duration_since(tour.since) >= TOUR_STEP
-                    || !self.scene.positions.contains_key(&tour.target)
+                    || self.tour_point(tour.target).is_none()
             }
         };
         if due {
             self.visit(self.tour.as_ref().map_or(0, |tour| tour.index + 1));
         }
         if let Some(tour) = &self.tour
-            && let Some(&p) = self.scene.positions.get(&tour.target)
+            && let Some(p) = self.tour_point(tour.target)
         {
             self.goal.center = [p[0], p[1]];
             self.face(p);
         }
+    }
+
+    /// Where the tour shows `id`: the point the view gave with it as a tour target, or else
+    /// where the process is drawn; None once it is neither.
+    fn tour_point(&self, id: Identity) -> Option<Point> {
+        self.scene
+            .tour
+            .iter()
+            .find(|target| target.id == id)
+            .map(|target| target.position)
+            .or_else(|| self.scene.positions.get(&id).copied())
     }
 
     /// In a view whose row can face a point, turns the camera so `point` is on the near side
@@ -788,6 +805,13 @@ impl App {
                         bytes(total)
                     ));
                 }
+                lines.extend(
+                    self.scene
+                        .popup
+                        .iter()
+                        .filter(|(owner, _)| *owner == id)
+                        .map(|(_, line)| line.clone()),
+                );
                 let local = snapshot
                     .links
                     .iter()
@@ -863,7 +887,9 @@ impl App {
         }
         if let Some(tour) = &self.tour
             && let Some(p) = lookup.get(&tour.target)
-            && let Some(anchor) = self.screen(frame, tour.target)
+            && let Some(anchor) = self
+                .tour_point(tour.target)
+                .and_then(|point| frame.locate(&self.camera, point))
         {
             let lines = vec![
                 p.name.clone(),
@@ -2638,6 +2664,90 @@ mod tests {
         };
         let frame = app.render(320, 180, 512);
         assert!(app.popup(&frame, &layout).is_none());
+    }
+
+    /// An app over `views::testing::GUIDED`, showing `guide`, and the process in its last seat,
+    /// which the guide tours. That process is made idle and small, so that nothing but the
+    /// guide's target puts it first.
+    fn guided_app() -> (App, Identity) {
+        let mut snapshot = model::demo(1.0, 16);
+        let last = snapshot
+            .processes
+            .iter()
+            .map(|p| p.id)
+            .max()
+            .expect("the demo has processes");
+        for process in snapshot.processes.iter_mut().filter(|p| p.id == last) {
+            process.cpu = 0.0;
+            process.memory = 1;
+            process.gpu_memory = None;
+        }
+        let rows = views::testing::GUIDED;
+        let mut app = App::new(View::at(0), snapshot, vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        app.render(320, 180, 512);
+        (app, last)
+    }
+
+    #[test]
+    fn tour_targets_from_stage_outputs_reach_the_app() {
+        let (mut app, last) = guided_app();
+        assert_eq!(
+            app.tour_targets().first(),
+            Some(&last),
+            "the view's target leads, though it is neither busy nor large"
+        );
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        assert_eq!(app.tour.as_ref().map(|tour| tour.target), Some(last));
+        app.update_tour(None);
+        let seat = app.scene.positions[&last];
+        assert_eq!(
+            app.goal.center,
+            [seat[0], 3.0],
+            "the camera goes to the point the view gave, beside the seat"
+        );
+        app.view = View::at(1);
+        app.render(320, 180, 512);
+        assert!(app.scene.tour.is_empty());
+        assert_ne!(
+            app.tour_targets().first(),
+            Some(&last),
+            "a view that gives no targets leaves the busiest first"
+        );
+    }
+
+    #[test]
+    fn popup_lines_from_stage_outputs_reach_the_inspector() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let popup = |app: &mut App, id: Identity| {
+            app.selected = Some(id);
+            let frame = app.render(320, 180, 512);
+            app.popup(&frame, &layout)
+                .expect("the selection has a popup")
+                .lines
+        };
+        let lines = popup(&mut app, last);
+        let at = lines
+            .iter()
+            .position(|line| line == views::testing::GUIDE_LINE)
+            .expect("the view's line is in the popup");
+        assert!(
+            lines[at - 1].starts_with("CPU "),
+            "right after the process's own figures: {lines:?}"
+        );
+        let other = app.snapshot().processes[0].id;
+        assert!(
+            !popup(&mut app, other)
+                .iter()
+                .any(|line| line == views::testing::GUIDE_LINE)
+        );
     }
 
     /// The checked-in golden hashes, which are those of Linux on x86_64.
