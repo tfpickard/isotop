@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::geo;
@@ -242,6 +242,40 @@ pub struct Snapshot {
     /// The processes counted in `unreadable`, as far as anyone may read them (`Sampler::shadows`),
     /// so that what they started can still be drawn under them.
     pub shadows: Vec<platform::Shadow>,
+    /// How the background thread that measures the slow sources is doing.
+    pub sampler: SamplerHealth,
+}
+
+/// How often the background thread runs its scans: sockets, GPU memory, cgroups, open files, file
+/// locks and remote locations. What it measured reaches a sample up to this long plus one cycle
+/// after it was read.
+pub const BACKGROUND_PERIOD: Duration = Duration::from_secs(2);
+
+/// Periods without a finished cycle after which a running background thread counts as stalled:
+/// one of its scans is stuck, normally on a read that does not return.
+const STALLED_PERIODS: u32 = 10;
+
+/// The state of the background thread, as of one sample.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SamplerHealth {
+    /// The thread is alive. False when it could not be spawned, panicked, or ended because its
+    /// shared state was poisoned; the slow sources then keep what it measured last.
+    pub running: bool,
+    /// How long ago its last cycle finished; None before the first.
+    pub last_cycle: Option<Duration>,
+    /// How long it has gone without finishing a cycle: since the last one finished, or since the
+    /// thread started while the first is still running. `stalled` judges this, so a first cycle
+    /// that never finishes counts too.
+    pub quiet: Duration,
+    /// How long each scan of that cycle took, by the source it reads, in the order they ran.
+    pub scan_latency: Vec<(Source, Duration)>,
+}
+
+impl SamplerHealth {
+    /// Alive, but no cycle has finished for `STALLED_PERIODS` periods.
+    pub fn stalled(&self) -> bool {
+        self.running && self.quiet > BACKGROUND_PERIOD * STALLED_PERIODS
+    }
 }
 
 /// What the collector keeps of a process between samples.
@@ -281,9 +315,13 @@ impl IoBytes {
     }
 }
 
-/// Slow measurements gathered off the frame loop.
+/// Slow measurements gathered off the frame loop, keyed by the pids of `identities`.
 #[derive(Default)]
 struct Extras {
+    /// The processes the frame loop had last sampled when this cycle began, by pid. Every scan
+    /// read after that, so a pid in the scans is the process named here or one that took its pid
+    /// since; `merge` keeps only the pids that still name the same process.
+    identities: HashMap<u32, Identity>,
     network: platform::Network,
     gpu: HashMap<u32, u64>,
     units: HashMap<String, Unit>,
@@ -297,6 +335,91 @@ struct Extras {
     /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table.
     missing: Sources,
     geo: String,
+    /// How long each scan took, by the source it reads.
+    latency: Vec<(Source, Duration)>,
+    /// When the cycle that measured all this finished; None before the first.
+    finished: Option<Instant>,
+}
+
+/// The background thread, as the frame loop sees it: what it measured last and whether it is
+/// still alive.
+struct Background {
+    extras: Arc<Mutex<Extras>>,
+    alive: Arc<AtomicBool>,
+    started: Instant,
+}
+
+/// Clears the background thread's alive flag when the thread ends, by returning or by a panic.
+struct Alive(Arc<AtomicBool>);
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+impl Background {
+    /// Starts the background thread. It calls `start` once to set up its scans, then runs the
+    /// cycle that returns every `BACKGROUND_PERIOD` and publishes what it measured, until the
+    /// `Background` is dropped. None when no thread can be spawned.
+    fn spawn<Cycle: FnMut() -> Extras>(
+        start: impl FnOnce() -> Cycle + Send + 'static,
+    ) -> Option<Background> {
+        let extras = Arc::new(Mutex::new(Extras::default()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let writer = Arc::clone(&extras);
+        let guard = Alive(Arc::clone(&alive));
+        let started = Instant::now();
+        std::thread::Builder::new()
+            .name("isotop-sampler".into())
+            .spawn(move || {
+                let _guard = guard;
+                let mut cycle = start();
+                while Arc::strong_count(&writer) > 1 {
+                    let mut measured = cycle();
+                    measured.finished = Some(Instant::now());
+                    match writer.lock() {
+                        Ok(mut slot) => *slot = measured,
+                        Err(_) => return,
+                    }
+                    std::thread::sleep(BACKGROUND_PERIOD);
+                }
+            })
+            .ok()?;
+        Some(Background {
+            extras,
+            alive,
+            started,
+        })
+    }
+
+    /// What it measured last. A poisoned lock still holds the last complete cycle: `slot` is
+    /// replaced whole, never written in parts.
+    fn extras(&self) -> MutexGuard<'_, Extras> {
+        self.extras.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The thread's health at `now`. A poisoned lock ends the thread at its next publish, so it
+    /// counts as stopped already.
+    fn health(&self, now: Instant) -> SamplerHealth {
+        let extras = self.extras();
+        SamplerHealth {
+            running: self.alive.load(Ordering::Relaxed) && !self.extras.is_poisoned(),
+            last_cycle: extras
+                .finished
+                .map(|finished| now.saturating_duration_since(finished)),
+            quiet: now.saturating_duration_since(extras.finished.unwrap_or(self.started)),
+            scan_latency: extras.latency.clone(),
+        }
+    }
+}
+
+/// Runs one scan and records how long it took under the `source` it reads.
+fn timed<T>(latency: &mut Vec<(Source, Duration)>, source: Source, scan: impl FnOnce() -> T) -> T {
+    let start = Instant::now();
+    let value = scan();
+    latency.push((source, start.elapsed()));
+    value
 }
 
 pub struct Collector {
@@ -304,65 +427,180 @@ pub struct Collector {
     previous: HashMap<Identity, Counters>,
     last: Instant,
     origin: Instant,
-    extras: Option<Arc<Mutex<Extras>>>,
+    background: Option<Background>,
     /// Cgroup paths the background thread should account, and whether to locate remote
     /// addresses (only the globe shows them, and the first lookup loads the GeoIP database).
     wanted: Arc<Mutex<HashSet<String>>>,
     locating: Arc<AtomicBool>,
+    /// The processes of the latest sample by pid, which the background scans are joined against.
+    identities: Arc<Mutex<HashMap<u32, Identity>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
 }
 
-/// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every two
-/// seconds on a background thread; the thread stops once the collector is gone. Returns None
-/// when no thread can be spawned.
+/// Samples sockets, GPU usage, cgroups, open files, file locks and remote locations every
+/// `BACKGROUND_PERIOD` on a background thread; the thread stops once the collector is gone.
+/// Returns None when no thread can be spawned.
 fn background(
     geoip: Option<PathBuf>,
     wanted: Arc<Mutex<HashSet<String>>>,
     locating: Arc<AtomicBool>,
-) -> Option<Arc<Mutex<Extras>>> {
-    let shared = Arc::new(Mutex::new(Extras::default()));
-    let writer = Arc::clone(&shared);
-    std::thread::Builder::new()
-        .name("isotop-sampler".into())
-        .spawn(move || {
-            let gpu = platform::Gpu::load();
-            let mut geo = geo::Geo::open(geoip.as_deref());
-            let mut units = HashMap::new();
-            let mut sockets = HashMap::new();
-            let mut loopback = LoopbackScan::default();
-            let mut retained = HashSet::new();
-            let mut scan = platform::FileScan::new();
-            while Arc::strong_count(&writer) > 1 {
-                let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
-                let paths = accounted(wanted_now, &mut retained);
-                let network = platform::network();
-                let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
-                let remotes = remotes(&network.remotes, &mut sockets, locator);
-                let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
-                let locks = platform::locks().map_or(Measured::Unreadable, Measured::Known);
-                let missing = background_gaps(gpu.is_some(), &locks);
-                let extras = Extras {
-                    network,
-                    gpu: gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default(),
-                    units: platform::account(&paths, &mut units),
-                    remotes,
-                    traffic,
-                    files: scan.sample(),
-                    locks,
-                    missing,
-                    geo: geo.source.clone(),
-                };
-                match writer.lock() {
-                    Ok(mut slot) => *slot = extras,
-                    Err(_) => return,
-                }
-                std::thread::sleep(Duration::from_secs(2));
+    identities: Arc<Mutex<HashMap<u32, Identity>>>,
+) -> Option<Background> {
+    Background::spawn(move || {
+        let gpu = platform::Gpu::load();
+        let mut geo = geo::Geo::open(geoip.as_deref());
+        let mut units = HashMap::new();
+        let mut sockets = HashMap::new();
+        let mut loopback = LoopbackScan::default();
+        let mut retained = HashSet::new();
+        let mut files = platform::FileScan::new();
+        let mut kept = KeptFiles::default();
+        move || {
+            // Taken before any scan reads, so that every pid the scans find is either the
+            // process named here or one that took its pid since.
+            let identities = identities.lock().map(|map| map.clone()).unwrap_or_default();
+            let wanted_now = wanted.lock().map(|set| set.clone()).unwrap_or_default();
+            let paths = accounted(wanted_now, &mut retained);
+            let mut latency = Vec::new();
+            let network = timed(&mut latency, Source::Sockets, platform::network);
+            let locator = locating.load(Ordering::Relaxed).then_some(&mut geo);
+            let remotes = timed(&mut latency, Source::Locations, || {
+                remotes(&network.remotes, &mut sockets, locator)
+            });
+            let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
+            let gpu_memory = timed(&mut latency, Source::GpuMemory, || {
+                gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default()
+            });
+            let units = timed(&mut latency, Source::Cgroups, || {
+                platform::account(&paths, &mut units)
+            });
+            let files = timed(&mut latency, Source::OpenFiles, || files.sample());
+            let files = kept.update(files, &identities);
+            let locks = timed(&mut latency, Source::FileLocks, || {
+                platform::locks().map_or(Measured::Unreadable, Measured::Known)
+            });
+            let missing = background_gaps(gpu.is_some(), &locks);
+            Extras {
+                identities,
+                network,
+                gpu: gpu_memory,
+                units,
+                remotes,
+                traffic,
+                files,
+                locks,
+                missing,
+                geo: geo.source.clone(),
+                latency,
+                finished: None,
             }
+        }
+    })
+}
+
+/// Open-file tables kept between background cycles, each with the process it was read for. The
+/// file scan is bounded and reaches every pid only over several cycles, so a table read earlier
+/// stands in until the scan comes round again, but only while its pid still names that process:
+/// a reused pid starts out unscanned instead of showing its predecessor's files.
+#[derive(Default)]
+struct KeptFiles(HashMap<u32, (Identity, Option<platform::Files>)>);
+
+impl KeptFiles {
+    /// Takes the tables this cycle's scan read, against `identities` (the processes by pid when
+    /// the cycle began), and returns every table that still belongs to the process its pid names
+    /// there.
+    fn update(
+        &mut self,
+        scanned: HashMap<u32, Option<platform::Files>>,
+        identities: &HashMap<u32, Identity>,
+    ) -> HashMap<u32, Option<platform::Files>> {
+        self.0
+            .retain(|pid, (id, _)| identities.get(pid) == Some(id));
+        for (pid, files) in scanned {
+            match identities.get(&pid) {
+                Some(&id) => {
+                    self.0.insert(pid, (id, files));
+                }
+                // Born since the cycle began, so it is not joined this cycle; its next scan
+                // will have an identity to keep it under.
+                None => {
+                    self.0.remove(&pid);
+                }
+            }
+        }
+        self.0
+            .iter()
+            .map(|(&pid, (_, files))| (pid, files.clone()))
+            .collect()
+    }
+}
+
+/// Joins the background measurements onto a sample. They were scanned against
+/// `extras.identities`, so a pid counts only while it still names the same process: data for a
+/// process that has exited since is dropped, and a process that took its pid since is not
+/// measured until the next cycle instead of inheriting what its predecessor had.
+fn merge(snapshot: &mut Snapshot, extras: &Extras) {
+    let current: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+    let id = |pid: &u32| {
+        extras
+            .identities
+            .get(pid)
+            .filter(|id| current.contains(id))
+            .copied()
+    };
+    for process in &mut snapshot.processes {
+        let scanned = extras.identities.get(&process.id.pid) == Some(&process.id);
+        process.gpu_memory = extras
+            .gpu
+            .get(&process.id.pid)
+            .filter(|_| scanned)
+            .copied()
+            .unwrap_or(0);
+        merge_files(process, &extras.files, &extras.locks, scanned);
+        // A holder that has exited since released its locks, so nothing waits on it any more.
+        process.blocked_on = process
+            .blocked_on
+            .filter(|holder| *holder == platform::UNNAMED || id(holder).is_some());
+    }
+    snapshot.unattributed_locks = extras.locks.known().map_or(0, |locks| locks.unattributed);
+    snapshot.links = extras
+        .network
+        .links
+        .iter()
+        .filter_map(|(&(a, b), &count)| Some((id(&a)?, id(&b)?, count)))
+        .collect();
+    snapshot.outside = extras
+        .network
+        .outside
+        .iter()
+        .filter_map(|(pid, &count)| Some((id(pid)?, count)))
+        .collect();
+    snapshot.link_traffic = extras
+        .traffic
+        .iter()
+        .filter_map(|(&(a, b), &rate)| Some(((id(&a)?, id(&b)?), rate)))
+        .collect();
+    snapshot.unix_links = extras
+        .network
+        .unix
+        .iter()
+        .filter_map(|(a, b)| Some((id(a)?, id(b)?)))
+        .collect();
+    snapshot.units = extras.units.clone();
+    snapshot.remotes = extras
+        .remotes
+        .iter()
+        .filter_map(|remote| {
+            Some(Remote {
+                id: id(&remote.id.pid)?,
+                ..remote.clone()
+            })
         })
-        .ok()
-        .map(|_| shared)
+        .collect();
+    snapshot.geo = extras.geo.clone();
+    snapshot.missing = snapshot.missing.union(extras.missing);
 }
 
 /// The slow sources a background pass found absent: GPU memory when no GPU library loaded, and
@@ -379,29 +617,32 @@ fn background_gaps(gpu: bool, locks: &Measured<platform::Locks>) -> Sources {
 }
 
 /// Sets a process's open files and locks from the background scans: absent from the file scan
-/// means not read yet, not unreadable. Kernel threads keep the empty table the platform gave
-/// them (Linux); a kernel process the platform leaves to the scan (kernel_task on macOS, which
-/// has a descriptor table like any process) takes what the scan found.
+/// means not read yet, not unreadable, and so does a process the scans did not run against
+/// (`scanned` false: born since, or holding a pid that belonged to another process then). Kernel
+/// threads keep the empty table the platform gave them (Linux); a kernel process the platform
+/// leaves to the scan (kernel_task on macOS, which has a descriptor table like any process)
+/// takes what the scan found.
 fn merge_files(
     process: &mut Process,
     files: &HashMap<u32, Option<platform::Files>>,
     locks: &Measured<platform::Locks>,
+    scanned: bool,
 ) {
     let pid = process.id.pid;
     if process.kind != Kind::Kernel || process.files == Measured::Pending {
-        process.files = match files.get(&pid) {
+        process.files = match files.get(&pid).filter(|_| scanned) {
             Some(Some(found)) => Measured::Known(found.clone()),
             Some(None) => Measured::Unreadable,
             None => Measured::Pending,
         };
     }
     (process.locks_held, process.blocked_on) = match locks {
-        Measured::Known(locks) => (
+        Measured::Known(locks) if scanned => (
             Measured::Known(locks.held.get(&pid).copied().unwrap_or(0)),
             locks.blocked.get(&pid).copied(),
         ),
+        Measured::Known(_) | Measured::Pending => (Measured::Pending, None),
         Measured::Unreadable => (Measured::Unreadable, None),
-        Measured::Pending => (Measured::Pending, None),
     };
 }
 
@@ -519,9 +760,10 @@ impl Collector {
             previous: HashMap::new(),
             last: Instant::now(),
             origin: Instant::now(),
-            extras: None,
+            background: None,
             wanted: Arc::new(Mutex::new(HashSet::new())),
             locating: Arc::new(AtomicBool::new(false)),
+            identities: Arc::new(Mutex::new(HashMap::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -534,13 +776,6 @@ impl Collector {
     }
 
     pub fn sample(&mut self) -> std::io::Result<Snapshot> {
-        if !std::mem::replace(&mut self.started, true) {
-            self.extras = background(
-                self.geoip.clone(),
-                Arc::clone(&self.wanted),
-                Arc::clone(&self.locating),
-            );
-        }
         let now = Instant::now();
         let dt = now.duration_since(self.last).as_secs_f32().max(0.001);
         let (pressure, pressure_missing) = self.sampler.pressure();
@@ -576,56 +811,26 @@ impl Collector {
                 .map(|p| p.cgroup.clone())
                 .collect();
         }
-        if let Some(shared) = &self.extras
-            && let Ok(extras) = shared.lock()
-        {
-            let ids: HashMap<u32, Identity> = snapshot
+        if let Ok(mut identities) = self.identities.lock() {
+            *identities = snapshot
                 .processes
                 .iter()
                 .map(|p| (p.id.pid, p.id))
                 .collect();
-            for process in &mut snapshot.processes {
-                process.gpu_memory = extras.gpu.get(&process.id.pid).copied().unwrap_or(0);
-                merge_files(process, &extras.files, &extras.locks);
-            }
-            snapshot.unattributed_locks =
-                extras.locks.known().map_or(0, |locks| locks.unattributed);
-            snapshot.links = extras
-                .network
-                .links
-                .iter()
-                .filter_map(|(&(a, b), &count)| Some((*ids.get(&a)?, *ids.get(&b)?, count)))
-                .collect();
-            snapshot.outside = extras
-                .network
-                .outside
-                .iter()
-                .filter_map(|(pid, &count)| Some((*ids.get(pid)?, count)))
-                .collect();
-            snapshot.link_traffic = extras
-                .traffic
-                .iter()
-                .filter_map(|(&(a, b), &rate)| Some(((*ids.get(&a)?, *ids.get(&b)?), rate)))
-                .collect();
-            snapshot.unix_links = extras
-                .network
-                .unix
-                .iter()
-                .filter_map(|&(a, b)| Some((*ids.get(&a)?, *ids.get(&b)?)))
-                .collect();
-            snapshot.units = extras.units.clone();
-            snapshot.remotes = extras
-                .remotes
-                .iter()
-                .filter_map(|remote| {
-                    Some(Remote {
-                        id: *ids.get(&remote.id.pid)?,
-                        ..remote.clone()
-                    })
-                })
-                .collect();
-            snapshot.geo = extras.geo.clone();
-            snapshot.missing = snapshot.missing.union(extras.missing);
+        }
+        // Started once the first sample has published what to scan, so its first cycle has the
+        // processes to join against and the cgroups to account.
+        if !std::mem::replace(&mut self.started, true) {
+            self.background = background(
+                self.geoip.clone(),
+                Arc::clone(&self.wanted),
+                Arc::clone(&self.locating),
+                Arc::clone(&self.identities),
+            );
+        }
+        if let Some(background) = &self.background {
+            snapshot.sampler = background.health(Instant::now());
+            merge(&mut snapshot, &background.extras());
         }
         self.previous = next;
         self.last = now;
@@ -988,6 +1193,12 @@ pub fn demo(time: f64, count: usize) -> Snapshot {
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
+        sampler: SamplerHealth {
+            running: true,
+            last_cycle: Some(Duration::ZERO),
+            quiet: Duration::ZERO,
+            scan_latency: Vec::new(),
+        },
         home: Some(Place {
             latitude: 52.37,
             longitude: 4.9,
@@ -1547,7 +1758,7 @@ mod tests {
             ..platform::Files::default()
         };
         let mut found = HashMap::new();
-        merge_files(&mut process, &found, &Measured::Pending);
+        merge_files(&mut process, &found, &Measured::Pending, true);
         assert_eq!(process.files, Measured::Pending, "not reached");
         assert_eq!(
             process.locks_held,
@@ -1555,11 +1766,11 @@ mod tests {
             "before the first pass"
         );
         found.insert(1001, None);
-        merge_files(&mut process, &found, &Measured::Unreadable);
+        merge_files(&mut process, &found, &Measured::Unreadable, true);
         assert_eq!(process.files, Measured::Unreadable);
         assert_eq!(process.locks_held, Measured::Unreadable);
         found.insert(1001, Some(scanned.clone()));
-        merge_files(&mut process, &found, &locks);
+        merge_files(&mut process, &found, &locks, true);
         assert_eq!(process.files, Measured::Known(scanned));
         assert_eq!(process.locks_held, Measured::Known(2));
     }
@@ -1575,17 +1786,230 @@ mod tests {
         thread.kind = Kind::Kernel;
         thread.id.pid = 2;
         thread.files = Measured::Known(platform::Files::default());
-        merge_files(&mut thread, &found, &Measured::Pending);
+        merge_files(&mut thread, &found, &Measured::Pending, true);
         assert_eq!(thread.files, Measured::Known(platform::Files::default()));
         // kernel_task on macOS comes from the sampler not read yet, like every process there.
         let mut task = thread.clone();
         task.id.pid = 0;
         task.files = Measured::Pending;
-        merge_files(&mut task, &found, &Measured::Pending);
+        merge_files(&mut task, &found, &Measured::Pending, true);
         assert_eq!(task.files, Measured::Known(scanned));
         task.files = Measured::Pending;
-        merge_files(&mut task, &HashMap::from([(0, None)]), &Measured::Pending);
+        merge_files(
+            &mut task,
+            &HashMap::from([(0, None)]),
+            &Measured::Pending,
+            true,
+        );
         assert_eq!(task.files, Measured::Unreadable, "without root");
+    }
+
+    #[test]
+    fn background_data_is_not_inherited_by_a_reused_pid() {
+        let open = |count| {
+            Some(platform::Files {
+                open: count,
+                ..platform::Files::default()
+            })
+        };
+        // The cycle scanned against pid 7 as the process that started at 70, and pid 8.
+        let extras = Extras {
+            identities: HashMap::from([
+                (7, Identity { pid: 7, start: 70 }),
+                (8, Identity { pid: 8, start: 8 }),
+            ]),
+            network: platform::Network {
+                links: HashMap::from([((7, 8), 1)]),
+                unix: HashSet::from([(7, 8)]),
+                outside: HashMap::from([(7, 2), (8, 1)]),
+                ..platform::Network::default()
+            },
+            gpu: HashMap::from([(7, 500), (8, 600)]),
+            remotes: [7, 8]
+                .map(|pid| Remote {
+                    id: Identity { pid, start: 0 },
+                    address: IpAddr::from([203, 0, 113, 1]),
+                    port: 443,
+                    rtt: 10.0,
+                    up: 1.0,
+                    down: 1.0,
+                    place: None,
+                })
+                .into(),
+            traffic: HashMap::from([((7, 8), 100.0)]),
+            files: HashMap::from([(7, open(4)), (8, open(2))]),
+            locks: Measured::Known(platform::Locks {
+                held: HashMap::from([(7, 1)]),
+                blocked: HashMap::from([(8, 7)]),
+                unattributed: 0,
+            }),
+            ..Extras::default()
+        };
+        let sample = |start_of_7| {
+            let mut snapshot = Snapshot {
+                processes: vec![
+                    Process {
+                        id: Identity {
+                            pid: 7,
+                            start: start_of_7,
+                        },
+                        ..testing::process(7, 1)
+                    },
+                    testing::process(8, 1),
+                ],
+                ..Snapshot::default()
+            };
+            merge(&mut snapshot, &extras);
+            snapshot
+        };
+        // Pid 7 now belongs to a process that started at 71.
+        let reused = sample(71);
+        let (newcomer, survivor) = (&reused.processes[0], &reused.processes[1]);
+        assert_eq!(newcomer.gpu_memory, 0);
+        assert_eq!(newcomer.files, Measured::Pending);
+        assert_eq!(newcomer.locks_held, Measured::Pending);
+        assert_eq!(survivor.gpu_memory, 600);
+        assert_eq!(survivor.files, Measured::Known(open(2).unwrap()));
+        assert_eq!(survivor.blocked_on, None, "its lock's holder has exited");
+        assert!(reused.links.is_empty() && reused.unix_links.is_empty());
+        assert!(reused.link_traffic.is_empty());
+        assert_eq!(
+            reused.outside,
+            HashMap::from([(survivor.id, 1)]),
+            "the old owner's connections are dropped"
+        );
+        assert_eq!(
+            reused.remotes.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [survivor.id]
+        );
+        // The process the cycle scanned is still there: everything joins.
+        let same = sample(70);
+        let (scanned, other) = (&same.processes[0], &same.processes[1]);
+        assert_eq!(scanned.gpu_memory, 500);
+        assert_eq!(scanned.files, Measured::Known(open(4).unwrap()));
+        assert_eq!(scanned.locks_held, Measured::Known(1));
+        assert_eq!(other.blocked_on, Some(7));
+        assert_eq!(same.links, [(scanned.id, other.id, 1)]);
+        assert_eq!(same.link_traffic.len(), 1);
+        assert_eq!(same.remotes.len(), 2);
+    }
+
+    #[test]
+    fn a_reused_pid_does_not_keep_its_predecessors_open_files() {
+        let table = |open| {
+            Some(platform::Files {
+                open,
+                ..platform::Files::default()
+            })
+        };
+        let first = HashMap::from([
+            (7, Identity { pid: 7, start: 70 }),
+            (8, Identity { pid: 8, start: 8 }),
+        ]);
+        let mut kept = KeptFiles::default();
+        let files = kept.update(HashMap::from([(7, table(4)), (8, table(2))]), &first);
+        assert_eq!(files.len(), 2);
+        // The scan did not reach either pid this cycle; pid 7 now names a process that started
+        // at 71, pid 8 the same process as before.
+        let second = HashMap::from([
+            (7, Identity { pid: 7, start: 71 }),
+            (8, Identity { pid: 8, start: 8 }),
+        ]);
+        let files = kept.update(HashMap::new(), &second);
+        assert_eq!(files.get(&7), None, "the predecessor's table is dropped");
+        assert_eq!(
+            files.get(&8),
+            Some(&table(2)),
+            "kept until the scan comes round"
+        );
+        // A table scanned for a pid the cycle had no identity for is not kept.
+        let files = kept.update(HashMap::from([(9, table(1))]), &second);
+        assert_eq!(files.get(&9), None);
+        let files = kept.update(HashMap::from([(7, table(5))]), &second);
+        assert_eq!(files.get(&7), Some(&table(5)));
+    }
+
+    /// The health of `background` once its thread has had `within` to end.
+    fn settled(background: &Background, within: Duration) -> SamplerHealth {
+        let deadline = Instant::now() + within;
+        while background.alive.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        background.health(Instant::now())
+    }
+
+    #[test]
+    fn a_dead_sampler_thread_is_reported() {
+        let healthy = Background::spawn(|| {
+            || Extras {
+                latency: vec![(Source::Sockets, Duration::from_millis(3))],
+                ..Extras::default()
+            }
+        })
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut health = healthy.health(Instant::now());
+        while health.last_cycle.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            health = healthy.health(Instant::now());
+        }
+        assert!(health.running && !health.stalled());
+        assert!(health.last_cycle.is_some_and(|age| age < BACKGROUND_PERIOD));
+        assert_eq!(
+            health.scan_latency,
+            [(Source::Sockets, Duration::from_millis(3))]
+        );
+
+        // A scan that panics ends the thread.
+        let panicked = Background::spawn(|| || -> Extras { panic!("a scan failed") }).unwrap();
+        let health = settled(&panicked, Duration::from_secs(5));
+        assert!(!health.running);
+        assert_eq!(health.last_cycle, None);
+
+        // A poisoned lock stops it too, and reads as stopped at once.
+        let poisoned = Arc::clone(&healthy.extras);
+        let _ = std::thread::spawn(move || {
+            let _held = poisoned.lock();
+            panic!("poisoned while publishing");
+        })
+        .join();
+        let frozen = healthy.health(Instant::now());
+        assert!(!frozen.running);
+        assert_eq!(
+            frozen.scan_latency,
+            [(Source::Sockets, Duration::from_millis(3))],
+            "what it measured last is kept"
+        );
+
+        // A collector whose thread could not be spawned has no background and reports so.
+        assert!(!SamplerHealth::default().running);
+
+        let stuck = SamplerHealth {
+            running: true,
+            last_cycle: Some(BACKGROUND_PERIOD * (STALLED_PERIODS + 1)),
+            quiet: BACKGROUND_PERIOD * (STALLED_PERIODS + 1),
+            scan_latency: Vec::new(),
+        };
+        assert!(stuck.stalled());
+    }
+
+    #[test]
+    fn a_first_cycle_that_never_finishes_counts_as_stalled() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let hung = Background::spawn(move || {
+            move || {
+                let _ = blocked.recv();
+                Extras::default()
+            }
+        })
+        .unwrap();
+        let soon = hung.health(Instant::now());
+        assert!(soon.running && !soon.stalled());
+        assert_eq!(soon.last_cycle, None);
+        let later = hung.health(hung.started + BACKGROUND_PERIOD * (STALLED_PERIODS + 1));
+        assert_eq!(later.last_cycle, None, "no cycle has finished");
+        assert!(later.stalled(), "{later:?}");
+        drop(release);
     }
 
     #[test]

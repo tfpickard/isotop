@@ -27,6 +27,11 @@ pub const MEMORY_LABEL: &str = "RSS";
 pub const GROUP_LABEL: &str = "service";
 pub const WITHOUT_CGROUPS: &str = "groups by service; no cgroup v2 accounting here";
 
+/// Samples between re-reads of a process's cmdline and cgroup when its comm has not changed.
+/// They change only on exec, which changes comm, on a cgroup migration and when a process
+/// rewrites its own arguments (setproctitle), which keep it; those show within this many samples.
+const TEXT_REFRESH: u64 = 10;
+
 /// Reads processes, memory, pressure and CPUs, keeping the CPU counters between readings.
 pub struct Sampler {
     cpu_previous: HashMap<u32, Ticks>,
@@ -40,6 +45,67 @@ pub struct Sampler {
     /// Whether any process in the last `processes` call sat in a cgroup v2 cgroup below the
     /// root; inside a container every process may read as the root `0::/`.
     grouped: bool,
+    /// What each process's cmdline and cgroup said when last read; only the processes of the
+    /// latest sample are kept.
+    texts: HashMap<Identity, Texts>,
+    /// Samples taken so far, the clock of `TEXT_REFRESH`.
+    samples: u64,
+}
+
+/// A process's command line and cgroup as last read from /proc/<pid>/cmdline and cgroup, with
+/// the comm it had then.
+struct Texts {
+    comm: String,
+    /// The arguments joined by spaces; None when empty (kernel threads, zombies) or unreadable.
+    command: Option<String>,
+    group: String,
+    /// The kind its cgroup implies, for a process that is not a kernel thread.
+    kind: Kind,
+    cgroup: String,
+}
+
+impl Texts {
+    /// Reads them from the process directory `path`.
+    fn read(path: &Path, comm: &str) -> Texts {
+        let command = fs::read(path.join("cmdline"))
+            .ok()
+            .map(|bytes| {
+                String::from_utf8_lossy(&bytes)
+                    .replace('\0', " ")
+                    .trim()
+                    .to_owned()
+            })
+            .filter(|text| !text.is_empty());
+        let cgroup = fs::read_to_string(path.join("cgroup")).ok();
+        Texts {
+            comm: comm.to_owned(),
+            command,
+            group: cgroup
+                .as_deref()
+                .and_then(cgroup_name)
+                .unwrap_or_else(|| "ungrouped".into()),
+            kind: cgroup.as_deref().map_or(Kind::System, classify),
+            cgroup: cgroup.as_deref().and_then(cgroup_path).unwrap_or_default(),
+        }
+    }
+
+    fn apply(&self, process: &mut Process) {
+        if let Some(command) = &self.command {
+            process.command.clone_from(command);
+        }
+        process.group.clone_from(&self.group);
+        if process.kind != Kind::Kernel {
+            process.kind = self.kind;
+            process.cgroup.clone_from(&self.cgroup);
+        }
+    }
+}
+
+/// Whether to read a process's cmdline and cgroup again rather than keep `cached`, the comm they
+/// were read with: when nothing is cached, after an exec (its comm is no longer `cached`), and
+/// once every `TEXT_REFRESH` samples, staggered by pid so the re-reads spread over the samples.
+fn reread(cached: Option<&str>, comm: &str, pid: u32, sample: u64) -> bool {
+    cached != Some(comm) || (sample + u64::from(pid)).is_multiple_of(TEXT_REFRESH)
 }
 
 impl Sampler {
@@ -58,6 +124,8 @@ impl Sampler {
             page_size: unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64,
             cpu_gaps: Sources::default(),
             grouped: false,
+            texts: HashMap::new(),
+            samples: 0,
         }
     }
 
@@ -66,9 +134,11 @@ impl Sampler {
         self.hz
     }
 
-    /// Every process in /proc whose stat file could be read and parsed.
+    /// Every process in /proc whose stat file could be read and parsed. Each sample reads its
+    /// stat and io; its cmdline and cgroup come from `texts` unless `reread` says otherwise.
     pub fn processes(&mut self) -> io::Result<Vec<RawProcess>> {
         let mut processes = Vec::new();
+        let mut texts = HashMap::with_capacity(self.texts.len());
         for entry in fs::read_dir("/proc")?.flatten() {
             let Some(pid) = entry
                 .file_name()
@@ -88,21 +158,15 @@ impl Sampler {
                 .ok()
                 .map(|text| parse_io(&text));
             process.written = io.map(|io| io.write);
-            if let Ok(command) = fs::read(path.join("cmdline")) {
-                let text = String::from_utf8_lossy(&command).replace('\0', " ");
-                if !text.trim().is_empty() {
-                    process.command = text.trim().to_owned();
+            let cached = self.texts.remove(&process.id);
+            let text = match cached {
+                Some(cached) if !reread(Some(&cached.comm), &process.name, pid, self.samples) => {
+                    cached
                 }
-            }
-            let cgroup = fs::read_to_string(path.join("cgroup")).ok();
-            process.group = cgroup
-                .as_deref()
-                .and_then(cgroup_name)
-                .unwrap_or_else(|| "ungrouped".into());
-            if process.kind != Kind::Kernel {
-                process.kind = cgroup.as_deref().map_or(Kind::System, classify);
-                process.cgroup = cgroup.as_deref().and_then(cgroup_path).unwrap_or_default();
-            }
+                _ => Texts::read(&path, &process.name),
+            };
+            text.apply(&mut process);
+            texts.insert(process.id, text);
             processes.push(RawProcess {
                 process,
                 ticks,
@@ -112,6 +176,8 @@ impl Sampler {
             });
         }
         self.grouped = processes.iter().any(|raw| !raw.process.cgroup.is_empty());
+        self.texts = texts;
+        self.samples += 1;
         Ok(processes)
     }
 
@@ -678,6 +744,28 @@ mod tests {
     }
 
     #[test]
+    fn cmdline_is_reread_after_exec_and_cached_otherwise() {
+        let pid = 4321;
+        assert!(reread(None, "bash", pid, 7), "nothing cached yet");
+        let due = (0..TEXT_REFRESH)
+            .filter(|&sample| reread(Some("bash"), "bash", pid, sample))
+            .count();
+        assert_eq!(due, 1, "the same comm is re-read once per refresh period");
+        for sample in 0..TEXT_REFRESH {
+            assert!(reread(Some("bash"), "python3", pid, sample), "exec");
+        }
+        let staggered: HashSet<u64> = (0..TEXT_REFRESH as u32)
+            .map(|pid| (0..TEXT_REFRESH).find(|&sample| reread(Some("x"), "x", pid, sample)))
+            .map(Option::unwrap)
+            .collect();
+        assert_eq!(
+            staggered.len(),
+            TEXT_REFRESH as usize,
+            "spread over the samples"
+        );
+    }
+
+    #[test]
     fn linux_reports_missing_core_kinds_and_cgroup_v2() {
         let hybrid = HashMap::from([(0, CoreKind::Performance), (1, CoreKind::Efficiency)]);
         let unified = "cpuset cpu io memory hugetlb pids rdma misc\n";
@@ -730,6 +818,26 @@ mod tests {
                 Source::IoPressure
             ])
         );
+    }
+
+    #[test]
+    fn text_cache_holds_only_the_processes_of_the_latest_sample() {
+        let mut sampler = Sampler::new();
+        for _ in 0..2 {
+            let processes = sampler.processes().unwrap();
+            let ids: HashSet<Identity> = processes.iter().map(|raw| raw.process.id).collect();
+            let cached: HashSet<Identity> = sampler.texts.keys().copied().collect();
+            assert_eq!(cached, ids);
+            let own = processes
+                .iter()
+                .find(|raw| raw.process.id.pid == std::process::id())
+                .unwrap();
+            assert!(
+                own.process.command.contains("isotop"),
+                "{}",
+                own.process.command
+            );
+        }
     }
 
     #[test]

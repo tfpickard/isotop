@@ -40,6 +40,9 @@ use render::{Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Scene, View, label_name}
 use terminal::{Label, Popup, Terminal, Tone};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
+/// How long the journal follower keeps running after Matrix was last shown, so a look at another
+/// view does not restart it, and with it the rain's backlog.
+const JOURNAL_LINGER: Duration = Duration::from_secs(30);
 /// Terminal rows of the status panel under the scene.
 const PANEL_ROWS: u16 = 5;
 
@@ -312,6 +315,8 @@ struct App {
     gpu: Option<gpu::Gpu>,
     /// Which rasterizer drew the last frame, for the status strip.
     renderer: String,
+    /// When Matrix was last shown; None while it never has been.
+    matrix_shown: Option<Instant>,
 }
 
 impl App {
@@ -345,7 +350,18 @@ impl App {
             tour: None,
             gpu: None,
             renderer: "cpu".into(),
+            matrix_shown: None,
         }
+    }
+
+    /// Whether the journal follower should run at `now`: while Matrix is shown and for
+    /// `JOURNAL_LINGER` after it was last shown.
+    fn journal_wanted(&mut self, now: Instant) -> bool {
+        if self.view == View::Matrix {
+            self.matrix_shown = Some(now);
+        }
+        self.matrix_shown
+            .is_some_and(|shown| now.saturating_duration_since(shown) < JOURNAL_LINGER)
     }
 
     fn choose_renderer(&mut self, renderer: Renderer, power: Power) -> Result<(), String> {
@@ -586,9 +602,10 @@ impl App {
             (false, None) => "LIVE",
         };
         let mut lines = vec![format!(
-            " ISOTOP / {view} / {mode}   {} processes{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
+            " ISOTOP / {view} / {mode}   {} processes{}{} | {} visible | {} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
             s.processes.len(),
             unreadable_text(s),
+            sampler_text(s),
             self.scene.visible,
             self.scene.collapsed,
             s.processes.iter().map(|p| p.cpu).sum::<f32>() / 100.0,
@@ -1207,6 +1224,20 @@ fn unreadable_text(snapshot: &Snapshot) -> String {
     }
 }
 
+/// A short note beside the process count when the background sampler has stopped or stalled:
+/// sockets, GPU memory, cgroups, open files and locks then keep what it measured last.
+fn sampler_text(snapshot: &Snapshot) -> String {
+    let sampler = &snapshot.sampler;
+    if !sampler.running {
+        " (background sampler stopped: links, files and cgroups frozen)".into()
+    } else if sampler.stalled() {
+        let seconds = sampler.quiet.as_secs();
+        format!(" (background sampler stalled {seconds}s)")
+    } else {
+        String::new()
+    }
+}
+
 /// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
 /// focused subtree or a platform that reads every process gets the legend it always had.
 fn hub_note(scene: &Scene) -> &'static str {
@@ -1340,10 +1371,15 @@ fn run(options: Options) -> Result<(), Box<dyn Error>> {
             }
         }
         let goal = app.goal.clone();
-        if app.view == View::Matrix {
-            if !options.demo && journal.is_none() {
+        if !options.demo {
+            if !app.journal_wanted(Instant::now()) {
+                // Dropping it stops the follower and its reader.
+                journal = None;
+            } else if journal.is_none() {
                 journal = Some(Journal::start());
             }
+        }
+        if app.view == View::Matrix {
             let now = origin.elapsed().as_secs_f64();
             // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
             if !app.paused {
@@ -1887,6 +1923,50 @@ mod tests {
             "{}",
             none[4]
         );
+    }
+
+    #[test]
+    fn status_line_says_when_the_background_sampler_stopped_or_stalled() {
+        let status = |sampler: model::SamplerHealth| {
+            let mut snapshot = model::demo(1.0, 16);
+            snapshot.sampler = sampler;
+            App::new(View::City, snapshot).text(0.0, "test", 20, 512)[0].clone()
+        };
+        let healthy = status(model::demo(1.0, 16).sampler);
+        assert!(!healthy.contains("sampler"), "{healthy}");
+        let stopped = status(model::SamplerHealth::default());
+        assert!(
+            stopped.contains(" processes (background sampler stopped: "),
+            "{stopped}"
+        );
+        let stalled = status(model::SamplerHealth {
+            running: true,
+            last_cycle: Some(Duration::from_secs(95)),
+            quiet: Duration::from_secs(95),
+            scan_latency: Vec::new(),
+        });
+        assert!(
+            stalled.contains("(background sampler stalled 95s)"),
+            "{stalled}"
+        );
+    }
+
+    #[test]
+    fn the_journal_stops_after_matrix_has_been_hidden_for_a_while() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut app = App::new(View::City, model::demo(1.0, 16));
+        assert!(!app.journal_wanted(at(0)), "Matrix was never shown");
+        app.view = View::Matrix;
+        assert!(app.journal_wanted(at(10)));
+        assert!(app.journal_wanted(at(500)), "shown all along");
+        app.view = View::Globe;
+        assert!(app.journal_wanted(at(501)));
+        assert!(app.journal_wanted(at(529)), "a look at another view");
+        assert!(!app.journal_wanted(at(530)));
+        assert!(!app.journal_wanted(at(900)));
+        app.view = View::Matrix;
+        assert!(app.journal_wanted(at(901)), "back on Matrix");
     }
 
     #[test]

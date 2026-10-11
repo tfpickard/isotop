@@ -35,8 +35,10 @@ startup and fails fast when it is missing. `--force-graphics` bypasses that quer
 
 The scene renders at the window's native resolution up to 1920 pixels wide
 (`--width` lowers the cap) and animation targets 10 FPS (`--fps` raises it, at a cost in CPU). Process data is sampled
-once per second; sockets, cgroup accounting and NVIDIA GPU usage every two
-seconds on a background thread. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
+once per second; sockets, cgroup accounting, open files, file locks and NVIDIA GPU
+usage every two seconds on a background thread. If that thread stops or a scan hangs,
+the first status line says so (`background sampler stopped` or `stalled`), since what
+it measured last then no longer changes. CPU uses a 1.5-second exponential smoothing time constant; 100% means one
 fully occupied CPU core. Sizes ease toward each sample over 0.3 seconds;
 inspector values remain the sampled measurements.
 
@@ -407,7 +409,8 @@ The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) 
 The systemd journal decoded out of digital rain (on macOS, the unified log; see
 [macOS](#macos)). `journalctl -f` runs on a
 background thread from the moment the view is first shown, starting with the
-last 200 entries. The screen is a log of `source[pid]: message` lines written
+last 200 entries, and stops 30 seconds after you leave the view; coming back
+starts it again with the last 200 entries. The screen is a log of `source[pid]: message` lines written
 horizontally, newest at the bottom, coloured by severity: red for errors and
 worse, amber for warnings, green for notices and information, teal for debug.
 Each character resolves only when a falling stream of rain passes over it,

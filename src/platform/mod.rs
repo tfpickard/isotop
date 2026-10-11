@@ -24,7 +24,7 @@
 //!   - `shadows(&self) -> Vec<Shadow>`: those unreadable processes again, as far as anyone may
 //!     read them (pid, parent and name), so that what descends from them can still be drawn
 //!     under them. Linux returns none, as every `/proc/<pid>/stat` is world-readable.
-//! - Slow sources, read on the background thread every two seconds:
+//! - Slow sources, read on the background thread every `model::BACKGROUND_PERIOD`:
 //!   - `network() -> Network`;
 //!   - `account(paths, state) -> HashMap<String, Unit>`: resource accounting of the named
 //!     cgroups, given the state the previous call left;
@@ -111,11 +111,17 @@ pub enum Source {
     GpuMemory,
     /// `Cpu::kind`: every CPU is `CoreKind::Unknown`.
     CoreKinds,
+    /// The socket scan: links between processes, loopback traffic and outside connections.
+    Sockets,
+    /// `Process::files`, each process's open files.
+    OpenFiles,
+    /// `Remote::place`, where remote addresses are, from the local GeoIP database.
+    Locations,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 11] = [
+    pub const ALL: [Source; 14] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -127,6 +133,9 @@ impl Source {
         Source::FileLocks,
         Source::GpuMemory,
         Source::CoreKinds,
+        Source::Sockets,
+        Source::OpenFiles,
+        Source::Locations,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -143,6 +152,9 @@ impl Source {
             Source::FileLocks => "file locks",
             Source::GpuMemory => "gpu memory",
             Source::CoreKinds => "core kinds",
+            Source::Sockets => "sockets",
+            Source::OpenFiles => "open files",
+            Source::Locations => "remote locations",
         }
     }
 

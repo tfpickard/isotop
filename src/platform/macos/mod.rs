@@ -1003,8 +1003,6 @@ pub struct FileScan {
     bounds: Bounds,
     /// The last pid scanned, so the next scan starts after it.
     after: u32,
-    /// The last result for each pid: None for an unreadable table.
-    known: HashMap<u32, Option<Files>>,
     /// Buffers reused by every scan.
     pids: Vec<c_int>,
     descriptors: Vec<libc::proc_fdinfo>,
@@ -1015,19 +1013,16 @@ impl FileScan {
         Self {
             bounds: BOUNDS,
             after: 0,
-            known: HashMap::new(),
             pids: Vec::new(),
             descriptors: Vec::new(),
         }
     }
 
-    /// Open files per pid; None for a table that could not be read. A pid the scan has not
-    /// reached yet, this time or ever, is absent unless it keeps a previous result (a pid
-    /// reused within those few seconds briefly shows its predecessor's files); so is one that
-    /// exited during the scan.
+    /// Open files per pid read by this scan; None for a table that could not be read. The scan is
+    /// bounded, so a pid it did not reach this time is absent, and so is one that exited during
+    /// it. The collector keeps earlier tables, by process identity, until the scan comes round.
     pub fn sample(&mut self) -> HashMap<u32, Option<Files>> {
         if list_pids(&mut self.pids).is_err() {
-            self.known.clear();
             return HashMap::new();
         }
         let mut pids: Vec<u32> = self
@@ -1056,12 +1051,6 @@ impl FileScan {
                 }
             }
         }
-        for pid in pids {
-            if let Some(previous) = self.known.get(&pid) {
-                found.entry(pid).or_insert_with(|| previous.clone());
-            }
-        }
-        self.known = found.clone();
         found
     }
 }
