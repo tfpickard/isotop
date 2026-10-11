@@ -118,6 +118,10 @@ WAYLAND_DISPLAY=<socket> grim /tmp/ghostty.png
 Kitty crashes when headless. Stop sway by PID, not with `pkill -f` and a pattern that can
 match your own shell.
 
+## Planned work
+
+`docs/ROADMAP.md` lists the planned views and the prerequisites and building blocks they rely on. Each item is one GitHub issue. `docs/VIEW_CONVENTIONS.md` holds the rules every new view and building block follows. Read both before taking an item.
+
 ## Code conventions
 
 - Comments explain math, protocol values or rules that aren't obvious, never what the next
