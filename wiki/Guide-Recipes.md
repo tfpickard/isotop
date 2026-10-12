@@ -1,6 +1,6 @@
 # Guide: Recipes
 
-Task-sized recipes for running, measuring, capturing and checking isotop. Each is marked **verified here** (run on the machine that built this page: Linux x86_64, 4 cores, no GPU, no graphical session, release build, with the output quoted where it is short) or **not verified** (with the reason). Anything that needs a graphics-capable terminal, a GPU, macOS or a network is the latter. Commands assume the repository root and a release build (`cargo build --release`); the binary is `./target/release/isotop`.
+Task-sized recipes for running, measuring, capturing and checking isotop. Each is marked **verified here** (run on the machine that built this page: Linux x86_64, 4 cores, no GPU, no graphical session, release build, with the output quoted where it is short) or **not verified** (with the reason). Anything that needs a graphics-capable terminal, a GPU, macOS or a network is the latter. (The build tree also holds one view that is not on `main`, the tutorial's `lissajous`, so its `--list-views` has fifteen names; the outputs quoted below are the fourteen of `main`.) Commands assume the repository root and a release build (`cargo build --release`); the binary is `./target/release/isotop`.
 
 For the machinery behind the headless recipes see [Guide: Headless and Reproducible Renders](Guide-Headless-and-Reproducible-Renders); for the views see [Gallery](Gallery).
 
@@ -28,7 +28,7 @@ For the machinery behind the headless recipes see [Guide: Headless and Reproduci
 | 20 | Compare CPU and GPU renders | CPU side verified |
 | 21 | Linux and macOS | not verified |
 | 22 | Use isotop over SSH | not verified |
-| 23 | Run the gates | partly verified |
+| 23 | Run the gates | verified here except the macOS type-check |
 | 24 | Place the globe's home | verified here |
 
 ## 1. A reproducible screenshot
@@ -302,7 +302,7 @@ What is planned, not implemented: [issue 97](https://github.com/tfpickard/isotop
 
 ## 23. Run the gates
 
-**Status:** partly verified (the smoke test, the code report check, the metrics tool, the golden tests). The full order is from `AGENTS.md`:
+**Status:** verified here, on the tree of [Guide: Writing a View](Guide-Writing-a-View) (`cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean, `cargo test` with 537 passed, 0 failed and 4 ignored, the release build, the smoke test, `code_report.py --check`); the macOS type-check below was not run (the target is not installed). The full order is from `AGENTS.md`:
 
 ```sh
 cargo fmt && cargo fmt --check
