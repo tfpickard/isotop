@@ -1292,8 +1292,11 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
 /// What persists between frames and belongs to the frame, not to any one view: the smoothing of
 /// the sampled processes, their births and deaths, the links and highlights, the outputs of the
 /// last frame the app reads back, the spare buffers, and the module of each view in its row's
-/// slot. A view keeps its own state in its module and reaches the scene only through `Stage`;
-/// `scene_has_no_view_specific_fields` fails if a field named after a view appears here.
+/// slot. A view keeps its own state in its module and reaches the scene only through `Stage`.
+/// Every field says in its doc comment why it is frame-wide (the lint below insists), and
+/// `scene_has_no_view_specific_fields` fails to compile until a new field is listed in it, which
+/// is the review: add one only if every view and the app share it.
+#[deny(clippy::missing_docs_in_private_items)]
 pub struct Scene {
     /// Each process's CPU and memory as eased towards the samples. Frame-wide: the easing
     /// belongs to the sample, so every view reads the same figures (`Stage::resources`) and a
@@ -2717,56 +2720,49 @@ mod tests {
         assert_eq!(draw(View::at(1)), ([0.0; 3], 0, 0));
     }
 
-    /// A view's state lives in its module. The fields of `Scene` are read from its source rather
-    /// than through `Debug`, which would need a hand-written impl that lists the same fields, and
-    /// rather than from `size_of`, which moves with every legitimate frame-wide field and says
-    /// nothing about which field grew. This fails on a field named after a registered view or
-    /// typed with one, and on a field without a doc comment, which is where the struct says why
-    /// the field is frame-wide.
+    /// A view's state lives in its module, so `Scene` holds only frame-wide state, and a field
+    /// added to it is a decision someone reviews. The pattern below names every field of `Scene`
+    /// and has no `..`: a new field does not compile until it is listed here, and it belongs
+    /// here only if it is frame-wide (see the doc of `Scene`). The compiler reads the struct, so
+    /// this holds for any layout of it (multi-line types, attributes, comments), unlike a scan
+    /// of the source for field names, which a field named after no view slips past. The doc
+    /// comment each field needs, which is where the struct says why it is frame-wide, is the
+    /// `missing_docs_in_private_items` lint denied on `Scene`.
     #[test]
     fn scene_has_no_view_specific_fields() {
-        let source = include_str!("render.rs");
-        let start = source
-            .find("\npub struct Scene {\n")
-            .expect("the scene is declared in this file");
-        let body = &source[start..];
-        let body = &body[..body.find("\n}\n").expect("the struct ends")];
-        let words = |text: &str| -> Vec<String> {
-            text.split(|c: char| !c.is_alphanumeric())
-                .filter(|word| !word.is_empty())
-                .map(str::to_lowercase)
-                .collect()
-        };
-        let views: Vec<&str> = REGISTRY.iter().map(|row| row.name).collect();
-        let mut documented = false;
-        let mut fields = 0;
-        for line in body.lines().skip(2) {
-            let line = line.trim();
-            if line.starts_with("///") {
-                documented = true;
-                continue;
-            }
-            let Some((name, kind)) = line.trim_end_matches(',').split_once(':') else {
-                continue;
-            };
-            let name = name
-                .trim()
-                .trim_start_matches("pub(crate) ")
-                .trim_start_matches("pub ");
-            fields += 1;
-            assert!(
-                documented,
-                "Scene::{name} has no doc comment saying why it is frame-wide"
-            );
-            documented = false;
-            for word in words(name).into_iter().chain(words(kind)) {
-                assert!(
-                    !views.contains(&word.as_str()),
-                    "Scene::{name} is named or typed after the {word} view: keep its state in the module"
-                );
-            }
-        }
-        assert!(fields >= 25, "the test read the struct: {fields} fields");
+        let scene = Scene::new();
+        let Scene {
+            resources: _,
+            frames: _,
+            last_time: _,
+            clock: _,
+            births: _,
+            arrivals: _,
+            previous: _,
+            deaths: _,
+            headroom: _,
+            splashes: _,
+            newborn: _,
+            started: _,
+            intro: _,
+            links: _,
+            highlight: _,
+            positions: _,
+            places: _,
+            titles: _,
+            bounds: _,
+            notes: _,
+            sparklines: _,
+            tour: _,
+            popup: _,
+            callout: _,
+            history: _,
+            rows: _,
+            modules: _,
+            spare: _,
+            visible: _,
+            collapsed: _,
+        } = scene;
     }
 
     #[test]
