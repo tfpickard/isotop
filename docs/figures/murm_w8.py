@@ -11,21 +11,22 @@ import math
 
 from izh_w8 import Normal
 
-PROCESSES = [110, 40, 26, 18, 6, 22, 4, 2, 48, 9, 90]  # threads (the prototype's list / 10)
+PROTOTYPE = [1100, 400, 260, 180, 60, 220, 40, 20, 480, 90, 900]  # the prototype's threads, 3750 birds
 BUSY = [0.15, 0.9, 0.3, 0.2, 0.4, 0.2, 0.02, 0.05, 0.6, 0.1, 0.05]
 
 
 class Flock:
-    def __init__(self, seed=11):
+    def __init__(self, scale=0.5, seed=11):
         self.rng = Normal(seed)
+        processes = [max(1, round(t * scale)) for t in PROTOTYPE]
         r = self.rng
         self.owner, self.speed = [], []
-        for index, (threads, share) in enumerate(zip(PROCESSES, BUSY)):
+        for index, (threads, share) in enumerate(zip(processes, BUSY)):
             for _ in range(threads):
                 self.owner.append(index)
                 self.speed.append(1.0 + 0.3 * (1.0 if r.unit() < share else 0.0))
         n = self.n = len(self.owner)
-        centres = [[18.0 * r.normal() for _ in range(3)] for _ in PROCESSES]
+        centres = [[18.0 * r.normal() for _ in range(3)] for _ in processes]
         self.pos = [[centres[o][a] + 14.0 * r.normal() + (60.0 if a == 2 else 0.0) for a in range(3)]
                     for o in self.owner]
         hx, hy = r.normal(), r.normal()
@@ -36,16 +37,35 @@ class Flock:
         self.falcon = None
         self.neighbours = [[] for _ in range(n)]
 
-    def knn(self, count=21):
+    def knn(self, count=21, cell=4.0):
+        """Exact k nearest neighbours of every bird, by growing cubes of grid cells."""
         pos = self.pos
+        grid = {}
+        for j, q in enumerate(pos):
+            grid.setdefault((int(q[0] // cell), int(q[1] // cell), int(q[2] // cell)), []).append(j)
         out = []
         for i, p in enumerate(pos):
-            px, py, pz = p
-            nearest = heapq.nsmallest(
-                count + 1,
-                ((((q[0] - px) ** 2 + (q[1] - py) ** 2 + (q[2] - pz) ** 2), j)
-                 for j, q in enumerate(pos)))
-            out.append([(math.sqrt(d2), j) for d2, j in nearest if j != i][:count])
+            cx, cy, cz = int(p[0] // cell), int(p[1] // cell), int(p[2] // cell)
+            radius = 1
+            while True:
+                found = []
+                for gx in range(cx - radius, cx + radius + 1):
+                    for gy in range(cy - radius, cy + radius + 1):
+                        for gz in range(cz - radius, cz + radius + 1):
+                            for j in grid.get((gx, gy, gz), ()):
+                                if j != i:
+                                    q = pos[j]
+                                    found.append(((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2
+                                                  + (q[2] - p[2]) ** 2, j))
+                if len(found) >= count:
+                    found.sort()
+                    if math.sqrt(found[count - 1][0]) <= radius * cell:
+                        break
+                if radius > 40:
+                    found.sort()
+                    break
+                radius += 1
+            out.append([(math.sqrt(d2), j) for d2, j in found[:count]])
         self.neighbours = out
         return out
 
