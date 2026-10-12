@@ -2544,6 +2544,13 @@ pub struct DemoOptions {
     /// over each cycle until the kill and falls back over the next 6 s, as it does before an
     /// OOM kill: no other process, no random stream. Off, there is no cycle.
     pub oom_cycle: bool,
+    /// Lets the thread pools of the base processes breathe: a process that has four threads or
+    /// more sheds up to two fifths of them and takes them back, each on its own period of 18 to
+    /// 33 s, so `Process::threads` falls and rises between samples (the higher thread indices
+    /// leave first and come back as the same threads). With `exact_cpu_time` it never falls
+    /// below one thread per 100% of the process's peak CPU use. A pure function of `time`;
+    /// the transients and every other field are as without it. Off, a process keeps its count.
+    pub thread_churn: bool,
 }
 
 impl DemoOptions {
@@ -2560,6 +2567,7 @@ impl DemoOptions {
         threads: false,
         channels: false,
         oom_cycle: false,
+        thread_churn: false,
     };
 }
 
@@ -3316,6 +3324,24 @@ fn demo_threads(index: usize, exact: bool) -> u32 {
     }
 }
 
+/// The thread count of base process `index` at `time` under `DemoOptions::thread_churn`: its
+/// `base` count less up to two fifths, shed and regained along a sine of its own period.
+fn demo_breathing_threads(base: u32, index: usize, time: f64, exact: bool) -> u32 {
+    if base < 4 {
+        return base;
+    }
+    let period = 18.0 + 5.0 * (index % 4) as f64;
+    let wave = 0.5 + 0.5 * (std::f64::consts::TAU * time / period + index as f64 * 1.3).sin();
+    let shed = (f64::from(base) * 0.4 * wave).floor() as u32;
+    let kept = if exact {
+        let (scale, bonus) = demo_cpu_shape(index);
+        (((scale + bonus) / 100.0).ceil() as u32).min(base)
+    } else {
+        1
+    };
+    (base - shed).max(kept)
+}
+
 /// The scheduler priority and nice value of demo process `index` of `kind`.
 fn demo_priority(index: usize, kind: Kind) -> (i32, i32) {
     if kind == Kind::Kernel && index.is_multiple_of(3) {
@@ -3593,6 +3619,12 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     } else {
         (Measured::Pending, Measured::Pending, None)
     };
+    if options.thread_churn {
+        for (index, process) in processes.iter_mut().enumerate().take(count) {
+            process.threads =
+                demo_breathing_threads(process.threads, index, time, options.exact_cpu_time);
+        }
+    }
     if options.threads {
         for process in &mut processes {
             process.thread_list = Measured::Known(threads::demo_list(process, time));
@@ -4150,6 +4182,78 @@ mod tests {
         }));
         assert!(snapshot.sources.is_empty());
         assert!(threaded.sources.contains(Source::Threads));
+    }
+
+    #[test]
+    fn thread_churn_makes_thread_pools_breathe_and_changes_nothing_else() {
+        let breathing = DemoOptions {
+            thread_churn: true,
+            threads: true,
+            ..DemoOptions::NONE
+        };
+        let plain = |time| {
+            demo_with(
+                time,
+                192,
+                DemoOptions {
+                    threads: true,
+                    ..DemoOptions::NONE
+                },
+            )
+        };
+        let mut distinct = HashSet::new();
+        let mut shed_and_regained = false;
+        for second in 0..60 {
+            let time = f64::from(second);
+            let (churned, base) = (demo_with(time, 192, breathing), plain(time));
+            for (index, (now, normal)) in churned.processes.iter().zip(&base.processes).enumerate()
+            {
+                assert_eq!(
+                    (now.id, now.cpu, now.memory),
+                    (normal.id, normal.cpu, normal.memory)
+                );
+                if normal.threads < 4 {
+                    assert_eq!(now.threads, normal.threads, "process {index}");
+                } else {
+                    assert!(
+                        now.threads <= normal.threads && now.threads * 5 >= normal.threads * 3,
+                        "process {index}: {} of {}",
+                        now.threads,
+                        normal.threads
+                    );
+                    distinct.insert((index, now.threads));
+                }
+                assert_eq!(
+                    now.thread_list.known().map(|list| list.threads.len()),
+                    Some(now.threads as usize),
+                    "the list follows the count"
+                );
+            }
+            shed_and_regained |= churned.processes[0].threads < base.processes[0].threads;
+        }
+        assert!(shed_and_regained, "the first pool sheds threads");
+        let by_process = |index: usize| distinct.iter().filter(|(i, _)| *i == index).count();
+        assert!(
+            by_process(0) >= 2 && by_process(5) >= 2,
+            "counts move over a minute"
+        );
+        // A thread that comes back is the same thread: ids depend on the process and the index.
+        let low = demo_with(0.0, 192, breathing);
+        let high = demo_with(
+            0.0,
+            192,
+            DemoOptions {
+                thread_churn: false,
+                ..breathing
+            },
+        );
+        let (few, many) = (
+            low.processes[0].thread_list.known().expect("threads"),
+            high.processes[0].thread_list.known().expect("threads"),
+        );
+        for (kept, thread) in few.threads.iter().zip(many.threads.iter()) {
+            assert_eq!((kept.tid, kept.start), (thread.tid, thread.start));
+        }
     }
 
     #[test]
