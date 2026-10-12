@@ -14,6 +14,7 @@ use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, 
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
 pub mod shared;
+pub(crate) mod strokes;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];

@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 58 | 57,377 | 1,293 | 3,282 |
+| Rust | 59 | 58,083 | 1,303 | 3,330 |
 | Python | 28 | 12,273 | 634 | 1,412 |
 | WebGPU Shader Language | 1 | 212 | 17 | 34 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,447 | 516 |
+| Markdown | 6 | 0 | 2,448 | 516 |
 | Plain Text | 7 | 0 | 302 | 0 |
-| **Total** | **104** | **69,928** | **4,694** | **5,255** |
+| **Total** | **105** | **70,634** | **4,705** | **5,303** |
 
 ## Rust by module
 
@@ -22,7 +22,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/render.rs` | 3,348 | 1,496 |
+| `src/render.rs` | 3,349 | 1,496 |
 | `src/model.rs` | 3,093 | 3,898 |
 | `src/coop.rs` | 2,706 | 1,363 |
 | `src/necropolis.rs` | 1,995 | 610 |
@@ -51,6 +51,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/cells.rs` | 457 | 339 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
+| `src/render/strokes.rs` | 383 | 317 |
 | `src/platform/linux/net.rs` | 320 | 278 |
 | `src/matrix.rs` | 299 | 219 |
 | `src/blackbody.rs` | 292 | 146 |
@@ -74,13 +75,13 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/journal.rs` | 101 | 53 |
 | `src/platform/linux/threads.rs` | 101 | 100 |
 | `src/platform/linux/memory.rs` | 86 | 121 |
+| `src/render/shared.rs` | 78 | 47 |
 | `src/palette.rs` | 75 | 58 |
-| `src/render/shared.rs` | 73 | 47 |
 | `src/geometry.rs` | 50 | 15 |
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **33,812** | **23,579** |
+| **Total** | **34,201** | **23,896** |
 
 ## Largest files
 
@@ -89,7 +90,7 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | File | Lines | > 1,200 |
 |:--|--:|:--|
 | `src/model.rs` | 8,219 | over limit |
-| `src/render.rs` | 5,452 | over limit |
+| `src/render.rs` | 5,453 | over limit |
 | `src/main.rs` | 5,286 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
@@ -106,7 +107,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 | Counter | Count |
 |:--|--:|
 | `#[expect(clippy::too_many_lines` | 16 |
-| `#[expect(clippy::too_many_arguments` | 8 |
+| `#[expect(clippy::too_many_arguments` | 9 |
 | `unsafe` blocks | 115 |
 | `unwrap_or(0` sites | 30 |
 | `unwrap_or(0.0` sites | 16 |
@@ -118,7 +119,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 781 |
+| `#[test]` functions | 792 |
 | Views in the registry | 17 |
 | Views with a README mapping table | 7 of 17 |
 | Direct crate dependencies | 10 |
