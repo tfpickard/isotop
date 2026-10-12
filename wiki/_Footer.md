@@ -1,0 +1,1 @@
+isotop &mdash; maximalism for its own sake. Source: [tfpickard/isotop](https://github.com/tfpickard/isotop). This wiki is published from `wiki/` in the repository; edit it there.
