@@ -52,7 +52,7 @@ def trace(b, limit=40.0, keep_path=False):
 
 
 def main():
-    svg = P.Svg(1180, 470, "Light bending by a Schwarzschild black hole",
+    svg = P.Svg(1180, 500, "Light bending by a Schwarzschild black hole",
                 "Photon paths for several impact parameters around a Schwarzschild black hole "
                 "and the deflection angle against impact parameter.")
     svg.text(24, 28, "Photons around a Schwarzschild hole: u'' + u = 3 M u^2", size=16,
@@ -69,8 +69,7 @@ def main():
     svg.circle(cx, cy, B_CRITICAL * scale, stroke=P.MUTED, width=1.0, dash="4 3")
     svg.circle(cx, cy, 3.0 * scale, stroke=P.MUTED, width=1.0, dash="1 3")
     svg.circle(cx, cy, 2.0 * scale, fill="#05070a", stroke=P.TEXT, width=1.2)
-    rays = [(3.0, P.RED), (5.0, P.RED), (5.25, P.ORANGE), (5.6, P.YELLOW), (6.5, P.AQUA),
-            (9.0, P.BLUE), (14.0, P.VIOLET)]
+    rays = [(3.0, P.RED), (5.25, P.ORANGE), (6.5, P.AQUA), (9.0, P.BLUE), (14.0, P.VIOLET)]
     for b, colour in rays:
         captured, sweep, path = trace(b, keep_path=True)
         points = []
