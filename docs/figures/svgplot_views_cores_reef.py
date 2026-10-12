@@ -36,6 +36,19 @@ def num(value):
     return "0" if text in ("-0", "") else text
 
 
+def tint(colour, scale):
+    """A '#rrggbb' colour scaled in brightness and clamped, as palette::tint does."""
+    channels = [int(colour[k:k + 2], 16) for k in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(c * scale))) for c in channels)
+
+
+def mix(a, b, t):
+    """Linear mix of two '#rrggbb' colours, a at 0 and b at 1."""
+    ca = [int(a[k:k + 2], 16) for k in (1, 3, 5)]
+    cb = [int(b[k:k + 2], 16) for k in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(x + (y - x) * t) for x, y in zip(ca, cb))
+
+
 def esc(text):
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

@@ -93,8 +93,6 @@ def main():
     arc = [(cx + R * math.cos(math.pi - math.pi * i / 120), cy - R * math.sin(math.pi - math.pi * i / 120))
            for i in range(121)]
     svg.polyline(arc, BLUE, 2.5)
-    svg.polyline([(cx + R * math.cos(math.pi * i / 120), cy + R * math.sin(math.pi * i / 120) * 0.0 + 0.0)
-                  for i in range(121)], BLUE, 0.1)
     # rays and hits
     for nx in (-0.85, -0.5, -0.15, 0.15, 0.5, 0.85):
         top = cy - R * math.sqrt(1 - nx * nx)

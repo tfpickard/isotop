@@ -69,7 +69,7 @@ def vicsek_periodic(n, side, eta, steps, burn, speed=0.03, radius=1.0, seed=1):
     return total / count
 
 
-def yard(eta, steps=1200, average=100, n=60, seed=1, speed=0.6, h=0.05, radius=4.0):
+def yard(eta, steps=1200, average=300, n=60, seed=1, speed=0.6, h=0.05, radius=4.0):
     """The Coop yard rule for one flock; returns the mean order over the last `average` steps."""
     rng = random.Random(seed)
     pos = [[8.0 + (rng.random() * 2 - 1) * 9.0, 8.0 + (rng.random() * 2 - 1) * 9.0]
@@ -162,15 +162,15 @@ def interpolate(xs, ys, x):
 def main():
     etas = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, TAU]
     periodic = [vicsek_periodic(256, 6.4, e, 1000, 500, seed=3) for e in etas]
-    seeds = [11, 12, 13, 14]
+    seeds = [11, 12, 13, 14, 15, 16]
     runs = [[yard(e, seed=s) for s in seeds] for e in etas]
     means = [sum(r) / len(r) for r in runs]
 
-    svg = Svg(1080, 400, "Vicsek order parameter against heading noise",
+    svg = Svg(1080, 430, "Vicsek order parameter against heading noise",
               "Order parameter against heading noise for the 1995 Vicsek rule and for the Coop "
               "yard rule, and the noise a given CPU pressure produces in the coop.")
     heading(svg, "Order against noise: the 1995 rule and the Coop yard",
-            "phi = |sum of velocities| / sum of speeds; each point is a time average after a burn-in")
+            "phi = |sum of velocities| / sum of speeds; each point is a time average after a burn-in (1000 steps, the last 500 for the periodic box; 1200 steps, the last 300 for the yard)")
 
     left = Axes(svg, 62, 82, 400, 270, (0, TAU), (0, 1.05), "heading noise eta (radians)",
                 "order parameter phi", "A: phi(eta)",
@@ -211,8 +211,8 @@ def main():
     right.hline(0.886 / math.sqrt(60), ORANGE, 1, "2 4")
     right.legend([("CV = 0", AQUA, "line"), ("CV = 1", YELLOW, "line"), ("CV = 2", MAGENTA, "line")],
                  x=right.x + 56, y=right.y + 20, size=10.5)
-    svg.text(24, 388, "Panel C reads panel A through panel B: it interpolates the orange mean at "
-                      "eta(psi, CV). Orange dots in A are the four seeds.", 10.5, "start", MUTED)
+    svg.text(24, 418, "Panel C reads panel A through panel B: it interpolates the orange mean at "
+                      "eta(psi, CV). Orange dots in A are the six seeds, each a time average over the last 15 s.", 10.5, "start", MUTED)
     print(svg.save("flocking-vicsek-order"))
     for e, p, m in zip(etas, periodic, means):
         print("eta %.2f  periodic %.3f  yard %.3f" % (e, p, m))

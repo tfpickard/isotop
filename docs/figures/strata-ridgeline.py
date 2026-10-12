@@ -44,19 +44,19 @@ def data():
     rng = Lcg(20240229)
     rows = []
     for row in range(ROWS):
-        pulses = [(rng.next() * COLUMNS, 3 + 5 * rng.next(), 0.25 + 0.75 * rng.next())
-                  for _ in range(2 + int(3 * rng.next()))]
+        pulses = [(rng.next() * COLUMNS, 1.2 + 2.2 * rng.next(), 0.3 + 0.7 * rng.next())
+                  for _ in range(3 + int(4 * rng.next()))]
         values = []
         for t in range(COLUMNS):
             value = sum(a * math.exp(-((t - c) ** 2) / (2 * w * w)) for c, w, a in pulses)
-            values.append(min(1.0, value + 0.04 * rng.next()))
+            values.append(min(1.0, value + 0.05 * rng.next()))
         rows.append(values)
     return rows
 
 
 def main():
     rows = data()
-    svg = S.Svg(1020, 400, "Building a ridgeline",
+    svg = S.Svg(1020, 410, "Building a ridgeline",
                 "The same sixteen profiles drawn as bare lines, with hidden-line removal, and as "
                 "curtains under the isotop camera.")
     palette = [S.SLATE, S.TEAL, S.GOLD, S.VIOLET]
@@ -77,34 +77,36 @@ def main():
     svg.text(360, 30, "(b) painter's algorithm: back to front, filled", 13, weight="600")
     front(360, 30, True)
 
-    # (c) Strata-style curtains through the isotop camera.
+    # (c) Strata-style curtains through the isotop camera, with Strata's own proportions: one
+    # unit of x per second of history, rows 2.4 apart, height 0.15 + 12 v.
     pitch = math.asin(1 / math.sqrt(3))
-    sc = math.sqrt(1.5)
-    ox, oy = 840, 330
 
-    def project(x, y, z):
+    def raw(x, y, z):
         across = (x - y) / math.sqrt(2)
         along = (x + y) / math.sqrt(2)
-        return (ox + across * sc * 5.0, oy + (along * math.sin(pitch) - z * math.cos(pitch)) * sc * 5.0)
+        return (across, -(z * math.cos(pitch) - along * math.sin(pitch)))
 
-    svg.text(700, 30, "(c) Strata: curtains, orthographic isometric camera", 13, weight="600")
-    spacing = 2.4
+    drawn = []
     for row in range(ROWS):
-        y = row * spacing - ROWS * spacing * 0.5
+        y = row * 2.4
+        xs = [t - (COLUMNS - 1) for t in range(COLUMNS)]
+        top = [raw(xs[t], y, 0.15 + 12.0 * rows[row][t]) for t in range(COLUMNS)]
+        low = [raw(xs[t], y, 0.45 * (0.15 + 12.0 * rows[row][t])) for t in range(COLUMNS)]
+        a, b = raw(xs[0], y, 0), raw(xs[-1], y, 0)
+        drawn.append((row, a, b, top, low))
+    every = [p for _, a, b, top, low in drawn for p in [a, b] + top]
+    lo_x, hi_x = min(p[0] for p in every), max(p[0] for p in every)
+    lo_y, hi_y = min(p[1] for p in every), max(p[1] for p in every)
+    scale = min(300.0 / (hi_x - lo_x), 300.0 / (hi_y - lo_y))
+    fit = lambda p: (700 + (p[0] - lo_x) * scale, 60 + (p[1] - lo_y) * scale)
+    svg.text(700, 30, "(c) Strata: curtains, isotop's camera", 13, weight="600")
+    for row, a, b, top, low in drawn:
         colour = palette[min(row * 4 // ROWS, 3)]
-        top = [project((t - COLUMNS) * 0.55, y, 0.15 + 9.0 * rows[row][t]) for t in range(COLUMNS)]
-        base_a = project((0 - COLUMNS) * 0.55, y, 0)
-        base_b = project((COLUMNS - 1 - COLUMNS) * 0.55, y, 0)
-        low = [project((t - COLUMNS) * 0.55, y, 0.45 * (0.15 + 9.0 * rows[row][t]))
-               for t in range(COLUMNS)]
-        svg.polygon([base_a] + top + [base_b], fill=S.tint(colour, 0.34) if hasattr(S, "tint") else colour,
-                    opacity=1.0)
-        svg.polygon([base_a] + low + [base_b], fill="#0e1116", opacity=0.45)
-        svg.polyline(top, colour, 1.3)
-    svg.text(700, 380, "time runs along x (now at the lower right); rows run from kernel (back)", 11,
-             fill=S.MUTED)
-    svg.text(20, 380, "Ridges are processes, height is CPU use. Panel (a) hides nothing; (b) and (c) "
-             "hide what a nearer ridge covers.", 11, fill=S.MUTED)
+        svg.polygon([fit(a)] + [fit(p) for p in top] + [fit(b)], fill=S.tint(colour, 0.34))
+        svg.polygon([fit(a)] + [fit(p) for p in low] + [fit(b)], fill="#0e1116", opacity=0.45)
+        svg.polyline([fit(p) for p in top], colour, 1.3)
+    svg.text(20, 384, "Panel (a) hides nothing; (b) and (c) hide what a nearer ridge covers. In (c) time "
+             "runs along x (now at the lower right) and rows run from kernel (back) to containers (front).", 11, fill=S.MUTED)
     print(svg.save("strata-ridgeline"))
 
 
