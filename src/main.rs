@@ -2018,7 +2018,7 @@ fn demo_snapshot(row: &ViewInfo, previous: f64, time: f64, count: usize) -> Snap
         snapshot.life = model::demo_events(previous, time, count, row.demo);
         // A view that demands the events is told where they come from, as a live run tells it.
         if row.sources.contains(Source::LifeEvents) {
-            snapshot.sources = model::demo_life_sources(row.demo);
+            snapshot.sources = snapshot.sources.union(model::demo_life_sources(row.demo));
         }
     }
     snapshot
