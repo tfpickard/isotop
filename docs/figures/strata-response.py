@@ -6,7 +6,7 @@ Writes docs/media/figures/strata-response.svg. Run from the repository root:
 
   (a) a ridge's height is `0.15 + PEAK * bounded(cpu, 60)` with PEAK = 16, where
       bounded(v, k) = v / (v + k) and `cpu` is in percent of one core (src/strata.rs). It
-      saturates: 100 % is 64 % of the ceiling, 400 % is 87 %.
+      saturates: 100 % is 63 % of the ceiling, 400 % is 87 %.
   (b) the history stores `Process::cpu`, which `measure` in src/model.rs has already smoothed
       with time constant 1.5 s: cpu += (1 - exp(-dt / 1.5)) (raw - cpu). At dt = 1 s the weight
       is 0.4866. A process that jumps to 100 % and stays there reads 49, 74, 87, 93 ... and a single

@@ -43,15 +43,15 @@ def main():
     a.vline(FLASH, MUTED, 1, "3 3")
     a.label(FLASH, 250, "tau = 0.35 s", 10, "start", MUTED, dx=4)
     a.legend([("red", RED, "line"), ("green", AQUA, "line"), ("blue", BLUE, "line")],
-             x=a.x + 150, y=a.y + 140, size=10.5)
+             x=a.x + 170, y=a.y + 105, size=10.5)
 
-    b = Axes(svg, 440, 90, 270, 240, (0, 76), (0, 24), "queued lines (pending)", "lines per second",
-             "Release rate = 1 / interval", xticks=[0, 16, 32, 48, 64, 76], yticks=[0, 4, 8, 12, 16, 20, 24],
+    b = Axes(svg, 440, 90, 270, 240, (0, 76), (0, 56), "queued lines (pending)", "lines per second",
+             "Release rate = 1 / interval", xticks=[0, 16, 32, 48, 64, 76], yticks=[0, 10, 20, 30, 40, 50],
              title_size=11.5)
     ns = list(range(0, 77))
     b.line(ns, [(1 + n / 3.0) / 0.5 for n in ns], ORANGE, 2.2)
-    b.label(76, 2.0, "interval 0.5 s empty; 0.25 s at 3 queued", 9.5, "end", MUTED, dy=-4)
-    b.label(76, 22.5, "2 lines/s at 0, 22.0 at 76", 9.5, "end", MUTED)
+    b.label(70, 4.0, "empty: one line per 0.5 s", 9.5, "end", MUTED)
+    b.label(70, 54.0, "76 queued: 52.7 lines/s", 9.5, "end", MUTED)
     b.vline(76, MUTED, 1, "3 3")
 
     rng = random.Random(7)
