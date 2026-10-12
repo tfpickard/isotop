@@ -57,7 +57,7 @@ crowd there.
 ![Orthographic projection of the globe](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/globe-orthographic.svg)
 
 **isotop's camera is this projection.** `Camera::view` maps a ground point $(x,y)$ and height $z$, with rotation
-$\rho$ and pitch $p$, to `across = (x cos(ρ+π/4) - y sin(ρ+π/4))`, `along = (x sin(ρ+π/4) + y cos(ρ+π/4))`,
+$\kappa$ and pitch $p$, to `across = x cos(κ+π/4) - y sin(κ+π/4)`, `along = x sin(κ+π/4) + y cos(κ+π/4)`,
 screen right $= \text{across}\cdot S$, screen up $= (z\cos p - \text{along}\sin p)\,S$ and depth $=
 \text{along}\cos p + z\sin p$, with $S = \sqrt{3/2} = 1.224745$ pixels per world unit at zoom 1. The globe places longitude $\lambda$ at azimuth
 $\theta = \text{spin} - \lambda$ with $\text{spin} = \pi/4 + \lambda_h + \dots$ ($\lambda_h$ the longitude of home). For
@@ -204,7 +204,7 @@ plane or outside the silhouette) before drawing glows. No new primitive.
 **The coastline file.** `src/coastline.bin` is Natural Earth 110 m coastline: 134 polylines, 5 128 vertices, 20 780 bytes = 134 x 2 + 5 128 x 4. Each polyline is a
 little-endian `u16` point count followed by that many `i16` pairs, longitude and latitude in hundredths of a degree
 (so a vertex is accurate to 0.005 degrees, 0.55 km). The longitudes span $\pm 180$, the latitudes $-85.61$ to $83.65$, the mean segment is
-0.95 degrees, 120 of the lines are closed rings and 14 are open (cut at the antimeridian or ending in Antarctica). At a scale of 1:110 million the
+0.95 degrees, 120 of the lines are closed rings and 14 are open. At a scale of 1:110 million the
 data are generalised far more coarsely than the quantum. `coastline()` parses it once, on first draw.
 
 ## Reading the picture
