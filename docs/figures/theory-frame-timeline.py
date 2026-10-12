@@ -107,7 +107,7 @@ def main():
     # events thread
     y = top + 3 * lane_h
     svg.rect(left + 1, y + 10, right - left - 2, lane_h - 28, fill=PURPLE, opacity=0.35, stroke=PURPLE)
-    svg.text(left + 10, y + 22, "blocks on the kernel; fills a bounded LifeQueue that each sample drains", 10.5, FG)
+    svg.text(left + 10, y + 22, "reads kernel events; fills a bounded LifeQueue that each sample drains", 10.5, FG)
 
     # ---- bottom panel: inside one frame ----
     y0 = 340
@@ -115,12 +115,12 @@ def main():
     fx0, fx1 = 40, 920
     segments = [
         ("animate,\nsample\nif due", 0.09, ORANGE),
-        ("camera.\napproach,\ntour", 0.06, TEAL),
-        ("Scene::\nrender\n(record)", 0.22, BLUE),
-        ("rasterize:\nCPU or GPU\n+ readback", 0.25, RED),
-        ("hover,\noverlay", 0.07, YELLOW),
+        ("camera\neasing,\ntour", 0.075, TEAL),
+        ("Scene::\nrender\n(record)", 0.20, BLUE),
+        ("rasterize:\nCPU or GPU\n+ readback", 0.22, RED),
+        ("hover,\noverlay", 0.075, YELLOW),
         ("Terminal::\npresent", 0.13, PURPLE),
-        ("event::poll until the deadline\n(no wait if already late)", 0.18, GRID),
+        ("event::poll\nuntil deadline\n(none if late)", 0.21, GRID),
     ]
     x = fx0
     total = fx1 - fx0

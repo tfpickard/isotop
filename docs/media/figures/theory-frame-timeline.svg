@@ -87,33 +87,34 @@
 <rect x="916.00" y="184.00" width="8.00" height="24.00" rx="0" fill="#3fb950" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
 <text x="260.00" y="195.00" font-size="10.5" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">sockets, files, locks, cgroups, NVML</text>
 <rect x="251.00" y="232.00" width="668.00" height="16.00" rx="0" fill="#bc8cff" fill-opacity="0.35" stroke="#bc8cff" stroke-width="1.0"/>
-<text x="260.00" y="244.00" font-size="10.5" fill="#c9d1d9" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">blocks on the kernel; fills a bounded LifeQueue that each sample drains</text>
+<text x="260.00" y="244.00" font-size="10.5" fill="#c9d1d9" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">reads kernel events; fills a bounded LifeQueue that each sample drains</text>
 <text x="24.00" y="322.00" font-size="14" fill="#c9d1d9" text-anchor="start" font-weight="600" font-style="normal" font-family="system-ui, sans-serif">inside one frame (schematic widths; the loop is sequential)</text>
 <rect x="40.00" y="340.00" width="79.20" height="62.00" rx="0" fill="#f0883e" fill-opacity="0.3" stroke="#f0883e" stroke-width="1.0"/>
 <text x="79.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">animate,</text>
 <text x="79.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">sample</text>
 <text x="79.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">if due</text>
-<rect x="119.20" y="340.00" width="52.80" height="62.00" rx="0" fill="#39c5cf" fill-opacity="0.3" stroke="#39c5cf" stroke-width="1.0"/>
-<text x="145.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">camera.</text>
-<text x="145.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">approach,</text>
-<text x="145.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">tour</text>
-<rect x="172.00" y="340.00" width="193.60" height="62.00" rx="0" fill="#58a6ff" fill-opacity="0.3" stroke="#58a6ff" stroke-width="1.0"/>
-<text x="268.80" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Scene::</text>
-<text x="268.80" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">render</text>
-<text x="268.80" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">(record)</text>
-<rect x="365.60" y="340.00" width="220.00" height="62.00" rx="0" fill="#f85149" fill-opacity="0.3" stroke="#f85149" stroke-width="1.0"/>
-<text x="475.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">rasterize:</text>
-<text x="475.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">CPU or GPU</text>
-<text x="475.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">+ readback</text>
-<rect x="585.60" y="340.00" width="61.60" height="62.00" rx="0" fill="#d29922" fill-opacity="0.3" stroke="#d29922" stroke-width="1.0"/>
-<text x="616.40" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">hover,</text>
-<text x="616.40" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">overlay</text>
-<rect x="647.20" y="340.00" width="114.40" height="62.00" rx="0" fill="#bc8cff" fill-opacity="0.3" stroke="#bc8cff" stroke-width="1.0"/>
-<text x="704.40" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Terminal::</text>
-<text x="704.40" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">present</text>
-<rect x="761.60" y="340.00" width="158.40" height="62.00" rx="0" fill="#30363d" fill-opacity="0.9" stroke="#8b949e" stroke-width="1.0"/>
-<text x="840.80" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">event::poll until the deadline</text>
-<text x="840.80" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">(no wait if already late)</text>
+<rect x="119.20" y="340.00" width="66.00" height="62.00" rx="0" fill="#39c5cf" fill-opacity="0.3" stroke="#39c5cf" stroke-width="1.0"/>
+<text x="152.20" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">camera</text>
+<text x="152.20" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">easing,</text>
+<text x="152.20" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">tour</text>
+<rect x="185.20" y="340.00" width="176.00" height="62.00" rx="0" fill="#58a6ff" fill-opacity="0.3" stroke="#58a6ff" stroke-width="1.0"/>
+<text x="273.20" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Scene::</text>
+<text x="273.20" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">render</text>
+<text x="273.20" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">(record)</text>
+<rect x="361.20" y="340.00" width="193.60" height="62.00" rx="0" fill="#f85149" fill-opacity="0.3" stroke="#f85149" stroke-width="1.0"/>
+<text x="458.00" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">rasterize:</text>
+<text x="458.00" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">CPU or GPU</text>
+<text x="458.00" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">+ readback</text>
+<rect x="554.80" y="340.00" width="66.00" height="62.00" rx="0" fill="#d29922" fill-opacity="0.3" stroke="#d29922" stroke-width="1.0"/>
+<text x="587.80" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">hover,</text>
+<text x="587.80" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">overlay</text>
+<rect x="620.80" y="340.00" width="114.40" height="62.00" rx="0" fill="#bc8cff" fill-opacity="0.3" stroke="#bc8cff" stroke-width="1.0"/>
+<text x="678.00" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Terminal::</text>
+<text x="678.00" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">present</text>
+<rect x="735.20" y="340.00" width="184.80" height="62.00" rx="0" fill="#30363d" fill-opacity="0.9" stroke="#8b949e" stroke-width="1.0"/>
+<text x="827.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">event::poll</text>
+<text x="827.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">until deadline</text>
+<text x="827.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">(none if late)</text>
 <line x1="40.00" y1="420.00" x2="920.00" y2="420.00" stroke="#8b949e" stroke-width="1" stroke-opacity="1.0"/>
 <text x="40.00" y="438.00" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">frame_start</text>
 <text x="920.00" y="438.00" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">deadline = frame_start + 1 / fps</text>

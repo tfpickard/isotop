@@ -75,7 +75,7 @@ def monte_carlo(dt, loads=160, steps=500, seed=7):
 def main():
     figure = Figure(
         900,
-        480,
+        500,
         "Rates from a quantised counter",
         "Raw and smoothed CPU readings of a steady load at 0.1 s sampling, and the error of both against the sampling interval.",
     )
@@ -112,15 +112,15 @@ def main():
     right.legend([(ORANGE, "raw reading", None), (BLUE, "displayed (filtered)", None)], x=right.left + 12, y=right.top + 18)
     right.note(1.0, 100 * Q / math.sqrt(6), "0.41%", color=ORANGE, dx=8, dy=-8)
     figure.text(
-        72, 430, "Lines: theory for a busy fraction per interval uniform in [0, 1]. Dots: simulation of random steady loads (seed 7).",
+        72, 450, "Lines: theory for a busy fraction per interval uniform in [0, 1]. Dots: simulation of random steady loads (seed 7).",
         size=11.5, color=MUTED,
     )
     figure.text(
-        72, 447, "The raw error grows as 1 / dt; the displayed error stays near 0.19% for every dt below tau.",
+        72, 467, "The raw error grows as 1 / dt; the displayed error stays near 0.19% for every dt below tau.",
         size=11.5, color=MUTED,
     )
     figure.text(
-        72, 464, "The counter is cumulative, so a tick is never lost, only moved to the next interval.",
+        72, 484, "The counter is cumulative, so a tick is never lost, only moved to the next interval.",
         size=11.5, color=MUTED,
     )
     out = os.path.join("docs", "media", "figures", "model-quantised-counters.svg")
