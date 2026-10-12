@@ -1003,7 +1003,7 @@ mod tests {
         assert!(!view("horizon").info().flash);
         assert!(
             REGISTRY.iter().take(11).all(|row| row.flash),
-            "no built-in view loses its ring"
+            "the eleven original views keep their ring"
         );
     }
 

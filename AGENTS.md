@@ -51,10 +51,14 @@ The README covers usage. This file covers how to work on the code.
    stops it. On Linux the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
-2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
+2. **Record** (`render.rs`, `views.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, field triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
-   The `Scene` persists between frames to hold layout, smoothing, births and deaths, and the
-   simulated media.
+   It eases the sample, admits the processes, and hands the shown view's module (`ViewModule::draw`)
+   a `Stage`; the scene then draws the links and exit flashes the view's registry row asks for.
+   The `Scene` persists between frames only what is frame-wide: smoothing, births and deaths,
+   links and highlights, the last frame's positions, places, bounds and notes, the shared history,
+   spare buffers and the visible and collapsed counts. Each view's own state (layout, simulated
+   media) lives in its module, which the scene builds from the registry row and owns.
 3. **Rasterize**. `Frame::rasterize` does this on the CPU; `gpu.rs` with `shaders.wgsl` does it
    on wgpu (Vulkan, Metal or DX12). Both produce colour, depth and a pick buffer.
 4. **Present** (`terminal.rs`). Frames go to the terminal through POSIX shared memory (`t=s`),
@@ -80,14 +84,14 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/threads.rs` | The Linux `ThreadReader`: `/proc/<pid>/task/<tid>/stat`, parsed after the last `)` with the field indices `parse_stat` uses (`split_stat`, `timing` in `platform/linux/mod.rs`) |
 | `platform/linux/events.rs` | The `isotop-events` thread on Linux: proc connector fork, exec and exit events and taskstats exit records over netlink, decoded by byte offset from the uapi headers, thread records summed per process |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines, and `Delivery`, the lines one sample carries on `Snapshot.journal` |
-| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); and `testing`, module views for tests |
+| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Build`, the constructor a row holds for its module; the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); and `testing`, module views for tests |
 | `views/city.rs` | The City module view (declared from `views.rs`): `City` keeps each process's plot (`Plot`: a district and one of its 16 slots, taken from the first vacant slot of its cgroup's districts and kept until the process leaves the sample), `district_origin` spirals the districts out in square shells without moving any, and a building is its height from CPU, footprint from memory, windows, rooftop lamp, GPU beacon and I/O pulse; it reports the tallest height in `Stage::headroom` for `Scene::fit`, and its row's `link_lift` of 1.5 raises the links over the rooftops |
 | `views/systems.rs` | The process tree as nested Keplerian systems, which the Orbit and Flow module views share: `layout` (the trees laid out for one frame, as a `Layout` of `Path`s, `Body`s and `Star`s), `Tree`, `Walk`, `hubs` (a hollow `Process` stand-in for a parent isotop cannot read, with `HUB_START` identities that never equal a process's, so it is never pickable), `Galaxy` (`place` reserves each system's room, with `HEADROOM` to spare for changes of memory and population, and keeps its place until the structure outgrows it, `revolve` turns the systems about their barycenter in Kepler bands, only across consecutive `Stage::frames`), `shells`, `elements`, `period`, `Orbit`, `system_label` and `hub_note`; `Layout::report` tells the app the tour stops (`Stage::tour`, a hub left out), the system titles (`Stage::titles`) and the memory a system holds (`Stage::popup`), and `Layout::homes` (test only) gives each process its system's centre, the place the two views keep, for their `ViewModule::anchors` |
 | `views/orbit.rs` | The Orbit module view (declared from `views.rs`): `Orbits` keeps a `Galaxy`, lays the systems out with the orbital phase following the scene's time, and draws the orbits, CPU glows and trails, the bodies (a hub as an outline), GPU halos and thread rings; its legend adds `gpu_note` and `systems::hub_note`, and its anchors are each process's system centre, since the orbits and slots inside follow memory and the other bodies |
 | `views/flow.rs` | The Flow module view (declared from `views.rs`): `Wells` keeps a `Galaxy` and a `medium::Flow` sheet, lays the systems out with the bodies held still, and pours the weather into the sheet (`weather`: a bowl per system and a dimple per heavy process for memory, whirlpools for CPU, two-lane `Lane` rivers for sockets, sparks for connections leaving the machine), kicks the particles from `Stage::splashes` and `Stage::newborn`, and draws the fabric, the bodies sunk into it and the particles; its anchors are each process's system centre, the well it sinks into |
 | `views/ripple.rs` | The Ripple module view (declared from `views.rs`): `Ripple` keeps the `medium::Wave` and the pebble `Cluster` of each cgroup (a sunflower spiral, a slot kept while its process lives, drawn or not), drives the wave from each busy process's own pitch and from the scene's births and exits (`Stage::newborn`, `Stage::splashes`), lights the water as facets and gives each patch to its nearest process (`territories`, which allocates its owner list and queue every frame); a cluster of two or more drawn pebbles is a system, named in `Stage::titles`, `Stage::tour` and `Stage::popup`. It draws with `render::cover` (the grid over the layout), `similar` and `glows`, which Flow shares |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the shared ground-grid helpers `cover`, `footprint`, `similar` and `glows` that Ripple and Flow draw with |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene` (frame-wide state only, plus the module of each registry row, which it calls through `ViewModule`), and the shared ground-grid helpers `cover`, `footprint`, `similar` and `glows` that Ripple and Flow draw with |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source. `LIGHT`, the one world light direction every lit surface shares, is Rust only: shading is baked into colours before the backends see them |
 | `render/strokes.rs` | Wide strokes built only from `Item::Triangle`s: `Frame::ribbon` (a screen-facing band along a polyline, `Width` in world units or pixels, an optional `Dash` measured along the 3D arc length) and `Frame::tube` (a flat-shaded prism with parallel-transported `ring_frames`, lit by `shared::LIGHT` through `lit`; `tube_faces` is its pure world-space geometry); every piece is at most 32 px an edge, so a triangle's box is at most 64 x 64 px |
 | `render/field.rs` | The field primitive (`Field`, `Placement`, `Relief`, `Shading`, `Frame::field`, `Item::Field`): a grid of colours drawn in world space, flat or as lit relief, sampled bilinearly by the one formula both backends use (clamped uv in node units, `floor(bilerp + 0.5)` per channel, the owner of the nearest node as the pick), with `ShadedField` (the shaded colours and owners a frame keeps and recycles through `Buffers`, so an unchanged `(key, revision)` is not shaded again), the CPU span rasterizer `Frame::field_triangle`, and `StorageLayout`, which plans what the GPU storage buffer must rewrite. Grid simulations draw through it, never one triangle pair per cell; Ripple and Flow still do |
@@ -179,8 +183,12 @@ after the process's own figures) and `stage.callout` (lines for the tour's callo
 collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
 time, limit, focus and whether the app is paused). The row (`ViewInfo`) holds
 everything else that sets the view apart, and `Scene`, `App` and the headless warm-up read it
-instead of naming the view. Every view is a module view; `Hooks::BuiltIn` is a leftover that no
-row uses and `Scene` has no arm for, so write new views the module way and never add an arm.
+instead of naming the view. There is one way to write a view: a module behind
+`ViewModule`, built by its row's `build`. `Scene` holds only frame-wide state and has no
+per-view field, branch or arm (`scene_has_no_view_specific_fields` fails on a field named or
+typed after a view), so a view's own state goes in its module, never on `Scene`. `Scene` builds every
+module when it is created and feeds each one `record` on every sample, so a view that is
+not shown still has its history when it opens.
 
 **Shared helpers live in one place each.** Don't write a second copy:
 - `simulation`: `SpatialHash` and `SpatialHash3`, `Rng` (seeded per identity, `normal` for a
@@ -332,7 +340,7 @@ match your own shell.
   - `src/<name>.rs` with a `#[derive(Default)]` state struct that implements `ViewModule`, a
     `mod` line in `main.rs` and a row in the file table above.
   - One `ViewInfo` at the end of `REGISTRY` in `views.rs`, built with
-    `ViewInfo::new(name, title, backdrop, Hooks::Module(...))`, setting only the fields that
+    `ViewInfo::new(name, title, backdrop, || Box::new(<Name>::default()))`, setting only the fields that
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
     `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
     demo samples, such as `Phase::Replay` at `--sample-ms` or `Phase::Play`, which also draws the frames between them, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,

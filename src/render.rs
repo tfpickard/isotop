@@ -8,7 +8,7 @@ use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::tint;
 use crate::simulation::{growth, hash, smoothing};
 use crate::views::systems::{Body, Orbit, is_hub};
-use crate::views::{Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
+use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
 use crate::{globe, glyphs};
 
 pub mod field;
@@ -1288,50 +1288,81 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
     Cow::Owned(cut)
 }
 
+/// What persists between frames and belongs to the frame, not to any one view: the smoothing of
+/// the sampled processes, their births and deaths, the links and highlights, the outputs of the
+/// last frame the app reads back, the spare buffers, and the module of each view in its row's
+/// slot. A view keeps its own state in its module and reaches the scene only through `Stage`;
+/// `scene_has_no_view_specific_fields` fails if a field named after a view appears here.
 pub struct Scene {
+    /// Each process's CPU and memory as eased towards the samples. Frame-wide: the easing
+    /// belongs to the sample, so every view reads the same figures (`Stage::resources`) and a
+    /// view that is opened later finds them already settled.
     resources: HashMap<Identity, (f32, f32)>,
     /// Frames rendered, whichever view was shown: `Stage::frames`.
     frames: u64,
+    /// The time of the previous frame, to tell a rewind or a gap from a step and drop `resources`.
     last_time: Option<f32>,
     /// The step every `Stage` gets as `dt`.
     clock: FrameClock,
+    /// When each process was first seen, for the growth every view eases new bodies in with.
     births: HashMap<Identity, f32>,
     /// When each process that arrived after the first frame was first seen: `Stage::age`.
     arrivals: HashMap<Identity, f32>,
+    /// Where the previous frame drew each process, so the exit flash and the splash of the media
+    /// know where a process that left stood, whichever view is shown.
     previous: HashMap<Identity, Point>,
+    /// The exit flashes still fading: the point and the time of a death. Frame-wide with
+    /// `previous`, drawn by the scene over any view whose row has the flash.
     deaths: Vec<(Point, f32)>,
     /// The last frame's `Stage::headroom`, so fitting leaves it room above the ground.
     headroom: f32,
-    /// Exits and births since the last frame, as disturbances for the ripple and flow media.
+    /// Where processes left since the last frame, as disturbances for the media of any view
+    /// (`Stage::splashes`).
     splashes: Vec<Point>,
+    /// The processes that arrived since the last frame (`Stage::newborn`).
     newborn: Vec<Identity>,
+    /// Whether a frame has been drawn: processes present at the first one did not start while
+    /// anyone watched.
     started: bool,
     /// Animate the processes that are already running when the first frame is drawn.
     pub intro: bool,
-    /// Which socket links to draw, and which processes' links stand out.
+    /// Which socket links to draw: the `c` key, global to every view.
     pub links: Links,
+    /// The processes whose links stand out: selected, hovered or toured, set by the app for
+    /// whichever view is shown.
     pub highlight: Vec<Identity>,
+    /// The last frame's `Stage::positions`: where each drawn process is, which picking, labels,
+    /// the tour, the links and the exit flash all read.
     pub positions: HashMap<Identity, Point>,
+    /// The last frame's `Stage::places`.
     pub places: Vec<(Point, String)>,
     /// The last frame's `Stage::titles`.
     pub titles: Vec<Title>,
+    /// The last frame's `Stage::bounds`, which `fit` frames the camera to.
     bounds: Vec<Point>,
+    /// The last frame's `Stage::notes`: popup lines after the sockets.
     pub notes: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::sparklines`.
     pub sparklines: HashMap<Identity, Vec<String>>,
-    /// The last frame's `Stage::tour`, `Stage::popup` and `Stage::callout`.
+    /// The last frame's `Stage::tour`: the stops the tour and the Space visits make.
     pub tour: Vec<TourTarget>,
+    /// The last frame's `Stage::popup`: lines the inspector popup carries for the shown view.
     pub popup: Vec<(Identity, String)>,
+    /// The last frame's `Stage::callout`: lines of the tour's callout.
     pub callout: Vec<(Identity, String)>,
     /// Every process's CPU and memory over the last samples, recorded whichever view is shown.
     pub(crate) history: History,
     /// The views this scene draws, one row each: `REGISTRY`, unless a test brings its own.
     rows: &'static [ViewInfo],
-    /// The state of each module view, in its row's slot; built-in rows have None.
-    modules: Vec<Option<Box<dyn ViewModule>>>,
+    /// The module of each view, in its row's slot, made by the row's `build` when the scene is
+    /// created. Every module is built up front, not on first show, because `record` feeds every
+    /// sample to every view and a view built late would miss the samples before it opened.
+    modules: Vec<Box<dyn ViewModule>>,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
+    /// How many processes the shown view drew in the last frame: the status line's count.
     pub visible: usize,
+    /// How many of the processes admitted to the last frame the shown view left out.
     pub collapsed: usize,
 }
 
@@ -1369,13 +1400,7 @@ impl Scene {
             callout: Vec::new(),
             history: History::default(),
             rows,
-            modules: rows
-                .iter()
-                .map(|row| match row.hooks {
-                    Hooks::BuiltIn { .. } => None,
-                    Hooks::Module(build) => Some(build()),
-                })
-                .collect(),
+            modules: rows.iter().map(|row| (row.build)()).collect(),
             spare: Buffers::default(),
             visible: 0,
             collapsed: 0,
@@ -1389,59 +1414,37 @@ impl Scene {
 
     /// The third status line for `view` while no process is inspected.
     pub fn legend(&self, view: View, snapshot: &Snapshot) -> String {
-        match self.row(view).hooks {
-            Hooks::BuiltIn { legend, .. } => legend(self, snapshot),
-            Hooks::Module(_) => self.modules[view.index()]
-                .as_ref()
-                .map(|module| module.legend(snapshot))
-                .unwrap_or_default(),
-        }
+        self.modules[view.index()].legend(snapshot)
     }
 
     /// The line `view` shows in place of the inspector, if it draws no processes to inspect.
     pub fn inspector_line(&self, view: View) -> Option<String> {
-        match self.row(view).hooks {
-            Hooks::BuiltIn { inspector_line, .. } => inspector_line.map(|line| line(self)),
-            Hooks::Module(_) => self.modules[view.index()]
-                .as_ref()
-                .and_then(|module| module.inspector_line()),
-        }
+        self.modules[view.index()].inspector_line()
     }
 
     /// The inspector card of `thing`, which `view`, the shown view, drew: built now from the
-    /// module's own state, or None once it no longer shows the thing. Built-in views draw no
-    /// things.
+    /// module's own state, or None once it no longer shows the thing.
     pub fn card(&self, view: View, thing: Thing, snapshot: &Snapshot) -> Option<Card> {
-        self.modules[view.index()]
-            .as_ref()
-            .and_then(|module| module.card(thing, snapshot))
+        self.modules[view.index()].card(thing, snapshot)
     }
 
-    /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means. No
-    /// built-in view takes keys.
+    /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means.
     pub fn key(&mut self, view: View, key: ViewKey) -> bool {
-        self.modules[view.index()]
-            .as_mut()
-            .is_some_and(|module| module.key(key))
+        self.modules[view.index()].key(key)
     }
 
     /// The state of the module view `view` draws, if it is a `T` and lets its tests see it
     /// (`ViewModule::state`).
     #[cfg(test)]
     pub fn module<T: 'static>(&self, view: View) -> Option<&T> {
-        self.modules[view.index()].as_ref()?.state()?.downcast_ref()
+        self.modules[view.index()].state()?.downcast_ref()
     }
 
     /// Where the view harness looks for `view`'s processes after a frame: the module's own
-    /// anchors for a module view. None checks `positions`.
+    /// anchors. None checks `positions`.
     #[cfg(test)]
     pub fn anchors(&self, view: View) -> Option<HashMap<Identity, Point>> {
-        match self.row(view).hooks {
-            Hooks::BuiltIn { .. } => None,
-            Hooks::Module(_) => self.modules[view.index()]
-                .as_ref()
-                .and_then(|module| module.anchors()),
-        }
+        self.modules[view.index()].anchors()
     }
 
     /// Notes a splash at `at` as an exit would, for the next frame, for a test that stirs the
@@ -1466,20 +1469,8 @@ impl Scene {
     /// shown, so views that keep their own history have it when they open.
     pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
         self.history.record(snapshot, time);
-        let rows = self.rows;
-        for (index, row) in rows.iter().enumerate() {
-            match row.hooks {
-                Hooks::BuiltIn {
-                    record: Some(record),
-                    ..
-                } => record(self, snapshot, time),
-                Hooks::BuiltIn { record: None, .. } => {}
-                Hooks::Module(_) => {
-                    if let Some(module) = self.modules[index].as_mut() {
-                        module.record(snapshot, time);
-                    }
-                }
-            }
+        for module in &mut self.modules {
+            module.record(snapshot, time);
         }
     }
 
@@ -1686,10 +1677,6 @@ impl Scene {
             toured,
             ..
         } = *input;
-        // No view is built in any more: a built-in row would need an arm here, and none has one.
-        if let Hooks::BuiltIn { arm, .. } = self.row(view).hooks {
-            match arm {}
-        }
         self.positions.clear();
         let mut stage = Stage {
             frame,
@@ -1721,9 +1708,7 @@ impl Scene {
             titles: &mut self.titles,
             headroom: &mut self.headroom,
         };
-        let shown = self.modules[view.index()]
-            .as_mut()
-            .map_or(0, |module| module.draw(&mut stage, processes, snapshot));
+        let shown = self.modules[view.index()].draw(&mut stage, processes, snapshot);
         self.visible = shown;
         self.collapsed = processes.len().saturating_sub(shown);
     }
@@ -2741,6 +2726,58 @@ mod tests {
         assert!(beams > 0, "highlighted links are drawn");
         assert!(flashes > 0, "exits flash");
         assert_eq!(draw(View::at(1)), ([0.0; 3], 0, 0));
+    }
+
+    /// A view's state lives in its module. The fields of `Scene` are read from its source rather
+    /// than through `Debug`, which would need a hand-written impl that lists the same fields, and
+    /// rather than from `size_of`, which moves with every legitimate frame-wide field and says
+    /// nothing about which field grew. This fails on a field named after a registered view or
+    /// typed with one, and on a field without a doc comment, which is where the struct says why
+    /// the field is frame-wide.
+    #[test]
+    fn scene_has_no_view_specific_fields() {
+        let source = include_str!("render.rs");
+        let start = source
+            .find("\npub struct Scene {\n")
+            .expect("the scene is declared in this file");
+        let body = &source[start..];
+        let body = &body[..body.find("\n}\n").expect("the struct ends")];
+        let words = |text: &str| -> Vec<String> {
+            text.split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect()
+        };
+        let views: Vec<&str> = REGISTRY.iter().map(|row| row.name).collect();
+        let mut documented = false;
+        let mut fields = 0;
+        for line in body.lines().skip(2) {
+            let line = line.trim();
+            if line.starts_with("///") {
+                documented = true;
+                continue;
+            }
+            let Some((name, kind)) = line.trim_end_matches(',').split_once(':') else {
+                continue;
+            };
+            let name = name
+                .trim()
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub ");
+            fields += 1;
+            assert!(
+                documented,
+                "Scene::{name} has no doc comment saying why it is frame-wide"
+            );
+            documented = false;
+            for word in words(name).into_iter().chain(words(kind)) {
+                assert!(
+                    !views.contains(&word.as_str()),
+                    "Scene::{name} is named or typed after the {word} view: keep its state in the module"
+                );
+            }
+        }
+        assert!(fields >= 25, "the test read the struct: {fields} fields");
     }
 
     #[test]

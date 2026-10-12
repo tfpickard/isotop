@@ -1,11 +1,12 @@
 //! The view registry. Every view is one row of `REGISTRY`, and the row holds everything that sets
-//! the view apart: its names, sky, legend, record and key hooks, headless warm-up, link rule, the
-//! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
-//! row instead of naming the view, so a new view is one module plus one row.
+//! the view apart: its names, sky, the constructor of its module, headless warm-up, link rule,
+//! the sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read
+//! the row instead of naming the view, so a new view is one module plus one row.
 //!
-//! Every view is a module view: a type that implements `ViewModule`, which `Scene` builds from
-//! the row and calls through the trait. `Hooks::BuiltIn` and `BuiltIn` remain only until the
-//! built-in path is deleted: no row uses them and `Scene` has no arm to draw one.
+//! There is one way to write a view: a type that implements `ViewModule`. The row's `build`
+//! makes one when the `Scene` is created, the scene keeps it in its row's slot and calls it
+//! through the trait (`draw`, `record`, `legend`, `key`, `inspector_line`, `card`), and nothing
+//! outside the module reaches into its state.
 
 mod city;
 mod flow;
@@ -75,7 +76,7 @@ impl fmt::Debug for View {
 }
 
 /// One row of the registry: everything that sets a view apart from the others. `ViewInfo::new`
-/// fills every field after `hooks` with its default, which is how the views without that
+/// fills every field after `build` with its default, which is how the views without that
 /// special case behave, so a row sets only what differs.
 pub struct ViewInfo {
     /// The lowercase name `--view` and `--list-views` use.
@@ -88,8 +89,9 @@ pub struct ViewInfo {
     /// is skipped by Tab and the digits, and a headless run of it exits 1. A runtime probe lives
     /// in `platform/`. Default: everywhere.
     pub available: fn() -> bool,
-    /// How the scene draws the view and asks for its legend, records and keys.
-    pub hooks: Hooks,
+    /// Makes the view's module, which draws the view and answers for its legend, records and
+    /// keys. The scene calls it once per row when it is created and owns the module from then on.
+    pub build: Build,
     /// What a headless run does before the captured frame, phase by phase in slice order.
     /// Default: nothing.
     pub warmup: &'static [Warmup],
@@ -97,7 +99,7 @@ pub struct ViewInfo {
     pub links: LinkRule,
     /// Whether the scene draws those links as hairlines (`Frame::hairline`, thin triangles), which the CPU
     /// and the GPU rasterize alike, rather than as beams, whose one-pixel lines they do not.
-    /// Default: off, the beams the built-in views were blessed with; a new view turns it on.
+    /// Default: off, the beams the eleven original views were blessed with; a new view turns it on.
     pub link_strokes: bool,
     /// How high, in world units, the scene lifts the ends of its links above the points the view
     /// put in `Stage::positions`, so they clear the rooftops of a view that draws buildings.
@@ -160,19 +162,19 @@ pub struct Turn {
 }
 
 impl ViewInfo {
-    /// A row with every field after `hooks` at its default.
+    /// A row with every field after `build` at its default.
     pub const fn new(
         name: &'static str,
         title: &'static str,
         backdrop: Backdrop,
-        hooks: Hooks,
+        build: Build,
     ) -> ViewInfo {
         ViewInfo {
             name,
             title,
             backdrop,
             available: everywhere,
-            hooks,
+            build,
             warmup: &[],
             links: LinkRule::Quiet,
             link_strokes: false,
@@ -291,33 +293,8 @@ fn everywhere() -> bool {
     true
 }
 
-/// How the scene draws a view and reaches its legend, record and key hooks. Each hook lives in
-/// exactly one place: on the row for a built-in view, on the trait for a module view.
-pub enum Hooks {
-    /// One of the views that predate the registry, drawn by its arm of `Scene::render`.
-    #[expect(
-        dead_code,
-        reason = "no row is built in; the built-in path is deleted next"
-    )]
-    BuiltIn {
-        arm: BuiltIn,
-        /// The third status line while no process is inspected.
-        legend: fn(&Scene, &Snapshot) -> String,
-        /// Takes in each new sample, whichever view is shown.
-        record: Option<fn(&mut Scene, &Snapshot, f32)>,
-        /// Replaces the inspector line, the second status line, and hides the inspector popup:
-        /// for a view that draws no processes.
-        inspector_line: Option<fn(&Scene) -> String>,
-    },
-    /// A view drawn through `ViewModule`. The scene builds one with this function when it is
-    /// created and owns it from then on; nothing outside the module reaches into its state.
-    Module(fn() -> Box<dyn ViewModule>),
-}
-
-/// The arm of `Scene::render` that draws a built-in view. No view is built in any more, so there
-/// is no arm and no value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuiltIn {}
+/// The constructor a row holds: it makes the module that draws the view.
+pub type Build = fn() -> Box<dyn ViewModule>;
 
 /// Which socket links the scene draws over a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,7 +386,7 @@ pub enum ViewKey {
 }
 
 /// A view that the scene draws, records and asks for its legend through this trait. Its state
-/// lives in the implementing type, which the registry row's `Hooks::Module` builds.
+/// lives in the implementing type, which the registry row's `build` makes.
 pub trait ViewModule {
     /// Draws the view onto the stage and returns how many of `processes` it showed; the scene
     /// counts the rest as collapsed. Fill `stage.positions` for every drawn process, and
@@ -472,21 +449,15 @@ pub static REGISTRY: &[ViewInfo] = &[
         links: LinkRule::All,
         // Links rise above the rooftops.
         link_lift: 1.5,
-        ..ViewInfo::new(
-            "city",
-            "CITY",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(city::City::default())),
-        )
+        ..ViewInfo::new("city", "CITY", Backdrop::Dusk, || {
+            Box::new(city::City::default())
+        })
     },
     ViewInfo {
         links: LinkRule::All,
-        ..ViewInfo::new(
-            "orbit",
-            "ORBIT",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(orbit::Orbits::default())),
-        )
+        ..ViewInfo::new("orbit", "ORBIT", Backdrop::Space, || {
+            Box::new(orbit::Orbits::default())
+        })
     },
     ViewInfo {
         links: LinkRule::All,
@@ -499,51 +470,36 @@ pub static REGISTRY: &[ViewInfo] = &[
             }],
             ..Contract::DEFAULT
         },
-        ..ViewInfo::new(
-            "ripple",
-            "RIPPLE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(ripple::Ripple::default())),
-        )
+        ..ViewInfo::new("ripple", "RIPPLE", Backdrop::Space, || {
+            Box::new(ripple::Ripple::default())
+        })
     },
     ViewInfo {
         warmup: &[SETTLE],
-        ..ViewInfo::new(
-            "flow",
-            "FLOW",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(flow::Wells::default())),
-        )
+        ..ViewInfo::new("flow", "FLOW", Backdrop::Space, || {
+            Box::new(flow::Wells::default())
+        })
     },
     ViewInfo {
         warmup: &[SETTLE],
         // Marbles lap at their CPU; the lane is what must stay put, and `Track::anchors` says
         // which one each rides.
-        ..ViewInfo::new(
-            "cores",
-            "CORES",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(cores::Track::default())),
-        )
+        ..ViewInfo::new("cores", "CORES", Backdrop::Space, || {
+            Box::new(cores::Track::default())
+        })
     },
-    ViewInfo::new(
-        "cells",
-        "CELLS",
-        Backdrop::Dusk,
-        Hooks::Module(|| Box::new(cells::Dishes::default())),
-    ),
+    ViewInfo::new("cells", "CELLS", Backdrop::Dusk, || {
+        Box::new(cells::Dishes::default())
+    }),
     ViewInfo {
         // A minute of history, so the landscape is full in the captured frame.
         warmup: &[Warmup {
             phase: Phase::History { seconds: 60 },
             when: When::DemoOutput,
         }],
-        ..ViewInfo::new(
-            "strata",
-            "STRATA",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(strata::Strata::default())),
-        )
+        ..ViewInfo::new("strata", "STRATA", Backdrop::Dusk, || {
+            Box::new(strata::Strata::default())
+        })
     },
     ViewInfo {
         face: Some(globe::face),
@@ -552,23 +508,17 @@ pub static REGISTRY: &[ViewInfo] = &[
             upright: globe::upright,
         }),
         sources: Sources::of(&[Source::Locations]),
-        ..ViewInfo::new(
-            "globe",
-            "GLOBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(globe::Globe::default())),
-        )
+        ..ViewInfo::new("globe", "GLOBE", Backdrop::Space, || {
+            Box::new(globe::Globe::default())
+        })
     },
     ViewInfo {
         warmup: &[SETTLE],
         // Fish swim and crabs scuttle at their CPU; their school's target and their seat are
         // what must stay put, and `Reef::anchors` says where those are.
-        ..ViewInfo::new(
-            "reef",
-            "REEF",
-            Backdrop::Sea,
-            Hooks::Module(|| Box::new(reef::Reef::default())),
-        )
+        ..ViewInfo::new("reef", "REEF", Backdrop::Sea, || {
+            Box::new(reef::Reef::default())
+        })
     },
     ViewInfo {
         haze: false,
@@ -589,12 +539,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             },
             when: When::Headless,
         }],
-        ..ViewInfo::new(
-            "matrix",
-            "MATRIX",
-            Backdrop::Void,
-            Hooks::Module(|| Box::new(matrix::Rain::default())),
-        )
+        ..ViewInfo::new("matrix", "MATRIX", Backdrop::Void, || {
+            Box::new(matrix::Rain::default())
+        })
     },
     ViewInfo {
         // The CPU history and fox baselines come from the samples before the frame.
@@ -607,12 +554,9 @@ pub static REGISTRY: &[ViewInfo] = &[
         ],
         // Chickens walk; their seats and houses are what must stay put, and `Coop::anchors` says
         // where those are.
-        ..ViewInfo::new(
-            "coop",
-            "COOP",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(coop::Coop::default())),
-        )
+        ..ViewInfo::new("coop", "COOP", Backdrop::Dusk, || {
+            Box::new(coop::Coop::default())
+        })
     },
     ViewInfo {
         // Stars flash their own novae and fades.
@@ -629,12 +573,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             time: 300.0,
             ..Contract::DEFAULT
         },
-        ..ViewInfo::new(
-            "ptolemy",
-            "PTOLEMY",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(ptolemy::Ptolemy::default())),
-        )
+        ..ViewInfo::new("ptolemy", "PTOLEMY", Backdrop::Space, || {
+            Box::new(ptolemy::Ptolemy::default())
+        })
     },
     ViewInfo {
         links: LinkRule::All,
@@ -653,12 +594,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             exact_cpu_time: true,
             ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "tesseract",
-            "TESSERACT",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(tesseract::Tesseract::default())),
-        )
+        ..ViewInfo::new("tesseract", "TESSERACT", Backdrop::Dusk, || {
+            Box::new(tesseract::Tesseract::default())
+        })
     },
     ViewInfo {
         // Graves are drawn by the view; the zombies have no socket links worth drawing.
@@ -682,12 +620,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             mortality: true,
             ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "necropolis",
-            "NECROPOLIS",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(necropolis::Necropolis::default())),
-        )
+        ..ViewInfo::new("necropolis", "NECROPOLIS", Backdrop::Dusk, || {
+            Box::new(necropolis::Necropolis::default())
+        })
     },
     ViewInfo {
         // Axons are the view's own: they follow the `c` key and carry the spikes.
@@ -712,12 +647,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             channels: true,
             ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "cortex",
-            "CORTEX",
-            Backdrop::Void,
-            Hooks::Module(|| Box::new(cortex::Cortex::default())),
-        )
+        ..ViewInfo::new("cortex", "CORTEX", Backdrop::Void, || {
+            Box::new(cortex::Cortex::default())
+        })
     },
     ViewInfo {
         // No sockets: the lensed images are not where processes talk. A process that vanishes
@@ -741,12 +673,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             oom_cycle: true,
             ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "horizon",
-            "HORIZON",
-            Backdrop::Void,
-            Hooks::Module(|| Box::new(horizon::Horizon::default())),
-        )
+        ..ViewInfo::new("horizon", "HORIZON", Backdrop::Void, || {
+            Box::new(horizon::Horizon::default())
+        })
     },
     ViewInfo {
         // Sockets join processes, and the flocks fly clear of one another.
@@ -773,12 +702,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             kernel_counters: true,
             ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "murmuration",
-            "MURMURATION",
-            Backdrop::Twilight,
-            Hooks::Module(|| Box::new(murmuration::Murmuration::default())),
-        )
+        ..ViewInfo::new("murmuration", "MURMURATION", Backdrop::Twilight, || {
+            Box::new(murmuration::Murmuration::default())
+        })
     },
     ViewInfo {
         // Sockets join the tips of the processes that hold them, as hairlines.
@@ -807,12 +733,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             unreadable_parent: true,
             ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "arbor",
-            "ARBOR",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(arbor::Arbor::default())),
-        )
+        ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
+            Box::new(arbor::Arbor::default())
+        })
     },
 ];
 
@@ -1007,18 +930,12 @@ pub mod testing {
 
     /// `guide`, then `probe` to switch to and back.
     pub static GUIDED: &[ViewInfo] = &[
-        ViewInfo::new(
-            "guide",
-            "GUIDE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Guide::default())),
-        ),
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("guide", "GUIDE", Backdrop::Space, || {
+            Box::new(Guide::default())
+        }),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
     ];
 
     /// A module view that seats each process by its rank in the frame's process order, so one
@@ -1140,42 +1057,28 @@ pub mod testing {
     /// `linker`, a view that draws its own links.
     pub static LINKER: &[ViewInfo] = &[ViewInfo {
         links: LinkRule::DrawnByView,
-        ..ViewInfo::new(
-            "linker",
-            "LINKER",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Linker::default())),
-        )
+        ..ViewInfo::new("linker", "LINKER", Backdrop::Space, || {
+            Box::new(Linker::default())
+        })
     }];
 
     /// `witness`, whose keys the help line shows, then `probe`.
     pub static WITNESSED: &[ViewInfo] = &[
         ViewInfo {
             keys: "m witness mode",
-            ..ViewInfo::new(
-                "witness",
-                "WITNESS",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Witness::default())),
-            )
+            ..ViewInfo::new("witness", "WITNESS", Backdrop::Space, || {
+                Box::new(Witness::default())
+            })
         },
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
     ];
 
     /// `shuffle`, then `listed`, the same view with its churn failure listed as known, and a
     /// resource-change failure it does not have.
     pub static SHUFFLED: &[ViewInfo] = &[
-        ViewInfo::new(
-            "shuffle",
-            "SHUFFLE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Shuffle)),
-        ),
+        ViewInfo::new("shuffle", "SHUFFLE", Backdrop::Space, || Box::new(Shuffle)),
         ViewInfo {
             contract: Contract {
                 known_unstable: &[
@@ -1192,12 +1095,7 @@ pub mod testing {
                 ],
                 ..Contract::DEFAULT
             },
-            ..ViewInfo::new(
-                "listed",
-                "LISTED",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Shuffle)),
-            )
+            ..ViewInfo::new("listed", "LISTED", Backdrop::Space, || Box::new(Shuffle))
         },
     ];
 
@@ -1242,23 +1140,17 @@ pub mod testing {
             time: 40.0,
             ..Contract::DEFAULT
         },
-        ..ViewInfo::new(
-            "anchored",
-            "ANCHORED",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Anchored::default())),
-        )
+        ..ViewInfo::new("anchored", "ANCHORED", Backdrop::Space, || {
+            Box::new(Anchored::default())
+        })
     }];
 
     /// Two module views: `probe`, with every optional field at its default, then `quiet`, which
     /// sets them otherwise: no links, flash, haze or tour, a pitch of its own and fixed counts.
     pub static ROWS: &[ViewInfo] = &[
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
         ViewInfo {
             links: LinkRule::DrawnByView,
             flash: false,
@@ -1266,12 +1158,9 @@ pub mod testing {
             pitch: Some(std::f32::consts::FRAC_PI_2),
             tour: false,
             header: Some(|_| (7, 3)),
-            ..ViewInfo::new(
-                "quiet",
-                "QUIET",
-                Backdrop::Dusk,
-                Hooks::Module(|| Box::new(Quiet::default())),
-            )
+            ..ViewInfo::new("quiet", "QUIET", Backdrop::Dusk, || {
+                Box::new(Quiet::default())
+            })
         },
     ];
 
@@ -1371,40 +1260,28 @@ pub mod testing {
 
     /// `lanterns`, then `probe` to switch to.
     pub static THINGS: &[ViewInfo] = &[
-        ViewInfo::new(
-            "lanterns",
-            "LANTERNS",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Lanterns::default())),
-        ),
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("lanterns", "LANTERNS", Backdrop::Space, || {
+            Box::new(Lanterns::default())
+        }),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
     ];
 
     /// `beamed` and `stroked`, which draw every link, as beams and as strokes.
     pub static LINKED: &[ViewInfo] = &[
         ViewInfo {
             links: LinkRule::All,
-            ..ViewInfo::new(
-                "beamed",
-                "BEAMED",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Probe::default())),
-            )
+            ..ViewInfo::new("beamed", "BEAMED", Backdrop::Space, || {
+                Box::new(Probe::default())
+            })
         },
         ViewInfo {
             links: LinkRule::All,
             link_strokes: true,
-            ..ViewInfo::new(
-                "stroked",
-                "STROKED",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Probe::default())),
-            )
+            ..ViewInfo::new("stroked", "STROKED", Backdrop::Space, || {
+                Box::new(Probe::default())
+            })
         },
     ];
 
@@ -1418,12 +1295,9 @@ pub mod testing {
             },
             when: When::DemoHeadless,
         }],
-        ..ViewInfo::new(
-            "replaying",
-            "REPLAYING",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        )
+        ..ViewInfo::new("replaying", "REPLAYING", Backdrop::Space, || {
+            Box::new(Probe::default())
+        })
     }];
 
     /// A module view that remembers when each frame it drew was and which sample it showed, as
@@ -1460,12 +1334,9 @@ pub mod testing {
             },
             when: When::DemoHeadless,
         }],
-        ..ViewInfo::new(
-            "playing",
-            "PLAYING",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Player::default())),
-        )
+        ..ViewInfo::new("playing", "PLAYING", Backdrop::Space, || {
+            Box::new(Player::default())
+        })
     }];
 
     /// `remembering`, which replays twenty seconds of demo samples, those before time 0 as well,
@@ -1478,24 +1349,18 @@ pub mod testing {
             },
             when: When::DemoHeadless,
         }],
-        ..ViewInfo::new(
-            "remembering",
-            "REMEMBERING",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        )
+        ..ViewInfo::new("remembering", "REMEMBERING", Backdrop::Space, || {
+            Box::new(Probe::default())
+        })
     }];
 
     /// Two module views for the demo options: `plain`, which asks for nothing, then `demanding`,
     /// which asks for births, exits and exact CPU time and replays two seconds of history before
     /// a captured frame.
     pub static DEMO_ROWS: &[ViewInfo] = &[
-        ViewInfo::new(
-            "plain",
-            "PLAIN",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("plain", "PLAIN", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
         ViewInfo {
             warmup: &[
                 Warmup {
@@ -1512,12 +1377,9 @@ pub mod testing {
                 exact_cpu_time: true,
                 ..DemoOptions::NONE
             },
-            ..ViewInfo::new(
-                "demanding",
-                "DEMANDING",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Probe::default())),
-            )
+            ..ViewInfo::new("demanding", "DEMANDING", Backdrop::Space, || {
+                Box::new(Probe::default())
+            })
         },
     ];
 }
@@ -1537,12 +1399,6 @@ mod tests {
         assert_eq!(View::all().count(), REGISTRY.len());
         assert_eq!(availability(), vec![true; REGISTRY.len()]);
     }
-
-    /// The first rows are the eleven views that predate the module contract, those not yet moved
-    /// onto it still built in; the digits pick them.
-    const ELEVEN_BUILT_IN: usize = 11;
-
-    /// The older views already moved onto the module contract, in registry order.
 
     #[test]
     fn a_process_that_arrives_after_the_first_frame_has_an_age_and_the_first_ones_have_none() {
@@ -1613,46 +1469,29 @@ mod tests {
     }
 
     #[test]
-    fn no_built_in_view_records_or_replaces_the_inspector() {
-        let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
-            REGISTRY
-                .iter()
-                .filter(|row| test(&row.hooks))
-                .map(|row| row.name)
-                .collect()
-        };
+    fn every_row_builds_its_own_module_and_only_the_matrix_replaces_the_inspector() {
+        let scene = Scene::new();
+        let snapshot = Snapshot::default();
+        let replacing: Vec<&str> = View::all()
+            .filter(|&view| scene.inspector_line(view).is_some())
+            .map(View::name)
+            .collect();
         assert_eq!(
-            with(|hooks| matches!(
-                hooks,
-                Hooks::BuiltIn {
-                    record: Some(_),
-                    ..
-                }
-            )),
-            Vec::<&str>::new(),
-            "the coop records through ViewModule, and Strata reads the shared history"
+            replacing,
+            ["matrix"],
+            "a view replaces the inspector line through ViewModule, and only a view that draws no \
+             processes has reason to"
         );
-        assert_eq!(
-            with(|hooks| matches!(
-                hooks,
-                Hooks::BuiltIn {
-                    inspector_line: Some(_),
-                    ..
-                }
-            )),
-            Vec::<&str>::new(),
-            "the matrix replaces the inspector through ViewModule"
-        );
-        let modules = with(|hooks| matches!(hooks, Hooks::Module(_)));
-        assert!(
-            REGISTRY[ELEVEN_BUILT_IN..]
-                .iter()
-                .all(|row| modules.contains(&row.name)),
-            "every row after the eleven built-in views is a module"
-        );
-        assert!(
-            modules.contains(&"coop") && modules.contains(&"matrix"),
-            "the coop and the matrix are two of the eleven, now modules"
-        );
+        for view in View::all() {
+            assert_eq!(
+                view.info().contract.draws_processes,
+                scene.inspector_line(view).is_none(),
+                "{view:?}: the line replaces the inspector of a view that draws no processes"
+            );
+            assert!(
+                scene.legend(view, &snapshot).starts_with(' '),
+                "{view:?}: the legend the module answers with starts with a space"
+            );
+        }
     }
 }
