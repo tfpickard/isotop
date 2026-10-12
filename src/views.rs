@@ -3,9 +3,10 @@
 //! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
 //! row instead of naming the view, so a new view is one module plus one row.
 //!
-//! The eleven views that predate the registry are built in: `Scene` keeps their state in typed
-//! fields and draws them in its own arms, picked by `BuiltIn`. A new view is a module view: a type
-//! that implements `ViewModule`, which `Scene` builds from the row and calls through the trait.
+//! Six of the eleven views that predate the registry (city, orbit, ripple, flow, matrix and coop)
+//! are still built in: `Scene` keeps their state in typed fields and draws them in its own arms,
+//! picked by `BuiltIn`. The others, and every new view, are module views: a type that implements
+//! `ViewModule`, which `Scene` builds from the row and calls through the trait.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -14,7 +15,8 @@ use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract,
+    arbor, cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, reef, strata,
+    tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -310,11 +312,6 @@ pub enum BuiltIn {
     Orbit,
     Ripple,
     Flow,
-    Cores,
-    Cells,
-    Strata,
-    Globe,
-    Reef,
     Matrix,
     Coop,
 }
@@ -577,12 +574,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "cores",
             "CORES",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Cores,
-                legend: |_, snapshot| cores::legend(snapshot),
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(cores::Track::default())),
         )
     },
     ViewInfo {
@@ -605,12 +597,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "cells",
             "CELLS",
             Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Cells,
-                legend: |_, snapshot| cells::legend(snapshot),
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(cells::Dishes::default())),
         )
     },
     ViewInfo {
@@ -623,12 +610,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "strata",
             "STRATA",
             Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Strata,
-                legend: strata_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(strata::Strata::default())),
         )
     },
     ViewInfo {
@@ -642,12 +624,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "globe",
             "GLOBE",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Globe,
-                legend: |_, snapshot| globe::legend(snapshot),
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(globe::Globe::default())),
         )
     },
     ViewInfo {
@@ -664,12 +641,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "reef",
             "REEF",
             Backdrop::Sea,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Reef,
-                legend: reef_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(reef::Reef::default())),
         )
     },
     ViewInfo {
@@ -953,14 +925,6 @@ fn flow_legend(scene: &Scene, _: &Snapshot) -> String {
         " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}",
         hub_note(scene)
     )
-}
-
-fn strata_legend(_: &Scene, _: &Snapshot) -> String {
-    " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into()
-}
-
-fn reef_legend(_: &Scene, _: &Snapshot) -> String {
-    " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into()
 }
 
 fn matrix_legend(scene: &Scene, _: &Snapshot) -> String {
@@ -1710,6 +1674,9 @@ mod tests {
     /// The first rows are the eleven views that predate the module contract; the digits pick them.
     const ELEVEN_BUILT_IN: usize = 11;
 
+    /// The older views already moved onto the module contract, in registry order.
+    const MIGRATED: [&str; 5] = ["cores", "cells", "strata", "globe", "reef"];
+
     #[test]
     fn a_process_that_arrives_after_the_first_frame_has_an_age_and_the_first_ones_have_none() {
         use crate::model::testing::process;
@@ -1810,11 +1777,11 @@ mod tests {
         );
         assert_eq!(
             with(|hooks| matches!(hooks, Hooks::Module(_))),
-            REGISTRY[ELEVEN_BUILT_IN..]
-                .iter()
-                .map(|row| row.name)
+            MIGRATED
+                .into_iter()
+                .chain(REGISTRY[ELEVEN_BUILT_IN..].iter().map(|row| row.name))
                 .collect::<Vec<_>>(),
-            "every row after the eleven built-in views is a module"
+            "every row after the eleven older views is a module, and so are the older ones moved"
         );
     }
 }

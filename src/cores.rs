@@ -16,6 +16,7 @@ use crate::model::{CoreKind, Cpu, Identity, Process, Snapshot, bounded};
 use crate::palette::{core_color, core_name, kind_color, tint};
 use crate::platform::Source;
 use crate::render::{Camera, Color, Frame, NONE, Point, Stage, WARM, mass_radius, ring_bounds};
+use crate::views::ViewModule;
 
 /// Seconds of CPU time per lap, so a process using one full core laps every LAP seconds.
 const LAP: f32 = 10.0;
@@ -96,14 +97,9 @@ fn hop_trail(
     }
 }
 
-impl Track {
+impl ViewModule for Track {
     #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
-    pub fn draw(
-        &mut self,
-        stage: &mut Stage,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-    ) -> usize {
+    fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.5));
         self.last = Some(time);
@@ -484,40 +480,45 @@ impl Track {
             .extend(ring_bounds([0.0, 0.0], outer + 1.0, 0.0, rim + 2.0));
         shown
     }
-}
 
-/// The status legend, saying what the snapshot's platform leaves out or measures per cluster.
-pub fn legend(snapshot: &Snapshot) -> String {
-    let lacks = |source| snapshot.missing.contains(source);
-    let clustered = by_cluster(snapshot);
-    let mut line = if lacks(Source::CoreKinds) {
-        " Lane = CPU (no core kinds reported) | brightness = busy".to_owned()
-    } else {
-        " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned()
-    };
-    line.push_str(if snapshot.per_cluster.contains(Source::CpuClock) {
-        " | chevrons = cluster clock (cycles per CPU second)"
-    } else if lacks(Source::CpuClock) {
-        " | no clock readings"
-    } else {
-        " | chevrons = clock"
-    });
-    line.push_str(if !lacks(Source::RunQueue) {
-        " | red queue = waiting tasks"
-    } else if clustered && snapshot.processes.iter().any(|p| p.waiting.is_some()) {
-        " | red beads = threads waiting to run"
-    } else {
-        " | no run queue readings"
-    });
-    line.push_str(if !lacks(Source::LastCpu) {
-        " | marble = running process, one lap per 10 s of CPU, hops = migrations"
-    } else if clustered {
-        " | marble = running process, one lap per 10 s of CPU; it rides the band it mostly ran on \
-         and hops when that changes (macOS reports the cluster, not the core)"
-    } else {
-        " | lanes = load; macOS reports no last CPU per process, so no marbles"
-    });
-    line
+    /// The status legend, saying what the snapshot's platform leaves out or measures per cluster.
+    fn legend(&self, snapshot: &Snapshot) -> String {
+        let lacks = |source| snapshot.missing.contains(source);
+        let clustered = by_cluster(snapshot);
+        let mut line = if lacks(Source::CoreKinds) {
+            " Lane = CPU (no core kinds reported) | brightness = busy".to_owned()
+        } else {
+            " Lane = CPU (gold performance, teal efficiency) | brightness = busy".to_owned()
+        };
+        line.push_str(if snapshot.per_cluster.contains(Source::CpuClock) {
+            " | chevrons = cluster clock (cycles per CPU second)"
+        } else if lacks(Source::CpuClock) {
+            " | no clock readings"
+        } else {
+            " | chevrons = clock"
+        });
+        line.push_str(if !lacks(Source::RunQueue) {
+            " | red queue = waiting tasks"
+        } else if clustered && snapshot.processes.iter().any(|p| p.waiting.is_some()) {
+            " | red beads = threads waiting to run"
+        } else {
+            " | no run queue readings"
+        });
+        line.push_str(if !lacks(Source::LastCpu) {
+            " | marble = running process, one lap per 10 s of CPU, hops = migrations"
+        } else if clustered {
+            " | marble = running process, one lap per 10 s of CPU; it rides the band it mostly ran on \
+             and hops when that changes (macOS reports the cluster, not the core)"
+        } else {
+            " | lanes = load; macOS reports no last CPU per process, so no marbles"
+        });
+        line
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 /// Whether marbles ride by cluster: the platform reports no last CPU per process but does
@@ -552,6 +553,18 @@ mod tests {
             &Camera::default(),
             time,
         ));
+    }
+
+    /// The legend of the view as the scene shows it with no process inspected.
+    fn legend(snapshot: &Snapshot) -> String {
+        Track::default().legend(snapshot)
+    }
+
+    /// The state of the cores view the scene has drawn.
+    fn track(scene: &Scene) -> &Track {
+        scene
+            .module::<Track>(view("cores"))
+            .expect("the cores view has drawn")
     }
 
     /// How many processes the Cores view draws as marbles over the demo workload.
@@ -684,7 +697,7 @@ mod tests {
             }
             time += 0.1;
             render(&mut scene, &snapshot, time);
-            let marble = &scene.cores.marbles[&hopper];
+            let marble = &track(&scene).marbles[&hopper];
             assert_eq!(marble.hops, hops, "share {share}");
             assert_eq!(marble.hop.is_some(), hopped, "share {share}");
             if let Some((from, _)) = marble.hop {
@@ -694,7 +707,10 @@ mod tests {
             }
             time += HOP_SECONDS + 0.1;
             render(&mut scene, &snapshot, time);
-            assert!(scene.cores.marbles[&hopper].hop.is_none(), "share {share}");
+            assert!(
+                track(&scene).marbles[&hopper].hop.is_none(),
+                "share {share}"
+            );
             let landed = radius(&scene, hopper);
             assert!((landed - band).abs() < 1e-3, "share {share} at {landed}");
             let plural = if hops == 1 { "" } else { "s" };
@@ -713,7 +729,7 @@ mod tests {
             (kept - PERFORMANCE_BAND).abs() < 1e-3,
             "a marble with no share stays on its band: {kept}"
         );
-        assert_eq!(scene.cores.marbles[&idle].hops, 0);
+        assert_eq!(track(&scene).marbles[&idle].hops, 0);
         assert_eq!(
             scene.notes[&idle][0].split(" | ").next(),
             Some("no CPU time measured in the last sample")
@@ -804,5 +820,32 @@ mod tests {
             process.waiting = None;
         }
         assert!(legend(&unmeasured).contains("| no run queue readings | marble = running"));
+    }
+
+    #[test]
+    fn marbles_hop_lanes_when_the_scheduler_moves_them() {
+        let mut snapshot = demo(1.0, 16);
+        for p in &mut snapshot.processes {
+            p.cpu = 0.0;
+            p.state = 'S';
+        }
+        snapshot.processes[3].cpu = 60.0;
+        snapshot.processes[3].core = Some(0);
+        let id = snapshot.processes[3].id;
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, 1.0);
+        let resting = scene.positions[&id][2];
+        snapshot.processes[3].core = Some(12);
+        render(&mut scene, &snapshot, 1.1);
+        render(&mut scene, &snapshot, 1.4);
+        assert!(scene.positions[&id][2] > resting + 0.5, "airborne mid-hop");
+        assert!(scene.notes[&id][0].contains("cpu12") && scene.notes[&id][0].contains("1 hop "));
+        render(&mut scene, &snapshot, 2.0);
+        let landed = scene.positions[&id];
+        assert!(
+            landed[0].hypot(landed[1]) > 20.0,
+            "efficiency lanes are outside"
+        );
+        assert_eq!(scene.visible, 1, "idle processes stay off the track");
     }
 }
