@@ -35,13 +35,13 @@ const ROOT_COLLAR: f32 = 0.55 * R_TRUNK;
 /// A branch of depth `d` is `TRUNK_LENGTH * LENGTH_RATIO^d` long; a root of depth `d` is
 /// `ROOT_LENGTH * ROOT_RATIO^d`.
 const TRUNK_LENGTH: f32 = 14.0;
-const LENGTH_RATIO: f32 = 0.78;
+const LENGTH_RATIO: f32 = 0.84;
 const ROOT_LENGTH: f32 = 8.0;
 const ROOT_RATIO: f32 = 0.72;
 /// How far a child leaves its parent's axis: the trunk's children, then every deeper branch; and
 /// the roots' children of the trunk, then every deeper root (measured from straight down).
-const ELEVATION_TRUNK: f32 = 50.0 * PI / 180.0;
-const ELEVATION: f32 = 40.0 * PI / 180.0;
+const ELEVATION_TRUNK: f32 = 66.0 * PI / 180.0;
+const ELEVATION: f32 = 52.0 * PI / 180.0;
 const ELEVATION_ROOT_COLLAR: f32 = 60.0 * PI / 180.0;
 const ELEVATION_ROOT: f32 = 38.0 * PI / 180.0;
 /// The golden angle, which the azimuths of successive slots advance by.
@@ -92,10 +92,10 @@ const WIND_HEADING: f32 = 0.35;
 const WIND_EASING: f32 = 1.5;
 
 /// The soil slab under the tree: half its width, and its depth.
-const SOIL_HALF: f32 = 14.0;
+const SOIL_HALF: f32 = 20.0;
 const SOIL_DEPTH: f32 = 10.0;
 /// The camera is fitted to a cylinder of this radius from the roots' depth to the crown's top.
-const FIT_RADIUS: f32 = 16.0;
+const FIT_RADIUS: f32 = 22.0;
 const FIT_TOP: f32 = 32.0;
 
 /// Most processes the tour visits above ground, and most roots.
