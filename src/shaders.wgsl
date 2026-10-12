@@ -261,3 +261,62 @@ fn splat_fragment(input: SplatVarying) -> Targets {
     }
     return Targets(vec4<f32>(0.0), input.pick);
 }
+
+// The field pass. An Item::Field triangle carries `uv` in node units and the word offset of its
+// field's slot in `field_words` (see render::field::StorageLayout): a header of
+// FIELD_HEADER_WORDS words (columns, rows, whether owners follow), one packed RGBA word per node
+// (r | g << 8 | b << 16) and, if the header says so, one owner word per node. The fragment
+// samples by hand, term by term as Frame::field_triangle does on the CPU, with no hardware
+// sampler or filtering: uv clamped to the field, bilinear mix `a + (b - a) * t` along x on both
+// rows and then along y, `floor(x + 0.5)` per channel, and the owner of the node at
+// `floor(uv + 0.5)` for the pick. The shading is already in the colours; there is none here.
+@group(0) @binding(1) var<storage, read> field_words: array<u32>;
+
+struct FieldVertex {
+    @location(0) position: vec2<f32>,
+    @location(1) depth: f32,
+    @location(2) uv: vec2<f32>,
+    @location(3) slot: u32,
+};
+
+struct FieldVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) slot: u32,
+};
+
+@vertex
+fn field_vertex(vertex: FieldVertex) -> FieldVarying {
+    return FieldVarying(vec4<f32>(clip(vertex.position), normalized(vertex.depth), 1.0), vertex.uv, vertex.slot);
+}
+
+fn field_texel(slot: u32, index: u32) -> vec3<f32> {
+    let packed = field_words[slot + FIELD_HEADER_WORDS + index];
+    return vec3<f32>(f32(packed & 255u), f32((packed >> 8u) & 255u), f32((packed >> 16u) & 255u));
+}
+
+@fragment
+fn field_fragment(input: FieldVarying) -> Targets {
+    let columns = field_words[input.slot];
+    let rows = field_words[input.slot + 1u];
+    let last = vec2<u32>(columns - 1u, rows - 1u);
+    let uv = clamp(input.uv, vec2<f32>(0.0), vec2<f32>(last));
+    // Truncation is the floor of a non-negative uv; the far corner of the last cell is itself.
+    let near = min(vec2<u32>(uv), last);
+    let far = min(near + vec2<u32>(1u), last);
+    let fraction = uv - vec2<f32>(near);
+    let c00 = field_texel(input.slot, near.y * columns + near.x);
+    let c10 = field_texel(input.slot, near.y * columns + far.x);
+    let c01 = field_texel(input.slot, far.y * columns + near.x);
+    let c11 = field_texel(input.slot, far.y * columns + far.x);
+    let top = c00 + (c10 - c00) * fraction.x;
+    let bottom = c01 + (c11 - c01) * fraction.x;
+    let color = floor(top + (bottom - top) * fraction.y + 0.5);
+    var pick = NONE;
+    if field_words[input.slot + 2u] != 0u {
+        let nearest = min(vec2<u32>(floor(uv + 0.5)), last);
+        pick = field_words[input.slot + FIELD_HEADER_WORDS + columns * rows + nearest.y * columns + nearest.x];
+    }
+    // k / 255 converts back to exactly k in an 8-bit unorm target.
+    return Targets(vec4<f32>(color / 255.0, 1.0), pick);
+}

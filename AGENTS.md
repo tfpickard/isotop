@@ -49,7 +49,7 @@ The README covers usage. This file covers how to work on the code.
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
-   screen-space `Item`s (triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
+   screen-space `Item`s (triangles, field triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
    The `Scene` persists between frames to hold layout, smoothing, births and deaths, and the
    simulated media.
 3. **Rasterize**. `Frame::rasterize` does this on the CPU; `gpu.rs` with `shaders.wgsl` does it
@@ -80,7 +80,8 @@ The README covers usage. This file covers how to work on the code.
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
-| `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
+| `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source. `LIGHT`, the one world light direction every lit surface shares, is Rust only: shading is baked into colours before the backends see them |
+| `render/field.rs` | The field primitive (`Field`, `Placement`, `Relief`, `Shading`, `Frame::field`, `Item::Field`): a grid of colours drawn in world space, flat or as lit relief, sampled bilinearly by the one formula both backends use (clamped uv in node units, `floor(bilerp + 0.5)` per channel, the owner of the nearest node as the pick), with `ShadedField` (the shaded colours and owners a frame keeps and recycles through `Buffers`, so an unchanged `(key, revision)` is not shaded again), the CPU span rasterizer `Frame::field_triangle`, and `StorageLayout`, which plans what the GPU storage buffer must rewrite. Grid simulations draw through it, never one triangle pair per cell; Ripple and Flow still do |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
 | `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
@@ -105,7 +106,7 @@ The README covers usage. This file covers how to work on the code.
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
 | `history.rs` | The shared per-process CPU and memory history: `History` (a ring of `CAPACITY` samples sorted by `Identity`, recorded by `Scene` on every sample whichever view is shown; `window` by `elapsed` time, `recent` and `series` by count, `changes` for the births and exits between consecutive samples), `Reading`, `Sample` (with an absolute `sequence`), `Change`. Views read it through `Stage::history`; `warm_up` replays it for headless demo runs |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
-| `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
+| `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer; the field pass samples one storage buffer by hand (no hardware sampler) and `store_fields` rewrites only the slots whose field was shaded again |
 | `terminal.rs` | Graphics and Kitty keyboard capability probe (the keyboard flags are pushed when the terminal answers, and `restore_screen` pops them before the alternate screen is left), frame transfer, text overlay, terminal restoration |
 | `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, the bounded open-file scan (`FileScan`, one `proc_pidfdinfo` per vnode), the pipe and FIFO scan (`PipeScan`: `PROC_PIDFDPIPEINFO`, and a vnode call per vnode descriptor to find FIFOs), the thread reader (`Threads`: `PROC_PIDLISTTHREADIDS`, then `PROC_PIDTHREADID64INFO` per thread), `oom_scores` (root only: `memorystatus_control`), and what it reports through `missing`, `per_cluster` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions; `memorystatus_control` and the jetsam priority entry |
@@ -199,7 +200,8 @@ onto `ViewModule`, so write new views the module way and never add an arm.
 - **Picking.** A pickable item carries an index into `frame.identities`, or a thing pick from
   `Frame::thing_pick` (an index into `frame.things` with the `THING` bit set) for something that
   is not a process. `NONE` means "not pickable", and lines clear picking where they draw.
-  `Item::Pick` writes picks only, for blended content. Mouse input is cell-coarse, so
+  `Item::Pick` writes picks only, for blended content, and `Item::Field` writes the owner of
+  the nearest node of its field (`NONE` without an owner grid). Mouse input is cell-coarse, so
   `target_near` (and `pick_near`, processes only) searches a radius. Never mint a synthetic
   `Identity` for a thing.
 - **Process and system sampling lives in `platform/`.** Nothing outside it reads `/proc` or

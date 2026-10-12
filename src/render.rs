@@ -13,10 +13,21 @@ use crate::simulation::{growth, hash, smoothing};
 use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
+pub mod field;
 pub mod shared;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "first used by a view that draws a field")
+)]
+pub use field::{Field, Placement, Relief, Shading};
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "first used by a view that draws a field")
+)]
+pub use shared::LIGHT;
 pub use shared::NONE;
 /// The pick-buffer bit that marks an index into `Frame::things` rather than `Frame::identities`.
 /// Process indices stay below it, and a thing index below `THING - 1`, so neither meets `NONE`.
@@ -340,6 +351,18 @@ pub enum Item {
         depth: f32,
         pick: u32,
     },
+    /// Depth-tested triangle whose colour and pick are sampled from field `field` (an index into
+    /// `Frame::fields`) at `uv`, in node units, interpolated linearly across the triangle. It
+    /// writes depth, the sampled colour and the owner of the nearest node (see `field`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first recorded by a view that draws a field")
+    )]
+    Field {
+        points: [Point; 3],
+        uv: [[f32; 2]; 3],
+        field: u32,
+    },
 }
 
 /// A finished frame's allocations, handed to the next frame so steady-state rendering does not
@@ -350,6 +373,9 @@ pub struct Buffers {
     pixels: Vec<u8>,
     depth: Vec<f32>,
     picks: Vec<u32>,
+    /// The fields the last frame drew, kept with their shaded colours so a field that has not
+    /// changed is not shaded again.
+    fields: Vec<field::ShadedField>,
 }
 
 pub struct Frame {
@@ -363,6 +389,11 @@ pub struct Frame {
     pub identities: Vec<Identity>,
     /// The things this frame's thing picks index, in `thing_pick` order.
     pub things: Vec<Thing>,
+    /// The fields this frame draws, in the order `Frame::field` recorded them: what an
+    /// `Item::Field` indexes.
+    pub fields: Vec<field::ShadedField>,
+    /// The previous frame's fields, which `Frame::field` takes back when one is unchanged.
+    earlier_fields: Vec<field::ShadedField>,
     /// Pixel position of the selected process, if it was drawn.
     pub anchor: Option<[f32; 2]>,
 }
@@ -374,6 +405,7 @@ impl Frame {
             pixels,
             depth,
             picks,
+            fields,
         } = buffers;
         items.clear();
         let mut frame = Self {
@@ -386,6 +418,8 @@ impl Frame {
             picks,
             identities: Vec::new(),
             things: Vec::new(),
+            fields: Vec::new(),
+            earlier_fields: fields,
             anchor: None,
         };
         if sky.backdrop == Backdrop::Space {
@@ -411,6 +445,7 @@ impl Frame {
             pixels: self.pixels,
             depth: self.depth,
             picks: self.picks,
+            fields: self.fields,
         }
     }
 
@@ -425,6 +460,7 @@ impl Frame {
         self.picks.resize(n, NONE);
         self.paint_sky();
         let items = std::mem::take(&mut self.items);
+        let fields = std::mem::take(&mut self.fields);
         for item in &items {
             match *item {
                 Item::Triangle([a, b, c], color, pick) => self.triangle(a, b, c, color, pick),
@@ -465,9 +501,13 @@ impl Frame {
                     depth,
                     pick,
                 } => self.splat(center, radius, depth, pick),
+                Item::Field { points, uv, field } => {
+                    self.field_triangle(points, uv, &fields[field as usize]);
+                }
             }
         }
         self.items = items;
+        self.fields = fields;
     }
 
     fn glyph(&mut self, origin: [f32; 2], scale: u32, bits: u128, color: Color) {

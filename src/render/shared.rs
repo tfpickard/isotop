@@ -100,7 +100,18 @@ shared! {
     F32 GLYPH_WIDTH: f32 = glyphs::WIDTH as f32;
     F32 GLYPH_HEIGHT: f32 = glyphs::HEIGHT as f32;
     U32 GLYPH_COLUMNS: u32 = glyphs::WIDTH;
+
+    /// Words of header before a field's node colours in the GPU storage buffer: columns, rows,
+    /// whether an owner grid follows the colours, and one word of padding. The colours come next,
+    /// one packed RGBA word per node, then the owners, one word per node.
+    U32 FIELD_HEADER_WORDS: u32 = 4;
 }
+
+/// The one light every lit surface shares: the world direction, as (x, y, up), from a surface
+/// towards the light. It need not be unit length; normalize it before use. Lit shading is done in
+/// Rust (a field bakes it into its node colours, a ribbon or tube into its triangles' colours),
+/// so the shader has no lighting code and no copy of this.
+pub const LIGHT: [f32; 3] = [0.55, -0.35, 0.76];
 
 /// The WGSL declarations of every shared constant, placed before `shaders.wgsl`.
 pub fn prelude() -> String {
