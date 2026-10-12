@@ -1745,6 +1745,40 @@ mod tests {
     }
 
     #[test]
+    fn an_arrival_survives_a_rewind_to_before_the_birth_so_forward_navigation_restores_its_age() {
+        use crate::model::testing::process;
+        use crate::render::{Camera, RenderInput};
+        let at_start = Snapshot {
+            processes: vec![process(10, 1)],
+            ..Snapshot::default()
+        };
+        let mut later = at_start.clone();
+        later.processes.push(process(12, 1));
+        let mut scene = Scene::with_rows(testing::WITNESSED);
+        let camera = Camera::default();
+        let mut age_of_twelve = |snapshot: &Snapshot, time: f32| {
+            let input = RenderInput::small(snapshot, View::at(0), &camera, time);
+            scene.render(&input);
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .ages
+                .get(&12)
+                .copied()
+                .flatten()
+        };
+        assert_eq!(age_of_twelve(&at_start, 5.0), None);
+        assert_eq!(age_of_twelve(&later, 6.0), Some(0.0));
+        // Rewound to a sample from before it started, then forward again.
+        assert_eq!(age_of_twelve(&at_start, 5.5), None);
+        assert_eq!(
+            age_of_twelve(&later, 8.5),
+            Some(2.5),
+            "the process keeps the age it had, not a fresh one"
+        );
+    }
+
+    #[test]
     fn only_coop_records_and_only_matrix_replaces_the_inspector() {
         let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
             REGISTRY

@@ -1094,6 +1094,10 @@ impl<'a> RenderInput<'a> {
     }
 }
 
+/// How many arrivals of processes absent from the shown sample the scene remembers, oldest
+/// forgotten first.
+const ARRIVALS_KEPT: usize = 4096;
+
 /// The longest step `Stage::dt` reports, in seconds. A longer gap (a stall, a slow frame) counts
 /// as this much, so a simulation never leaps.
 pub(crate) const MAX_DT: f32 = 0.5;
@@ -1721,6 +1725,30 @@ impl Scene {
         frame
     }
 
+    /// Forgets the arrivals of processes that are gone, except the latest `ARRIVALS_KEPT`: a
+    /// rewind to before a process started also finds it absent, and jumping forward again must
+    /// give it back the age it had, not a new one.
+    fn keep_arrivals(&mut self, alive: &HashSet<Identity>) {
+        let absent =
+            self.arrivals.len() - self.arrivals.keys().filter(|id| alive.contains(id)).count();
+        let Some(excess) = absent
+            .checked_sub(ARRIVALS_KEPT)
+            .filter(|&excess| excess > 0)
+        else {
+            return;
+        };
+        let mut gone: Vec<(f32, Identity)> = self
+            .arrivals
+            .iter()
+            .filter(|(id, _)| !alive.contains(id))
+            .map(|(&id, &arrived)| (arrived, id))
+            .collect();
+        gone.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (_, id) in gone.into_iter().take(excess) {
+            self.arrivals.remove(&id);
+        }
+    }
+
     /// Takes in the frame's sample: notes births, and returns its processes with CPU and memory
     /// eased towards the sampled values.
     fn ease(&mut self, snapshot: &Snapshot, alive: &HashSet<Identity>, time: f32) -> Vec<Process> {
@@ -1732,7 +1760,7 @@ impl Scene {
         let alpha = smoothing(dt.max(0.0), 0.3);
         self.resources.retain(|id, _| alive.contains(id));
         self.births.retain(|id, _| alive.contains(id));
-        self.arrivals.retain(|id, _| alive.contains(id));
+        self.keep_arrivals(alive);
         let born = if self.started || self.intro {
             time
         } else {
@@ -1745,7 +1773,7 @@ impl Scene {
                 entry.insert(born);
                 if fresh {
                     self.newborn.push(p.id);
-                    self.arrivals.insert(p.id, time);
+                    self.arrivals.entry(p.id).or_insert(time);
                 }
             }
         }
