@@ -38,7 +38,9 @@ def main():
     a.frame(xticks=ticks, yticks=[0, 20, 40, 60], xlabel="--sample-ms (log scale)",
             ylabel="seconds of history in the ring")
     svg.text(80, 46, "(a) the minute Strata can draw", 13, weight="600")
-    svg.polygon([a.pt(100, 0), a.pt(100, 24), a.pt(250, 60), a.pt(250, 0)], fill=S.RED, opacity=0.14)
+    short = [m for m in ms if m <= 250.0001]
+    svg.polygon([a.pt(m, min(WINDOW, CAPACITY * m / 1000.0)) for m in short] + [a.pt(250, 60), a.pt(100, 60)],
+                fill=S.RED, opacity=0.16)
     a.curve(ms, coverage, S.GOLD, 2.4)
     a.curve([100, 10000], [60, 60], S.MUTED, 1, dash="4 3")
     svg.text(a.px(10000) - 4, a.py(60) - 6, "WINDOW = 60 s", 11, "end", S.MUTED)
