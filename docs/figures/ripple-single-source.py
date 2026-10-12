@@ -82,7 +82,7 @@ for y in range(ROWS):
         pixels.append(tuple(int(round(b + (g - b) * w)) for b, g in zip(base, target)))
 
 figure = Figure(
-    1180, 490,
+    1180, 500,
     "One pebble on the pond",
     "Left: the height field of a single source at 0.8 hertz after nine seconds, with the border "
     "sponge visible as the fading of the rings at the edge. Right: the amplitude envelope along a "
@@ -110,5 +110,6 @@ ax.plot(curve_r, [anchor * r ** -0.5 for r in curve_r], MUTED, 1.2, "4 3")
 ax.legend([("measured (scheme)", BLUE, None),
            ("r^-1/2 exp(-0.0126 r)", ORANGE, None),
            ("r^-1/2 only", MUTED, "4 3")], "tr")
-figure.text(720, 474, "The bump near 45 to 60 cells is the border reflection returning. Damping alone would give an e-folding length of 79 cells; geometric spreading adds the r^-1/2.", 11, "start", MUTED)
+figure.text(720, 468, "The bump near 45 to 60 cells is the border reflection returning.", 11, "start", MUTED)
+figure.text(720, 484, "Damping alone: e-folding 79 cells; spreading adds r^-1/2.", 11, "start", MUTED)
 figure.save(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "media", "figures", "ripple-single-source.svg"))

@@ -48,8 +48,8 @@ full; `--follow` then streams. `read_entry` consumes one entry per call:
   error, not a short message.
 * Values are decoded lossily (`from_utf8_lossy`); a `PRIORITY` that does not parse as a number reads as 6 (info),
   and is capped at 7.
-* Only the five requested fields are kept; others (journalctl always adds cursor and timestamp metadata in export
-  mode) are read and ignored.
+* Only the five requested fields are kept; others (the export format also carries metadata such as `__CURSOR`) are
+  read and ignored.
 * An empty line ends the entry. The line shown is `source[pid]: message`, where `source` is `SYSLOG_IDENTIFIER`,
   else `_COMM`, else `"journal"`; `[pid]` is omitted when there is no `_PID`; newlines and tabs in the message become
   spaces.
@@ -135,17 +135,17 @@ The journal does not go through `Reads`, so it never appears in `Snapshot::sourc
 
 `--demo` has no follower. `journal::demo(from, to)` returns the synthetic lines whose index $k$ satisfies
 $k\cdot 0.35 \in (from, to]$ (`DEMO_INTERVAL = 0.35 s`, and $k \ge 0$): a **pure function of time**. Line $k$ takes
-`h = golden_gamma_high(k)` $= \lfloor k\cdot\gamma / 2^{32}\rfloor$ truncated (the splitmix64 increment $\gamma$ times
-$k$, shifted right 32), picks template `h mod 16` of sixteen, and fills `{n}` with `h mod 9 + 1` and `{p}` with
-`1000 + h mod 60000`. The templates look like a real machine, with severities from debug to critical, and three of
+`h = golden_gamma_high(k)` $= (k\gamma \bmod 2^{64}) \gg 32$ (the splitmix64 increment $\gamma$ times
+$k$, wrapping, shifted right 32), picks template `h mod 16` of sixteen, and fills `{n}` with `h mod 9 + 1` and `{p}` with
+`1000 + h mod 60000`. The templates look like a real machine, with severities from debug to critical, and two of
 them are quotes from the film. A test checks that splitting an interval anywhere yields the same lines as one long
 interval, which is what lets a warm-up replay and a live demo agree
 ([Determinism](Theory-Determinism)).
 
 ## 7. Untrusted text
 
-A log message is arbitrary bytes chosen by whoever can write to the journal, including a remote attacker through a
-failed-login message. Two layers stop it from reaching the terminal as a control sequence:
+A log message is arbitrary bytes chosen by whoever can write to the journal, including data a remote party can influence,
+such as a username in a failed-login message. Two layers stop it from reaching the terminal as a control sequence:
 
 * The rain is **drawn with a bitmap font**, not printed. `glyphs::glyph(character)` maps printable ASCII to a
   7×14 bitmap (the public-domain X11 `7x14` font) and **everything else to `?`**: there is no path from a message
