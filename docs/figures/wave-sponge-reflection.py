@@ -66,7 +66,7 @@ coefficient = [spectrum(reflected, f) / spectrum(without, f) for f in frequencie
 round_trip = math.exp(-(WIDTH / C) * (GAMMA0 + SPONGE / 3.0))
 
 figure = Figure(
-    1100, 430,
+    1100, 455,
     "The pond's absorbing border",
     "Left: the damping rate against distance from the border, 0.35 per second plus a quadratic "
     "sponge of 6 per second over ten cells. Right: the amplitude reflection coefficient measured "
@@ -94,7 +94,7 @@ b.plot(frequencies, coefficient, ORANGE, 2.2)
 b.scatter(frequencies, coefficient, ORANGE, 2.5)
 b.hline(round_trip, MUTED, 1.0, "4 3", "geometric-optics estimate %.2f" % round_trip, 1.1)
 
-figure.text(70, 405, "Measured: 0.46 at 0.35 Hz, 0.31 at 0.5 Hz, 0.18 at 0.8 Hz. At high pitch the layer simply attenuates (round trip exp(-(10/c)(0.35 + 2)) = %.2f);" % round_trip,
+figure.text(70, 428, "Measured: 0.46 at 0.35 Hz, 0.31 at 0.5 Hz, 0.18 at 0.8 Hz. At high pitch the layer simply attenuates (round trip exp(-(10/c)(0.35 + 2)) = %.2f);" % round_trip,
             11, "start", MUTED)
-figure.text(70, 421, "at low pitch the damping changes too fast for the wavelength and the layer reflects like a partial mirror.", 11, "start", MUTED)
+figure.text(70, 444, "at low pitch the damping changes too fast for the wavelength and the layer reflects like a partial mirror.", 11, "start", MUTED)
 figure.save(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "media", "figures", "wave-sponge-reflection.svg"))

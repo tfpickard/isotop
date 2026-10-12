@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 430" width="1100" height="430" font-family="system-ui, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 455" width="1100" height="455" font-family="system-ui, sans-serif">
 <title>The pond's absorbing border</title>
 <desc>Left: the damping rate against distance from the border, 0.35 per second plus a quadratic sponge of 6 per second over ten cells. Right: the amplitude reflection coefficient measured with the exact scheme at normal incidence, between 0.46 at 0.35 hertz and 0.18 at 0.8 hertz.</desc>
 <defs><clipPath id="clip1"><rect x="70" y="90" width="400" height="270"/></clipPath><clipPath id="clip2"><rect x="620" y="90" width="440" height="270"/></clipPath></defs>
-<rect width="1100" height="430" fill="#0e1116"/>
+<rect width="1100" height="455" fill="#0e1116"/>
 <text x="20" y="28" font-size="16" text-anchor="start" fill="#c9d1d9" font-weight="600">A sponge, not a perfect absorber</text>
 <text x="20" y="47" font-size="12" text-anchor="start" fill="#8b949e">Damping profile of Wave::new and the reflection it leaves at normal incidence (measured with the same scheme).</text>
 <line x1="70" y1="90" x2="70" y2="360" stroke="#262c36" stroke-width="1"/>
@@ -136,6 +136,6 @@
 </g>
 <line x1="620" y1="297.01" x2="1060" y2="297.01" stroke="#8b949e" stroke-width="1" stroke-dasharray="4 3"/>
 <text x="840" y="293.01" font-size="11" text-anchor="start" fill="#8b949e">geometric-optics estimate 0.19</text>
-<text x="70" y="405" font-size="11" text-anchor="start" fill="#8b949e">Measured: 0.46 at 0.35 Hz, 0.31 at 0.5 Hz, 0.18 at 0.8 Hz. At high pitch the layer simply attenuates (round trip exp(-(10/c)(0.35 + 2)) = 0.19);</text>
-<text x="70" y="421" font-size="11" text-anchor="start" fill="#8b949e">at low pitch the damping changes too fast for the wavelength and the layer reflects like a partial mirror.</text>
+<text x="70" y="428" font-size="11" text-anchor="start" fill="#8b949e">Measured: 0.46 at 0.35 Hz, 0.31 at 0.5 Hz, 0.18 at 0.8 Hz. At high pitch the layer simply attenuates (round trip exp(-(10/c)(0.35 + 2)) = 0.19);</text>
+<text x="70" y="444" font-size="11" text-anchor="start" fill="#8b949e">at low pitch the damping changes too fast for the wavelength and the layer reflects like a partial mirror.</text>
 </svg>

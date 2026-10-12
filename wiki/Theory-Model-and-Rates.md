@@ -176,7 +176,7 @@ $$
 
 The exponential's $-3$ dB point satisfies $\cos\omega_c = (-1+4a-a^2)/(2a)$ with $\omega_c = 2\pi f_c\Delta t$. At
 $\Delta t = 1$ s that is $f_c = 0.110$ Hz, against the RC value $1/(2\pi\tau) = 0.106$ Hz; at $\Delta t = 0.1$ s the two
-agree to four digits. The display passes slow load changes and removes anything faster than about one cycle every
+agree to four digits. The display passes slow load changes and attenuates by more than 3 dB anything faster than about one cycle every
 nine seconds.
 
 ![Gain of the interval average, the exponential filter and their product at dt = 1 s, below and above the Nyquist limit](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/model-smoothing-response.svg)
@@ -224,10 +224,10 @@ figure; the 1/6 assumes independent residues.)
 
 A counter delta is an *integrate-and-dump* filter, and a poor anti-aliasing filter. Its gain,
 $\lvert\operatorname{sinc}(f\Delta t)\rvert$, is $2/\pi$ (−3.9 dB) at the Nyquist limit $f = 1/(2\Delta t)$ and has
-sidelobes: a load oscillating at 1.4 Hz still passes at 22 % amplitude into a one-second sampler. Anything above
+sidelobes: a load oscillating at 1.4 Hz still gets through the interval average at 22 % amplitude. Anything above
 the Nyquist frequency is attenuated, then **folded**: a load at frequency $f$ appears at
 $\lvert f - \Delta t^{-1}\operatorname{round}(f\Delta t)\rvert$. Only exact multiples of the sampling frequency
-vanish. A process that is busy for 0.4 s of every 1.02 s therefore shows a slow wobble with a period of about 51 s,
+vanish. A process that is busy for 0.4 s of every 1.02 s therefore shows a slow wobble whose fundamental has a period of about 51 s,
 and a 1.1 Hz oscillation of ±40 points around 50 % appears as a 0.1 Hz wobble of about ±2.6 points (after the
 smoother), with a ten-second period. Nothing in the displayed number can tell that from a real slow fluctuation.
 
