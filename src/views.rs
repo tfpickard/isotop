@@ -567,29 +567,12 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::Module(|| Box::new(cores::Track::default())),
         )
     },
-    ViewInfo {
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#118",
-                    reason: "the largest member is the nucleus at the centre, and memory sizes the cell",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#118",
-                    reason: "when the nucleus exits, the next largest member moves to the centre",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "cells",
-            "CELLS",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(cells::Dishes::default())),
-        )
-    },
+    ViewInfo::new(
+        "cells",
+        "CELLS",
+        Backdrop::Dusk,
+        Hooks::Module(|| Box::new(cells::Dishes::default())),
+    ),
     ViewInfo {
         // A minute of history, so the landscape is full in the captured frame.
         warmup: &[Warmup {

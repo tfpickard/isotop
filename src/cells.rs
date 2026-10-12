@@ -1,8 +1,13 @@
 //! Cells: every cgroup is a living cell in a petri dish, one dish each for system services, your
 //! session and containers. A cell's size follows its memory; a dashed ring marks its memory limit
 //! and an arc its CPU use against its quota. The membrane trembles under pressure, flashes red
-//! when the quota throttles it and bursts when the OOM killer strikes. Processes are organelles,
-//! the largest as the nucleus.
+//! when the quota throttles it and bursts when the OOM killer strikes. Processes are organelles.
+//! The nucleus, at the centre, is the largest process of a new cell; it keeps the centre until it
+//! exits, and a cell that has lost it gives it to the largest process to arrive.
+//!
+//! Nothing a measurement moves moves an organelle: each keeps its seat, and the seats are spread
+//! for the room the cell reserved (`Room`), within which memory moves the membrane and processes
+//! join or leave without moving a seat. The room is laid out again only when the cell outgrows it.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -24,6 +29,13 @@ const DISHES: [(Kind, &str, Color); 3] = [
     (Kind::Container, "containers", CONTAINER),
 ];
 const SEAT: f32 = 0.75;
+/// The share of a cell's radius its seats are spread over when its room is laid out.
+const SPREAD: f32 = 0.8;
+/// How far inside the membrane the centre of the outermost organelle stays.
+const MARGIN: f32 = 0.4;
+/// How much its membrane may have grown over its room before a cell lays its seats out again,
+/// so they do not huddle round the nucleus.
+const SPARSE: f32 = 1.5;
 /// Widest a memory limit ring is drawn, as a multiple of the cell radius.
 const LIMIT: f32 = 1.6;
 const NAMED: usize = 12;
@@ -39,8 +51,38 @@ pub struct Dishes {
     radii: [f32; 3],
     dishes: Discs,
     seats: Seats,
+    /// The room each cell reserved for its seats, by dish and cgroup.
+    rooms: HashMap<(usize, String), Room>,
+    /// Each cell's nucleus, and who was in the cell at the last frame, by dish and cgroup: a cell
+    /// without a nucleus gives it to the largest process that was not in the cell then.
+    nuclei: HashMap<(usize, String), Identity>,
+    members: HashMap<(usize, String), HashSet<Identity>>,
     /// OOM kill count last seen per cgroup, and when its latest burst began.
     kills: HashMap<String, (u64, f32)>,
+}
+
+/// What a cell reserves for its organelles: the membrane radius and the number of seats its
+/// spiral was spread for. A seat is where the room puts it, whatever the membrane measures now.
+#[derive(Clone, Copy, Debug)]
+struct Room {
+    radius: f32,
+    seats: usize,
+}
+
+impl Room {
+    /// The spacing of the seats' spiral: out over most of the room rather than huddling round the
+    /// nucleus.
+    fn spacing(self) -> f32 {
+        (self.radius * SPREAD / (self.seats as f32 + 1.0).sqrt()).max(SEAT)
+    }
+
+    /// Whether a cell with a membrane of `radius` and `span` seats in use still has this room: the
+    /// outermost seat stands inside the membrane, and the membrane has not grown far past the
+    /// room. Until it fails, nothing the cell measures moves a seat, and a seat that joins goes on
+    /// outwards from the last.
+    fn serves(self, radius: f32, span: usize) -> bool {
+        self.spacing() * (span as f32).sqrt() + MARGIN <= radius && radius <= self.radius * SPARSE
+    }
 }
 
 /// A sampled process with the CPU and memory it is measured by.
@@ -58,13 +100,16 @@ struct Cell<'a> {
     /// How many processes the cell has and what they use between them, drawn or not.
     population: usize,
     cpu: f32,
-    /// The largest process, drawn or not, and its place among the drawn ones if it is drawn.
-    nucleus: Identity,
+    /// The nucleus, drawn or not, if the cell has one, and its place among the drawn ones if it is
+    /// drawn.
+    nucleus: Option<Identity>,
     nucleus_memory: u64,
     nucleus_index: Option<usize>,
     unit: Option<&'a Unit>,
     memory: u64,
     radius: f32,
+    /// Where its seats are: the room reserved for them.
+    room: Room,
     /// Only the largest cells in a dish are named, so labels don't bury the dish.
     named: bool,
 }
@@ -101,6 +146,8 @@ impl ViewModule for Dishes {
                 .map(|s| (s.process.id, cell_name(s.process))),
         );
         let mut cells: [Vec<Cell>; 3] = Default::default();
+        let mut nuclei: HashMap<(usize, String), Identity> = HashMap::new();
+        let mut members: HashMap<(usize, String), HashSet<Identity>> = HashMap::new();
         for (dish, (kind, _, _)) in DISHES.iter().enumerate() {
             let mut groups: BTreeMap<&str, Vec<Sampled>> = BTreeMap::new();
             for &s in sampled.iter().filter(|s| s.process.kind == *kind) {
@@ -112,44 +159,44 @@ impl ViewModule for Dishes {
                     || everyone.iter().map(|s| s.memory).sum(),
                     |unit| unit.memory,
                 );
-                let nucleus = everyone
-                    .iter()
-                    .copied()
-                    .max_by_key(|s| (s.memory, Reverse(s.process.id)))
-                    .expect("a cell has members");
+                let key = (dish, name.to_owned());
+                let nucleus = self.elect(&key, &everyone);
+                members.insert(key.clone(), everyone.iter().map(|s| s.process.id).collect());
+                if let Some(nucleus) = nucleus {
+                    nuclei.insert(key, nucleus.process.id);
+                }
                 let mut members: Vec<usize> = everyone
                     .iter()
                     .filter_map(|s| drawn.get(&s.process.id).copied())
                     .collect();
                 members.sort_unstable();
-                let span = self.seats.span(name) as f32;
+                let span = self.seats.span(name);
                 let by_memory = 1.3 + 0.16 * (memory as f32 / 1048576.0).sqrt();
-                let by_members = SEAT * (span + 1.0).sqrt() + 1.0;
+                let by_members = SEAT * (span as f32 + 1.0).sqrt() + 1.0;
+                let radius = by_memory.max(by_members);
                 cells[dish].push(Cell {
                     name: name.to_owned(),
                     members,
                     population: everyone.len(),
                     cpu: everyone.iter().map(|s| s.cpu).sum(),
-                    nucleus: nucleus.process.id,
-                    nucleus_memory: nucleus.memory,
-                    nucleus_index: drawn.get(&nucleus.process.id).copied(),
+                    nucleus: nucleus.map(|s| s.process.id),
+                    nucleus_memory: nucleus.map_or(0, |s| s.memory),
+                    nucleus_index: nucleus.and_then(|s| drawn.get(&s.process.id).copied()),
                     unit,
                     memory,
-                    radius: by_memory.max(by_members),
+                    radius,
+                    room: Room {
+                        radius,
+                        seats: span,
+                    },
                     named: false,
                 });
             }
-            let mut sizes: Vec<u64> = cells[dish]
-                .iter()
-                .filter(|c| !c.members.is_empty())
-                .map(|c| c.memory)
-                .collect();
-            sizes.sort_unstable_by(|a, b| b.cmp(a));
-            let smallest = sizes.get(NAMED - 1).copied().unwrap_or(0);
-            for cell in &mut cells[dish] {
-                cell.named = cell.memory >= smallest;
-            }
+            name_the_largest(&mut cells[dish]);
         }
+        self.nuclei = nuclei;
+        self.members = members;
+        self.reserve(&mut cells);
         let mut offsets: [HashMap<String, [f32; 2]>; 3] = Default::default();
         for dish in 0..3 {
             // Room for the limit ring and CPU gauge drawn outside each membrane.
@@ -237,9 +284,50 @@ impl ViewModule for Dishes {
             " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
         }
     }
+
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 impl Dishes {
+    /// The nucleus of the cell `key` among `everyone` in it, sampled, drawn or not: the one it
+    /// has, or else the largest process that was not in the cell at the last frame (all of them,
+    /// for a cell that has just appeared). A cell whose nucleus exited and that gained nobody has
+    /// none, and no seated organelle moves to the centre.
+    fn elect<'a>(&self, key: &(usize, String), everyone: &[Sampled<'a>]) -> Option<Sampled<'a>> {
+        let kept = self.nuclei.get(key);
+        if let Some(nucleus) = everyone.iter().find(|s| Some(&s.process.id) == kept) {
+            return Some(*nucleus);
+        }
+        let before = self.members.get(key);
+        everyone
+            .iter()
+            .copied()
+            .filter(|s| before.is_none_or(|before| !before.contains(&s.process.id)))
+            .max_by_key(|s| (s.memory, Reverse(s.process.id)))
+    }
+
+    /// Keeps each cell's room, or lays it out again for the cell as it is now when the cell has
+    /// outgrown it. Rooms of cells that are gone are dropped.
+    fn reserve(&mut self, cells: &mut [Vec<Cell>; 3]) {
+        let mut rooms = HashMap::new();
+        for (dish, cells) in cells.iter_mut().enumerate() {
+            for cell in cells {
+                let key = (dish, cell.name.clone());
+                let span = self.seats.span(&cell.name);
+                if let Some(&room) = self.rooms.get(&key)
+                    && room.serves(cell.radius, span)
+                {
+                    cell.room = room;
+                }
+                rooms.insert(key, cell.room);
+            }
+        }
+        self.rooms = rooms;
+    }
+
     /// Remembers when each cell's OOM kill count last rose. Every sampled cell is watched, shown
     /// or not, so a kill that happens while its cell is hidden does not burst when it comes back.
     fn watch_kills(&mut self, cells: &[Vec<Cell>; 3], time: f32) {
@@ -365,8 +453,7 @@ impl Dishes {
             }
         }
         let mut drawn = 0;
-        // Spread the organelles over most of the cell rather than huddling round the nucleus.
-        let spacing = (r * 0.8 / (self.seats.span(&cell.name) as f32 + 1.0).sqrt()).max(SEAT);
+        let spacing = cell.room.spacing();
         let core = mass_radius(cell.nucleus_memory as f32).clamp(0.45, r * 0.32);
         if cell.nucleus_index.is_some() {
             stage.frame.glow(
@@ -379,13 +466,13 @@ impl Dishes {
         }
         for &index in &cell.members {
             let process = processes[index];
-            let is_nucleus = process.id == cell.nucleus;
+            let is_nucleus = Some(process.id) == cell.nucleus;
             let (position, size) = if is_nucleus {
                 ([x, y, 0.4], core)
             } else {
                 let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
                 let (distance, angle) = spiral(spacing, 1.0, seat, phase);
-                let position = at(angle, distance.min(r - 0.4), 0.3);
+                let position = at(angle, distance.min(r - MARGIN), 0.3);
                 stage
                     .frame
                     .line(camera, [x, y, 0.2], position, tint(color, 0.45));
@@ -423,6 +510,20 @@ impl Dishes {
                 .push((camera.front([x, y, 0.0], r + 0.6), label));
         }
         drawn
+    }
+}
+
+/// Marks the cells of one dish that get a label: only the largest, so labels don't bury the dish.
+fn name_the_largest(cells: &mut [Cell]) {
+    let mut sizes: Vec<u64> = cells
+        .iter()
+        .filter(|c| !c.members.is_empty())
+        .map(|c| c.memory)
+        .collect();
+    sizes.sort_unstable_by(|a, b| b.cmp(a));
+    let smallest = sizes.get(NAMED - 1).copied().unwrap_or(0);
+    for cell in cells {
+        cell.named = cell.memory >= smallest;
     }
 }
 
@@ -688,6 +789,164 @@ mod tests {
         assert!(shown.contains_key(&small));
     }
 
+    /// The state of the cells view the scene has drawn.
+    fn dishes(scene: &Scene) -> &Dishes {
+        scene
+            .module::<Dishes>(view("cells"))
+            .expect("the cells view has drawn")
+    }
+
+    /// The dish and the cgroup a process's cell is kept under.
+    fn cell_of(process: &Process) -> (usize, String) {
+        let dish = DISHES
+            .iter()
+            .position(|(kind, ..)| *kind == process.kind)
+            .expect("a process of a cell is in a dish");
+        (dish, cell_name(process).to_owned())
+    }
+
+    /// Draws `snapshot` for three seconds, long enough for the scene's easing of CPU and memory to
+    /// settle, and returns where every drawn process stands.
+    fn settle(scene: &mut Scene, snapshot: &Snapshot, time: &mut f32) -> Places {
+        for _ in 0..30 {
+            *time += 0.1;
+            draw(scene, snapshot, *time, 4096, None, None);
+        }
+        scene.positions.clone()
+    }
+
+    /// A process that starts in the cell of `template`, with its figures and a fresh identity.
+    fn arrival(template: &Process, serial: u32) -> Process {
+        let pid = 900_000 + serial;
+        Process {
+            id: Identity {
+                pid,
+                start: u64::from(pid),
+            },
+            ..template.clone()
+        }
+    }
+
+    /// Asserts that every process in `before` that is not in `except` is drawn where it was.
+    fn survivors_in_place(now: &Places, before: &Places, except: &[Identity]) {
+        let survivors = before.len() - except.iter().filter(|id| before.contains_key(id)).count();
+        let held = before
+            .iter()
+            .filter(|(id, _)| !except.contains(id))
+            .filter(|(id, position)| now.get(id) == Some(position))
+            .count();
+        assert_eq!(held, survivors, "survivors moved");
+    }
+
+    #[test]
+    fn the_nucleus_keeps_the_centre_until_it_exits_and_the_next_arrival_takes_it() {
+        // Leaf 40 is the largest process of its cell and leaf 41 a small one.
+        let mut base = demo(30.0, 160);
+        base.processes[40].memory = 8 << 30;
+        base.processes[41].memory = 1 << 30;
+        let (large, small) = (base.processes[40].id, base.processes[41].id);
+        let key = cell_of(&base.processes[40]);
+        let (mut scene, mut time) = (Scene::new(), 30.0);
+        let before = settle(&mut scene, &base, &mut time);
+        assert_eq!(dishes(&scene).nuclei[&key], large);
+        assert_eq!(before[&large][2], 0.4, "the nucleus stands at the centre");
+        // The small one balloons past it: the large one is still the nucleus, and nothing moves.
+        let mut grown = base.clone();
+        grown.processes[41].memory = 20 << 30;
+        let after = settle(&mut scene, &grown, &mut time);
+        assert_eq!(dishes(&scene).nuclei[&key], large);
+        assert_eq!(after, before);
+        // The nucleus exits. Nobody moves to the centre in its place.
+        let mut gone = grown.clone();
+        gone.processes.retain(|process| process.id != large);
+        let after = settle(&mut scene, &gone, &mut time);
+        assert_eq!(after.len(), before.len() - 1);
+        survivors_in_place(&after, &before, &[large]);
+        assert!(!dishes(&scene).nuclei.contains_key(&key), "no nucleus now");
+        assert!(
+            after[&small][2] < 0.4,
+            "the next largest stays an organelle"
+        );
+        // A process that arrives takes the vacant centre, the largest of those that arrive. The
+        // others stay in their seats.
+        let mut arrived = gone.clone();
+        let template = arrived.processes[41].clone();
+        arrived.processes.push(arrival(&template, 1));
+        let heavier = Process {
+            memory: 2 << 30,
+            ..arrival(&template, 2)
+        };
+        let heavier_id = heavier.id;
+        arrived.processes.push(heavier);
+        let after = settle(&mut scene, &arrived, &mut time);
+        assert_eq!(dishes(&scene).nuclei[&key], heavier_id);
+        assert_eq!(after[&heavier_id][2], 0.4);
+        survivors_in_place(&after, &before, &[large]);
+        // It keeps it when the cell gains someone larger.
+        let mut larger = arrived.clone();
+        let template = larger.processes[41].clone();
+        larger.processes.push(Process {
+            memory: 40 << 30,
+            ..arrival(&template, 3)
+        });
+        let after = settle(&mut scene, &larger, &mut time);
+        assert_eq!(dishes(&scene).nuclei[&key], heavier_id);
+        survivors_in_place(&after, &before, &[large]);
+    }
+
+    #[test]
+    fn a_process_joining_or_leaving_a_cell_moves_no_seat() {
+        let mut base = demo(30.0, 160);
+        base.processes[40].memory = 8 << 30;
+        base.processes[41].memory = 1 << 30;
+        let (large, leaver) = (base.processes[40].id, base.processes[41].id);
+        let (mut scene, mut time) = (Scene::new(), 30.0);
+        let before = settle(&mut scene, &base, &mut time);
+        // One leaves and three arrive: the first takes the free seat, the others the seats
+        // after the last, and the spiral goes on outwards from there.
+        let mut changed = base.clone();
+        changed.processes.retain(|process| process.id != leaver);
+        let template = changed.processes[41].clone();
+        let arrivals: Vec<Process> = (1..=3).map(|serial| arrival(&template, serial)).collect();
+        let joined: Vec<Identity> = arrivals.iter().map(|process| process.id).collect();
+        changed.processes.extend(arrivals);
+        let after = settle(&mut scene, &changed, &mut time);
+        assert!(joined.iter().all(|id| after.contains_key(id)));
+        assert_eq!(after[&large], before[&large]);
+        survivors_in_place(&after, &before, &[leaver]);
+    }
+
+    #[test]
+    fn seats_stay_put_while_memory_moves_the_membrane_until_the_cell_outgrows_its_room() {
+        let base = demo(30.0, 160);
+        let cgroup = base.processes[40].cgroup.clone();
+        let key = cell_of(&base.processes[40]);
+        let (mut scene, mut time) = (Scene::new(), 30.0);
+        let before = settle(&mut scene, &base, &mut time);
+        let room = dishes(&scene).rooms[&key];
+        // A fifth more memory, then a tenth less: the membrane breathes, the organelles stay.
+        for factor in [1.2, 0.9] {
+            let mut changed = base.clone();
+            let unit = changed.units.get_mut(&cgroup).expect("the cell has a unit");
+            unit.memory = (unit.memory as f64 * factor) as u64;
+            let after = settle(&mut scene, &changed, &mut time);
+            assert_eq!(after, before, "memory x{factor}");
+            assert_eq!(dishes(&scene).rooms[&key].radius, room.radius);
+        }
+        // Six times the memory is two and a half times the radius: the seats are spread out again.
+        let mut changed = base.clone();
+        let unit = changed.units.get_mut(&cgroup).expect("the cell has a unit");
+        unit.memory *= 6;
+        let after = settle(&mut scene, &changed, &mut time);
+        let grown = dishes(&scene).rooms[&key];
+        assert!(grown.radius > 1.5 * room.radius, "{grown:?}");
+        let member = base.processes[41].id;
+        assert_ne!(after[&member], before[&member], "its seats moved out");
+        // And that is the room the cell keeps from now on.
+        let again = settle(&mut scene, &changed, &mut time);
+        assert_eq!(again, after);
+    }
+
     #[test]
     fn popups_and_dish_labels_count_the_whole_cell_while_only_part_of_it_is_shown() {
         let (mut scene, mut sample, time) = settled();
@@ -721,12 +980,16 @@ mod tests {
                 members: Vec::new(),
                 population: 3,
                 cpu: 0.0,
-                nucleus: Identity { pid: 1, start: 1 },
+                nucleus: Some(Identity { pid: 1, start: 1 }),
                 nucleus_memory: 0,
                 nucleus_index: None,
                 unit: Some(unit),
                 memory: 0,
                 radius: 1.0,
+                room: Room {
+                    radius: 1.0,
+                    seats: 3,
+                },
                 named: false,
             };
             [vec![cell], Vec::new(), Vec::new()]
