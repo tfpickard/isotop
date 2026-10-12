@@ -441,6 +441,13 @@ pub trait ViewModule {
         None
     }
 
+    /// The view's state as `Any`, for `Scene::module`: a module's own tests read what its legend
+    /// and `Stage` outputs do not tell. None, the default, shows nothing.
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Where the view harness looks for each drawn process instead of where it is drawn, for a
     /// view whose bodies move by themselves: the place each one keeps, read after a frame. None,
     /// the default, checks `Scene::positions`.
@@ -893,6 +900,10 @@ pub mod testing {
     }
 
     impl ViewModule for Probe {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,

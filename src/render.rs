@@ -1390,6 +1390,13 @@ impl Scene {
             .is_some_and(|module| module.key(key))
     }
 
+    /// The state of the module view `view` draws, if it is a `T` and lets its tests see it
+    /// (`ViewModule::state`).
+    #[cfg(test)]
+    pub fn module<T: 'static>(&self, view: View) -> Option<&T> {
+        self.modules[view.index()].as_ref()?.state()?.downcast_ref()
+    }
+
     /// Where the view harness looks for `view`'s processes after a frame: the row's anchors for
     /// a built-in view, the module's own for a module view. None checks `positions`.
     #[cfg(test)]
@@ -4346,6 +4353,24 @@ mod tests {
         assert_eq!(
             scene.legend(quiet, &snapshot),
             " probe: 1 draws | 1 records | keys []"
+        );
+    }
+
+    #[test]
+    fn a_modules_tests_can_read_its_state_by_type() {
+        let snapshot = demo(12.0, 16);
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::ROWS);
+        let (probe, quiet) = (View::at(0), View::at(1));
+        scene.render(&RenderInput::small(&snapshot, probe, &camera, 1.0));
+        assert!(scene.module::<testing::Probe>(probe).is_some());
+        assert!(
+            scene.module::<testing::Quiet>(probe).is_none(),
+            "the wrong type"
+        );
+        assert!(
+            scene.module::<testing::Probe>(quiet).is_none(),
+            "a view that shows nothing of itself"
         );
     }
 
