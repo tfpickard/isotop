@@ -9,7 +9,7 @@ Run from the repository root after `cargo build --release`:
     python3 scripts/render_wiki_media.py --check-tools
 
 Standard library only. It calls the isotop binary (CPU rasterizer, demo workload, so every
-output is repeatable), ImageMagick (`convert`, `montage`) and ffmpeg (libwebp_anim).
+output is repeatable), ImageMagick (`convert`, `montage`) and ffmpeg (libwebp).
 
 What it writes, all WebP:
 
@@ -24,9 +24,10 @@ frames at --time + i / --fps and writes the last one, so frame k of a loop is th
 and the demo snapshot stays fixed (only animation time moves). Successive --time values would
 instead re-run every warm-up and re-lay the scene, which is not an animation.
 
-Each loop and still is encoded at the highest quality whose file fits its size budget; the
-script fails if even the lowest quality does not fit, so a table change that bloats a file is
-caught here.
+Each still is encoded (ffmpeg libwebp) at the highest quality whose file fits its size
+budget, and each loop (ImageMagick) at the largest per-frame byte target whose file fits; the
+script fails if even the lowest does not fit, so a table change that bloats a file is caught
+here.
 """
 
 import argparse
@@ -125,7 +126,8 @@ FILMSTRIP_BUDGET = 700_000
 GROUPS = ["stills", "contact-sheet", "loops", "filmstrips"]
 
 STILL_QUALITIES = (95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40)
-LOOP_QUALITIES = (80, 72, 64, 56, 48, 40, 32)
+# Per-frame byte targets to try for a loop, 0 meaning the encoder's default quality.
+LOOP_FRAME_BYTES = (0, 30000, 24000, 20000, 16000, 13000, 10000, 8000)
 SHEET_QUALITIES = (95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40)
 
 BACKGROUND = "#0e1116"
@@ -183,8 +185,8 @@ def check_tools():
         encoders = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True
         ).stdout
-        report("ffmpeg", "libwebp_anim" in encoders, "libwebp_anim encoder"
-               if "libwebp_anim" in encoders else "no libwebp_anim encoder")
+        has = any(line.split()[1:2] == ["libwebp"] for line in encoders.splitlines())
+        report("ffmpeg", has, "libwebp encoder" if has else "no libwebp encoder")
     else:
         report("ffmpeg", False, "not on PATH")
     return ok
@@ -251,15 +253,19 @@ class Job:
         with concurrent.futures.ThreadPoolExecutor(self.jobs) as pool:
             list(pool.map(frame, range(count)))
         target = self.output / f"{view}-loop.webp"
-        for quality in LOOP_QUALITIES:
-            run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-i",
-                 str(folder / "f_%03d.png"), "-c:v", "libwebp_anim", "-lossless", "0",
-                 "-quality", str(quality), "-compression_level", "6", "-loop", "0",
-                 str(target)])
+        frames = [str(folder / f"f_{index:03d}.png") for index in range(count)]
+        # ImageMagick writes the animation: ffmpeg's libwebp_anim drifts into visible blocks
+        # on lossy frames after a few dozen frames. This ImageMagick ignores -quality for
+        # WebP, so the size is steered by webp:target-size, the bytes it aims for per frame.
+        for per_frame in LOOP_FRAME_BYTES:
+            define = ["-define", f"webp:target-size={per_frame}"] if per_frame else []
+            run(CONVERT + ["-delay", str(round(100 / fps)), "-loop", "0", *frames,
+                           "-define", "webp:method=6", *define, str(target)])
             if target.stat().st_size <= LOOP_BUDGET:
-                report(target, f"t={start}+{seconds}s {fps}fps {count} frames q{quality}")
+                report(target, f"t={start}+{seconds}s {fps}fps {count} frames "
+                               f"{per_frame or 'default'}")
                 return
-        sys.exit(f"{target.name}: over {LOOP_BUDGET} bytes at the lowest quality")
+        sys.exit(f"{target.name}: over {LOOP_BUDGET} bytes at the lowest target size")
 
     def montage(self, panels, columns, width, target, budget, qualities, pointsize):
         """Labelled tiles of (png path, label) in a grid `width` wide, as one WebP."""
