@@ -102,6 +102,16 @@ shared! {
     U32 GLYPH_COLUMNS: u32 = glyphs::WIDTH;
 }
 
+/// The one light every lit surface drawn on the CPU shares (tubes, and the relief of a field): a
+/// unit vector in world space, z up, pointing from the surface towards the light, the normalized
+/// `[-0.4, -0.5, 0.75]`. It is shaded in Rust, so the shader never sees it and it is not in
+/// `CONSTANTS`; a surface is `0.35 + 0.65 * max(normal . LIGHT, 0)` bright.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used by views added after this PR")
+)]
+pub const LIGHT: [f32; 3] = [-0.405_616_1, -0.507_020_1, 0.760_530_2];
+
 /// The WGSL declarations of every shared constant, placed before `shaders.wgsl`.
 pub fn prelude() -> String {
     let mut source = String::from("// Generated from render::shared; do not edit.\n");
