@@ -1,7 +1,7 @@
 # View Coop
 
 The machine as a fenced chicken yard. Every process is a chicken, every cgroup is a flock with its own henhouse, and
-the flock moves by the rule Tamas Vicsek proposed in 1995 for self-driven particles: steer by the average heading of your
+the flock moves by the rule Tamás Vicsek and colleagues proposed in 1995 for self-driven particles: steer by the average heading of your
 flock mates, plus noise. Idle processes roost on perch ladders, running ones queue at the feeder of the CPU they last ran on in
 order of priority, and the hens that hold file locks brood by the nest box where the eggs, one clutch per flock, count its open files. Foxes
 come when the kernel's OOM killer takes something. The noise that scatters a flock is the machine's own instability: the
@@ -121,7 +121,7 @@ queues, a few pink and red chickens (zombies, a stopped process), and a dense kn
 ./target/release/isotop --view coop     # live; select a chicken: inspector lines give role, noise, eggs, locks, peers, dust
 ```
 
-Keys: the global ones (Tab, `v`, `f` focus a subtree, `p` pause and rewind, `c` link modes). The yard replays 30 s of samples before a headless demo frame so CPU variation exists, then runs four seconds of simulation.
+Keys: only the global ones (Tab, `v` the picker, `f` focus a subtree, `c` link modes, pause and rewind); the coop has no keys of its own. The yard replays 30 s of samples before a headless demo frame so CPU variation exists, then runs four seconds of simulation.
 
 ## Where in the code
 
