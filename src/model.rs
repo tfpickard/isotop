@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub(crate) mod kernel;
+
 use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{
@@ -12,6 +14,7 @@ use crate::platform::{
     OpenEvents, RawProcess, Source, Sources, Taken,
 };
 use crate::simulation::{Rng, hash, hash_identity, smoothing};
+use kernel::{KernelReadings, KernelScan, Readers};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -388,6 +391,43 @@ pub struct Unit {
     pub pids_max: Option<u64>,
 }
 
+/// One CPU's count of an interrupt or softirq: the CPU, the events counted since boot, and their
+/// rate per second over the interval between two reads. The rate is None on the first read, for
+/// a CPU that was not there before and when the count went backwards.
+pub type CpuCount = (u32, u64, Option<f32>);
+
+/// One row of `/proc/softirqs`: the softirq's name (`TIMER`, `NET_RX`, ...) and its count on each
+/// CPU.
+pub type Softirq = (String, Vec<CpuCount>);
+
+/// One row of the interrupt table (`Snapshot::interrupts`). Text is as the kernel wrote it:
+/// whoever shows it cleans it (`terminal::clean_text`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Interrupt {
+    /// The row's label without its colon: an interrupt number (`27`) or a name (`LOC`, `NMI`,
+    /// `IPI0`). `Interrupt::is_numbered` tells them apart.
+    pub id: String,
+    /// The interrupt controller or MSI domain of a numbered row; empty for a named one.
+    pub chip: String,
+    /// The controller's own number for the interrupt, when the row has one.
+    pub hwirq: Option<u64>,
+    /// How the line triggers or what handles it (`edge`, `fasteoi`, `Level`), when the row says.
+    pub trigger: String,
+    /// The devices that registered a handler, in the kernel's order; empty for a named row.
+    pub devices: Vec<String>,
+    /// What a named row counts (`Local timer interrupts`); empty for a numbered one.
+    pub description: String,
+    /// The count on each online CPU, in column order. A `total_only` row has one entry, filed
+    /// under the first CPU, which holds the row's total.
+    pub per_cpu: Vec<CpuCount>,
+    /// The kernel printed fewer counts than there are CPUs (`ERR`, `MIS`, `Err`): one total for
+    /// the machine, not a count per CPU.
+    pub total_only: bool,
+    /// The CPUs that serve the interrupt (`effective_affinity_list`): only numbered rows have
+    /// one, and None when it was not read (`Source::IrqAffinity`) or cannot be.
+    pub affinity: Option<Vec<u32>>,
+}
+
 /// An established TCP connection to another machine.
 #[derive(Clone, Debug)]
 pub struct Remote {
@@ -469,6 +509,16 @@ pub struct Snapshot {
     /// `processes`, or None when it was not read. The demo synthesizes one only when the shown
     /// view asks (`DemoOptions::observer`), outside `processes`.
     pub observer: Option<Process>,
+    /// The interrupt table with its rates per CPU (`Source::Interrupts`, and `Source::IrqAffinity`
+    /// for each row's affinity): Pending until a pass has read it, which only a view that
+    /// declares the source causes, and Unreadable where the platform has none. In the demo it is
+    /// Pending unless the shown view asks for `DemoOptions::kernel_counters`.
+    pub interrupts: Measured<Vec<Interrupt>>,
+    /// The softirq counts with their rates per CPU (`Source::Softirqs`), as `interrupts`.
+    pub softirqs: Measured<Vec<Softirq>>,
+    /// The kernel's count of OOM kills since boot (`Source::OomKills`): cumulative, so a view takes
+    /// the difference between samples. None when it was not read or cannot be.
+    pub oom_kills: Option<u64>,
 }
 
 /// The optional sources the shown view wants read. The background thread reads an optional
@@ -537,6 +587,16 @@ impl Reads {
             None => self.missing.insert(source),
         }
         value
+    }
+
+    /// `Reads::read` for a source that fills a `Measured`: Pending when it is not demanded,
+    /// Unreadable (and missing) when `read` could not read it, Known (and active) otherwise.
+    fn measure<T>(&mut self, source: Source, read: impl FnOnce() -> Option<T>) -> Measured<T> {
+        match self.read(source, read) {
+            Some(value) => Measured::Known(value),
+            None if self.missing.contains(source) => Measured::Unreadable,
+            None => Measured::Pending,
+        }
     }
 }
 
@@ -684,6 +744,8 @@ struct Extras {
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<platform::Files>>,
     locks: Measured<platform::Locks>,
+    /// The kernel counters this cycle read, for the sources that were demanded.
+    kernel: KernelReadings,
     /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table,
     /// and the demanded optional sources that could not be read.
     missing: Sources,
@@ -830,6 +892,7 @@ fn background(
         let mut files = platform::FileScan::new();
         let mut kept = KeptFiles::default();
         let mut memory = MemoryReads::new();
+        let mut kernel = KernelScan::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -885,6 +948,7 @@ fn background(
                 platform::oom_scores,
                 platform::rollup,
             );
+            let kernel = kernel.scan(Readers::PLATFORM, &mut reads, &mut latency);
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -895,6 +959,7 @@ fn background(
                 traffic,
                 files,
                 locks,
+                kernel,
                 missing,
                 sources: reads.active,
                 geo: geo.source.clone(),
@@ -1012,6 +1077,9 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         })
         .collect();
     snapshot.geo = extras.geo.clone();
+    snapshot.interrupts = extras.kernel.interrupts.clone();
+    snapshot.softirqs = extras.kernel.softirqs.clone();
+    snapshot.oom_kills = extras.kernel.oom_kills;
     snapshot.missing = snapshot.missing.union(extras.missing);
     snapshot.sources = snapshot.sources.union(extras.sources);
 }
@@ -2186,6 +2254,14 @@ pub struct DemoOptions {
     /// private part and `rss`, its three `pss_` parts add up to `pss`, and `swap_pss <= swap`.
     /// One of the 64 is unreadable. Off, both are `Pending`, as in `demo`.
     pub oom_and_memory_detail: bool,
+    /// Synthesizes the kernel counters (`Snapshot::interrupts`, `softirqs` and `oom_kills`, with
+    /// each interrupt's affinity) for 16 CPUs: device rows `nvme0q0` to `nvme0q7`, `xhci_hcd`,
+    /// `iwlwifi` (whose affinity moves to another CPU every 37 s), `i915` and `ahci`; the named
+    /// rows `NMI`, `LOC` (about 250 Hz per CPU, scaled by the CPU's busy share), `RES`, `CAL` and
+    /// `TLB`; all ten softirqs; and `oom_kills`, the sum of the units' `oom_kills` at the same
+    /// time. Counts grow from a day of uptime and rates wander, both pure functions of `time`.
+    /// Off, the three fields hold what an unread source holds: Pending, Pending and None.
+    pub kernel_counters: bool,
 }
 
 impl DemoOptions {
@@ -2198,6 +2274,7 @@ impl DemoOptions {
         observer: false,
         mortality: false,
         oom_and_memory_detail: false,
+        kernel_counters: false,
     };
 }
 
@@ -3088,7 +3165,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         .map(|i| (id(i), 1 + (i % 3) as u32))
         .collect();
     let wave = |rate: f64, scale: f32| ((time * rate).sin() as f32).max(0.0) * scale;
-    let cpus = (0..16)
+    let cpus: Vec<Cpu> = (0..16)
         .map(|id| {
             let load = (time as f32 * 0.4 + id as f32 * 0.9).sin() * 0.5 + 0.5;
             Cpu {
@@ -3200,6 +3277,13 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     if options.oom_and_memory_detail {
         demo_oom_and_memory_detail(&mut processes, count);
     }
+    let (interrupts, softirqs, oom_kills) = if options.kernel_counters {
+        let (interrupts, softirqs) = kernel::demo(time, cpus.len());
+        let kills = units.values().filter_map(|unit| unit.oom_kills).sum();
+        (interrupts, softirqs, Some(kills))
+    } else {
+        (Measured::Pending, Measured::Pending, None)
+    };
     Snapshot {
         processes,
         memory_total: Some(DEMO_MEMORY_TOTAL),
@@ -3236,6 +3320,9 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         }),
         geo: "demo locations".into(),
         observer: options.observer.then(|| demo_observer(time)),
+        interrupts,
+        softirqs,
+        oom_kills,
     }
 }
 
@@ -4814,6 +4901,9 @@ mod tests {
             }),
             geo: "demo locations".into(),
             observer: None,
+            interrupts: Measured::Pending,
+            softirqs: Measured::Pending,
+            oom_kills: None,
         }
     }
 
@@ -4848,6 +4938,9 @@ mod tests {
             life,
             life_dropped,
             observer,
+            interrupts,
+            softirqs,
+            oom_kills,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
         let unix_links: BTreeSet<_> = unix_links.iter().collect();
@@ -4857,7 +4950,8 @@ mod tests {
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {wall:?} {pressure:?}\n\
              {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
-             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}"
+             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
+             {interrupts:?}\n{softirqs:?} {oom_kills:?}"
         )
     }
 
@@ -5479,6 +5573,15 @@ mod tests {
         assert!(extras.finished.is_some(), "the first cycle finished");
         assert!(extras.sources.is_empty());
         assert_eq!(
+            (
+                &extras.kernel.interrupts,
+                &extras.kernel.softirqs,
+                extras.kernel.oom_kills
+            ),
+            (&Measured::Pending, &Measured::Pending, None),
+            "no kernel counter was read"
+        );
+        assert_eq!(
             extras.geo, "loading the GeoIP database",
             "no lookup, so the database was never opened"
         );
@@ -5488,6 +5591,16 @@ mod tests {
                 .iter()
                 .all(|(source, _)| *source != Source::Locations),
             "no location scan ran"
+        );
+        assert!(
+            extras.latency.iter().all(|(source, _)| ![
+                Source::Interrupts,
+                Source::Softirqs,
+                Source::IrqAffinity,
+                Source::OomKills
+            ]
+            .contains(source)),
+            "no kernel counter file was opened"
         );
     }
 

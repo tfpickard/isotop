@@ -46,6 +46,16 @@
 //!     a process's memory by kind, and one such reading (the collector keeps to the
 //!     `model::ROLLUP_PROCESSES` largest and to a time budget). Without it the collector reports
 //!     `Source::MemoryDetail` missing.
+//! - Kernel counters, each read on the background thread while its source is demanded:
+//!   - `interrupts() -> Option<Vec<Interrupt>>`: every row of the interrupt table with its
+//!     counts per CPU, no rates and no affinity; None when it cannot be read
+//!     (`Source::Interrupts`);
+//!   - `softirqs() -> Option<Vec<Softirq>>`: every softirq with its counts per CPU
+//!     (`Source::Softirqs`);
+//!   - `irq_affinity(id: &str) -> Option<Vec<u32>>`: the CPUs that serve the numbered interrupt
+//!     `id`, None when they cannot be read (`Source::IrqAffinity`);
+//!   - `oom_kills() -> Option<u64>`: the kernel's count of OOM kills since boot
+//!     (`Source::OomKills`). macOS reads none of the four, and `Sampler::missing` says so.
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -172,11 +182,20 @@ pub enum Source {
     /// The split of the proportional set size into anonymous, file and shared-memory pages
     /// (`Rollup::pss_anon` and the two after it), which needs Linux 5.3.
     MemorySplit,
+    /// `Snapshot::interrupts`, the interrupt counts and rates per CPU (`/proc/interrupts`).
+    Interrupts,
+    /// `Snapshot::softirqs`, the softirq counts and rates per CPU (`/proc/softirqs`).
+    Softirqs,
+    /// `Interrupt::affinity`, the CPUs that serve each numbered interrupt. It fills the rows of
+    /// `Interrupts`, so a view that draws it declares both.
+    IrqAffinity,
+    /// `Snapshot::oom_kills`, the kernel's count of OOM kills (`oom_kill` in `/proc/vmstat`).
+    OomKills,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 26] = [
+    pub const ALL: [Source; 30] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -203,6 +222,10 @@ impl Source {
         Source::Oom,
         Source::MemoryDetail,
         Source::MemorySplit,
+        Source::Interrupts,
+        Source::Softirqs,
+        Source::IrqAffinity,
+        Source::OomKills,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -234,6 +257,10 @@ impl Source {
             Source::Oom => "oom score",
             Source::MemoryDetail => "memory detail",
             Source::MemorySplit => "memory split",
+            Source::Interrupts => "interrupts",
+            Source::Softirqs => "softirqs",
+            Source::IrqAffinity => "irq affinity",
+            Source::OomKills => "oom kills",
         }
     }
 

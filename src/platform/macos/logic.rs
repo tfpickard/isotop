@@ -205,7 +205,8 @@ pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
 /// What macOS never measures: the pressures it has no stall accounting for, the last CPU, the
 /// run queue, cgroups, socket traffic, the lock table, GPU memory (Apple GPUs share memory
 /// with the CPU and report none per process), syscall I/O (no per-process counters of the
-/// bytes and calls of read and write) and memory by kind (no smaps_rollup). The clock is missing too unless it is measured
+/// bytes and calls of read and write), memory by kind (no smaps_rollup) and the kernel counters
+/// (no interrupt or softirq table, no IRQ affinity, and no readable count of OOM kills). The clock is missing too unless it is measured
 /// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
 pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
     let mut missing = Sources::from([
@@ -219,6 +220,10 @@ pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
         Source::GpuMemory,
         Source::SyscallIo,
         Source::MemoryDetail,
+        Source::Interrupts,
+        Source::Softirqs,
+        Source::IrqAffinity,
+        Source::OomKills,
     ]);
     if !clocked {
         missing.insert(Source::CpuClock);
@@ -1033,6 +1038,21 @@ mod tests {
             }
         }
         assert_eq!(Source::SyscallIo.name(), "syscall io");
+    }
+
+    #[test]
+    fn macos_reports_the_kernel_counters_as_missing() {
+        for clocked in [false, true] {
+            let gaps = missing(clocked, true);
+            for source in [
+                Source::Interrupts,
+                Source::Softirqs,
+                Source::IrqAffinity,
+                Source::OomKills,
+            ] {
+                assert!(gaps.contains(source), "{gaps:?}");
+            }
+        }
     }
 
     #[test]

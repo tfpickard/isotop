@@ -1,0 +1,13 @@
+# Built by hand, not captured: /proc/softirqs as show_softirqs() in fs/proc/softirqs.c prints it
+# with CPU2 offline, so its header skips CPU2.
+                    CPU0       CPU1       CPU3       
+          HI:          1          0          0
+       TIMER:     100200     100300     100400
+      NET_TX:          5          6          7
+      NET_RX:       2000       3000       4000
+       BLOCK:          0          9          0
+    IRQ_POLL:          0          0          0
+     TASKLET:         10         20         30
+       SCHED:     500000     600000     700000
+     HRTIMER:          0          0          0
+         RCU:     800000     900000    1000000

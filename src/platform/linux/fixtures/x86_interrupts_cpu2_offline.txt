@@ -1,0 +1,7 @@
+# Built by hand, not captured: the layout of x86_interrupts.txt with CPU2 offline. The kernel prints
+# one column per online CPU, so the header skips CPU2 and the counts follow the header.
+           CPU0       CPU1       CPU3       
+  0:         10          0          5   IO-APIC    2-edge      timer
+ 27:      41230          0          9  IR-PCI-MSIX-0000:01:00.0    0-edge      nvme0q0
+LOC:    9100322    9001201    9043321   Local timer interrupts
+ERR:          0

@@ -1,0 +1,13 @@
+# Real capture: Linux 6.8.0-117-generic aarch64 (Docker Desktop VM, 4 CPUs), 2026-10-11.
+# /proc/softirqs, unmodified.
+                    CPU0       CPU1       CPU2       CPU3       
+          HI:          1          0          3          0
+       TIMER:     709996     647955     648959     875186
+      NET_TX:        544        496        483        456
+      NET_RX:     440294     106297     107675     106420
+       BLOCK:     755467          0          0          0
+    IRQ_POLL:          0          0          0          0
+     TASKLET:      10337         75         61         48
+       SCHED:    2402151    1796333    1439788    1318213
+     HRTIMER:          0          0          0          0
+         RCU:    3439226    3425783    3420062    3423629

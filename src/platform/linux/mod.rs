@@ -2,6 +2,7 @@
 //! stall information, cgroup v2 accounting, sockets, open files and file locks, NVML, the
 //! systemd journal, and fork, exec and exit events.
 
+mod counters;
 mod events;
 mod files;
 mod journal;
@@ -20,6 +21,7 @@ use crate::model::{
 };
 use crate::platform::{Files, Network, RawProcess, Shadow, Source, Sources};
 
+pub use counters::{interrupts, irq_affinity, oom_kills, softirqs};
 pub use events::{monotonic_ns, open_events};
 pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};

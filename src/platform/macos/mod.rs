@@ -22,7 +22,8 @@ use std::process::Child;
 use std::time::Instant;
 
 use crate::model::{
-    CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Oom, Process, Rollup, Unit,
+    CoreKind, Cpu, GpuMemory, Identity, Interrupt, IoBytes, Kind, Measured, Oom, Process, Rollup,
+    Softirq, Unit,
 };
 use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources, Taken};
 
@@ -1213,6 +1214,29 @@ fn vnode_info(pid: c_int, fd: i32) -> io::Result<ffi::vnode_fdinfo> {
 /// range of a file the caller has open itself, so no process can be named as a holder or a
 /// waiter. `Sampler::missing` names "file locks".
 pub fn locks() -> Option<Locks> {
+    None
+}
+
+/// The interrupt table. macOS has none that can be read, and `Sampler::missing` names
+/// "interrupts".
+pub fn interrupts() -> Option<Vec<Interrupt>> {
+    None
+}
+
+/// The softirq counts. macOS has no softirqs; `Sampler::missing` names "softirqs".
+pub fn softirqs() -> Option<Vec<Softirq>> {
+    None
+}
+
+/// The CPUs serving an interrupt. macOS has no table to name one from; `Sampler::missing` names
+/// "irq affinity".
+pub fn irq_affinity(_id: &str) -> Option<Vec<u32>> {
+    None
+}
+
+/// The count of OOM kills. macOS keeps none short of the private IOReport framework;
+/// `Sampler::missing` names "oom kills".
+pub fn oom_kills() -> Option<u64> {
     None
 }
 
