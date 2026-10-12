@@ -4,7 +4,7 @@ Writes docs/media/figures/chamber-v0.svg. Run from the repository root:
 
     python3 docs/figures/chamber-v0.py
 
-Left: a K0_S of 0.8 GeV/c decays to pi+ pi- at the origin, B = 1.5 T out of the page. The parent
+Left: a K0_S of 0.4 GeV/c decays to pi+ pi- at the origin, B = 1.5 T out of the page. The parent
 leaves no track (dashed); the daughters curl in opposite senses. Middle: the Armenteros-
 Podolanski plane (alpha, q_T) for K0_S -> pi+ pi-, Lambda -> p pi- and anti-Lambda -> pbar pi+
 at a parent momentum of 2 GeV/c; alpha = (p_L+ - p_L-) / (p_L+ + p_L-), q_T is the daughter
@@ -91,11 +91,11 @@ def main():
     # Event display.
     left, w = 40, 330
     axes = P.Axes(svg, left, top, w, h, (-20, 130), (-66, 66), xlabel="x (cm)",
-                  ylabel="y (cm)", title="K0_S (0.8 GeV/c) to pi+ pi-",
+                  ylabel="y (cm)", title="K0_S (0.4 GeV/c) to pi+ pi-",
                   xticks=[0, 40, 80, 120], yticks=[-60, -30, 0, 30, 60])
-    plus, minus = daughters(M_K0, M_PI, 800.0, math.radians(75.0))
-    track_p, radius_p = helix((0.0, 0.0), plus, +1, 1.5, 100.0)
-    track_n, radius_n = helix((0.0, 0.0), minus, -1, 1.5, 100.0)
+    plus, minus = daughters(M_K0, M_PI, 400.0, math.radians(80.0))
+    track_p, radius_p = helix((0.0, 0.0), plus, +1, 1.5, 120.0)
+    track_n, radius_n = helix((0.0, 0.0), minus, -1, 1.5, 120.0)
     axes.plot([p[0] for p in track_p], [p[1] for p in track_p], stroke=P.BLUE, width=2.0)
     axes.plot([p[0] for p in track_n], [p[1] for p in track_n], stroke=P.ORANGE, width=2.0)
     axes.plot([-20, 0.0], [0.0, 0.0], stroke=P.MUTED, width=1.5, dash="5 4")

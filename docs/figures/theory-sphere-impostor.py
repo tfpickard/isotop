@@ -44,7 +44,7 @@ class Svg:
     def rect(self, x, y, w, h, fill="none", stroke="none", width=1.0, opacity=1.0):
         self.parts.append(
             f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" fill="{fill}" '
-            f'fill-opacity="{opacity}" stroke="{stroke}" stroke-width="{width}"/>')
+            f'fill-opacity="{opacity}" stroke="{stroke}" stroke-width="{width}" shape-rendering="crispEdges"/>')
 
     def polyline(self, points, stroke=FG, width=1.5, dash=None):
         pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
@@ -82,8 +82,8 @@ def main():
     svg.text(24, 50, "Frame::ball and ball_fragment: no mesh, one square root per covered pixel", 12, DIM)
 
     # ---------------- left: geometry in the plane y = cy ----------------
-    cx, cy, R = 235, 275, 150            # centre of the slice, display radius
-    svg.text(24, 88, "slice through the centre (n_y = 0), looking along the depth axis", 12.5, FG, weight="600")
+    cx, cy, R = 215, 285, 140            # centre of the slice, display radius
+    svg.text(24, 82, "slice through the centre (n_y = 0)", 12.5, FG, weight="600")
     # depth axis and screen axis
     svg.line(cx - R - 30, cy, cx + R + 30, cy, DIM, 1)
     svg.line(cx, cy + 22, cx, cy - R - 38, DIM, 1)
@@ -113,22 +113,22 @@ def main():
     svg.circle(cx, cy, 3, FG)
     # captions
     lines = [
-        "d = n_x^2 + n_y^2        covered if d <= 1",
-        "n_z = sqrt(1 - d)        the near root of the ray-sphere quadratic",
-        "normal = (n_x, n_y, n_z)  unit length, since d + n_z^2 = 1",
-        "depth  = cz + n_z * R     R is the world radius, r the pixel radius",
+        "d = n_x^2 + n_y^2; covered if d <= 1",
+        "n_z = sqrt(1 - d), the near root of the quadratic",
+        "normal = (n_x, n_y, n_z), unit length: d + n_z^2 = 1",
+        "depth = cz + n_z R (R world units, r pixels)",
     ]
     for i, line in enumerate(lines):
-        svg.text(30, 428 + 18 * i, line, 12, FG)
-    svg.text(30, 508, "The silhouette is a circle of r pixels but the depth bulge is R world units, so the", 11, DIM)
-    svg.text(30, 524, "impostor is a sphere only where r = R * zoom * SCALE (Frame::world_sphere); Frame::sphere", 11, DIM)
-    svg.text(30, 540, "draws r = max(R * zoom, 3.5), about 18% smaller, which the views' spacing was tuned with.", 11, DIM)
+        svg.text(30, 385 + 18 * i, line, 12, FG)
+    svg.text(24, 500, "The silhouette is r pixels across but the depth bulge is R world units, so the impostor is exactly a sphere only where", 11, DIM)
+    svg.text(24, 516, "r = R * zoom * SCALE (Frame::world_sphere). Frame::sphere draws r = max(R * zoom, 3.5), about 18% smaller,", 11, DIM)
+    svg.text(24, 532, "the size the views' spacing was tuned with. Lighting uses the normal in screen axes: the light does not turn with the camera.", 11, DIM)
 
     # ---------------- right: literal pixels ----------------
-    svg.text(520, 88, "the pixels of a sphere with r = 20, sampled at integer coordinates", 12.5, FG, weight="600")
+    svg.text(425, 82, "the literal pixels of a sphere, r = 20", 12.5, FG, weight="600")
     r = 20
-    cell = 9
-    ox, oy = 700, 290                    # centre pixel position
+    cell = 8
+    ox, oy = 585, 262                    # centre pixel position
     base = (100, 160, 210)
     for j in range(-r, r + 1):
         for i in range(-r, r + 1):
@@ -148,29 +148,30 @@ def main():
     un = math.sqrt(sum(c * c for c in u))
     u = tuple(c / un for c in u)
     v = (lvec[1] * u[2] - lvec[2] * u[1], lvec[2] * u[0] - lvec[0] * u[2], lvec[0] * u[1] - lvec[1] * u[0])
-    ring = []
-    for i in range(0, 721):
+    full = []
+    for i in range(0, 720):
         t = 2 * math.pi * i / 720
-        n = tuple(u[k] * math.cos(t) + v[k] * math.sin(t) for k in range(3))
-        if n[2] >= 0:
-            ring.append((ox + n[0] * r * cell, oy + n[1] * r * cell))
+        full.append(tuple(u[k] * math.cos(t) + v[k] * math.sin(t) for k in range(3)))
+    start = min(range(len(full)), key=lambda i: full[i][2])      # rotate so the front arc is contiguous
+    full = full[start:] + full[:start]
+    ring = [(ox + n[0] * r * cell, oy + n[1] * r * cell) for n in full if n[2] >= 0]
     svg.polyline(ring, YELLOW, 1.8, dash="5 3")
     # highlight and light arrow
     hx, hy = ox + lvec[0] * r * cell, oy + lvec[1] * r * cell
     svg.line(ox, oy, hx, hy, FG, 1.4, dash="2 3")
     svg.circle(hx, hy, 4.5, "none", FG, 1.6)
-    svg.text(hx - 10, hy - 10, "peak 1.162 at n = L/|L|", 11, FG, "end")
+    svg.text(hx - 8, hy - 8, "peak 1.162 at n = L/|L|", 11, FG, "start")
     svg.circle(ox, oy, 2.5, FG)
-    svg.text(ox + r * cell + 14, oy - 40, "light L = (-0.4, -0.5, 0.65)", 11.5, FG)
-    svg.text(ox + r * cell + 14, oy - 24, "in (x right, y down, z to viewer);", 11, DIM)
-    svg.text(ox + r * cell + 14, oy - 10, "|L| = 0.9124, not normalised", 11, DIM)
-    svg.text(ox + r * cell + 14, oy + 18, "factor = 0.25 + max(n . L, 0)", 11.5, FG)
-    svg.text(ox + r * cell + 14, oy + 34, "cap 1.2 is never reached:", 11, DIM)
-    svg.text(ox + r * cell + 14, oy + 50, "0.25 + |L| = 1.162", 11, DIM)
-    svg.text(ox + r * cell + 14, oy + 74, "yellow: terminator n . L = 0", 11, YELLOW)
-    svg.text(ox + r * cell + 14, oy + 90, "14.4% of the disc is at 0.25", 11, YELLOW)
+    svg.text(ox + r * cell + 22, oy - 40, "light L = (-0.4, -0.5, 0.65)", 11.5, FG)
+    svg.text(ox + r * cell + 22, oy - 24, "in (x right, y down, z to viewer);", 11, DIM)
+    svg.text(ox + r * cell + 22, oy - 10, "|L| = 0.9124, not normalised", 11, DIM)
+    svg.text(ox + r * cell + 22, oy + 18, "factor = 0.25 + max(n . L, 0)", 11.5, FG)
+    svg.text(ox + r * cell + 22, oy + 34, "cap 1.2 is never reached:", 11, DIM)
+    svg.text(ox + r * cell + 22, oy + 50, "0.25 + |L| = 1.162", 11, DIM)
+    svg.text(ox + r * cell + 22, oy + 74, "yellow: terminator n . L = 0", 11, YELLOW)
+    svg.text(ox + r * cell + 22, oy + 90, "14.4% of the disc is at 0.25", 11, YELLOW)
     # colour bar
-    bx, by, bw, bh = 520, 500, 220, 12
+    bx, by, bw, bh = 425, 445, 320, 12
     for i in range(110):
         k = AMBIENT + (1.162 - AMBIENT) * i / 109
         colour = tuple(max(0, min(255, int(c * k))) for c in base)
