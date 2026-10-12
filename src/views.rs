@@ -602,14 +602,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#119",
-                reason: "fish swim and crabs scuttle at their CPU and no anchor is declared",
-            }],
-            ..Contract::DEFAULT
-        },
+        // Fish swim and crabs scuttle at their CPU; their school's target and their seat are
+        // what must stay put, and `Reef::anchors` says where those are.
         ..ViewInfo::new(
             "reef",
             "REEF",

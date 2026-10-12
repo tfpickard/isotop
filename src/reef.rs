@@ -38,6 +38,11 @@ pub struct Reef {
     seats: Seats,
     fish: HashMap<Identity, Swimmer>,
     last: Option<f32>,
+    /// The place each process of the last frame keeps to, for the harness's anchors: the target
+    /// of its school or its seat on the sand, where it wanders at its CPU, or else where it is
+    /// drawn.
+    #[cfg(test)]
+    kept: HashMap<Identity, Point>,
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +56,8 @@ impl ViewModule for Reef {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1));
         self.last = Some(time);
+        #[cfg(test)]
+        self.kept.clear();
         // Seats and homes are reserved for every sampled process, drawn or not, so focusing a
         // subtree, or `--limit` hiding some, neither frees their seats nor drops their cluster's
         // place: clearing it puts everything back where it was. Only drawn processes are drawn.
@@ -200,12 +207,28 @@ impl ViewModule for Reef {
                 stage.bounds.push([x, y, DEPTH * 0.6]);
             }
         }
+        #[cfg(test)]
+        self.keep_the_rest(stage.positions);
         shown
     }
 
     /// The status legend.
     fn legend(&self, _snapshot: &Snapshot) -> String {
         " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into()
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// Where each process belongs. Fish swim about their school's target at a speed set by their
+    /// CPU, and crabs scuttle about their seat at a pace set by theirs, so where they are drawn
+    /// follows the CPU by design; what stays put is the school's target and the crab's seat on its
+    /// container's home. Corals and plankton do not wander, and stand where they are drawn.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+        Some(self.kept.clone())
     }
 }
 
@@ -292,6 +315,10 @@ impl Reef {
             home[1] + room * 0.4 * (time * 0.05 + phase).sin(),
             5.0 + 2.5 * (time * 0.07 + phase).sin(),
         ];
+        #[cfg(test)]
+        for &index in members {
+            self.kept.insert(processes[index].id, target);
+        }
         for &index in members {
             let id = processes[index].id;
             // pid only: kept for pixel stability, see A33
@@ -432,7 +459,7 @@ impl Reef {
 
     /// A crab scuttling sideways near its container's home, legs stepping as it goes.
     fn crab(
-        &self,
+        &mut self,
         stage: &mut Stage,
         processes: &[&Process],
         index: usize,
@@ -441,8 +468,16 @@ impl Reef {
     ) {
         let process = processes[index];
         let time = stage.time;
-        let seat = self.seats.seat(process.id).unwrap_or(0) as f32;
-        let (distance, angle) = spiral(1.3, 0.5, seat, spin(group));
+        let (seat, distance, angle) = self.crab_seat(process.id, group);
+        #[cfg(test)]
+        self.kept.insert(
+            process.id,
+            [
+                home[0] + distance * angle.cos(),
+                home[1] + distance * angle.sin(),
+                0.0,
+            ],
+        );
         let pace = 0.4 + 2.0 * bounded(process.cpu, 40.0);
         let stride = (time * pace + seat).sin() * 0.9;
         let heading = angle + std::f32::consts::FRAC_PI_2;
@@ -504,6 +539,23 @@ impl Reef {
             stage.selected == Some(process.id),
         );
         stage.positions.insert(process.id, center);
+    }
+
+    /// Records, for the harness's anchors, where the processes that do not wander stand: the
+    /// corals and the plankton, where they are drawn.
+    #[cfg(test)]
+    fn keep_the_rest(&mut self, positions: &HashMap<Identity, Point>) {
+        for (&id, &position) in positions {
+            self.kept.entry(id).or_insert(position);
+        }
+    }
+
+    /// A crab's seat on the sand round its container's home: the seat's number, and its distance
+    /// and angle from the home.
+    fn crab_seat(&self, id: Identity, group: &str) -> (f32, f32, f32) {
+        let seat = self.seats.seat(id).unwrap_or(0) as f32;
+        let (distance, angle) = spiral(1.3, 0.5, seat, spin(group));
+        (seat, distance, angle)
     }
 
     /// One polyp of a coral colony: a stalk rising from the colony's base, taller near the middle,
@@ -687,6 +739,67 @@ mod tests {
         let restored = draw(&mut scene, &sample, time, 4096, None, None);
         assert_eq!(restored.len(), before.len());
         in_place(&restored, &before);
+    }
+
+    /// The state of the reef view the scene has drawn.
+    fn reef(scene: &Scene) -> &Reef {
+        scene
+            .module::<Reef>(view("reef"))
+            .expect("the reef view has drawn")
+    }
+
+    fn ground_distance(a: Point, b: Point) -> f32 {
+        (a[0] - b[0]).hypot(a[1] - b[1])
+    }
+
+    #[test]
+    fn fish_and_crabs_wander_at_their_cpu_about_a_school_target_and_a_seat_that_stay_put() {
+        let sample = demo(30.0, 160);
+        // Every CPU scaled by 0.25 to 4 and every memory by 0.5 to 2.
+        let changed = crate::harness::rescaled(&sample);
+        let (mut steady, mut scaled) = (Scene::new(), Scene::new());
+        for step in 0..40 {
+            let time = 30.0 + 0.1 * step as f32;
+            draw(&mut steady, &sample, time, 4096, None, None);
+            draw(&mut scaled, &changed, time, 4096, None, None);
+        }
+        let (kept, other) = (&reef(&steady).kept, &reef(&scaled).kept);
+        let (fish, crabs): (Vec<&Process>, Vec<&Process>) = sample
+            .processes
+            .iter()
+            .filter(|process| matches!(process.kind, Kind::Session | Kind::Container))
+            .partition(|process| process.kind == Kind::Session);
+        assert!(!fish.is_empty() && !crabs.is_empty(), "the demo has both");
+        let mut wandered = 0;
+        for process in fish.iter().chain(&crabs) {
+            let id = process.id;
+            assert_eq!(kept[&id], other[&id], "{id:?} keeps its place");
+            wandered +=
+                usize::from(ground_distance(steady.positions[&id], scaled.positions[&id]) > 0.5);
+        }
+        assert!(wandered > 0, "scaling the CPU moves fish and crabs about");
+        // A crab scuttles at most 0.9 either side of its seat, along its heading.
+        for process in &crabs {
+            let id = process.id;
+            let off = ground_distance(steady.positions[&id], kept[&id]);
+            assert!(off <= 0.9 + 1e-3, "{id:?} is {off} from its seat");
+        }
+        // Corals and plankton are where they are drawn.
+        for process in sample
+            .processes
+            .iter()
+            .filter(|p| !matches!(p.kind, Kind::Session | Kind::Container))
+        {
+            if let Some(&drawn) = steady.positions.get(&process.id) {
+                assert_eq!(kept[&process.id], drawn);
+            }
+        }
+        // A fish swims with its school, within a few body lengths of the target it steers to.
+        for process in &fish {
+            let id = process.id;
+            let off = ground_distance(steady.positions[&id], kept[&id]);
+            assert!(off < 8.0, "{id:?} is {off} from its school's target");
+        }
     }
 
     #[test]
