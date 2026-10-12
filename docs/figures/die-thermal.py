@@ -75,7 +75,7 @@ def main():
                   "die heat field, and its point-source profile against K0.")
     svg.title_text("die (planned): from blackbody radiation to a screened heat equation")
     # (a) Planck
-    ax = kit.Axes(svg, 60, 60, 400, 240, (2, 20), (0, 1400), xlabel="wavelength (micrometres)",
+    ax = kit.Axes(svg, 60, 60, 400, 240, (2, 20), (0, 140), xlabel="wavelength (micrometres)",
                   ylabel="spectral exitance (W m^-2 um^-1)", title="a  blackbody exitance at 300 to 390 K",
                   xticks=[2, 5, 8, 11, 14, 17, 20])
     ax.band(8, 14, color=kit.YELLOW, opacity=0.13)
@@ -86,7 +86,7 @@ def main():
         entries.append(("%d K (%d C), peak %.1f um" % (temperature, temperature - 273, WIEN_B / temperature),
                         colour, None))
     ax.legend(entries, corner="tr", size=10)
-    ax.label(8.2, 1300, "8 to 14 um", color=kit.YELLOW, size=10)
+    ax.label(8.2, 128, "8 to 14 um", color=kit.YELLOW, size=10)
     # (b) ironbow
     bx0, by0 = 540, 76
     stops = kit.IRONBOW
