@@ -310,7 +310,7 @@ match your own shell.
     `ViewInfo::new(name, title, backdrop, Hooks::Module(...))`, setting only the fields that
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
     `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
-    demo samples, such as `Phase::Replay` at `--sample-ms`, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
+    demo samples, such as `Phase::Replay` at `--sample-ms` or `Phase::Play`, which also draws the frames between them, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `link_strokes` (off: the scene's links are beams; a new view turns it on,
     so its links are hairlines that rasterize alike on the CPU and the GPU), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the

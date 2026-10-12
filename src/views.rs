@@ -352,6 +352,13 @@ pub enum Phase {
     /// defined there as well), so a view whose record hook keeps minutes is settled at the
     /// reference time of 12 s.
     Replay { seconds: u32, before_start: bool },
+    /// Plays the `seconds` before `time` as a live run drew them, for a view that builds its
+    /// state inside `draw` from the samples as they arrived: at each `--sample-ms` the demo
+    /// sample of that moment becomes the whole history, and the frames `step` seconds apart up
+    /// to the next sample are drawn, not rasterized. It replays demo samples, so it belongs
+    /// under `When::DemoHeadless`; samples before time 0 are skipped.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    Play { seconds: u32, step: f32 },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
     /// The same as `Settle`, in `f64` seconds, handing the journal lines that arrived since the
@@ -1436,6 +1443,48 @@ pub mod testing {
             "REPLAYING",
             Backdrop::Space,
             Hooks::Module(|| Box::new(Probe::default())),
+        )
+    }];
+
+    /// A module view that remembers when each frame it drew was and which sample it showed, as
+    /// `time@elapsed` in its legend.
+    #[derive(Default)]
+    pub struct Player {
+        frames: Vec<String>,
+    }
+
+    impl ViewModule for Player {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            self.frames
+                .push(format!("{:.1}@{:.1}", stage.time, snapshot.elapsed));
+            Probe::default().draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" player: {}", self.frames.join(" "))
+        }
+    }
+
+    /// `playing`, which plays four seconds of demo frames, two a sample, before a headless frame
+    /// of a demo run.
+    pub static PLAYING: &[ViewInfo] = &[ViewInfo {
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 4,
+                step: 0.5,
+            },
+            when: When::DemoHeadless,
+        }],
+        ..ViewInfo::new(
+            "playing",
+            "PLAYING",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Player::default())),
         )
     }];
 

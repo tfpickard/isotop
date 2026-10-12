@@ -614,6 +614,25 @@ impl App {
     }
 
     fn render(&mut self, width: u32, height: u32, limit: usize) -> Frame {
+        let mut frame = self.draw(width, height, limit);
+        let failure = match self.gpu.as_mut() {
+            Some(gpu) => gpu.render(&mut frame, self.hover.map(|h| h.frame)).err(),
+            None => {
+                frame.rasterize();
+                None
+            }
+        };
+        if let Some(error) = failure {
+            self.gpu = None;
+            self.renderer = format!("cpu (GPU failed: {error})");
+            frame.rasterize();
+        }
+        frame
+    }
+
+    /// Records the frame's display list, which `render` then rasterizes: everything that moves a
+    /// view's state, without the pixels.
+    fn draw(&mut self, width: u32, height: u32, limit: usize) -> Frame {
         let index = if self.paused {
             self.history_index
         } else {
@@ -655,18 +674,6 @@ impl App {
             }
         }
         self.rendered = self.camera.clone();
-        let failure = match self.gpu.as_mut() {
-            Some(gpu) => gpu.render(&mut frame, self.hover.map(|h| h.frame)).err(),
-            None => {
-                frame.rasterize();
-                None
-            }
-        };
-        if let Some(error) = failure {
-            self.gpu = None;
-            self.renderer = format!("cpu (GPU failed: {error})");
-            frame.rasterize();
-        }
         frame
     }
 
@@ -2151,6 +2158,29 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
                         app.scene.record(&snapshot, at as f32);
                     }
                 }
+            }
+            Phase::Play { seconds, step } => {
+                let interval = options.sample_seconds();
+                let samples = (f64::from(seconds) / interval).round() as u32;
+                let frames = (interval / f64::from(step)).round().max(1.0) as u32;
+                for back in (1..=samples).rev() {
+                    let at = options.time - f64::from(back) * interval;
+                    if at < 0.0 {
+                        continue;
+                    }
+                    app.history = VecDeque::from([demo_snapshot(row, at - interval, at, count)]);
+                    for index in 0..frames {
+                        app.animation = (at + f64::from(index) * f64::from(step)) as f32;
+                        let frame = app.draw(width, height, limit);
+                        app.scene.spare = frame.release();
+                    }
+                }
+                app.history = VecDeque::from([demo_snapshot(
+                    row,
+                    options.time - interval,
+                    options.time,
+                    count,
+                )]);
             }
             Phase::Settle { frames, step, lead } => {
                 for index in 0..frames {
@@ -3769,6 +3799,39 @@ mod tests {
             counted(0),
             "only headless runs warm up"
         );
+    }
+
+    #[test]
+    fn a_play_draws_frames_between_demo_samples_without_rasterizing_them() {
+        let frames = |arguments: &[&str]| {
+            let rows = views::testing::PLAYING;
+            let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+            app.scene = Scene::with_rows(rows);
+            let mut all = vec!["--time", "12", "--processes", "16"];
+            all.extend_from_slice(arguments);
+            warm_up(&mut app, &options(&all), None);
+            app.scene.legend(app.view, app.snapshot())
+        };
+        // The first frame is drawn twice, the second time with the camera fitted to it.
+        assert_eq!(
+            frames(&["--demo", "--output", "x.png"]),
+            " player: 8.0@8.0 8.0@8.0 8.5@8.0 9.0@9.0 9.5@9.0 10.0@10.0 10.5@10.0 11.0@11.0 11.5@11.0"
+        );
+        assert_eq!(
+            frames(&["--demo", "--benchmark", "3", "--sample-ms", "500"]),
+            " player: 8.0@8.0 8.0@8.0 8.5@8.5 9.0@9.0 9.5@9.5 10.0@10.0 10.5@10.5 11.0@11.0 11.5@11.5"
+        );
+        assert_eq!(
+            frames(&["--output", "x.png"]),
+            " player: ",
+            "not in a live run"
+        );
+        let rows = views::testing::PLAYING;
+        let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        let frame = app.draw(160, 90, 512);
+        assert!(frame.pixels.is_empty(), "a drawn frame is not rasterized");
+        assert!(!frame.items.is_empty());
     }
 
     #[test]
