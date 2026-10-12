@@ -1195,9 +1195,15 @@ pub mod testing {
     #[derive(Default)]
     pub struct Witness {
         seen: String,
+        /// The `Stage::age` of every process of the last frame, by pid.
+        pub ages: HashMap<u32, Option<f32>>,
     }
 
     impl ViewModule for Witness {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -1210,6 +1216,10 @@ pub mod testing {
                 stage.focus.map(|id| id.pid),
                 stage.limit
             );
+            self.ages = processes
+                .iter()
+                .map(|process| (process.id.pid, stage.age(process.id)))
+                .collect();
             for (index, process) in processes.iter().enumerate() {
                 let position = [index as f32 * 4.0, 0.0, 0.0];
                 stage.positions.insert(process.id, position);
@@ -1663,6 +1673,40 @@ mod tests {
 
     /// The first rows are the eleven views that predate the module contract; the digits pick them.
     const ELEVEN_BUILT_IN: usize = 11;
+
+    #[test]
+    fn a_process_that_arrives_after_the_first_frame_has_an_age_and_the_first_ones_have_none() {
+        use crate::model::testing::process;
+        use crate::render::{Camera, RenderInput};
+        let rows = testing::WITNESSED;
+        let at_start = Snapshot {
+            processes: vec![process(10, 1), process(11, 1)],
+            ..Snapshot::default()
+        };
+        let mut later = at_start.clone();
+        later.processes.push(process(12, 1));
+        let mut scene = Scene::with_rows(rows);
+        let camera = Camera::default();
+        let mut ages = |snapshot: &Snapshot, time: f32| {
+            let input = RenderInput::small(snapshot, View::at(0), &camera, time);
+            scene.render(&input);
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .ages
+                .clone()
+        };
+        let first = ages(&at_start, 5.0);
+        assert_eq!(first[&10], None, "present on the first frame: never new");
+        let second = ages(&later, 6.0);
+        assert_eq!(second[&10], None);
+        assert_eq!(second[&12], Some(0.0), "first seen this frame");
+        let third = ages(&later, 8.5);
+        assert_eq!(third[&12], Some(2.5));
+        assert_eq!(third[&11], None);
+        let rewound = ages(&later, 5.0);
+        assert_eq!(rewound[&12], None, "before it arrived");
+    }
 
     #[test]
     fn only_coop_records_and_only_matrix_replaces_the_inspector() {
