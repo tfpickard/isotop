@@ -48,7 +48,7 @@ def main():
         spikes, trace = izh.simulate(kind, 0.0, 450.0, record=True,
                                      current_of_time=lambda s: 10.0 if s >= 50.0 else 0.0)
         ax = kit.Axes(svg, xs[col], ys[row], w, h - 10, (0, 450), (-85, 35),
-                      xlabel="t (ms)" if row else "", ylabel="v (mV)" if col == 0 or row == 0 and col == 1 else "",
+                      xlabel="t (ms)" if row else "", ylabel="v (mV)" if col == 0 else "",
                       title="%s  %s" % ("BCDE"[[c[0] for c in cells].index(kind)], kind),
                       xticks=[0, 150, 300, 450], yticks=[-80, -40, 0, 30])
         ax.line([p[0] for p in trace], [p[1] for p in trace], color=TYPE_COLOURS[kind], width=1.4)
@@ -59,8 +59,8 @@ def main():
         print(kind, "spikes", len(late), "first ISIs", [round(x, 1) for x in isis[:5]],
               "last ISI %.1f" % (isis[-1] if isis else 0))
     # F: f-I
-    ax = kit.Axes(svg, xs[2], ys[1], w, h - 10, (3, 20), (0, 250), xlabel="I", ylabel="rate (Hz)",
-                  title="F  f-I curves (noise-free)", xticks=[4, 8, 12, 16, 20])
+    ax = kit.Axes(svg, xs[2], ys[1], w, h - 10, (3, 20), (0, 250), xlabel="I (input current)",
+                  title="F  f-I curves, rate in Hz (noise-free)", xticks=[4, 8, 12, 16, 20])
     currents = [3.0 + 0.25 * i for i in range(69)]
     entries = []
     for kind in ("RS", "IB", "CH", "FS"):
