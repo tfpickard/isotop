@@ -113,11 +113,11 @@ by $\psi \approx 20\%$. *There is no sharp transition at these sizes*; the legen
 
 *Top: the yard rule at $\eta = 0.5, 3.64, 4.5$ after 60 s; bottom: the periodic box at $\eta = 1, 4, 5.5$. Colour is heading angle, so an aligned flock is one colour. Script: `docs/figures/flocking-snapshots.py`.*
 
-### Reef: a boid with a global neighbourhood (`School` in `src/reef.rs`)
+### Reef: a boid with a global neighbourhood (`Reef::school` in `src/reef.rs`)
 
 Fish of one habitat form a school steered by three terms per frame: a pull towards the school's wandering target (`0.4` times the offset), a *separation* push $1.5\,\mathbf d/|\mathbf d|^2$ from each school-mate nearer than $\sqrt 6$ units, and an *alignment* pull
 $0.5\,(\bar{\mathbf v} - \mathbf v)$ towards the mean velocity $\bar{\mathbf v}$ of the *whole school*. There is no neighbourhood radius, so the alignment is all-to-all (a mean-field limit: it cannot show a Vicsek-type transition, and the school always aligns), there is no noise, the speed is clamped between 0.3 and 1 of
-$0.8 + 5\,c/(c + 40)$ units per second, and the step uses `stage.dt` rather than a fixed clock (the older views keep their own clamps).
+$0.8 + 5\,c/(c + 40)$ units per second, and the step uses the frame's own time step, clamped to 0.1 s (`dt` in `Reef::draw`), rather than a fixed clock, so the school's path depends on the frame rate.
 
 ### Planned: Murmuration
 
@@ -143,7 +143,7 @@ In a live coop (`--view coop`) select a chicken: the inspector line `flock X: ph
 ## Where in the code
 
 * `src/coop.rs`: `Yard::step`, `separate`, `confine`, `order`, `flock_orders`, `noise`, `speed`, `variation`, `peer_weight`; constants `NEIGHBOURHOOD`, `ETA_BASE`, `K_CV`, `K_PSI`, `PSI_KNEE`, `V_MIN`, `V_SPAN`, `SPEED_KNEE`, `FLEE`, `H`. Tests: `vicsek_step_does_not_depend_on_update_order`, `order_parameter_is_the_magnitude_of_the_summed_velocity`, `flocks_order_at_low_noise_and_dissolve_past_critical_noise`, `chickens_align_only_with_their_own_flock`, `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second`.
-* `src/simulation.rs`: `SpatialHash`, `Rng`, `FixedStep`. `src/reef.rs`: `school`.
+* `src/simulation.rs`: `SpatialHash`, `Rng`, `FixedStep`. `src/reef.rs`: `Reef::school`.
 * Figure scripts: `docs/figures/flock_sim_w6.py` (both simulations), `flocking-vicsek-order.py`, `flocking-snapshots.py`.
 
 ## Variations and open questions
