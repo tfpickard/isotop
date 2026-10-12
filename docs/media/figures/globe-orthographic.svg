@@ -1,40 +1,40 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 470" width="980" height="470" font-family="system-ui, sans-serif" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 500" width="980" height="500" font-family="system-ui, sans-serif" role="img">
 <title>Orthographic projection of the globe</title>
 <desc>Parallel rays, the visible hemisphere and the hidden test on the left; the foreshortened graticule on the right.</desc>
-<rect width="980" height="470" fill="#0e1116"/>
+<rect width="980" height="500" fill="#0e1116"/>
 <text x="30" y="34" font-size="14" text-anchor="start" fill="#c9d1d9" font-weight="600">Side view: the plane through the view axis</text>
-<circle cx="200" cy="250" r="130" fill="#12253b" stroke="#4b5563" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 200 120 A 130.0 130.0 0 0 1 200 380" fill="none" stroke="#6edcff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M 200 120 A 130.0 130.0 0 0 0 200 380" fill="none" stroke="#8b949e" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 4"/>
-<line x1="50" y1="250" x2="390" y2="250" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="2 3"/>
-<text x="392" y="244" font-size="11" text-anchor="end" fill="#8b949e">view axis</text>
-<line x1="400" y1="80" x2="400" y2="420" fill="none" stroke="#ecb25c" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="408" y="92" font-size="11" text-anchor="start" fill="#ecb25c">screen</text>
-<line x1="174" y1="107" x2="400" y2="107" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
-<line x1="174" y1="159" x2="400" y2="159" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
-<line x1="174" y1="211" x2="400" y2="211" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
-<line x1="174" y1="289" x2="400" y2="289" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
-<line x1="174" y1="341" x2="400" y2="341" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
-<line x1="174" y1="393" x2="400" y2="393" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
-<line x1="330" y1="96" x2="390" y2="96" fill="none" stroke="#c9d1d9" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
-<polygon points="390,96 383.55,98.73 383.55,93.27" fill="#c9d1d9"/>
-<text x="360" y="88" font-size="11" text-anchor="middle" fill="#c9d1d9">to viewer v</text>
-<circle cx="283.56" cy="150.41" r="4.5" fill="#7bd88f" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
-<line x1="283.56" y1="150.41" x2="400" y2="150.41" fill="none" stroke="#7bd88f" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
-<circle cx="400" cy="150.41" r="3.5" fill="#7bd88f" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="291.56" y="142.41" font-size="11" text-anchor="start" fill="#7bd88f">A: n.v &gt; 0, visible</text>
-<circle cx="87.42" cy="315" r="4.5" fill="#f06054" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
-<line x1="87.42" y1="315" x2="400" y2="315" fill="none" stroke="#f06054" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
-<text x="81.42" y="333" font-size="11" text-anchor="start" fill="#f06054">B: behind, inside the disc: hidden</text>
-<circle cx="135" cy="83.6" r="4.5" fill="#ecb25c" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
-<line x1="135" y1="83.6" x2="400" y2="83.6" fill="none" stroke="#ecb25c" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
-<text x="129" y="75.6" font-size="11" text-anchor="start" fill="#ecb25c">C: behind the centre plane but</text>
-<text x="129" y="89.6" font-size="11" text-anchor="start" fill="#ecb25c">beyond the silhouette: visible</text>
-<line x1="200" y1="120" x2="400" y2="120" fill="none" stroke="#6edcff" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" opacity="0.7" stroke-dasharray="1 3"/>
-<line x1="200" y1="380" x2="400" y2="380" fill="none" stroke="#6edcff" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" opacity="0.7" stroke-dasharray="1 3"/>
-<text x="394" y="134" font-size="11" text-anchor="end" fill="#6edcff">silhouette: radius R</text>
-<text x="200" y="436" font-size="11" text-anchor="middle" fill="#8b949e">disc radius on screen = R * zoom * sqrt(3/2) pixels</text>
-<text x="200" y="454" font-size="11" text-anchor="middle" fill="#8b949e">(Camera: SCALE = 1.224745, independent of distance)</text>
+<circle cx="200" cy="262" r="130" fill="#12253b" stroke="#4b5563" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 200 132 A 130.0 130.0 0 0 1 200 392" fill="none" stroke="#6edcff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M 200 132 A 130.0 130.0 0 0 0 200 392" fill="none" stroke="#8b949e" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 4"/>
+<line x1="50" y1="262" x2="390" y2="262" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="2 3"/>
+<text x="392" y="256" font-size="11" text-anchor="end" fill="#8b949e">view axis</text>
+<line x1="400" y1="92" x2="400" y2="432" fill="none" stroke="#ecb25c" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="408" y="104" font-size="11" text-anchor="start" fill="#ecb25c">screen</text>
+<line x1="174" y1="119" x2="400" y2="119" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
+<line x1="174" y1="171" x2="400" y2="171" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
+<line x1="174" y1="223" x2="400" y2="223" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
+<line x1="174" y1="301" x2="400" y2="301" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
+<line x1="174" y1="353" x2="400" y2="353" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
+<line x1="174" y1="405" x2="400" y2="405" fill="none" stroke="#c9d1d9" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.5" stroke-dasharray="2 4"/>
+<line x1="310" y1="414" x2="390" y2="414" fill="none" stroke="#c9d1d9" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polygon points="390,414 383.55,416.73 383.55,411.27" fill="#c9d1d9"/>
+<text x="350" y="430" font-size="11" text-anchor="middle" fill="#c9d1d9">to the viewer, v</text>
+<circle cx="283.56" cy="162.41" r="4.5" fill="#7bd88f" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="283.56" y1="162.41" x2="400" y2="162.41" fill="none" stroke="#7bd88f" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
+<circle cx="400" cy="162.41" r="3.5" fill="#7bd88f" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="293.56" y="179.41" font-size="11" text-anchor="start" fill="#7bd88f">A: n.v &gt; 0, visible</text>
+<circle cx="87.42" cy="327" r="4.5" fill="#f06054" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="87.42" y1="327" x2="400" y2="327" fill="none" stroke="#f06054" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
+<text x="81.42" y="345" font-size="11" text-anchor="start" fill="#f06054">B: behind, inside the disc: hidden</text>
+<circle cx="141.5" cy="93" r="4.5" fill="#ecb25c" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="141.5" y1="93" x2="400" y2="93" fill="none" stroke="#ecb25c" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
+<text x="151.5" y="87" font-size="11" text-anchor="start" fill="#ecb25c">C: behind the centre plane, but outside</text>
+<text x="151.5" y="101" font-size="11" text-anchor="start" fill="#ecb25c">the silhouette: visible</text>
+<line x1="200" y1="132" x2="400" y2="132" fill="none" stroke="#6edcff" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" opacity="0.7" stroke-dasharray="1 3"/>
+<line x1="200" y1="392" x2="400" y2="392" fill="none" stroke="#6edcff" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" opacity="0.7" stroke-dasharray="1 3"/>
+<text x="394" y="126" font-size="11" text-anchor="end" fill="#6edcff">silhouette: radius R</text>
+<text x="200" y="458" font-size="11" text-anchor="middle" fill="#8b949e">disc radius on screen = R * zoom * sqrt(3/2) pixels</text>
+<text x="200" y="476" font-size="11" text-anchor="middle" fill="#8b949e">(Camera: SCALE = 1.224745, independent of distance)</text>
 <text x="560" y="34" font-size="14" text-anchor="start" fill="#c9d1d9" font-weight="600">The graticule seen from latitude 35.26 degrees</text>
 <circle cx="740" cy="245" r="150" fill="#12253b" stroke="#4b5563" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
 <polyline points="622.27,337.93 623.24,339.12 624.25,340.29 625.3,341.45 626.38,342.6 627.5,343.74 628.65,344.87 629.84,345.98 631.05,347.09 632.3,348.18 633.59,349.26 634.91,350.32 636.25,351.37 637.63,352.41 639.05,353.44 640.49,354.45 641.96,355.44 643.46,356.42 644.99,357.39 646.56,358.34 648.14,359.27 649.76,360.19 651.41,361.09 653.08,361.97 654.78,362.84 656.5,363.69 658.25,364.52 660.02,365.34 661.82,366.13 663.64,366.91 665.49,367.67 667.36,368.42 669.25,369.14 671.16,369.84 673.09,370.52 675.05,371.19 677.02,371.83 679.01,372.46 681.02,373.06 683.05,373.65 685.1,374.21 687.16,374.75 689.24,375.28 691.34,375.78 693.45,376.26 695.57,376.71 697.71,377.15 699.86,377.57 702.02,377.96 704.19,378.33 706.38,378.68 708.57,379.01 710.78,379.31 712.99,379.6 715.21,379.86 717.44,380.1 719.68,380.31 721.92,380.51 724.17,380.68 726.42,380.83 728.68,380.95 730.94,381.05 733.2,381.13 735.47,381.19 737.73,381.23 740,381.24 742.27,381.23 744.53,381.19 746.8,381.13 749.06,381.05 751.32,380.95 753.58,380.83 755.83,380.68 758.08,380.51 760.32,380.31 762.56,380.1 764.79,379.86 767.01,379.6 769.22,379.31 771.43,379.01 773.62,378.68 775.81,378.33 777.98,377.96 780.14,377.57 782.29,377.15 784.43,376.71 786.55,376.26 788.66,375.78 790.76,375.28 792.84,374.75 794.9,374.21 796.95,373.65 798.98,373.06 800.99,372.46 802.98,371.83 804.95,371.19 806.91,370.52 808.84,369.84 810.75,369.14 812.64,368.42 814.51,367.67 816.36,366.91 818.18,366.13 819.98,365.34 821.75,364.52 823.5,363.69 825.22,362.84 826.92,361.97 828.59,361.09 830.24,360.19 831.86,359.27 833.44,358.34 835.01,357.39 836.54,356.42 838.04,355.44 839.51,354.45 840.95,353.44 842.37,352.41 843.75,351.37 845.09,350.32 846.41,349.26 847.7,348.18 848.95,347.09 850.16,345.98 851.35,344.87 852.5,343.74 853.62,342.6 854.7,341.45 855.75,340.29 856.76,339.12 857.73,337.93" fill="none" stroke="#3a6a96" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>

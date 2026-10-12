@@ -58,7 +58,7 @@ def main():
               "pressure.")
     heading(svg, "The coop's transfer functions", "constants from src/coop.rs and README.md; every "
             "curve saturates, so no process can dominate the yard")
-    w, h, gx, gy = 300, 200, 346, 290
+    w, h, gx, gy = 286, 200, 358, 290
     ox, oy = 62, 96
 
     a = Axes(svg, ox, oy, w, h, (0, 400), (0, 4.4), "CPU (% of one core)", "units per second",
@@ -115,7 +115,7 @@ def main():
     e.label(400, 0.8, "0.8 at most", 10, "end", MUTED, dy=-5)
 
     f = Axes(svg, ox + 2 * gx, oy + gy, w, h, (0, 100), (0, 7), "memory pressure psi (%)",
-             "pairs of eyes  |  units outside the fence", "Fox eyes", yticks=[0, 1, 2, 3, 4, 5, 6, 7],
+             "pairs  |  units", "Fox eyes", yticks=[0, 1, 2, 3, 4, 5, 6, 7],
              xticks=[0, 20, 40, 60, 80, 100])
     ps = [p * 0.25 for p in range(0, 401)]
     f.polyline([(p, 0 if p <= 0.5 else min(6, 1 + int(p / 10))) for p in ps], MAGENTA, 2.2)

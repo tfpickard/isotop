@@ -39,11 +39,11 @@ def graticule_point(phi, dlam, phi0=PHI0):
 
 
 def main():
-    svg = S.Svg(980, 470, "Orthographic projection of the globe",
+    svg = S.Svg(980, 500, "Orthographic projection of the globe",
                 "Parallel rays, the visible hemisphere and the hidden test on the left; the "
                 "foreshortened graticule on the right.")
     # Left panel: side view.
-    cx, cy, R = 200.0, 250.0, 130.0
+    cx, cy, R = 200.0, 262.0, 130.0
     svg.text(30, 34, "Side view: the plane through the view axis", 14, weight="600")
     svg.circle(cx, cy, R, "#12253b", S.AXIS, 1.2)
     # Far half dashed, near half bright.
@@ -61,8 +61,8 @@ def main():
     for k in (-1.1, -0.7, -0.3, 0.3, 0.7, 1.1):
         y = cy + R * k
         svg.line(cx - R * 0.2, y, plane, y, S.TEXT, 0.8, dash="2 4", opacity=0.5)
-    svg.arrow(plane - 70, cy - R - 24, plane - 10, cy - R - 24, S.TEXT, 1.2)
-    svg.text(plane - 40, cy - R - 32, "to viewer v", 11, "middle", S.TEXT)
+    svg.arrow(plane - 90, cy + R + 22, plane - 10, cy + R + 22, S.TEXT, 1.2)
+    svg.text(plane - 50, cy + R + 38, "to the viewer, v", 11, "middle", S.TEXT)
 
     def at(angle_deg, radius=R):
         a = math.radians(angle_deg)
@@ -76,22 +76,22 @@ def main():
     svg.circle(px, py, 4.5, S.GREEN, "#0e1116", 1)
     svg.line(px, py, plane, py, S.GREEN, 1, dash="3 3")
     svg.circle(plane, py, 3.5, S.GREEN, "#0e1116", 1)
-    svg.text(px + 8, py - 8, "A: n.v > 0, visible", 11, fill=S.GREEN)
+    svg.text(px + 10, py + 17, "A: n.v > 0, visible", 11, fill=S.GREEN)
     qx, qy = at(-150)
     svg.circle(qx, qy, 4.5, S.RED, "#0e1116", 1)
     svg.line(qx, qy, plane, qy, S.RED, 1, dash="3 3")
     svg.text(qx - 6, qy + 18, "B: behind, inside the disc: hidden", 11, "start", S.RED)
     # An apex above the sphere behind the limb but outside the cylinder: visible.
-    ex, ey = cx - R * 0.5, cy - R * 1.28
+    ex, ey = cx - R * 0.45, cy - R * 1.3
     svg.circle(ex, ey, 4.5, S.GOLD, "#0e1116", 1)
     svg.line(ex, ey, plane, ey, S.GOLD, 1, dash="3 3")
-    svg.text(ex - 6, ey - 8, "C: behind the centre plane but", 11, "start", S.GOLD)
-    svg.text(ex - 6, ey + 6, "beyond the silhouette: visible", 11, "start", S.GOLD)
+    svg.text(ex + 10, ey - 6, "C: behind the centre plane, but outside", 11, "start", S.GOLD)
+    svg.text(ex + 10, ey + 8, "the silhouette: visible", 11, "start", S.GOLD)
     svg.line(cx, cy - R, plane, cy - R, S.CYAN, 1, dash="1 3", opacity=0.7)
     svg.line(cx, cy + R, plane, cy + R, S.CYAN, 1, dash="1 3", opacity=0.7)
-    svg.text(plane - 6, cy - R + 14, "silhouette: radius R", 11, "end", S.CYAN)
-    svg.text(cx, cy + R + 56, "disc radius on screen = R * zoom * sqrt(3/2) pixels", 11, "middle", S.MUTED)
-    svg.text(cx, cy + R + 74, "(Camera: SCALE = 1.224745, independent of distance)", 11, "middle", S.MUTED)
+    svg.text(plane - 6, cy - R - 6, "silhouette: radius R", 11, "end", S.CYAN)
+    svg.text(cx, cy + R + 66, "disc radius on screen = R * zoom * sqrt(3/2) pixels", 11, "middle", S.MUTED)
+    svg.text(cx, cy + R + 84, "(Camera: SCALE = 1.224745, independent of distance)", 11, "middle", S.MUTED)
 
     # Right panel: graticule.
     gx, gy, G = 740.0, 245.0, 150.0
