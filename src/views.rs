@@ -3,20 +3,23 @@
 //! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
 //! row instead of naming the view, so a new view is one module plus one row.
 //!
-//! Six of the eleven views that predate the registry (city, orbit, ripple, flow, matrix and coop)
-//! are still built in: `Scene` keeps their state in typed fields and draws them in its own arms,
-//! picked by `BuiltIn`. The others, and every new view, are module views: a type that implements
+//! Four of the eleven views that predate the registry (city, orbit, ripple and flow) are still
+//! built in: `Scene` keeps their state in typed fields and draws them in its own arms, picked by
+//! `BuiltIn`. The others, and every new view, are module views: a type that implements
 //! `ViewModule`, which `Scene` builds from the row and calls through the trait.
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::model::{DemoOptions, Identity, Process, Snapshot};
+#[cfg(test)]
+use crate::model::Identity;
+use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, reef, strata,
-    tesseract,
+    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
+    reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -192,10 +195,6 @@ pub struct Contract {
     /// How far, in world units, a surviving process may move when resources or the population
     /// change. Default: 1.
     pub tolerance: f32,
-    /// Where the stability properties look for a process instead of where it is drawn: its
-    /// anchor (seat, house), for a built-in view whose creatures wander. Default: None, which
-    /// checks `Scene::positions`. A module view returns its anchors from `ViewModule::anchors`.
-    pub anchors: Option<Anchors>,
     /// The demo time, in seconds, the harness checks the view at: the default reference time, or
     /// a later one for a view whose history window is not full by then. Default: 12.
     pub time: f64,
@@ -204,14 +203,10 @@ pub struct Contract {
     pub known_unstable: &'static [Unstable],
 }
 
-/// Where each drawn process is anchored, read from the scene after a frame.
-pub type Anchors = fn(&Scene) -> HashMap<Identity, Point>;
-
 impl Contract {
     pub const DEFAULT: Contract = Contract {
         draws_processes: true,
         tolerance: 1.0,
-        anchors: None,
         time: 12.0,
         known_unstable: &[],
     };
@@ -312,8 +307,6 @@ pub enum BuiltIn {
     Orbit,
     Ripple,
     Flow,
-    Matrix,
-    Coop,
 }
 
 /// Which socket links the scene draws over a view.
@@ -647,6 +640,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         haze: false,
         sources: Sources::of(&[Source::Journal]),
+        // The rain draws no processes and collapses none, whatever the machine runs.
+        header: Some(|_| (0, 0)),
         // The rain draws journal lines, not processes.
         contract: Contract {
             draws_processes: false,
@@ -665,12 +660,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "matrix",
             "MATRIX",
             Backdrop::Void,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Matrix,
-                legend: matrix_legend,
-                record: None,
-                inspector_line: Some(matrix_line),
-            },
+            Hooks::Module(|| Box::new(matrix::Rain::default())),
         )
     },
     ViewInfo {
@@ -682,21 +672,13 @@ pub static REGISTRY: &[ViewInfo] = &[
             },
             SETTLE,
         ],
-        // Chickens walk; their seats and houses are what must stay put.
-        contract: Contract {
-            anchors: Some(|scene| scene.coop.anchors()),
-            ..Contract::DEFAULT
-        },
+        // Chickens walk; their seats and houses are what must stay put, and `Coop::anchors` says
+        // where those are.
         ..ViewInfo::new(
             "coop",
             "COOP",
             Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Coop,
-                legend: |scene, _| scene.coop.legend(),
-                record: Some(|scene, snapshot, _| scene.coop.record(snapshot)),
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(coop::Coop::default())),
         )
     },
     ViewInfo {
@@ -924,28 +906,6 @@ fn flow_legend(scene: &Scene, _: &Snapshot) -> String {
     format!(
         " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}",
         hub_note(scene)
-    )
-}
-
-fn matrix_legend(scene: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Journal lines decode as the rain passes | red = error, amber = warning, green = info, teal = debug | {} queued{}",
-        scene.matrix.pending(),
-        match scene.matrix.skipped {
-            0 => String::new(),
-            skipped => format!(", {skipped} skipped"),
-        }
-    )
-}
-
-/// The newest journal line, in place of the inspector: the rain draws no processes.
-fn matrix_line(scene: &Scene) -> String {
-    format!(
-        " > {}",
-        scene
-            .matrix
-            .latest()
-            .unwrap_or("waiting for the journal...")
     )
 }
 
@@ -1675,7 +1635,6 @@ mod tests {
     const ELEVEN_BUILT_IN: usize = 11;
 
     /// The older views already moved onto the module contract, in registry order.
-    const MIGRATED: [&str; 5] = ["cores", "cells", "strata", "globe", "reef"];
 
     #[test]
     fn a_process_that_arrives_after_the_first_frame_has_an_age_and_the_first_ones_have_none() {
@@ -1746,7 +1705,7 @@ mod tests {
     }
 
     #[test]
-    fn only_coop_records_and_only_matrix_replaces_the_inspector() {
+    fn no_built_in_view_records_or_replaces_the_inspector() {
         let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
             REGISTRY
                 .iter()
@@ -1762,8 +1721,8 @@ mod tests {
                     ..
                 }
             )),
-            ["coop"],
-            "Strata reads the shared history, so it has no record hook"
+            Vec::<&str>::new(),
+            "the coop records through ViewModule, and Strata reads the shared history"
         );
         assert_eq!(
             with(|hooks| matches!(
@@ -1773,15 +1732,19 @@ mod tests {
                     ..
                 }
             )),
-            ["matrix"]
+            Vec::<&str>::new(),
+            "the matrix replaces the inspector through ViewModule"
         );
-        assert_eq!(
-            with(|hooks| matches!(hooks, Hooks::Module(_))),
-            MIGRATED
-                .into_iter()
-                .chain(REGISTRY[ELEVEN_BUILT_IN..].iter().map(|row| row.name))
-                .collect::<Vec<_>>(),
-            "every row after the eleven older views is a module, and so are the older ones moved"
+        let modules = with(|hooks| matches!(hooks, Hooks::Module(_)));
+        assert!(
+            REGISTRY[ELEVEN_BUILT_IN..]
+                .iter()
+                .all(|row| modules.contains(&row.name)),
+            "every row after the eleven built-in views is a module"
+        );
+        assert!(
+            modules.contains(&"coop") && modules.contains(&"matrix"),
+            "the coop and the matrix are two of the eleven, now modules"
         );
     }
 }

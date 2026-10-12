@@ -30,7 +30,10 @@ The README covers usage. This file covers how to work on the code.
    descriptor walk and fdinfo reads behind `Snapshot.pipes`) go through it; the unread bytes of
    Unix sockets (`Snapshot.unix_queues`) ride the socket scan, which every view reads, and are not
    demanded. The journal follower in `main.rs` runs while the demand contains `Source::Journal` and for
-   `JOURNAL_LINGER` (30 s) after; no view is special-cased. The kernel counters (`Source::Interrupts`, `Softirqs`,
+   `JOURNAL_LINGER` (30 s) after; no view is special-cased. While the demand contains it, `feed` attaches
+   each frame's new lines (the follower's, or the demo's) to the newest sample as `Snapshot.journal`
+   (`journal::Delivery`, numbered so a view takes each line once), and the view that draws them reads
+   them from its snapshot. The kernel counters (`Source::Interrupts`, `Softirqs`,
    `IrqAffinity` and `OomKills`; `platform/linux/counters.rs`, `model/kernel.rs`) go through it
    too: with none demanded no `/proc` counter file is opened, and `Snapshot.interrupts`,
    `softirqs` and `oom_kills` stay Pending, Pending and None. Threads (`Source::Threads`) are read
@@ -76,10 +79,10 @@ The README covers usage. This file covers how to work on the code.
 | `threads.rs` | Per-thread sampling (`Source::Threads`): `Thread`, `ThreadList` (in `Process::thread_list`), the caps, `ThreadReader` (what each platform's `Threads` provides), `DeltaTracker` (cumulative counters to growth, forgetting keys a pass missed) and `ThreadScan` (the capped pass and per-thread CPU keyed `(tid, start)`), `targets` (the order the frame thread hands over) and `demo_list` (the demo's threads, `DemoOptions::threads`) |
 | `platform/linux/threads.rs` | The Linux `ThreadReader`: `/proc/<pid>/task/<tid>/stat`, parsed after the last `)` with the field indices `parse_stat` uses (`split_stat`, `timing` in `platform/linux/mod.rs`) |
 | `platform/linux/events.rs` | The `isotop-events` thread on Linux: proc connector fork, exec and exit events and taskstats exit records over netlink, decoded by byte offset from the uapi headers, thread records summed per process |
-| `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
-| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
+| `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines, and `Delivery`, the lines one sample carries on `Snapshot.journal` |
+| `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends; and `testing`, module views for tests |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and Coop through `Stage`) |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source. `LIGHT`, the one world light direction every lit surface shares, is Rust only: shading is baked into colours before the backends see them |
 | `render/strokes.rs` | Wide strokes built only from `Item::Triangle`s: `Frame::ribbon` (a screen-facing band along a polyline, `Width` in world units or pixels, an optional `Dash` measured along the 3D arc length) and `Frame::tube` (a flat-shaded prism with parallel-transported `ring_frames`, lit by `shared::LIGHT` through `lit`; `tube_faces` is its pure world-space geometry); every piece is at most 32 px an edge, so a triangle's box is at most 64 x 64 px |
 | `render/field.rs` | The field primitive (`Field`, `Placement`, `Relief`, `Shading`, `Frame::field`, `Item::Field`): a grid of colours drawn in world space, flat or as lit relief, sampled bilinearly by the one formula both backends use (clamped uv in node units, `floor(bilerp + 0.5)` per channel, the owner of the nearest node as the pick), with `ShadedField` (the shaded colours and owners a frame keeps and recycles through `Buffers`, so an unchanged `(key, revision)` is not shaded again), the CPU span rasterizer `Frame::field_triangle`, and `StorageLayout`, which plans what the GPU storage buffer must rewrite. Grid simulations draw through it, never one triangle pair per cell; Ripple and Flow still do |
@@ -128,7 +131,8 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 `render`. The exceptions, so don't assume otherwise:
 
 - `model` and `platform` import each other: the platform builds `model` types and `model` calls the
-  `Sampler`. `journal` and `platform/*/journal.rs` do the same.
+  `Sampler`. `journal` and `platform/*/journal.rs` do the same,
+  and `model` imports `journal::Delivery` for `Snapshot.journal`.
 - `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
   `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
   `Scene`, `Stage` and `Backdrop` and call the built-in views' legends. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
@@ -167,12 +171,11 @@ collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size
 time, limit, focus and whether the app is paused). Orbit, Ripple and Flow still report through
 `scene.stars`, `scene.mass` and `scene.hub_names`, which `main.rs` reads besides the outputs
 until they move. The row (`ViewInfo`) holds everything else that sets the view apart, and `Scene`,
-`App` and the headless warm-up read it instead of naming the view. Six of the eleven older views
-(City, Orbit, Ripple, Flow, Matrix and Coop) are still built in (`Hooks::BuiltIn`): `Scene`
-keeps their state in typed fields and draws them in its own arms, City, Orbit, Ripple and Flow as
-`Scene` methods, Matrix by hand and Coop through `Stage`. Cores, Cells, Strata, Globe and Reef
-have moved onto `ViewModule`, and the rest are being moved, so write new views the module way and
-never add an arm.
+`App` and the headless warm-up read it instead of naming the view. Four of the eleven older views
+(City, Orbit, Ripple and Flow) are still built in (`Hooks::BuiltIn`): `Scene` keeps their state in
+typed fields and draws them in its own arms, as `Scene` methods. Cores, Cells, Strata, Globe, Reef,
+Coop and Matrix have moved onto `ViewModule`, and the rest are being moved, so write new views the
+module way and never add an arm.
 
 **Shared helpers live in one place each.** Don't write a second copy:
 - `simulation`: `SpatialHash` and `SpatialHash3`, `Rng` (seeded per identity, `normal` for a
@@ -349,7 +352,7 @@ match your own shell.
     draws. A new view needs tests only for what is its own beyond that. Set its tolerance on
     the row's `contract`, and a later `time` there if its history window is not full at 12 s;
     a module view whose bodies move by themselves returns the places they keep from
-    `ViewModule::anchors` (a built-in view declares `anchors` on the contract, as Coop's seats). Never
+    `ViewModule::anchors` (as Coop's seats). Never
     add a `known_unstable` entry for a new view: those record debt of the views that predate the
     harness, each with its issue, and the harness reports one that starts to pass.
   - Test the module through `Scene::with_rows` and a table of its own, as `views::testing` does.

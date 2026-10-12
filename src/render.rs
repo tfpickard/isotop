@@ -11,7 +11,7 @@ use crate::palette::{DISTRICTS, kind_color, process_color, tint};
 use crate::platform::Shadow;
 use crate::simulation::{growth, hash, smoothing};
 use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
-use crate::{coop, globe, glyphs, matrix};
+use crate::{globe, glyphs};
 
 pub mod field;
 pub mod shared;
@@ -1383,8 +1383,6 @@ pub struct Scene {
     pub callout: Vec<(Identity, String)>,
     /// Every process's CPU and memory over the last samples, recorded whichever view is shown.
     pub(crate) history: History,
-    pub coop: coop::Coop,
-    pub matrix: matrix::Rain,
     /// The views this scene draws, one row each: `REGISTRY`, unless a test brings its own.
     rows: &'static [ViewInfo],
     /// The state of each module view, in its row's slot; built-in rows have None.
@@ -1443,8 +1441,6 @@ impl Scene {
             popup: Vec::new(),
             callout: Vec::new(),
             history: History::default(),
-            coop: coop::Coop::default(),
-            matrix: matrix::Rain::default(),
             rows,
             modules: rows
                 .iter()
@@ -1509,12 +1505,12 @@ impl Scene {
         self.modules[view.index()].as_ref()?.state()?.downcast_ref()
     }
 
-    /// Where the view harness looks for `view`'s processes after a frame: the row's anchors for
-    /// a built-in view, the module's own for a module view. None checks `positions`.
+    /// Where the view harness looks for `view`'s processes after a frame: the module's own
+    /// anchors for a module view. None checks `positions`.
     #[cfg(test)]
     pub fn anchors(&self, view: View) -> Option<HashMap<Identity, Point>> {
         match self.row(view).hooks {
-            Hooks::BuiltIn { .. } => self.row(view).contract.anchors.map(|anchors| anchors(self)),
+            Hooks::BuiltIn { .. } => None,
             Hooks::Module(_) => self.modules[view.index()]
                 .as_ref()
                 .and_then(|module| module.anchors()),
@@ -1824,12 +1820,7 @@ impl Scene {
                 let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
                 self.draw_flow(frame, &processes, camera, selected, time, snapshot, stir);
             }
-            Some(BuiltIn::Matrix) => {
-                self.positions.clear();
-                self.matrix.draw(frame, time);
-                self.visible = 0;
-            }
-            Some(BuiltIn::Coop) | None => {
+            None => {
                 self.positions.clear();
                 let mut stage = Stage {
                     frame,
@@ -1857,7 +1848,6 @@ impl Scene {
                     callout: &mut self.callout,
                 };
                 let shown = match arm {
-                    Some(BuiltIn::Coop) => self.coop.draw(&mut stage, processes, snapshot),
                     Some(_) => unreachable!(),
                     None => self.modules[view.index()]
                         .as_mut()
