@@ -67,7 +67,7 @@ def isometric(world):
 
 
 def main():
-    svg = Svg(1100, 640, "Boost and Schlegel projection",
+    svg = Svg(1100, 690, "Boost and Schlegel projection",
               "The (x, w) plane before and after a Lorentz boost, hyperbolas of constant "
               "interval, and the tesseract's Schlegel projection at four XW rotations.")
     heading(svg, "A boost slides along hyperbolas; a rotation turns the tesseract inside out",
@@ -89,7 +89,8 @@ def main():
             line = [(-1 + beta * (w + 1), w) for w in (-1.0, 1.0)]
             line = [boost(p, head, a) if frame else p for p in line]
             ax.polyline(line, color, 2.0 if beta == 0.6 else 1.5)
-            ax.svg.circle(ax.px(line[1][0]), ax.py(line[1][1]), 3, color)
+            if ax.xlim[0] <= line[1][0] <= ax.xlim[1] and ax.ylim[0] <= line[1][1] <= ax.ylim[1]:
+                ax.svg.circle(ax.px(line[1][0]), ax.py(line[1][1]), 3, color)
         for w, label in ((1.0, "now"), (-1.0, "60 s ago")):
             pts = [(-2.2, w), (2.6, w)]
             pts = [boost(p, head, a) if frame else p for p in pts]
@@ -116,6 +117,7 @@ def main():
             inv.polyline(pts, ORANGE, 1.4, opacity=0.8)
     for sign in (1, -1):
         inv.polyline([(-2.2, -2.2 * sign), (2.2, 2.2 * sign)], YELLOW, 1.2, dash="4 3")
+    inv.polyline([(math.sqrt(w * w - 0.64) * 0 + x, math.sqrt(x * x + 0.64)) for x in [k * 0.05 for k in range(-60, 61)]], MAGENTA, 1.2, dash="3 3")
     pt = (0.6, 1.0)
     for rapidity in (0.0, 0.5, 1.0):
         q = boost(pt, (0, 0), rapidity)
@@ -129,7 +131,7 @@ def main():
     corners = [[(1 if i >> k & 1 else -1) for k in range(4)] for i in range(16)]
     for index, (angle, name) in enumerate(zip(angles, names)):
         matrix = rotation([angle, 0.10, -0.08])
-        box = Axes(svg, 40 + index * 262, 372, 236, 236, (-14, 14), (-14, 14), "", "", name, equal=True,
+        box = Axes(svg, 40 + index * 262, 424, 236, 236, (-14, 14), (-14, 14), "", "", name, equal=True,
                    xticks=[], yticks=[], grid=False, title_size=11.5)
         screen = []
         for corner in corners:
