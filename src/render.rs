@@ -7,7 +7,7 @@ use crate::medium::Grid;
 use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::tint;
 use crate::simulation::{growth, hash, smoothing};
-use crate::views::systems::{Body, Orbit, is_hub};
+use crate::views::systems::Orbit;
 use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
 use crate::{globe, glyphs};
 
@@ -1168,8 +1168,8 @@ pub(crate) struct Stage<'a> {
     pub time: f32,
     /// Frames the scene has rendered, this one included, whichever view was shown. A view that
     /// must tell a frame that follows its own last frame from one after a gap (another view was
-    /// shown in between) compares it with the number it last drew at: the galaxy of Orbit and
-    /// Flow turns only across consecutive frames.
+    /// shown in between) compares it with the number it last drew at: the galaxy of Orbit
+    /// turns only across consecutive frames (Flow's is held still).
     pub frames: u64,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
     /// first frame, while paused, and when `time` went back (a rewind or a headless replay);
@@ -1214,7 +1214,8 @@ pub(crate) struct Stage<'a> {
     /// what the view makes of the visit, such as a frame it cannot enter.
     pub callout: &'a mut Vec<(Identity, String)>,
     /// The names of the systems the view draws, labelled under their outer edges after
-    /// `places`, in the order pushed.
+    /// `places`, in the order pushed. Each system's centre (`Title::at`) is kept in the camera
+    /// fit with the `positions`, when the view gave no `bounds`.
     pub titles: &'a mut Vec<Title>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
@@ -1291,8 +1292,11 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
 /// What persists between frames and belongs to the frame, not to any one view: the smoothing of
 /// the sampled processes, their births and deaths, the links and highlights, the outputs of the
 /// last frame the app reads back, the spare buffers, and the module of each view in its row's
-/// slot. A view keeps its own state in its module and reaches the scene only through `Stage`;
-/// `scene_has_no_view_specific_fields` fails if a field named after a view appears here.
+/// slot. A view keeps its own state in its module and reaches the scene only through `Stage`.
+/// Every field says in its doc comment why it is frame-wide (the lint below insists), and
+/// `scene_has_no_view_specific_fields` fails to compile until a new field is listed in it, which
+/// is the review: add one only if every view and the app share it.
+#[deny(clippy::missing_docs_in_private_items)]
 pub struct Scene {
     /// Each process's CPU and memory as eased towards the samples. Frame-wide: the easing
     /// belongs to the sample, so every view reads the same figures (`Stage::resources`) and a
@@ -1475,7 +1479,7 @@ impl Scene {
     }
 
     pub fn fit(&self, camera: &mut Camera, width: u32, height: u32) {
-        if self.positions.is_empty() && self.bounds.is_empty() {
+        if self.positions.is_empty() && self.titles.is_empty() && self.bounds.is_empty() {
             return;
         }
         let probe = Camera {
@@ -1486,7 +1490,14 @@ impl Scene {
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
         let points: Vec<Point> = if self.bounds.is_empty() {
-            self.positions.values().map(|p| [p[0], p[1], 0.0]).collect()
+            // The drawn processes, and the systems' centres a hub stands at, which are no process.
+            let centres = self.titles.iter().map(|title| title.at);
+            self.positions
+                .values()
+                .copied()
+                .chain(centres)
+                .map(|p| [p[0], p[1], 0.0])
+                .collect()
         } else {
             self.bounds.clone()
         };
@@ -1724,8 +1735,7 @@ impl Scene {
         flash: bool,
     ) {
         for (id, &point) in &self.previous {
-            // A hub is no process, so it neither dies nor splashes when it is no longer drawn.
-            if !alive.contains(id) && !is_hub(id) {
+            if !alive.contains(id) {
                 self.deaths.push((point, time));
                 self.splashes.push(point);
             }
@@ -1846,24 +1856,6 @@ pub(crate) fn similar(a: &Grid, b: &Grid) -> bool {
         && (a.cell / b.cell - 1.0).abs() < 0.05
         && (a.origin[0] - b.origin[0]).abs() < a.cell * 2.0
         && (a.origin[1] - b.origin[1]).abs() < a.cell * 2.0
-}
-
-/// The ground-plane grid covering the layout with a margin, and each body's ground position.
-pub(crate) fn footprint(
-    positions: &HashMap<Identity, Point>,
-    processes: &[&Process],
-    bodies: &[Body],
-    cells: usize,
-) -> Option<(Grid, Vec<[f32; 2]>)> {
-    let located: Vec<[f32; 2]> = bodies
-        .iter()
-        .map(|body| {
-            let p = positions[&processes[body.index].id];
-            [p[0], p[1]]
-        })
-        .collect();
-    let grid = cover(&located, cells)?;
-    Some((grid, located))
 }
 
 /// The ground-plane grid covering points with a margin and about `cells` cells along the longer
@@ -2728,56 +2720,49 @@ mod tests {
         assert_eq!(draw(View::at(1)), ([0.0; 3], 0, 0));
     }
 
-    /// A view's state lives in its module. The fields of `Scene` are read from its source rather
-    /// than through `Debug`, which would need a hand-written impl that lists the same fields, and
-    /// rather than from `size_of`, which moves with every legitimate frame-wide field and says
-    /// nothing about which field grew. This fails on a field named after a registered view or
-    /// typed with one, and on a field without a doc comment, which is where the struct says why
-    /// the field is frame-wide.
+    /// A view's state lives in its module, so `Scene` holds only frame-wide state, and a field
+    /// added to it is a decision someone reviews. The pattern below names every field of `Scene`
+    /// and has no `..`: a new field does not compile until it is listed here, and it belongs
+    /// here only if it is frame-wide (see the doc of `Scene`). The compiler reads the struct, so
+    /// this holds for any layout of it (multi-line types, attributes, comments), unlike a scan
+    /// of the source for field names, which a field named after no view slips past. The doc
+    /// comment each field needs, which is where the struct says why it is frame-wide, is the
+    /// `missing_docs_in_private_items` lint denied on `Scene`.
     #[test]
     fn scene_has_no_view_specific_fields() {
-        let source = include_str!("render.rs");
-        let start = source
-            .find("\npub struct Scene {\n")
-            .expect("the scene is declared in this file");
-        let body = &source[start..];
-        let body = &body[..body.find("\n}\n").expect("the struct ends")];
-        let words = |text: &str| -> Vec<String> {
-            text.split(|c: char| !c.is_alphanumeric())
-                .filter(|word| !word.is_empty())
-                .map(str::to_lowercase)
-                .collect()
-        };
-        let views: Vec<&str> = REGISTRY.iter().map(|row| row.name).collect();
-        let mut documented = false;
-        let mut fields = 0;
-        for line in body.lines().skip(2) {
-            let line = line.trim();
-            if line.starts_with("///") {
-                documented = true;
-                continue;
-            }
-            let Some((name, kind)) = line.trim_end_matches(',').split_once(':') else {
-                continue;
-            };
-            let name = name
-                .trim()
-                .trim_start_matches("pub(crate) ")
-                .trim_start_matches("pub ");
-            fields += 1;
-            assert!(
-                documented,
-                "Scene::{name} has no doc comment saying why it is frame-wide"
-            );
-            documented = false;
-            for word in words(name).into_iter().chain(words(kind)) {
-                assert!(
-                    !views.contains(&word.as_str()),
-                    "Scene::{name} is named or typed after the {word} view: keep its state in the module"
-                );
-            }
-        }
-        assert!(fields >= 25, "the test read the struct: {fields} fields");
+        let scene = Scene::new();
+        let Scene {
+            resources: _,
+            frames: _,
+            last_time: _,
+            clock: _,
+            births: _,
+            arrivals: _,
+            previous: _,
+            deaths: _,
+            headroom: _,
+            splashes: _,
+            newborn: _,
+            started: _,
+            intro: _,
+            links: _,
+            highlight: _,
+            positions: _,
+            places: _,
+            titles: _,
+            bounds: _,
+            notes: _,
+            sparklines: _,
+            tour: _,
+            popup: _,
+            callout: _,
+            history: _,
+            rows: _,
+            modules: _,
+            spare: _,
+            visible: _,
+            collapsed: _,
+        } = scene;
     }
 
     #[test]

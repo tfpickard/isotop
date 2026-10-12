@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 use super::ViewModule;
-use super::systems::{self, Galaxy, HUB, Layout, is_hub};
-use crate::medium::{Flow, TRAIL};
+use super::systems::{self, Body, Galaxy, HUB, Layout, is_hub};
+use crate::medium::{Flow, Grid, TRAIL};
 use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::kind_color;
-use crate::render::{Camera, Frame, OUTSIDE, Point, Stage, footprint, glows, similar};
+use crate::render::{Camera, Frame, OUTSIDE, Point, Stage, cover, glows, similar};
 
 /// The most particles in the sheet.
 const PARTICLES: usize = 6000;
@@ -67,8 +67,8 @@ impl ViewModule for Wells {
         let hubs = systems::hubs(processes, snapshot, stage.focus);
         self.hubs = !hubs.is_empty();
         let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
-        let layout = systems::layout(&mut self.galaxy, stage, &processes, snapshot, 0.0);
-        self.pour(stage, &processes, &layout, snapshot, stir);
+        let mut layout = systems::layout(&mut self.galaxy, stage, &processes, snapshot, 0.0);
+        self.pour(stage, &processes, &mut layout, snapshot, stir);
         layout.report(stage);
         #[cfg(test)]
         {
@@ -101,13 +101,12 @@ impl Wells {
         &mut self,
         stage: &mut Stage,
         processes: &[&Process],
-        layout: &Layout,
+        layout: &mut Layout,
         snapshot: &Snapshot,
         stir: f32,
     ) {
         let time = stage.time;
-        let Some((grid, located)) = footprint(stage.positions, processes, &layout.bodies, 140)
-        else {
+        let Some((grid, located)) = footprint(&layout.bodies, 140) else {
             return;
         };
         let mut flow = match self.sheet.take() {
@@ -122,7 +121,7 @@ impl Wells {
         }
         let pour = Pour {
             processes,
-            layout,
+            layout: &*layout,
             located: &located,
             snapshot,
             dt,
@@ -315,24 +314,37 @@ fn fabric(frame: &mut Frame, camera: &Camera, flow: &Flow) {
     }
 }
 
+/// The ground-plane grid covering the layout with a margin, and each body's ground position.
+fn footprint(bodies: &[Body], cells: usize) -> Option<(Grid, Vec<[f32; 2]>)> {
+    let located: Vec<[f32; 2]> = bodies
+        .iter()
+        .map(|body| [body.target[0], body.target[1]])
+        .collect();
+    let grid = cover(&located, cells)?;
+    Some((grid, located))
+}
+
 /// The bodies, sunk into the sheet where they stand: a process as a lit sphere with its glows,
-/// a hub as an outline. Their positions in the stage are the ones on the sheet.
+/// a hub as an outline. A process's position in the stage is the one on the sheet, and so is the
+/// star of each system (`Star::at`), which `Layout::report` tells the app.
 fn bodies(
     stage: &mut Stage,
     processes: &[&Process],
-    layout: &Layout,
+    layout: &mut Layout,
     located: &[[f32; 2]],
     flow: &Flow,
 ) {
+    let mut stood = HashMap::new();
     for (body, &at) in layout.bodies.iter().zip(located) {
         let process = processes[body.index];
         let radius = layout.tree.radii[body.index] * 0.7 * body.grow;
         let position = [at[0], at[1], flow.depth_at(at) + radius * 0.6];
-        stage.positions.insert(process.id, position);
+        stood.insert(body.index, position);
         if is_hub(&process.id) {
             stage.frame.outline(stage.camera, position, radius, HUB);
             continue;
         }
+        stage.positions.insert(process.id, position);
         glows(stage.frame, stage.camera, process, position, radius);
         stage.frame.sphere(
             stage.camera,
@@ -342,6 +354,11 @@ fn bodies(
             body.index as u32,
             stage.selected == Some(process.id),
         );
+    }
+    for star in &mut layout.stars {
+        if let Some(&position) = stood.get(&star.root) {
+            star.at = position;
+        }
     }
 }
 

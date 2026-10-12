@@ -401,7 +401,7 @@ struct App {
     renderer: String,
     /// When the demand last contained `Source::Journal`; None while it has not.
     journal_demanded: Option<Instant>,
-    /// What `deliver_journal` has attached to samples so far, which numbers the next lines.
+    /// What `feed` has attached to samples so far, which numbers the next lines.
     journal_totals: journal::Totals,
     /// Whether each of the scene's views runs on this platform, in row order.
     available: Vec<bool>,
@@ -466,6 +466,20 @@ impl App {
     /// The shown view's registry row.
     fn row(&self) -> &'static ViewInfo {
         self.scene.row(self.view)
+    }
+
+    /// Takes in a new sample as the newest, keeping at most `capacity` in the history. The sample
+    /// it replaces as the newest lets go of its journal lines: they were drawn, and only the
+    /// newest sample is ever fed more.
+    fn push_sample(&mut self, snapshot: Snapshot, capacity: usize) {
+        self.scene.record(&snapshot, self.animation);
+        if let Some(newest) = self.history.back_mut() {
+            newest.journal.retire();
+        }
+        self.history.push_back(snapshot);
+        if self.history.len() > capacity {
+            self.history.pop_front();
+        }
     }
 
     /// Whether the journal follower should run at `now`: while the demand contains
@@ -1936,11 +1950,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                 } else {
                     collector.sample()?
                 };
-                app.scene.record(&snapshot, app.animation);
-                app.history.push_back(snapshot);
-                if app.history.len() > options.history as usize {
-                    app.history.pop_front();
-                }
+                app.push_sample(snapshot, options.history as usize);
                 last_sample = Instant::now();
                 if app.framed && app.tour.is_none() && app.scene.bounded() {
                     app.fit = true;
@@ -2891,6 +2901,38 @@ mod tests {
         let before = newest.clone();
         feed(&mut app, None, true, 2.0, 2.05);
         assert_eq!(app.history[1].journal, before);
+    }
+
+    #[test]
+    fn the_history_keeps_the_journal_lines_of_the_newest_sample_only() {
+        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
+        let held = |app: &App| -> usize { app.history.iter().map(|s| s.journal.lines.len()).sum() };
+        for sample in 0..40 {
+            app.push_sample(model::demo(f64::from(sample), 16), 24);
+            // A flood bigger than a sample keeps arrives every frame, twice.
+            for _ in 0..2 {
+                let flood: Vec<journal::Line> = (0..journal::KEPT)
+                    .map(|n| journal::Line::new(6, format!("line {n}")))
+                    .collect();
+                let App {
+                    history,
+                    journal_totals,
+                    ..
+                } = &mut app;
+                let newest = history.back_mut().unwrap();
+                newest.journal.add(journal_totals, flood, 0);
+            }
+            assert!(held(&app) <= journal::KEPT, "{} lines held", held(&app));
+        }
+        assert_eq!(app.history.len(), 24);
+        assert_eq!(held(&app), journal::KEPT, "the newest sample's lines");
+        // The numbering outlives the lines: a sample that was the newest says how many had
+        // arrived by then, and offers none of them to a view that has not taken them.
+        for older in app.history.iter().take(23) {
+            assert!(older.journal.lines.is_empty());
+            assert!(older.journal.through > 0);
+            assert!(older.journal.unseen(0).is_empty());
+        }
     }
 
     #[test]

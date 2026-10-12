@@ -7,7 +7,11 @@
 //!
 //! Nothing a measurement moves moves an organelle: each keeps its seat, and the seats are spread
 //! for the room the cell reserved (`Room`), within which memory moves the membrane and processes
-//! join or leave without moving a seat. The room is laid out again only when the cell outgrows it.
+//! join or leave without moving a seat. The seats are spread over the smallest membrane memory
+//! alone is expected to leave the cell (half its memory), so the membrane breathes between half
+//! and double its memory without crossing a seat. The room is laid out again only when the
+//! membrane grows past `SPARSE` times the room, or when so many processes join that the
+//! outermost seat would stand outside the membrane.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -29,8 +33,12 @@ const DISHES: [(Kind, &str, Color); 3] = [
     (Kind::Container, "containers", CONTAINER),
 ];
 const SEAT: f32 = 0.75;
-/// The share of a cell's radius its seats are spread over when its room is laid out.
+/// The share of the smallest membrane its seats are spread over when its room is laid out.
 const SPREAD: f32 = 0.8;
+/// The smallest membrane the memory of a cell is expected to leave it, as a share of the radius
+/// its room was laid out for. Half the memory is 0.71 of the radius at the least (it goes with
+/// the square root of the memory), and a cgroup's memory, page cache and all, swings that much.
+const SHRINK: f32 = 0.7;
 /// How far inside the membrane the centre of the outermost organelle stays.
 const MARGIN: f32 = 0.4;
 /// How much its membrane may have grown over its room before a cell lays its seats out again,
@@ -70,16 +78,18 @@ struct Room {
 }
 
 impl Room {
-    /// The spacing of the seats' spiral: out over most of the room rather than huddling round the
-    /// nucleus.
+    /// The spacing of the seats' spiral: out over most of the smallest membrane the room expects
+    /// rather than huddling round the nucleus, so the outermost seat stays inside the membrane
+    /// when the memory falls to half.
     fn spacing(self) -> f32 {
-        (self.radius * SPREAD / (self.seats as f32 + 1.0).sqrt()).max(SEAT)
+        ((self.radius * SHRINK - MARGIN).max(0.0) * SPREAD / (self.seats as f32 + 1.0).sqrt())
+            .max(SEAT)
     }
 
     /// Whether a cell with a membrane of `radius` and `span` seats in use still has this room: the
     /// outermost seat stands inside the membrane, and the membrane has not grown far past the
-    /// room. Until it fails, nothing the cell measures moves a seat, and a seat that joins goes on
-    /// outwards from the last.
+    /// room. Until it fails, nothing the cell measures within half to double its memory moves a
+    /// seat, and a seat that joins goes on outwards from the last.
     fn serves(self, radius: f32, span: usize) -> bool {
         self.spacing() * (span as f32).sqrt() + MARGIN <= radius && radius <= self.radius * SPARSE
     }
@@ -921,17 +931,50 @@ mod tests {
         let base = demo(30.0, 160);
         let cgroup = base.processes[40].cgroup.clone();
         let key = cell_of(&base.processes[40]);
+        let family: Vec<Identity> = base
+            .processes
+            .iter()
+            .filter(|p| p.kind != Kind::Kernel && cell_of(p) == key)
+            .map(|p| p.id)
+            .collect();
         let (mut scene, mut time) = (Scene::new(), 30.0);
         let before = settle(&mut scene, &base, &mut time);
         let room = dishes(&scene).rooms[&key];
-        // A fifth more memory, then a tenth less: the membrane breathes, the organelles stay.
-        for factor in [1.2, 0.9] {
+        let nucleus = dishes(&scene).nuclei[&key];
+        // Each organelle of the cell where it is, measured from the cell's own centre.
+        let seats = |places: &Places| -> Vec<[f32; 2]> {
+            let centre = places[&nucleus];
+            family
+                .iter()
+                .map(|id| [places[id][0] - centre[0], places[id][1] - centre[1]])
+                .collect()
+        };
+        // The membrane breathes with the memory, from half to double, and the organelles stay in
+        // their seats, all inside the membrane of the least memory (the draw would otherwise pull
+        // the outermost back in). Up to a seventh over its radius the cell keeps its place in the
+        // dish as well; a cell that grows more than its dish reserved is placed again whole, so
+        // after that only its seats are compared, from its own centre.
+        let mut moved = false;
+        for factor in [1.2, 0.9, 0.6, 0.5, 2.0, 0.5, 1.0] {
             let mut changed = base.clone();
             let unit = changed.units.get_mut(&cgroup).expect("the cell has a unit");
             unit.memory = (unit.memory as f64 * factor) as u64;
             let after = settle(&mut scene, &changed, &mut time);
-            assert_eq!(after, before, "memory x{factor}");
-            assert_eq!(dishes(&scene).rooms[&key].radius, room.radius);
+            moved |= factor > 1.2;
+            // Equal to a rounding error of the subtraction from the centre.
+            let moved_by = seats(&after)
+                .iter()
+                .zip(seats(&before))
+                .map(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]))
+                .fold(0.0, f32::max);
+            assert!(
+                moved_by < 1e-3,
+                "memory x{factor} moved a seat by {moved_by}"
+            );
+            assert_eq!(dishes(&scene).rooms[&key].radius, room.radius, "x{factor}");
+            if !moved {
+                assert_eq!(after, before, "memory x{factor}");
+            }
         }
         // Six times the memory is two and a half times the radius: the seats are spread out again.
         let mut changed = base.clone();
