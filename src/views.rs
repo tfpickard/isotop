@@ -558,14 +558,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#117",
-                reason: "marbles lap at their CPU and no anchor (the lane) is declared",
-            }],
-            ..Contract::DEFAULT
-        },
+        // Marbles lap at their CPU; the lane is what must stay put, and `Track::anchors` says
+        // which one each rides.
         ..ViewInfo::new(
             "cores",
             "CORES",
@@ -573,29 +567,12 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::Module(|| Box::new(cores::Track::default())),
         )
     },
-    ViewInfo {
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#118",
-                    reason: "the largest member is the nucleus at the centre, and memory sizes the cell",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#118",
-                    reason: "when the nucleus exits, the next largest member moves to the centre",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "cells",
-            "CELLS",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(cells::Dishes::default())),
-        )
-    },
+    ViewInfo::new(
+        "cells",
+        "CELLS",
+        Backdrop::Dusk,
+        Hooks::Module(|| Box::new(cells::Dishes::default())),
+    ),
     ViewInfo {
         // A minute of history, so the landscape is full in the captured frame.
         warmup: &[Warmup {
@@ -625,14 +602,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#119",
-                reason: "fish swim and crabs scuttle at their CPU and no anchor is declared",
-            }],
-            ..Contract::DEFAULT
-        },
+        // Fish swim and crabs scuttle at their CPU; their school's target and their seat are
+        // what must stay put, and `Reef::anchors` says where those are.
         ..ViewInfo::new(
             "reef",
             "REEF",

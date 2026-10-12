@@ -328,12 +328,18 @@ session and containers. Accounting comes from the cgroup v2 files
   as usage nears it; an arc around the membrane shows CPU use against its quota.
 - The membrane trembles with the cgroup's pressure, flashes red when its CPU
   quota throttles it, and bursts when the OOM killer strikes inside it.
-- Organelles: its processes, with the largest as the nucleus. Kernel threads
-  belong to no cell and are only counted.
+- Organelles: its processes. The nucleus is the largest process of a new cell
+  and keeps the centre until it exits; the largest process to arrive after that
+  takes it, and the centre stays bare until one does. Kernel threads belong to
+  no cell and are only counted.
+- Organelles keep their seats while memory moves the membrane and processes
+  come and go. The seats are spread for the room the cell reserved, and are laid
+  out again only when the membrane would no longer hold the outermost one or has
+  grown half again past the room.
 - Processes hidden by focus (`f`) or by `--limit` keep their seats, and their
   cells keep their place and size, so clearing the focus puts every cell back.
-  A cell draws only the processes that are shown, and its nucleus stays its
-  largest process even while that one is hidden.
+  A cell draws only the processes that are shown, and its nucleus stays the same
+  process even while that one is hidden.
 
 ### Strata
 
