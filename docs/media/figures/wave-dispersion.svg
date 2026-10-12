@@ -170,10 +170,10 @@
 <text x="971.4" y="336" font-size="11" text-anchor="start" fill="#c9d1d9">5-point, along a diagonal</text>
 <line x1="945.4" y1="348" x2="965.4" y2="348" stroke="#d95926" stroke-width="2.2" stroke-dasharray="2 2"/>
 <text x="971.4" y="352" font-size="11" text-anchor="start" fill="#c9d1d9">9-point, along a diagonal</text>
-<text x="921.18" y="336.75" font-size="11" text-anchor="start" fill="#199e70">pebbles</text>
-<text x="1051.35" y="177" font-size="11" text-anchor="start" fill="#8b949e">continuum</text>
-<text x="948.81" y="146.88" font-size="11" text-anchor="start" fill="#8b949e">the lattice flattens toward</text>
-<text x="948.81" y="168.75" font-size="11" text-anchor="start" fill="#8b949e">the Nyquist limit k = pi</text>
+<text x="895.03" y="195" font-size="11" text-anchor="middle" fill="#199e70">pebbles</text>
+<text x="924.94" y="243.12" font-size="11" text-anchor="start" fill="#8b949e">continuum</text>
+<text x="924.14" y="111.88" font-size="11" text-anchor="start" fill="#8b949e">the lattice flattens toward</text>
+<text x="924.14" y="132" font-size="11" text-anchor="start" fill="#8b949e">the Nyquist limit k = pi</text>
 <text x="60" y="450" font-size="11" text-anchor="start" fill="#8b949e">Courant number 0.5 is isotop's ceiling (Wave::advance); the 9-point stencil is stable to sqrt(3)/2 = 0.866, the 5-point to 1/sqrt(2) = 0.707.</text>
 <text x="60" y="468" font-size="11" text-anchor="start" fill="#8b949e">The Klein-Gordon term (0.5 per s squared) and the damping are left out here; see the source-band figure on View Ripple.</text>
 </svg>
