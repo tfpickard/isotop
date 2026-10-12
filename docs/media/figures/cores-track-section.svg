@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" width="980" height="560" font-family="system-ui, sans-serif" role="img">
+<title>The Cores track in plan and section</title>
+<desc>Concentric lanes, performance cores inside and efficiency cores outside, banked so that outer lanes stand higher.</desc>
+<rect width="980" height="560" fill="#0e1116"/>
+<text x="30" y="34" font-size="14" text-anchor="start" fill="#c9d1d9" font-weight="600">Plan: one lane per CPU, seen from above</text>
+<circle cx="245" cy="270" r="48.67" fill="#0c121c" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="245" cy="270" r="55.8" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="65.1" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="74.4" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="83.7" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="93" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="102.3" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="111.6" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="120.9" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="137.64" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="146.94" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="156.24" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="165.54" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="174.84" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="184.14" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="193.44" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="202.74" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+<circle cx="245" cy="270" r="207.39" fill="none" stroke="#4b5563" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="293.67" y1="270" x2="452.39" y2="270" fill="none" stroke="#e6ecf0" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="259.23,187.52 253.7,186.75 248.13,186.36 242.56,186.34 236.99,186.68 231.46,187.4 225.98,188.49 220.6,189.94 215.32,191.74 210.17,193.89 205.18,196.38 200.36,199.2 195.74,202.33" fill="none" stroke="#b288e8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
+<circle cx="195.74" cy="202.33" r="6" fill="#b288e8" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="199.74" y="190.33" font-size="11" text-anchor="middle" fill="#b288e8">marble</text>
+<circle cx="401.14" cy="275.58" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="400.98" cy="278.99" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="400.75" cy="282.39" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="245" y="274" font-size="11" text-anchor="middle" fill="#8b949e">infield</text>
+<text x="245" y="503.39" font-size="11" text-anchor="middle" fill="#8b949e">P lanes r = 9 to 19.5, E lanes r = 22.2 to 32.7, wall at r = 33.45</text>
+<text x="245" y="521.39" font-size="11" text-anchor="middle" fill="#8b949e">white line = start line; red beads = queue behind it; angle grows counter-clockwise</text>
+<line x1="672.68" y1="90" x2="672.68" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="672.68" y1="340" x2="672.68" y2="344" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="672.68" y="357" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="729.4" y1="90" x2="729.4" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="729.4" y1="340" x2="729.4" y2="344" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="729.4" y="357" font-size="11" text-anchor="middle" fill="#8b949e">15</text>
+<line x1="786.11" y1="90" x2="786.11" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="786.11" y1="340" x2="786.11" y2="344" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="786.11" y="357" font-size="11" text-anchor="middle" fill="#8b949e">20</text>
+<line x1="842.82" y1="90" x2="842.82" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="842.82" y1="340" x2="842.82" y2="344" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="842.82" y="357" font-size="11" text-anchor="middle" fill="#8b949e">25</text>
+<line x1="899.53" y1="90" x2="899.53" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="899.53" y1="340" x2="899.53" y2="344" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="899.53" y="357" font-size="11" text-anchor="middle" fill="#8b949e">30</text>
+<line x1="650" y1="340" x2="950" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="646" y1="340" x2="650" y2="340" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="642" y="344" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="650" y1="284.44" x2="950" y2="284.44" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="646" y1="284.44" x2="650" y2="284.44" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="642" y="288.44" font-size="11" text-anchor="end" fill="#8b949e">1</text>
+<line x1="650" y1="228.89" x2="950" y2="228.89" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="646" y1="228.89" x2="650" y2="228.89" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="642" y="232.89" font-size="11" text-anchor="end" fill="#8b949e">2</text>
+<line x1="650" y1="173.33" x2="950" y2="173.33" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="646" y1="173.33" x2="650" y2="173.33" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="642" y="177.33" font-size="11" text-anchor="end" fill="#8b949e">3</text>
+<line x1="650" y1="117.78" x2="950" y2="117.78" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="646" y1="117.78" x2="650" y2="117.78" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="642" y="121.78" font-size="11" text-anchor="end" fill="#8b949e">4</text>
+<rect x="650" y="90" width="300" height="250" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="800" y="376" font-size="12" text-anchor="middle" fill="#c9d1d9">radius r (world units)</text>
+<text x="606" y="215" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 606 215)">height z (world units)</text>
+<text x="650" y="78" font-size="14" text-anchor="start" fill="#c9d1d9" font-weight="600">Section: banking z = 0.16 (r - 9)</text>
+<polyline points="650,340 653,340 656,340 659,340 662,339.48 665,337.13 668,334.78 671,332.43 674,330.08 677,327.73 680,325.38 683,323.03 686,320.68 689,318.32 692,315.97 695,313.62 698,311.27 701,308.92 704,306.57 707,304.22 710,301.87 713,299.52 716,297.16 719,294.81 722,292.46 725,290.11 728,287.76 731,285.41 734,283.06 737,280.71 740,278.36 743,276 746,273.65 749,271.3 752,268.95 755,266.6 758,264.25 761,261.9 764,259.55 767,257.2 770,254.84 773,252.49 776,250.14 779,247.79 782,245.44 785,243.09 788,240.74 791,238.39 794,236.04 797,233.68 800,231.33 803,228.98 806,226.63 809,224.28 812,221.93 815,219.58 818,217.23 821,214.88 824,212.52 827,210.17 830,207.82 833,205.47 836,203.12 839,200.77 842,198.42 845,196.07 848,193.72 851,191.36 854,189.01 857,186.66 860,184.31 863,181.96 866,179.61 869,177.26 872,174.91 875,172.56 878,170.2 881,167.85 884,165.5 887,163.15 890,160.8 893,158.45 896,156.1 899,153.75 902,151.4 905,149.04 908,146.69 911,144.34 914,141.99 917,139.64 920,137.29 923,134.94 926,132.59 929,130.24 932,127.88 935,125.53 938,123.18 941,120.83 944,118.48 947,116.13 950,113.78" fill="none" stroke="#e6ecf0" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" opacity="0.7"/>
+<polygon points="653.74,340 653.74,340 668.94,334.04 668.94,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="670.76,340 670.76,332.62 685.95,320.71 685.95,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="687.77,340 687.77,319.29 702.97,307.38 702.97,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="704.78,340 704.78,305.96 719.98,294.04 719.98,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="721.8,340 721.8,292.62 736.99,280.71 736.99,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="738.81,340 738.81,279.29 754.01,267.38 754.01,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="755.82,340 755.82,265.96 771.02,254.04 771.02,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="772.84,340 772.84,252.62 788.03,240.71 788.03,340" fill="#ecb25c" opacity="0.55"/>
+<polygon points="803.46,340 803.46,228.62 818.66,216.71 818.66,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="820.47,340 820.47,215.29 835.67,203.38 835.67,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="837.49,340 837.49,201.96 852.68,190.04 852.68,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="854.5,340 854.5,188.62 869.7,176.71 869.7,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="871.51,340 871.51,175.29 886.71,163.38 886.71,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="888.53,340 888.53,161.96 903.72,150.04 903.72,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="905.54,340 905.54,148.62 920.74,136.71 920.74,340" fill="#48b7c7" opacity="0.55"/>
+<polygon points="922.55,340 922.55,135.29 937.75,123.38 937.75,340" fill="#48b7c7" opacity="0.55"/>
+<text x="699.91" y="231.67" font-size="11" text-anchor="middle" fill="#ecb25c">performance band</text>
+<text x="699.91" y="245.67" font-size="11" text-anchor="middle" fill="#ecb25c">mean r = 14.25</text>
+<text x="831.47" y="142.78" font-size="11" text-anchor="middle" fill="#48b7c7">efficiency band</text>
+<text x="831.47" y="156.78" font-size="11" text-anchor="middle" fill="#48b7c7">mean r = 27.45</text>
+<text x="795.75" y="334" font-size="10" text-anchor="middle" fill="#8b949e">gap</text>
+<text x="650" y="400" font-size="12" text-anchor="start" fill="#c9d1d9">A marble rides its process's last CPU's lane (Linux)</text>
+<text x="650" y="418" font-size="12" text-anchor="start" fill="#c9d1d9">or the middle of its cluster's lanes (macOS).</text>
+<text x="650" y="450" font-size="12" text-anchor="start" fill="#8b949e">Equal angular speed is a larger linear speed on an</text>
+<text x="650" y="468" font-size="12" text-anchor="start" fill="#8b949e">outer lane: lap time, not distance, is the invariant.</text>
+</svg>
