@@ -73,7 +73,7 @@ The nullclines are the parabola $u = 0.04v^2 + 5v + 140 + I$ and the line $u = b
 
 ### 3.2 What the simulation shows
 
-Euler steps of 0.5 ms, as in the paper (his listing splits the $v$ update into two half-steps of 0.5 ms inside a 1 ms step and updates $u$ once; `docs/figures/izh_w8.py` updates both per 0.5 ms step, the same scheme the mockup prototype uses). A step of $I = 10$ at $t = 50$ ms gives:
+Euler steps of 0.5 ms, as in the paper (as I recall his listing, which I have not re-checked, it splits the $v$ update into two half-steps of 0.5 ms inside a 1 ms step and updates $u$ once; `docs/figures/izh_w8.py` updates both per 0.5 ms step, the same scheme the mockup prototype uses). A step of $I = 10$ at $t = 50$ ms gives:
 
 | Class | What the trace does (simulated) |
 |---|---|

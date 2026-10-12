@@ -65,11 +65,16 @@ def main():
             # Mars-like ratio does not close in one deferent turn; follow 15 synodic cycles
             # worth of epicycle turns so the loop pattern repeats around the sky
             points = path(ratio, speed, 7)
-        retro = 0
-        for (a, back_a), (b, _) in zip(points, points[1:]):
-            colour = RED if back_a else BLUE
-            retro += 1 if back_a else 0
-            ax.polyline([(a.real, a.imag), (b.real, b.imag)], colour, 1.6 if back_a else 1.2, opacity=0.9)
+        # Segment i runs points[i] -> points[i + 1] and takes the flag of points[i]. Consecutive
+        # segments with the same flag are drawn as one polyline, so the file stays small.
+        retro = sum(1 for _, back in points[:-1] if back)
+        start = 0
+        for index_end in range(1, len(points)):
+            if index_end == len(points) - 1 or points[index_end][1] != points[start][1]:
+                back = points[start][1]
+                run = [(p.real, p.imag) for p, _ in points[start:index_end + 1]]
+                ax.polyline(run, RED if back else BLUE, 1.6 if back else 1.2, opacity=0.9)
+                start = index_end
         share = retro / (len(points) - 1)
         svg.text(ax.x + ax.w / 2, ax.y + ax.h + 16, "retrograde %.1f%% of the time" % (100 * share), 10, "middle", MUTED)
         if index == 3:
