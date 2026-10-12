@@ -215,7 +215,10 @@ default, free to rotate and tilt between a low angle and top-down. Tab cycles
 the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
 and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
-Orbit and flow share one layout, so a process sits in the same place in each. Views
+Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
+orbit turns its systems about their barycenter and flow holds its wells still, so
+switching from one to the other does not carry the places orbit has turned to over to
+flow. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
 
@@ -264,6 +267,9 @@ existing ones.
 
 Four levels are drawn per system; deeper processes are counted as collapsed.
 
+Known gap: where a body stands inside its system is not yet stable when memory and
+the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
+
 ### Ripple
 
 ![Ripple: pebble clusters driving interfering ripples](docs/media/ripple-motion.webp)
@@ -294,6 +300,9 @@ memory bends.
   each way, carrying traffic in each end's colour.
 - Connections that leave the machine send sparks rising off the sheet; exits
   burst outward; pressure adds turbulence.
+
+Known gap: where a body stands inside its system is not yet stable when memory and
+the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
 
 ### Cores
 
