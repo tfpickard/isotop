@@ -46,16 +46,16 @@ def main():
     for sockets, colour in ((0, P.MUTED), (1, P.BLUE), (2, P.AQUA), (4, P.ORANGE)):
         axes.plot(xs, [corridor(x, sockets) for x in xs], stroke=colour, width=2.0)
     axes.hline(0.55, dash="2 4")
-    axes.label(2, 0.575, "cap 0.55", size=10.5, fill=P.MUTED)
-    svg.legend(80, top + 18, [("0 sockets (bytes only)", P.MUTED, "line"),
+    axes.label(1.5, 0.575, "cap 0.55", size=10.5, fill=P.MUTED)
+    svg.legend(230, top + h - 72, [("0 sockets (bytes only)", P.MUTED, "line"),
                               ("1 socket", P.BLUE, "line"), ("2 sockets", P.AQUA, "line"),
                               ("4 or more", P.ORANGE, "line")], size=10.5, gap=15)
 
     mib = [10 ** (k / 20.0) for k in range(0, 101)]
-    axes = P.Axes(svg, 450, top, w, h, (1, 1e5), (0, 18), xlog=True,
+    axes = P.Axes(svg, 450, top, w, h, (1, 102400), (0, 18), xlog=True,
                   xlabel="process memory, MiB", ylabel="flake radius, grid cells",
                   title="Oat flake size", yticks=[0, 4, 8, 12, 16],
-                  xticks=[1, 10, 100, 1e3, 1e4, 1e5],
+                  xticks=[1, 10, 100, 1024, 10240, 102400],
                   xtick_labels=["1", "10", "100", "1 GiB", "10 GiB", "100 GiB"])
     axes.plot(mib, [flake_radius(m) for m in mib], stroke=P.YELLOW, width=2.2)
     axes.hline(16, dash="2 4")
@@ -66,9 +66,9 @@ def main():
                flake_radius(0), size=10.5, fill=P.MUTED)
 
     distance = [k / 40.0 for k in range(0, 161)]
-    axes = P.Axes(svg, 830, top, w, h, (0, 4), (0, 1.5), xlabel="distance from centre, flake radii",
+    axes = P.Axes(svg, 830, top, w, h, (0, 4), (0, 2.0), xlabel="distance from centre, flake radii",
                   ylabel="attractant added per step", title="Scent halo",
-                  xticks=[0, 1, 2, 3, 4], yticks=[0, 0.5, 1.0, 1.5])
+                  xticks=[0, 1, 2, 3, 4], yticks=[0, 0.5, 1.0, 1.5, 2.0])
     for cpu, colour in ((0, P.MUTED), (10, P.BLUE), (50, P.AQUA), (100, P.YELLOW),
                         (100, None), (140, P.ORANGE)):
         if colour is None:
