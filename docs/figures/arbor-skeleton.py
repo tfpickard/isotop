@@ -90,7 +90,7 @@ def main():
                   "branch geometry on a synthetic 192-process tree, and child to parent radius ratios.")
     svg.title_text("arbor (planned): phyllotaxis slots, Leonardo radii, one synthetic tree")
     # a: gaps
-    a = kit.Axes(svg, 50, 56, 270, 280, (1, 144), (1, 360), xlog=True, ylog=True,
+    a = kit.Axes(svg, 62, 56, 262, 280, (1, 144), (1, 360), xlog=True, ylog=True,
                  xlabel="slots used (children of one parent)", ylabel="largest gap (degrees)",
                  title="a  azimuth gaps", xticks=[1, 3, 10, 30, 100], yticks=[1, 10, 100])
     entries = []
@@ -102,7 +102,7 @@ def main():
         entries.append((name, colour, None))
     a.legend(entries, corner="bl", size=10)
     # b: skeleton
-    cx, cy, scale = 475, 340, 7.5
+    cx, cy, scale = 480, 342, 11.5
     az, el = math.radians(28.0), math.radians(14.0)
 
     def project(p):
@@ -114,8 +114,6 @@ def main():
     segments = []
     trunk_area = sub[0]
     for p in range(n):
-        order = sorted(children[p], key=lambda c: (0.35 + 0.6 * (1.0 - 0.8 ** (children[p].index(c) + 1))))
-        stops = [(0.0, None)]
         junctions = []
         for k, c in enumerate(children[p]):
             junctions.append((0.35 + 0.6 * (1.0 - 0.8 ** (k + 1)), c))

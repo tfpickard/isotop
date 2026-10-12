@@ -4,7 +4,7 @@
 Standard library only. Run from the repository root; exits 1 on any problem.
 
   * Every page file is `<Prefix>-<Words>.md` (or Home, Philosophy, Gallery, Glossary, _Sidebar,
-    _Footer) and has a first-line `# ` heading.
+    _Footer) and opens with a `# ` title (a leading `>` banner line is allowed).
   * Every `[text](Page-Name)` link names a page that exists (anchors after `#` are allowed).
   * Every media link under `raw.githubusercontent.com/<repo>/main/docs/...` names a file that
     exists in this tree, so a page never points at a render or figure that was not committed.
@@ -44,8 +44,12 @@ def main():
         if name not in SPECIAL and not name.startswith(PREFIXES):
             problems.append(f"{path.name}: page name has no known prefix {PREFIXES}")
         text = path.read_text(encoding="utf-8")
-        if name not in {"_Sidebar", "_Footer"} and not text.lstrip().startswith("# "):
-            problems.append(f"{path.name}: first line must be a '# ' heading")
+        if name not in {"_Sidebar", "_Footer"}:
+            # A planned-view banner (a blockquote) may precede the title.
+            first = next((line for line in text.splitlines()
+                          if line.strip() and not line.startswith(">")), "")
+            if not first.startswith("# "):
+                problems.append(f"{path.name}: the first heading must be a '# ' title")
         for number, line in prose_lines(text):
             for target in LINK.findall(line):
                 if target.startswith(("http://", "https://", "mailto:", "#")):
