@@ -2689,8 +2689,7 @@ mod tests {
         let asked = DemoOptions {
             churn: true,
             exact_cpu_time: true,
-            observer: false,
-            mortality: false,
+            ..DemoOptions::NONE
         };
         let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
         app.scene = Scene::with_rows(rows);

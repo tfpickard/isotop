@@ -1944,6 +1944,18 @@ pub struct DemoOptions {
     pub mortality: bool,
 }
 
+impl DemoOptions {
+    /// Every option off, which `demo` uses. Name the options a row turns on and take the rest
+    /// from here (`DemoOptions { churn: true, ..DemoOptions::NONE }`), so a new option does not
+    /// touch the rows that leave it off.
+    pub const NONE: Self = Self {
+        churn: false,
+        exact_cpu_time: false,
+        observer: false,
+        mortality: false,
+    };
+}
+
 /// One transient family per this many base processes.
 const DEMO_FAMILY_SIZE: usize = 16;
 
@@ -4502,21 +4514,16 @@ mod tests {
 
     const CHURN: DemoOptions = DemoOptions {
         churn: true,
-        exact_cpu_time: false,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
     const EXACT: DemoOptions = DemoOptions {
-        churn: false,
         exact_cpu_time: true,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
     const BOTH: DemoOptions = DemoOptions {
         churn: true,
         exact_cpu_time: true,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
 
     /// The transients of `snapshot`, which come after the `count` base processes.
@@ -4566,9 +4573,8 @@ mod tests {
     fn mortality_gives_a_graveyard_every_kind_of_death_and_reuses_only_the_victims_pid() {
         const MORTAL: DemoOptions = DemoOptions {
             churn: true,
-            exact_cpu_time: false,
-            observer: false,
             mortality: true,
+            ..DemoOptions::NONE
         };
         let events = demo_events(-600.0, 0.0, 192, MORTAL);
         let exits: Vec<(Identity, &Cause, bool, f64)> = events

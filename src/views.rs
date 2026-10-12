@@ -168,12 +168,7 @@ impl ViewInfo {
             face: None,
             turn: None,
             sources: Sources::of(&[]),
-            demo: DemoOptions {
-                churn: false,
-                exact_cpu_time: false,
-                observer: false,
-                mortality: false,
-            },
+            demo: DemoOptions::NONE,
             keys: "",
             contract: Contract::DEFAULT,
         }
@@ -722,9 +717,8 @@ pub static REGISTRY: &[ViewInfo] = &[
         haze: false,
         demo: DemoOptions {
             churn: true,
-            exact_cpu_time: false,
             observer: true,
-            mortality: false,
+            ..DemoOptions::NONE
         },
         // The window of 60 samples is full only after a minute.
         contract: Contract {
@@ -753,8 +747,7 @@ pub static REGISTRY: &[ViewInfo] = &[
         demo: DemoOptions {
             churn: true,
             exact_cpu_time: true,
-            observer: false,
-            mortality: false,
+            ..DemoOptions::NONE
         },
         ..ViewInfo::new(
             "tesseract",
@@ -782,9 +775,8 @@ pub static REGISTRY: &[ViewInfo] = &[
         }],
         demo: DemoOptions {
             churn: true,
-            exact_cpu_time: false,
-            observer: false,
             mortality: true,
+            ..DemoOptions::NONE
         },
         ..ViewInfo::new(
             "necropolis",
@@ -1443,8 +1435,7 @@ pub mod testing {
             demo: DemoOptions {
                 churn: true,
                 exact_cpu_time: true,
-                observer: false,
-                mortality: false,
+                ..DemoOptions::NONE
             },
             ..ViewInfo::new(
                 "demanding",

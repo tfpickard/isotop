@@ -1266,8 +1266,7 @@ mod tests {
     const EXACT: DemoOptions = DemoOptions {
         churn: true,
         exact_cpu_time: true,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
 
     fn snapshot(elapsed: f64, processes: Vec<Process>) -> Snapshot {

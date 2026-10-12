@@ -288,7 +288,7 @@ match your own shell.
     so its links are hairlines that rasterize alike on the CPU and the GPU), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
     wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
-    shown), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
+    shown), `sources` (none), `demo` (`DemoOptions::NONE`; a row names only the options it turns on, `DemoOptions { churn: true, ..DemoOptions::NONE }`, so a new option leaves the other rows alone) and `contract`
     (`Contract::DEFAULT`: it draws processes, which may move at most 1 world unit over the
     ground, checked where they are drawn at 12 s of demo time, and it is known to fail nothing).
     Tab, Shift+Tab, the `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow
