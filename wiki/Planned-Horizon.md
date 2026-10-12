@@ -8,6 +8,8 @@ The `horizon` view is specified as the OOM killer drawn as a Schwarzschild black
 
 *The reference mockup (`docs/mockups/horizon.jpg`), rendered in Python by `docs/mockups/code/horizon.py` from synthetic data. It is the visual target, not an isotop render.*
 
+**Status.** On `main` (commit `192299b`) there is no `horizon`. An implementation is in the open pull request [#134](https://github.com/tfpickard/isotop/pull/134), "Batch 4a: horizon, murmuration and cortex views, their building blocks (B2, B4, B5, B6, B7) and the Space visit control (F11)", which says it closes #43 and was not merged when this page was written. Where its description reports a decision that differs from the issue, this page says so; I have read the description, not the code, and I treat its statements as the implementer's claims.
+
 ## The system being modelled
 
 A **Schwarzschild black hole** is the simplest one: no spin, no charge, a horizon at $r = 2GM/c^2$ from which nothing returns, and a photon sphere at $1.5$ times that radius where light can orbit. Around it, gas with angular momentum settles into a thin disk in which each ring is in a nearly circular orbit and slowly spirals inward by friction, until it reaches the innermost stable circular orbit (ISCO) at $6GM/c^2$ and plunges. The disk is hot, and its light is bent by the hole so strongly that an observer near the disk's plane sees the far side of the disk lifted over the top of the shadow (the primary image) and the underside of the disk's far part as a second arc beneath it (the secondary image). Jean-Pierre Luminet computed the first such image in 1979, with a thin disk, by tracing light backwards from the observer and plotting it by hand and on a computer; the look was reused in the film *Interstellar* (whose black hole, Gargantua, is a spinning Kerr one, treated by James, von Tunzelmann, Franklin and Thorne in 2015), and the Event Horizon Telescope has since imaged the bright ring and dark shadow of M87* (2019). The ring is the lensed photon sphere; the shadow is the capture cross-section of radius $3\sqrt3\,GM/c^2$.
@@ -41,9 +43,9 @@ where $b\sin\alpha$ is the image's screen $x$ coordinate. The sign depends on ho
 
 *Left: $V = (1 - 2/r)(1 + L^2/r^2)$; the ISCO is the inflection of the $L^2 = 12$ curve and $L^2 = 16$ peaks at $E = 1$ at $r = 4$. Middle: relative intensity $g^4$ around a ring at $i = 80^\circ$ (0 degrees receding, 180 degrees approaching). Right: the plunge from the ISCO ($L = 0.95\,L_\mathrm{isco}$, kick 0.1): $\ln(r - 2M)$ falls with slope $-1/2$ in Schwarzschild time and $-1/4$ in the observer's retarded time. Script: `docs/figures/horizon-potential-redshift-plunge.py`.*
 
-**The plunge, and which clock.** A body leaving the ISCO with slightly too little angular momentum and a small inward kick falls through the horizon in finite proper time, but a distant observer sees it freeze. Close to the horizon, $r - 2M \propto e^{-t/2M}$ in Schwarzschild time $t$ and $\propto e^{-u/4M}$ in the observer's retarded time $u = t - r_*$; the redshift grows as $e^{u/4M}$. The issue specifies a brightness $1.5\,(1 - 2/r)$ "which e-folds about every $4M$ (0.4 s)", with `plunge_track` integrated against coordinate time. Because $1 - 2/r \propto r - 2M$, that brightness e-folds every $2M$ of *Schwarzschild* time, not $4M$, and every $4M$ only if the plunge clock is the retarded time $u$. I measured both slopes by integration ($-0.4999$ and $-0.2500$ over $t \in [50, 58]$). The implementer should pick one clock on purpose: `t` gives 0.2 s at $10M$ per second, `u` gives 0.4 s. This is not a bug in the physics but an inconsistency in the specification, and I list it under open questions below too.
+**The plunge, and which clock.** A body leaving the ISCO with slightly too little angular momentum and a small inward kick falls through the horizon in finite proper time, but a distant observer sees it freeze. Close to the horizon, $r - 2M \propto e^{-t/2M}$ in Schwarzschild time $t$ and $\propto e^{-u/4M}$ in the observer's retarded time $u = t - r_*$; the redshift grows as $e^{u/4M}$. The issue specifies a brightness $1.5\,(1 - 2/r)$ "which e-folds about every $4M$ (0.4 s)", with `plunge_track` integrated against coordinate time. Because $1 - 2/r \propto r - 2M$, that brightness e-folds every $2M$ of *Schwarzschild* time, not $4M$, and every $4M$ only if the plunge clock is the retarded time $u$. I measured both slopes by integration ($-0.4999$ and $-0.2500$ over $t \in [50, 58]$). The two clocks give 0.2 s and 0.4 s at $10M$ per second. This is not a bug in the physics but an inconsistency in the specification. According to its description, pull request #134 resolves it in favour of the observer's clock (`PlungeTrack::seen_at`): the displayed light falls by $e$ every $4M$ near the horizon, and because the kick of 0.1 leaves the ISCO slowly the whole plunge takes about 6 s.
 
-**The flux profile has a trap.** The Python prototype's `page_thorne` closed form uses $\sqrt3/3$ in front of the logarithm. Integrating the Page-Thorne expression directly gives $\sqrt3/2$ (derivation on the Math page): with $\sqrt3/2$ the ratio to the numerical integral is constant to five digits and the flux peaks at $r = 9.55M$; with $\sqrt3/3$ it peaks at $8.37M$ and is not proportional to the integral. The issue says to "port its physics and constants"; the port should check this coefficient (my finding from reading and testing the prototype; I have not checked Luminet's printed equation).
+**The flux profile has a trap.** The Python prototype's `page_thorne` closed form uses $\sqrt3/3$ in front of the logarithm. Integrating the Page-Thorne expression directly gives $\sqrt3/2$ (derivation on the Math page): with $\sqrt3/2$ the ratio to the numerical integral is constant to five digits and the flux peaks at $r = 9.55M$; with $\sqrt3/3$ it peaks at $8.37M$ and is not proportional to the integral. The issue says to "port its physics and constants"; the port has to check this coefficient. (This is my finding from reading and testing the prototype; I have not checked Luminet's printed equation.) The description of pull request #134 reports the same finding: its implementation uses $\sqrt3/2$, pinned by a test to the numerical integral to 0.2 %, and its independent reviewer derived the same coefficient.
 
 **The photon ring is drawn, not traced.** The thin ring just outside the shadow is a drawn annulus at $b_c + 0.02$ to $b_c + 0.12$ (at least 1.5 px, Doppler-modulated), not a computed image of the photon sphere; the README is specified to say so. The true photon ring is the infinite sequence of higher-order images, each narrower than the last by roughly $e^{-\pi} = 0.043$.
 
@@ -75,7 +77,7 @@ Inspector notes (specified): `oom_score N | oom_score_adj N`, `rank R of K`, `or
 
 Everything below is the specification of issue #43. None of it exists.
 
-**Modules.** `src/horizon.rs` holds a `#[derive(Default)] Horizon` implementing `views::ViewModule`, with one registry row; `src/horizon/lens.rs` holds the pure physics, with no drawing, in the style of `medium.rs`: the photon table, Page-Thorne flux, $1 + z$, and `plunge_track`. One world unit is $M = 1$. There is no plugin system; the module is compiled in.
+**Modules.** (Per the issue.) `src/horizon.rs` holds a `#[derive(Default)] Horizon` implementing `views::ViewModule`, with one registry row; `src/horizon/lens.rs` holds the pure physics, with no drawing, in the style of `medium.rs`: the photon table, Page-Thorne flux, $1 + z$, and `plunge_track`. One world unit is $M = 1$. There is no plugin system; the module is compiled in.
 
 **Dependencies.** Status at commit `192299b`:
 
@@ -85,9 +87,9 @@ Everything below is the specification of issue #43. None of it exists.
 | S1 (#22) | CPU/GPU parity check and tolerance | merged |
 | S4 (#25) | opt-in demo exits and respawns (the kill cycle) | merged |
 | S6 (#27) | source demand, wording of missing sources | merged |
-| B4 (#31) | `/proc/vmstat` `oom_kill` and its demo value | open |
-| B5 (#32) | blackbody colour table | open |
-| B6 (#33) | `oom_score`, `oom_score_adj` with demo values | open |
+| B4 (#31) | `/proc/vmstat` `oom_kill` and its demo value | implemented in open PR #134, not merged |
+| B5 (#32) | blackbody colour table | implemented in open PR #134, not merged |
+| B6 (#33) | `oom_score`, `oom_score_adj` with demo values | implemented in open PR #134, not merged |
 
 **Lens table.** RK4 on $u'' = 3u^2 - u$ with $h = 0.002$ and the prototype's grid of $b$; 360 log-spaced radii from 2.0005 to 150, by 721 values of $\psi$. Built in a `OnceLock` on the first draw, not at startup. Tests named by the issue include `lens_table_matches_beloborodov_at_ten_m` (psi from 0.1 to 2.0, within 3 %), `lens_table_matches_a_direct_photon_integration` (0.5 %), `secondary_images_always_lie_outside_the_shadow`, `orbital_angular_velocity_matches_kepler`, `a_plunging_image_dims_monotonically_and_never_reaches_the_horizon` and `the_approaching_side_of_the_disk_is_brighter_and_bluer`.
 
@@ -137,8 +139,7 @@ The figure regenerates from the repository root with `python3 docs/figures/horiz
 
 ## Variations and open questions
 
-* **Which plunge clock?** Decide between Schwarzschild time (e-folding $2M$, 0.2 s) and retarded time (e-folding $4M$, 0.4 s) for the brightness decay, and document it.
-* **Check the Page-Thorne coefficient** before porting (see above), and add a test that integrates the flux numerically.
+* **Which plunge clock?** Schwarzschild time (e-folding $2M$, 0.2 s) or retarded time (e-folding $4M$, 0.4 s). Pull request #134 chose the retarded time; the README should say which, since the two differ by a factor of two.
 * **Kerr.** A spinning hole moves the ISCO from $6M$ (non-rotating) to $M$ (maximal, prograde) and shifts and flattens the shadow; the issue puts it out of scope. A spin parameter taken from, say, the hottest process's CPU would be arbitrary, which is exactly the problem.
 * **A real tidal stretch.** The victim is stretched radially by a stylised streak; the geodesic-deviation tidal stretch $2GM\ell/r^3$ (Math page) could set its length, so larger processes stretch more.
 * **Hawking radiation.** A black hole's temperature falls as $1/M$; a hole that shrinks as it eats (the victim's mass is removed) is a different physical model, and the memory freed by the kill is the natural analogue. Nothing in the specification does this.

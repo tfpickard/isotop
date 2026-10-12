@@ -103,9 +103,9 @@ Nothing else in isotop uses the magnitude scale; other views size by their own s
 * **Measured:** memory (RSS; the physical footprint on macOS) is the only input to a star's brightness; birth and exit times (from consecutive samples of the shared history) drive the flashes.
 * **Derived:** the magnitude, the core and halo sizes, the colour mix toward white.
 * **Decorative:** the *colour* of a star (the process's kind) is not a temperature: there is no spectral information. In the planned HR view a temperature will come from CPU use; here colour carries kind only.
-* **Saturation.** Brightness is compressed twice, by the logarithm and by the display's caps: the visible range is about 1 MiB (core 1.25 px, no halo) to about 1 GiB (halo strength at its cap), 10 magnitudes; below 6 MiB no halo, above 1 GiB almost no change.
+* **Saturation.** Brightness is compressed twice, by the logarithm and by the display's caps: the visible range is about 1 MiB (core 1.25 px, no halo) to about 1 GiB (halo strength at its cap), 7.5 magnitudes or ten doublings; below about 6 MiB there is no halo, above 1 GiB almost nothing changes.
 * **Flashes are age-only.** A nova at 0.3 s is $-4$ magnitudes whatever the process; a supernova needs more than 1 GiB (not 1 GiB exactly). A short-lived process appears and fades inside the 8 s window the view looks back over; a process that exits and whose exit lies outside that window is not shown fading.
-* **Size means flux^0.2, not area.** The core radius grows as the fifth root of flux (a factor 1.58 per 2.5 magnitudes at the bright end), so a thousand-fold memory ratio is a factor of four in radius, not 32.
+* **Size means flux^0.2, not area.** The core radius grows as the fifth root of flux (a factor 1.58 per 2.5 magnitudes at the bright end), so a thousand-fold memory ratio is a factor of four in the scaling part of the radius.
 
 ## Try it
 
