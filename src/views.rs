@@ -1123,6 +1123,44 @@ pub mod testing {
         }
     }
 
+    /// A module view that seats every process on a line and tells the link mode and the highlighted
+    /// processes the stage handed it, in its legend.
+    #[derive(Default)]
+    pub struct Linker {
+        seen: String,
+    }
+
+    impl ViewModule for Linker {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            self.seen = format!(
+                "links {:?} | highlight {:?}",
+                stage.links,
+                stage.highlight.iter().map(|id| id.pid).collect::<Vec<_>>()
+            );
+            Witness::default().draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" linker: {}", self.seen)
+        }
+    }
+
+    /// `linker`, a view that draws its own links.
+    pub static LINKER: &[ViewInfo] = &[ViewInfo {
+        links: LinkRule::DrawnByView,
+        ..ViewInfo::new(
+            "linker",
+            "LINKER",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Linker::default())),
+        )
+    }];
+
     /// `witness`, whose keys the help line shows, then `probe`.
     pub static WITNESSED: &[ViewInfo] = &[
         ViewInfo {

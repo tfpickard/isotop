@@ -1039,6 +1039,13 @@ pub(crate) struct Stage<'a> {
     /// The root of the focused subtree, if one is focused: the process slice holds only that
     /// subtree, so a view leaves out what it draws besides the processes (exited ones).
     pub focus: Option<Identity>,
+    /// Which links the `c` key shows. A view whose row says `LinkRule::DrawnByView` draws its
+    /// own links and follows it: all of them, only those of the `highlight`, or none.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    pub links: Links,
+    /// The processes whose links stand out: the selected, the hovered and the toured.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    pub highlight: &'a [Identity],
     /// `--limit`, the most processes a frame draws. The slice is already cut to it; a view that
     /// draws more than the slice (exited processes) keeps within it.
     pub limit: usize,
@@ -1699,6 +1706,8 @@ impl Scene {
                     thing,
                     toured,
                     focus,
+                    links: self.links,
+                    highlight: &self.highlight,
                     limit,
                     time,
                     dt,
@@ -4337,6 +4346,39 @@ mod tests {
         assert_eq!(
             scene.legend(quiet, &snapshot),
             " probe: 1 draws | 1 records | keys []"
+        );
+    }
+
+    #[test]
+    fn a_view_that_draws_its_own_links_learns_the_link_mode_and_the_highlighted() {
+        let snapshot = demo(12.0, 16);
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::LINKER);
+        let view = View::at(0);
+        let legend = |scene: &mut Scene, links: Links, highlight: Vec<Identity>| {
+            scene.links = links;
+            scene.highlight = highlight;
+            scene.render(&RenderInput::small(&snapshot, view, &camera, 1.0));
+            scene.legend(view, &snapshot)
+        };
+        assert_eq!(
+            legend(&mut scene, Links::All, Vec::new()),
+            " linker: links All | highlight []"
+        );
+        let pids: Vec<u32> = snapshot
+            .processes
+            .iter()
+            .take(2)
+            .map(|p| p.id.pid)
+            .collect();
+        let hot = snapshot.processes.iter().take(2).map(|p| p.id).collect();
+        assert_eq!(
+            legend(&mut scene, Links::Focused, hot),
+            format!(" linker: links Focused | highlight {pids:?}")
+        );
+        assert_eq!(
+            legend(&mut scene, Links::Off, Vec::new()),
+            " linker: links Off | highlight []"
         );
     }
 
