@@ -69,7 +69,7 @@ def energy(d):
 
 
 def main():
-    svg = Svg(960, 470, "Glow weight profile",
+    svg = Svg(960, 520, "Glow weight profile",
               "The quadratic falloff weight of a glow, the share of its blended weight inside a radius, "
               "and the literal pixels of a glow of radius 20.")
     svg.text(24, 30, "a glow is a quadratic falloff blended over the frame", 17, FG, weight="600")
@@ -100,7 +100,7 @@ def main():
     svg.polyline(cumulative, ORANGE, 2.5)
     half = 1 - 1 / math.sqrt(2)
     svg.circle(X(half), Y(0.5), 4, BLUE)
-    svg.text(X(half) + 8, Y(0.5) - 8, "w = 1/2 at d = 0.293", 11, BLUE)
+    svg.text(x0, y1 + 62, "blue dot: w = 1/2 at d = 1 - 1/sqrt(2) = 0.293", 11, BLUE)
     lo, hi = 0.0, 1.0
     for _ in range(60):
         mid = (lo + hi) / 2
@@ -109,10 +109,10 @@ def main():
         else:
             hi = mid
     svg.circle(X(lo), Y(0.5), 4, ORANGE)
-    svg.text(X(lo) + 8, Y(0.5) + 18, f"half the weight lies inside d = {lo:.3f}", 11, ORANGE)
+    svg.text(x0, y1 + 78, f"orange dot: half the blended weight lies inside d = {lo:.3f}", 11, ORANGE)
     svg.text(X(0.02) + 4, Y(0.98) - 2, "w(d) = (1 - d)^2", 12, BLUE)
     svg.text(x1 - 6, Y(0.90), "E(d), share of the total", 11.5, ORANGE, "end")
-    svg.text(x1 - 6, Y(0.52), "dashed: a linear cone, for comparison", 10.5, DIM, "end")
+    svg.text(x1 - 6, Y(0.62), "dashed: a linear cone, for comparison", 10.5, DIM, "end")
     svg.text(x0 - 56, (y0 + y1) / 2, "weight, and cumulative share", 12, FG, "middle", rotate=-90)
 
     # ---------------- right: literal pixels ----------------
@@ -142,7 +142,7 @@ def main():
         "between (2R + 1)^2 and (2R + 2)^2 visits, so doubling a glow's radius quadruples its CPU cost (VIEW_CONVENTIONS: cap glow radii).",
     ]
     for i, line in enumerate(notes):
-        svg.text(24, 430 + 16 * i, line, 11.5, DIM)
+        svg.text(24, 482 + 16 * i, line, 11.5, DIM)
 
     out = pathlib.Path("docs/media/figures/theory-glow-falloff.svg")
     out.parent.mkdir(parents=True, exist_ok=True)
