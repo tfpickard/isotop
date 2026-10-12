@@ -91,8 +91,7 @@ which process, before `ac_tgid` existed, comes from the connector's thread forks
 
 ### Why `CAP_NET_ADMIN`, and why isotop never escalates
 
-Netlink families can mark an operation as administrative; the kernel then requires `CAP_NET_ADMIN` in the *initial*
-user namespace before it will honour it. Taskstats' registration is such an operation, always. The proc connector
+Netlink families can mark an operation as administrative; the kernel then requires `CAP_NET_ADMIN` before it will honour it. Taskstats' registration is such an operation, always. The proc connector
 required it too; isotop's source and README state that it needs no privilege from Linux 6.6 on (not re-verified
 against kernel history for this page). Both only work for a process in the **initial PID and user namespaces**
 (`initial_namespaces` checks the `/proc/self/ns/pid` and `user` links against the fixed inode numbers
@@ -105,8 +104,8 @@ isotop will use it, but it will not ask, `sudo` itself, or retry.
 
 ### The subscription handshake
 
-`open_connector` binds the socket to the multicast group, sends `PROC_CN_MCAST_LISTEN` with a nonce in the `seq`
-slot and waits (up to 256 messages, with a 200 ms receive timeout) for the kernel's acknowledgement, a
+`open_connector` binds the socket to the multicast group, sends `PROC_CN_MCAST_LISTEN` with a nonce (its own pid) in the
+`ack` slot and waits (up to 256 messages, with a 200 ms receive timeout) for the kernel's acknowledgement, a
 `PROC_EVENT_NONE` message whose `ack` field is nonce+1 and whose first data word is 0 (success). Outside the initial
 namespaces the request is ignored and no acknowledgement ever comes, so the socket is dropped. The receive buffer is
 requested at 4 MiB (`SO_RCVBUF`; the kernel caps it at `rmem_max`), because a burst of forks outruns the default.
@@ -198,8 +197,8 @@ stays in `/proc` and in every sample as state `Z`. The connector reports its exi
 parent reaps it more than 10 s later, the entry in `reported` has been pruned, the process is in the last sample and
 not this one and is not claimed, and diffing emits a **second** exit for it, `Cause::Unknown`, source `Diff`, at the
 reaping sample. In the probe an exit reported at 1.5 s for a process still listed at 2 s to 19 s produced
-`Exit { cause: Unknown, source: Diff }` at 20 s, while the same reaping within 8 s produced nothing. The same
-window opens at `--sample-ms 10000`. Consumers that need exactly-once guard it themselves: the Necropolis keeps its own
+`Exit { cause: Unknown, source: Diff }` at 20 s, while the same reaping within 8 s produced nothing. By the same reasoning a sampling interval over ten seconds (the maximum `--sample-ms` is 10000, and frame rounding adds a little) can open the
+same window; that case was not probed. Consumers that need exactly-once guard it themselves: the Necropolis keeps its own
 `mourned` set and ignores a repeated exit. A reported-set that outlives the longest zombie, or diffing that skips
 processes that were already `Z`, would close it; it is a boundary of the current design, not a measurement of how
 often it occurs.
