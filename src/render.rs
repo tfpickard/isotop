@@ -1041,10 +1041,8 @@ pub(crate) struct Stage<'a> {
     pub focus: Option<Identity>,
     /// Which links the `c` key shows. A view whose row says `LinkRule::DrawnByView` draws its
     /// own links and follows it: all of them, only those of the `highlight`, or none.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub links: Links,
     /// The processes whose links stand out: the selected, the hovered and the toured.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub highlight: &'a [Identity],
     /// `--limit`, the most processes a frame draws. The slice is already cut to it; a view that
     /// draws more than the slice (exited processes) keeps within it.
@@ -1076,7 +1074,6 @@ pub(crate) struct Stage<'a> {
     /// generated Braille Patterns (U+2800 to U+28FF) and spaces: the terminal draws them through
     /// `terminal::clean_sparkline`, which turns everything else into `?`, so text from the system
     /// never belongs here.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub sparklines: &'a mut HashMap<Identity, Vec<String>>,
     /// Processes the tour should visit; a hub is passed over, since it has no callout.
     pub tour: &'a mut Vec<TourTarget>,

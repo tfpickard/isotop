@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 51 | 48,183 | 1,029 | 2,745 |
+| Rust | 53 | 51,212 | 1,062 | 2,919 |
 | Python | 28 | 12,266 | 631 | 1,412 |
 | WebGPU Shader Language | 1 | 198 | 13 | 32 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,367 | 493 |
-| Plain Text | 7 | 0 | 299 | 0 |
-| **Total** | **97** | **60,713** | **4,340** | **4,693** |
+| Markdown | 6 | 0 | 2,397 | 501 |
+| Plain Text | 7 | 0 | 300 | 0 |
+| **Total** | **99** | **63,742** | **4,404** | **4,875** |
 
 ## Rust by module
 
@@ -22,28 +22,30 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/render.rs` | 3,282 | 1,298 |
+| `src/render.rs` | 3,295 | 1,347 |
 | `src/model.rs` | 3,000 | 3,752 |
 | `src/coop.rs` | 2,706 | 1,363 |
-| `src/necropolis.rs` | 1,995 | 609 |
-| `src/main.rs` | 1,914 | 2,660 |
+| `src/necropolis.rs` | 1,995 | 610 |
+| `src/main.rs` | 1,971 | 2,774 |
+| `src/cortex.rs` | 1,220 | 540 |
 | `src/platform/macos/mod.rs` | 1,197 | 609 |
 | `src/tesseract.rs` | 1,053 | 561 |
 | `src/ptolemy.rs` | 983 | 421 |
 | `src/gpu.rs` | 834 | 82 |
-| `src/simulation.rs` | 675 | 762 |
-| `src/views.rs` | 644 | 540 |
+| `src/views.rs` | 674 | 614 |
+| `src/simulation.rs` | 671 | 762 |
 | `src/platform/linux/mod.rs` | 609 | 370 |
 | `src/platform/macos/ffi.rs` | 594 | 12 |
 | `src/platform/macos/logic.rs` | 587 | 807 |
 | `src/platform/linux/events.rs` | 581 | 317 |
+| `src/neurons.rs` | 569 | 333 |
 | `src/reef.rs` | 550 | 94 |
 | `src/platform/mod.rs` | 499 | 94 |
 | `src/model/kernel.rs` | 492 | 474 |
 | `src/cores.rs` | 488 | 243 |
 | `src/globe.rs` | 487 | 461 |
+| `src/terminal.rs` | 466 | 151 |
 | `src/cells.rs` | 457 | 339 |
-| `src/terminal.rs` | 449 | 134 |
 | `src/platform/linux/net.rs` | 320 | 278 |
 | `src/blackbody.rs` | 300 | 146 |
 | `src/matrix.rs` | 299 | 219 |
@@ -73,7 +75,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **28,626** | **19,570** |
+| **Total** | **30,528** | **20,698** |
 
 ## Largest files
 
@@ -82,15 +84,15 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | File | Lines | > 1,200 |
 |:--|--:|:--|
 | `src/model.rs` | 7,945 | over limit |
-| `src/render.rs` | 5,150 | over limit |
-| `src/main.rs` | 5,046 | over limit |
+| `src/main.rs` | 5,229 | over limit |
+| `src/render.rs` | 5,225 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
-| `src/necropolis.rs` | 2,905 | over limit |
+| `src/necropolis.rs` | 2,906 | over limit |
 | `src/platform/macos/mod.rs` | 2,221 | over limit |
+| `src/cortex.rs` | 1,964 | over limit |
 | `src/tesseract.rs` | 1,849 | over limit |
-| `src/simulation.rs` | 1,774 | over limit |
+| `src/simulation.rs` | 1,770 | over limit |
 | `src/platform/macos/logic.rs` | 1,684 | over limit |
-| `src/ptolemy.rs` | 1,589 | over limit |
 
 ## Debt counters
 
@@ -102,7 +104,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 | `#[expect(clippy::too_many_arguments` | 7 |
 | `unsafe` blocks | 115 |
 | `unwrap_or(0` sites | 27 |
-| `unwrap_or(0.0` sites | 15 |
+| `unwrap_or(0.0` sites | 16 |
 | `known_unstable` harness entries | 9 |
 
 ## Health counters
@@ -111,10 +113,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 651 |
-| Views in the registry | 14 |
-| Views with a README mapping table | 4 of 14 |
+| `#[test]` functions | 690 |
+| Views in the registry | 15 |
+| Views with a README mapping table | 5 of 15 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`.

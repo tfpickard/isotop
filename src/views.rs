@@ -12,8 +12,8 @@ use std::fmt;
 
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
-use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
-use crate::{cells, cores, globe, necropolis, ptolemy, tesseract};
+use crate::render::{Backdrop, Camera, Card, ISOMETRIC, Point, Scene, Stage, Thing};
+use crate::{cells, cores, cortex, globe, necropolis, ptolemy, tesseract};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -357,7 +357,6 @@ pub enum Phase {
     /// sample of that moment becomes the whole history, and the frames `step` seconds apart up
     /// to the next sample are drawn, not rasterized. It replays demo samples, so it belongs
     /// under `When::DemoHeadless`; samples before time 0 are skipped.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     Play { seconds: u32, step: f32 },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
@@ -797,6 +796,36 @@ pub static REGISTRY: &[ViewInfo] = &[
             "NECROPOLIS",
             Backdrop::Dusk,
             Hooks::Module(|| Box::new(necropolis::Necropolis::default())),
+        )
+    },
+    ViewInfo {
+        // Axons are the view's own: they follow the `c` key and carry the spikes.
+        links: LinkRule::DrawnByView,
+        link_strokes: true,
+        // The slice is a drawing, not a scene to haze.
+        haze: false,
+        // The slice faces the default camera.
+        pitch: Some(ISOMETRIC),
+        face: Some(|_, _| (0.0, ISOMETRIC)),
+        sources: Sources::of(&[Source::Pipes]),
+        // Twelve seconds of the demo as a live run drew it, so the raster is full at 12 s and the
+        // simulation has settled before the ten seconds it shows begin.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 12,
+                step: 0.1,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            channels: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new(
+            "cortex",
+            "CORTEX",
+            Backdrop::Void,
+            Hooks::Module(|| Box::new(cortex::Cortex::default())),
         )
     },
 ];
@@ -1601,7 +1630,7 @@ mod tests {
         );
         assert_eq!(
             with(|hooks| matches!(hooks, Hooks::Module(_))),
-            ["ptolemy", "tesseract", "necropolis"]
+            ["ptolemy", "tesseract", "necropolis", "cortex"]
         );
     }
 }

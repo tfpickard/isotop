@@ -2,6 +2,7 @@ mod blackbody;
 mod cells;
 mod coop;
 mod cores;
+mod cortex;
 mod geo;
 mod geometry;
 mod globe;
@@ -16,6 +17,7 @@ mod matrix;
 mod medium;
 mod model;
 mod necropolis;
+mod neurons;
 mod palette;
 mod picker;
 mod places;
@@ -3707,6 +3709,50 @@ mod tests {
     }
 
     #[test]
+    fn the_cortex_inspector_lists_the_neuron_and_draws_its_trace_in_braille() {
+        let mut app = App::new(view("cortex"), model::demo(12.0, 64), all_available());
+        let layout = Layout {
+            columns: 120,
+            rows: 40,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        app.selected = Some(app.snapshot().processes[3].id);
+        for step in 0..40 {
+            app.animation = 1.0 + step as f32 * 0.1;
+            app.render(320, 180, 512);
+        }
+        let frame = app.render(320, 180, 512);
+        let popup = app
+            .popup(&frame, &layout)
+            .expect("the selection has a popup");
+        assert!(
+            popup.lines.iter().any(|line| line.contains(" a b c d = ")),
+            "{:?}",
+            popup.lines
+        );
+        assert_eq!(popup.braille.len(), 2, "two lines of trace");
+        for &index in &popup.braille {
+            let line = &popup.lines[index];
+            assert_eq!(line.chars().count(), 40);
+            assert!(
+                line.chars()
+                    .all(|c| c == ' ' || ('\u{2800}'..='\u{28ff}').contains(&c))
+            );
+        }
+        assert!(popup.width >= 44, "forty cells fit: {}", popup.width);
+        let legend = app.scene.legend(app.view, app.snapshot());
+        assert!(legend.starts_with(" chi "), "{legend}");
+        let mut frame = frame;
+        let (labels, _) = app.overlay(&mut frame, &layout, 4.0);
+        let words: Vec<&str> = labels.iter().map(|label| label.text.as_str()).collect();
+        for layer in ["II/III", "IV", "V", "VI"] {
+            assert!(words.contains(&layer), "{layer} is labelled: {words:?}");
+        }
+    }
+
+    #[test]
     fn module_views_learn_the_tour_target_focus_and_limit_and_add_callout_lines() {
         let rows = views::testing::WITNESSED;
         let snapshot = model::demo(12.0, 16);
@@ -4448,7 +4494,7 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/14");
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/15");
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -4687,7 +4733,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
+                .any(|line| line.starts_with("> ") && line.contains("cortex"))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -4702,7 +4748,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
+                .any(|line| line.starts_with("> ") && line.contains("cortex"))
         );
     }
 

@@ -791,10 +791,6 @@ impl Rng {
     /// [`unit`](Self::unit) draws: `sqrt(-2 ln u1) * cos(2 pi u2)`. `u1` is `1 - unit()`, which
     /// lies in (0, 1], so the logarithm never sees zero. The second value of the pair is
     /// discarded, which keeps the generator a single `state` word.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no caller until the first view that uses it")
-    )]
     pub fn normal(&mut self) -> f32 {
         let radius = (-2.0 * (1.0 - self.unit()).ln()).sqrt();
         radius * (std::f32::consts::TAU * self.unit()).cos()

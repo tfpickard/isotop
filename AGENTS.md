@@ -87,6 +87,8 @@ The README covers usage. This file covers how to work on the code.
 | `ptolemy.rs` | The Ptolemy module view: isotop as Earth, the seven most varied processes as planets on deferents carrying `simulation::dft` epicycle chains that replay their last minute, trails tinted where retrograde, and every other process a fixed star (`stellar`) with novae and fades from `History::changes` |
 | `tesseract.rs` | The Tesseract module view: the `Worldlines` recorder (cumulative CPU time at most every 0.25 s for 180 s, recorded in every view) and its seat bands, the 4D rotation, the Lorentz boost and the display compression, then the Schlegel-projected worldlines, heads, fork vertices and I/O marks |
 | `necropolis.rs` | The Necropolis module view: deaths from `Snapshot::life` buried by `record` in every view (rows by UTC minute, families together, mass graves, OOM claims, mausoleums for stopped units, unmarked markers, ghosts on pid reuse, the 600-grave cap), stones built once per grave, and the fogged cemetery, zombies in pits and the real moon drawn from them; `moon_age`, `moon_lit`, `lifetime_text` and `Death` |
+| `neurons.rs` | The simulation behind Cortex, pure: Izhikevich neurons stepped by 0.5 ms ticks (`Firing`, `advance`, `calibration` and `current` from CPU), a `Network` of neurons, synapses and one event queue of spikes in flight, Golomb's synchrony from exponential averages (`Network::synchrony`), and the `sparkline` encoder for the braille membrane trace |
+| `cortex.rs` | The Cortex module view: a neuron per process in a layered slice (seats by kind, widening in 1.25x steps), dendrites per thread, axons from `Snapshot::links` and `pipes` with their delays, the pulses in flight, the flashing somas, the dust of exits, the inspector lines and braille sparkline, and the raster panel drawn in screen space at the bottom of the frame; `Slice`, `Body`, `Axon`, `weight_of_rate` and `raster_bins` |
 | `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, the `FixedStep` clock, hashes, and the `growth`, `sprout` and `smoothing` easing |
 | `status.rs` | The legend wording for optional sources, so every view says it alike: `missing_note` (` \| no <source>: <consequence>`) and `sources_note` (` \| sources: a, b`) |
@@ -136,7 +138,9 @@ a state struct and implements `views::ViewModule`:
 `inspector_line` and `card` (the inspector card of a `Thing` it drew, built on demand). A view
 reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage`
 outputs. `Stage` carries in the frame, camera, selection (and `thing`, the selected or hovered
-thing), the process the tour visits (`toured`), the focused subtree's root, `--limit`, time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
+thing), the process the tour visits (`toured`), the focused subtree's root, `--limit`, the `c`
+link mode and the processes whose links stand out (`links`, `highlight`, for a row whose links
+rule is `DrawnByView`), time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
 history (`history.rs`), which `Scene` fills on every sample whichever view is shown and a view
 reads from the shown snapshot's `elapsed` (`History::window`, `History::series`); what the
 platform could not measure is `snapshot.missing`, which `Stage` does not
@@ -146,7 +150,9 @@ last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulati
 with a fixed-step clock fed from `stage.time`; the older views keep their own clamps. A view
 writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
-`stage.places`, `stage.notes` (popup lines after the sockets), `stage.tour` (`TourTarget { id,
+`stage.places`, `stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
+braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
+`stage.tour` (`TourTarget { id,
 position, weight }`, which the tour visits heaviest first) `stage.popup` (popup lines right
 after the process's own figures) and `stage.callout` (lines for the tour's callout of a process), and returns how many processes it showed; the rest count as
 collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
