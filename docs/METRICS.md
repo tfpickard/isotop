@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 43 | 41,799 | 859 | 2,342 |
+| Rust | 44 | 42,237 | 866 | 2,357 |
 | Python | 28 | 12,179 | 619 | 1,398 |
 | WebGPU Shader Language | 1 | 198 | 13 | 32 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,328 | 492 |
+| Markdown | 6 | 0 | 2,330 | 492 |
 | Plain Text | 1 | 0 | 15 | 0 |
-| **Total** | **83** | **54,242** | **3,835** | **4,275** |
+| **Total** | **84** | **54,680** | **3,844** | **4,290** |
 
 ## Rust by module
 
@@ -24,15 +24,15 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 |:--|--:|--:|
 | `src/render.rs` | 3,282 | 1,298 |
 | `src/coop.rs` | 2,706 | 1,363 |
-| `src/model.rs` | 2,422 | 2,742 |
+| `src/model.rs` | 2,430 | 2,736 |
 | `src/necropolis.rs` | 1,995 | 609 |
-| `src/main.rs` | 1,815 | 2,398 |
-| `src/tesseract.rs` | 1,053 | 562 |
+| `src/main.rs` | 1,816 | 2,397 |
+| `src/tesseract.rs` | 1,053 | 561 |
 | `src/ptolemy.rs` | 983 | 421 |
 | `src/platform/macos/mod.rs` | 919 | 365 |
 | `src/gpu.rs` | 834 | 82 |
 | `src/simulation.rs` | 672 | 752 |
-| `src/views.rs` | 652 | 541 |
+| `src/views.rs` | 644 | 540 |
 | `src/platform/linux/events.rs` | 581 | 317 |
 | `src/platform/linux/mod.rs` | 576 | 370 |
 | `src/reef.rs` | 550 | 94 |
@@ -43,6 +43,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/cells.rs` | 457 | 339 |
 | `src/platform/mod.rs` | 425 | 94 |
 | `src/terminal.rs` | 425 | 79 |
+| `src/blackbody.rs` | 300 | 146 |
 | `src/matrix.rs` | 299 | 219 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
 | `src/places.rs` | 270 | 0 |
@@ -65,7 +66,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/geometry.rs` | 50 | 15 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **25,753** | **16,057** |
+| **Total** | **26,054** | **16,194** |
 
 ## Largest files
 
@@ -73,16 +74,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 6,046 | over limit |
+| `src/model.rs` | 6,052 | over limit |
 | `src/render.rs` | 5,150 | over limit |
 | `src/main.rs` | 4,631 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
 | `src/necropolis.rs` | 2,905 | over limit |
-| `src/tesseract.rs` | 1,850 | over limit |
+| `src/tesseract.rs` | 1,849 | over limit |
 | `src/simulation.rs` | 1,757 | over limit |
 | `src/ptolemy.rs` | 1,589 | over limit |
 | `src/platform/macos/mod.rs` | 1,584 | over limit |
-| `src/views.rs` | 1,510 | over limit |
+| `src/views.rs` | 1,501 | over limit |
 
 ## Debt counters
 
@@ -103,7 +104,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 545 |
+| `#[test]` functions | 551 |
 | Views in the registry | 14 |
 | Views with a README mapping table | 4 of 14 |
 | Direct crate dependencies | 10 |
