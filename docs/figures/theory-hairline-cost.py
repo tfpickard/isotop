@@ -124,20 +124,25 @@ def main():
     svg.polyline(cut_diag, ORANGE, 2.4)
     svg.polyline(cut_axis, TEAL, 2.0)
     svg.polyline(area, DIM, 1.4, dash="5 4")
-    svg.text(X(30.0), Y(5.0e4), "one quad, 45 degrees:", 11.5, RED)
-    svg.text(X(30.0), Y(5.0e4) + 14, "grows as L squared", 11.5, RED)
-    svg.text(X(300.0), Y(300.0 * WIDTH * 9), "cut into 8 px pieces, 45 degrees", 11.5, ORANGE)
-    svg.text(X(300.0), Y(300.0 * WIDTH * 9) + 14, "grows as L", 11.5, ORANGE)
-    svg.text(X(1000.0), Y(1000.0 * WIDTH * 0.45), "axis-aligned pieces", 11.5, TEAL, "middle")
-    svg.text(X(18.0), Y(18.0 * WIDTH) + 24, "dashed: the area actually covered, L * w", 11, DIM)
+    for i, (colour, label, dash) in enumerate([
+        (RED, "one quad at 45 degrees: grows as L squared", None),
+        (ORANGE, "pieces of at most 8 px at 45 degrees: grows as L", None),
+        (TEAL, "pieces of at most 8 px, axis-aligned", None),
+        (DIM, "the area actually covered, L * w", "5 4"),
+    ]):
+        yy = y0 + 22 + 18 * i
+        svg.line(x0 + 14, yy - 4, x0 + 44, yy - 4, colour, 2.4, dash=dash)
+        svg.text(x0 + 52, yy, label, 11.5, colour if colour != DIM else DIM)
 
     rows = [(50, 45), (100, 45), (400, 45), (1000, 45)]
     svg.text(640, 100, "scanned pixels at 45 degrees", 12.5, FG, weight="600")
-    svg.text(640, 120, "length    one quad    in pieces    ratio", 11.5, DIM)
+    for x, label in [(690, "length"), (775, "one quad"), (860, "in pieces"), (930, "ratio")]:
+        svg.text(x, 120, label, 11.5, DIM, "end")
     for i, (L, a) in enumerate(rows):
         whole = scanned(float(L), float(a), 1)
         cut = scanned(float(L), float(a), math.ceil(L / HAIRLINE_PIECE))
-        svg.text(640, 142 + 20 * i, f"{L:>6d}  {whole:>10,d}  {cut:>10,d}  {whole / cut:>6.1f}x", 12, FG)
+        for x, label in [(690, f"{L}"), (775, f"{whole:,d}"), (860, f"{cut:,d}"), (930, f"{whole / cut:.1f}x")]:
+            svg.text(x, 142 + 20 * i, label, 12, FG, "end")
     svg.text(640, 242, "A piece of 8 px at 45 degrees scans", 11.5, DIM)
     svg.text(640, 258, f"{scanned(8.0, 45.0, 1)} pixels for about {8.0 * WIDTH:.0f} covered:", 11.5, DIM)
     svg.text(640, 274, "a constant factor, paid per piece.", 11.5, DIM)
