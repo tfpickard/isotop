@@ -121,7 +121,7 @@ impl Camera {
     }
 
     /// Ground-plane offset that appears at a screen offset of (dx, dy) frame pixels.
-    fn ground(&self, dx: f32, dy: f32) -> [f32; 2] {
+    pub(crate) fn ground(&self, dx: f32, dy: f32) -> [f32; 2] {
         let across = dx / (SCALE * self.zoom);
         let along = dy / (SCALE * self.zoom * self.pitch.sin());
         let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
@@ -819,6 +819,12 @@ impl Frame {
     ) {
         let a = self.project(camera, a);
         let b = self.project(camera, b);
+        self.hairline_between(a, b, color, width);
+    }
+
+    /// `hairline` between two points already in frame space (x, y, depth), for a view that draws
+    /// in screen space, such as a lensed image, and sets the depth of its layers itself.
+    pub(crate) fn hairline_between(&mut self, a: Point, b: Point, color: Color, width: f32) {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let length = dx.hypot(dy);
         if !(1e-3..=12000.0).contains(&length) {
@@ -4704,6 +4710,35 @@ mod tests {
         frame.pixel(5, 5, 2.0, [30, 20, 10], 0);
         assert_eq!(frame.pick_near(5.5, 5.5, 0.5), Some(b));
         assert_eq!(frame.pick_near(20.5, 5.5, 0.5), None);
+    }
+
+    #[test]
+    fn a_screen_space_hairline_draws_the_same_ribbon_as_a_world_one() {
+        let camera = Camera::default();
+        let (a, b) = ([0.0, 0.0, 0.0], [4.0, 1.0, 0.0]);
+        let mut world = blank(100, 100);
+        world.hairline(&camera, a, b, [200, 100, 50], 2.0);
+        let mut screen = blank(100, 100);
+        let (a, b) = (screen.project(&camera, a), screen.project(&camera, b));
+        screen.hairline_between(a, b, [200, 100, 50], 2.0);
+        assert!(!world.items.is_empty());
+        assert_eq!(format!("{:?}", world.items), format!("{:?}", screen.items));
+    }
+
+    #[test]
+    fn the_ground_offset_of_a_screen_offset_projects_back_to_it() {
+        let camera = Camera {
+            rotation: 0.7,
+            pitch: 0.9,
+            zoom: 3.0,
+            ..Camera::default()
+        };
+        let frame = blank(200, 120);
+        let origin = frame.project(&camera, [camera.center[0], camera.center[1], 0.0]);
+        let [x, y] = camera.ground(40.0, -25.0);
+        let back = frame.project(&camera, [camera.center[0] + x, camera.center[1] + y, 0.0]);
+        assert!((back[0] - origin[0] - 40.0).abs() < 1e-3);
+        assert!((back[1] - origin[1] + 25.0).abs() < 1e-3);
     }
 
     /// A sphere item with `pick` at pixel (x, y), at depth 0.
