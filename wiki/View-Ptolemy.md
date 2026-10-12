@@ -128,7 +128,7 @@ kind colours (teal, slate, purple, gold). Faint small circles hang about each pl
 ./target/release/isotop --view ptolemy            # live; v opens the picker, Tab cycles, click a planet for its sphere and epicycle count
 ```
 
-Same-seed renders are repeatable: the demo is deterministic in `--time`, and the trail is a function of the clock. Compare `--time 300` and `--time 301`: the red stretches shift while the chains' shapes barely change, as the sliding window predicts.
+Renders are repeatable: the demo is deterministic in `--time`, and the trail is a function of the clock, not a recording.
 
 ## Where in the code
 
