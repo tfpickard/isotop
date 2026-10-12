@@ -193,7 +193,7 @@ def main():
     svg.text(96, 442, "distance tests per query", 11, INK)
     svg.line(280, 438, 310, 438, ORANGE, 2, "7 4")
     svg.text(316, 442, "cell lookups per query", 11, INK)
-    svg.text(500, 442, "counts of SpatialHash / SpatialHash3 on seeded points; 3· per point, not wall time", 11, MUTED)
+    svg.text(500, 442, "counts of SpatialHash / SpatialHash3 on seeded points; operation counts, not wall time", 11, MUTED)
     svg.save("docs/media/figures/hashing-op-counts.svg")
 
 
