@@ -101,6 +101,15 @@ Everything below is the specification of issue #43. None of it exists.
 
 **Demo and warm-up.** With S4 options on the row, the demo's kill cycle has a period of 30 s: the highest-index non-kernel process at index 134 or below gets score 950, exits at phase 20 s (when the demo `oom_kill` counter increments), and respawns with a new start at 26 s. The headless warm-up (80 frames) is on the registry row. Parity frames: `--time 12` and `--time 20.5` (mid-plunge).
 
+**Differences reported by pull request #134** (from its description; not checked against the code):
+
+* `Stage.own_exits` is not added: the registry row's existing `flash: false` already switches off the generic exit ring.
+* The legend uses `status::missing_note` (` | no oom kills: exits not classified`) instead of the issue's literal `no oom_kill counter`.
+* The disk mesh coarsens from 4 px to about 6 px facets at 1920 px wide, to stay under the 120,000-triangle cap (about 101,000 triangles), and re-lenses in about 10 ms when inclination or zoom changes.
+* A kill that the background thread reports late (up to about 2 s plus a sample interval after the process vanished) is still classified: the claim window adds the background period and one sample interval, and the plunge starts when the kill is known.
+* The demo kill cycle comes from `DemoOptions::oom_cycle`, a post-pass on the demo snapshot.
+* Reported CPU cost at 1920 x 1080: 15.8 ms a frame (63 fps) with 192 processes and 17.5 ms (57 fps) with `--processes 1000`; CPU/GPU parity at `--time 12`, mean 0.0126 and 0.0303 % of pixels more than 2 levels off (Apple GPU).
+
 **Degradation.**
 
 * Linux: full. A process whose score is unreadable is excluded and the legend shows `N unranked`. With no kill counter at all the legend reads `no oom_kill counter: exits not classified`.

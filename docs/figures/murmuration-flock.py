@@ -53,7 +53,7 @@ def main():
             falcon = flock.falcon[0]
             hit = [math.dist(flock.pos[i], falcon) for i in range(flock.n) if flock.agitation[i] > 0.35]
             wave.append((step - 260, len(hit), max(hit, default=0.0)))
-    svg = kit.Svg(920, 640, "A murmuration port: connectivity, islands and the falcon's wave",
+    svg = kit.Svg(920, 664, "A murmuration port: connectivity, islands and the falcon's wave",
                   "Side view, connectivity and polarisation, k-NN islands and the agitation wave "
                   "of a stdlib port of the murmuration prototype at 1875 birds.")
     svg.title_text("Murmuration brief constants, simulated: %d birds, 7 topological neighbours" % flock.n)
@@ -91,13 +91,13 @@ def main():
     cxs.label(7.3, 12.6, "k = 7: 12 islands", size=10, color=kit.MUTED)
     # (d) wave
     dx = kit.Axes(svg, 530, 360, 340, 220, (0, 140), (0, 100), xlabel="steps after release",
-                  title="d  agitation wave (birds above 0.35 in blue, max distance in orange)",
+                  title="d  agitation wave after the falcon arrives",
                   xticks=[0, 35, 70, 105, 140], yticks=[0, 25, 50, 75, 100])
     dx.line([w[0] for w in wave], [100.0 * w[1] / flock.n for w in wave], color=kit.BLUE, width=2.0)
     dx.line([w[0] for w in wave], [w[2] for w in wave], color=kit.ORANGE, width=2.0)
     dx.hline(14, color=kit.MUTED)
     dx.label(2, 14, "flee radius 14", size=10, color=kit.MUTED, dy=-4)
-    svg.text(700, 622, "blue: percent of the flock; orange: world units from the falcon", size=10,
+    svg.text(700, 652, "blue: percent of the flock above 0.35; orange: farthest such bird from the falcon (world units)", size=10,
              anchor="middle", fill=kit.MUTED)
     svg.save("murmuration-flock")
     peak = max(wave, key=lambda w: w[1])

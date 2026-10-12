@@ -158,9 +158,9 @@ Everything in this section is the design of issue #41. The numbers are those of 
 | S2 (#23) | `simulation::FixedStep` | merged |
 | S6 (#27) | source demand, `status::missing_note` and `sources_note` | merged |
 | P3 (#19) | field primitive: one bilinear quad, identical on CPU and GPU, with an owner grid for picking | open |
-| B2 (#29) | Unix socket queues and pipe links beside the loopback TCP rates | open |
+| B2 (#29) | Unix socket queues and pipe links beside the loopback TCP rates | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
 
-The view cannot be started until P3 and B2 are on `main`.
+The view cannot be started until P3 (not yet implemented in any open pull request) and B2 (in #134) are on `main`.
 
 **Simulation.**
 

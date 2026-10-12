@@ -121,8 +121,8 @@ Everything below is the specification of issue #44. None of it exists.
 | B1 (#28) | shared per-process CPU and memory history (`history.rs`) | merged |
 | S4 (#25), S5 (#26), S6 (#27) | demo births and exits, `stellar.rs` helpers, source demand | merged |
 | P3 (#19) | colour field with four-corner placement, used for the dome | open |
-| B2 (#29) | Unix socket and pipe traffic for stick-figure brightness | open |
-| B5 (#32) | blackbody colour table | open |
+| B2 (#29) | Unix socket and pipe traffic for stick-figure brightness | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
+| B5 (#32) | blackbody colour table | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
 
 **Billboard dome.** A sky-plane point maps to world coordinates as `Camera::ground` of its screen offset, so the dome always faces the viewer; pan and zoom apply; rotate and tilt leave it upright. `Camera::view` and `Camera::ground` become `pub(crate)`. `positions`, `places` and `bounds` stay consistent with what is drawn. The dome is one opaque P3 field of about 192 x 108, placed by four world corners: a plum-to-black gradient plus the Milky Way band; rebuilt only when the number of kernel threads changes or a transition runs.
 

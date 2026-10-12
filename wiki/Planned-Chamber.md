@@ -125,7 +125,7 @@ Everything in this section is the specification of issue #42; none of it exists 
 | B3 (#30) | fork, exec and exit events (`Snapshot::life`, `Source::LifeEvents`, `isotop-events` thread) | merged |
 | S1 (#22), S2 (#23), S4 (#25), S6 (#27) | parity check, `FixedStep`, demo births and exits, source demand | merged |
 | P3 (#19) | field primitive for the window backdrop | open |
-| B4 (#31) | `/proc/interrupts`, `/proc/softirqs`, `oom_kill` | open |
+| B4 (#31) | `/proc/interrupts`, `/proc/softirqs`, `oom_kill` | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
 
 **Simulation.** `simulation::FixedStep` at H = 1/120 s on wall-clock time. Each step turns the heading of every track by $-s\,v/r\,H$ ($s = \pm1$ the sign of the charge), advances the position by $v\,H$ along the heading, and relaxes the guiding centre toward the home at rate $K_\mathrm{home} = 0.6/\mathrm{s}$. Because the sign and radius are recomputed from the current CPU, a falling CPU shrinks $r$ and the track spirals in without any scripted path. At most 96 tracks are integrated, chosen by momentum; the legend counts the rest as `N over cap`. A test asserts the same path at 10 and at 60 frames per second.
 
