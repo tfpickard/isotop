@@ -42,6 +42,10 @@ pub struct Track {
     /// Chevron phase per CPU, advanced by its clock speed.
     chevrons: HashMap<u32, f32>,
     last: Option<f32>,
+    /// The start line of the lane each marble of the last frame rode (angle 0, at the radius of
+    /// its core's lane, or of the band it rides by cluster): the harness's anchors.
+    #[cfg(test)]
+    lanes: HashMap<Identity, Point>,
 }
 
 struct Marble {
@@ -103,6 +107,8 @@ impl ViewModule for Track {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.5));
         self.last = Some(time);
+        #[cfg(test)]
+        self.lanes.clear();
         let mut cpus: Vec<Cpu> = snapshot.cpus.clone();
         if cpus.is_empty() {
             cpus = (0..snapshot.cores.max(1) as u32)
@@ -335,6 +341,8 @@ impl ViewModule for Track {
                     marble.hops += 1;
                 }
                 let target = band(marble.level);
+                #[cfg(test)]
+                self.lanes.insert(process.id, ring(0.0, target, 0.0));
                 let (r, lift, progress) = hopping(marble.hop, target, time);
                 if progress.is_some_and(|(_, u)| u >= 1.0) {
                     marble.hop = None;
@@ -423,6 +431,8 @@ impl ViewModule for Track {
                 marble.hops += 1;
             }
             let target = lane_radius(core);
+            #[cfg(test)]
+            self.lanes.insert(process.id, ring(0.0, target, 0.0));
             let (r, lift, progress) = hopping(marble.hop, target, time);
             if progress.is_some_and(|(_, u)| u >= 1.0) {
                 marble.hop = None;
@@ -518,6 +528,15 @@ impl ViewModule for Track {
     #[cfg(test)]
     fn state(&self) -> Option<&dyn std::any::Any> {
         Some(self)
+    }
+
+    /// The lane each marble rides, as its start line: a marble laps its lane at its CPU, so the
+    /// angle it has reached is a measurement that moves by design, and what stays put is the
+    /// lane (or, by cluster, the band) and the hop that changes it. The view harness checks
+    /// these instead of the drawn positions.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+        Some(self.lanes.clone())
     }
 }
 
@@ -822,6 +841,47 @@ mod tests {
         assert!(legend(&unmeasured).contains("| no run queue readings | marble = running"));
     }
 
+    /// Distance of the start line of a marble's lane from the centre of the track.
+    fn lane(scene: &Scene, id: Identity) -> f32 {
+        let [x, y, _] = track(scene).lanes[&id];
+        x.hypot(y)
+    }
+
+    #[test]
+    fn a_marble_stays_on_its_lane_while_its_cpu_laps_it_round() {
+        let mut clustered = by_cluster();
+        three_shares(&mut clustered);
+        for snapshot in [demo(12.0, 96), clustered] {
+            // Every CPU scaled by 0.25 to 4 and every memory by 0.5 to 2: the marbles lap at other
+            // speeds, so they stand at other angles, on the lanes they were on.
+            let changed = crate::harness::rescaled(&snapshot);
+            let (mut steady, mut scaled) = (Scene::new(), Scene::new());
+            for step in 0..10 {
+                let time = 12.0 + 0.25 * step as f32;
+                render(&mut steady, &snapshot, time);
+                render(&mut scaled, &changed, time);
+            }
+            assert!(!track(&steady).lanes.is_empty(), "the demo races marbles");
+            assert_eq!(
+                track(&steady).lanes.len(),
+                steady.positions.len(),
+                "every marble has a lane"
+            );
+            let mut lapped = 0;
+            for (&id, &position) in &steady.positions {
+                let anchor = lane(&steady, id);
+                assert!((radius(&steady, id) - anchor).abs() < 1e-3, "{id:?}");
+                let Some(&other) = scaled.positions.get(&id) else {
+                    continue;
+                };
+                assert_eq!(track(&scaled).lanes[&id], track(&steady).lanes[&id]);
+                assert!((radius(&scaled, id) - anchor).abs() < 1e-3, "{id:?}");
+                lapped += usize::from((other[0] - position[0]).hypot(other[1] - position[1]) > 1.0);
+            }
+            assert!(lapped > 0, "scaling the CPU moves marbles round the lap");
+        }
+    }
+
     #[test]
     fn marbles_hop_lanes_when_the_scheduler_moves_them() {
         let mut snapshot = demo(1.0, 16);
@@ -835,6 +895,7 @@ mod tests {
         let mut scene = Scene::new();
         render(&mut scene, &snapshot, 1.0);
         let resting = scene.positions[&id][2];
+        assert!((lane(&scene, id) - INNER).abs() < 1e-3, "starts on cpu0");
         snapshot.processes[3].core = Some(12);
         render(&mut scene, &snapshot, 1.1);
         render(&mut scene, &snapshot, 1.4);
@@ -846,6 +907,7 @@ mod tests {
             landed[0].hypot(landed[1]) > 20.0,
             "efficiency lanes are outside"
         );
+        assert!(lane(&scene, id) > 20.0, "the lane it keeps is the new one");
         assert_eq!(scene.visible, 1, "idle processes stay off the track");
     }
 }

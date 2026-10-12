@@ -558,14 +558,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#117",
-                reason: "marbles lap at their CPU and no anchor (the lane) is declared",
-            }],
-            ..Contract::DEFAULT
-        },
+        // Marbles lap at their CPU; the lane is what must stay put, and `Track::anchors` says
+        // which one each rides.
         ..ViewInfo::new(
             "cores",
             "CORES",
