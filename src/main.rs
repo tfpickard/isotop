@@ -29,6 +29,7 @@ mod stellar;
 mod strata;
 mod terminal;
 mod tesseract;
+mod threads;
 mod views;
 
 use std::cmp::Reverse;

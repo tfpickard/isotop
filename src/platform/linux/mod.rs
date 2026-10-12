@@ -9,6 +9,7 @@ mod journal;
 mod memory;
 mod net;
 mod nvml;
+mod threads;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -27,6 +28,7 @@ pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};
 pub use memory::{MEMORY_DETAIL, oom_scores, rollup};
 pub use nvml::Nvml as Gpu;
+pub use threads::Threads;
 
 /// What `Process::memory` measures here: the resident set size.
 pub const MEMORY_LABEL: &str = "RSS";
@@ -644,15 +646,46 @@ fn classify(cgroup: &str) -> Kind {
     }
 }
 
-fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCounters)> {
-    const PF_KTHREAD: u64 = 0x0020_0000;
-    // comm can contain both whitespace and closing parentheses; only the last ')' delimits it.
+/// Splits the text of /proc/<pid>/stat, or of /proc/<pid>/task/<tid>/stat, into the command and
+/// the fields after it. The command can contain both whitespace and closing parentheses; only
+/// the last ')' delimits it.
+fn split_stat(text: &str) -> Option<(&str, Vec<&str>)> {
     let open = text.find('(')?;
     let close = text.rfind(')')?;
-    let fields: Vec<&str> = text.get(close + 1..)?.split_whitespace().collect();
+    let name = text.get(open + 1..close)?;
+    Some((name, text.get(close + 1..)?.split_whitespace().collect()))
+}
+
+/// What a stat file says about when and how a task runs, from the same fields for a process
+/// and for a thread of it (proc(5) counts them from the state as field 3).
+struct Timing {
+    state: char,
+    /// utime plus stime, in clock ticks.
+    ticks: u64,
+    /// stime alone.
+    system_ticks: u64,
+    /// starttime, in clock ticks after boot.
+    start: u64,
+}
+
+fn timing(fields: &[&str]) -> Option<Timing> {
+    let number = |index: usize| fields.get(index)?.parse::<u64>().ok();
+    let system_ticks = number(12)?;
+    Some(Timing {
+        state: fields.first()?.chars().next()?,
+        ticks: number(11)?.saturating_add(system_ticks),
+        system_ticks,
+        start: number(19)?,
+    })
+}
+
+fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCounters)> {
+    const PF_KTHREAD: u64 = 0x0020_0000;
+    let (name, fields) = split_stat(text)?;
+    let timing = timing(&fields)?;
     let number = |index: usize| fields.get(index)?.parse::<u64>().ok();
     let signed = |index: usize| fields.get(index)?.parse::<i32>().ok();
-    let name = text.get(open + 1..close)?.to_owned();
+    let name = name.to_owned();
     let rss = fields.get(21)?.parse::<i64>().ok()?.max(0) as u64;
     let kernel = number(6)? & PF_KTHREAD != 0;
     // Kernel threads hold no descriptors of their own (their tables read empty even as root), so
@@ -667,14 +700,14 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCoun
         Process {
             id: Identity {
                 pid,
-                start: number(19)?,
+                start: timing.start,
             },
             parent: number(1)? as u32,
             command: name.clone(),
             name,
             group: String::new(),
             kind: if kernel { Kind::Kernel } else { Kind::System },
-            state: fields.first()?.chars().next()?,
+            state: timing.state,
             cpu: 0.0,
             memory: rss.saturating_mul(page_size),
             io_rate: None,
@@ -704,10 +737,11 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCoun
             started: 0.0,
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         },
         StatCounters {
-            ticks: number(11)?.saturating_add(number(12)?),
-            system_ticks: number(12)?,
+            ticks: timing.ticks,
+            system_ticks: timing.system_ticks,
             // Field 12 of /proc/<pid>/stat.
             major_faults: number(9)?,
         },

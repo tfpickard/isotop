@@ -551,6 +551,34 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_name_with_control_bytes_is_cleaned_for_display() {
+        let thread = crate::threads::Thread {
+            tid: 7,
+            start: 1,
+            name: "w\x1b[2J\x07\n\u{202e}x".into(),
+            cpu: None,
+            state: 'S',
+            leader: false,
+        };
+        assert!(thread.name.contains('\x1b'), "the name is stored raw");
+        let label = Label {
+            column: 0,
+            row: 0,
+            text: format!("thread {}", thread.name),
+            tone: Tone::Tag,
+        };
+        let mut output = Vec::new();
+        draw_label(&mut output, &label, 80).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.ends_with("thread w?[2J???x\x1b[0m"), "{text:?}");
+        assert_eq!(
+            text.matches('\x1b').count(),
+            3,
+            "only the cursor move, the style and the reset"
+        );
+    }
+
+    #[test]
     fn device_attributes_end_the_probe_but_mode_reports_do_not() {
         assert!(!primary_attributes(b"\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y"));
         assert!(primary_attributes(

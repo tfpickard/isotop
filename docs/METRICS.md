@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 47 | 45,301 | 917 | 2,556 |
+| Rust | 49 | 46,526 | 959 | 2,653 |
 | Python | 28 | 12,266 | 631 | 1,412 |
 | WebGPU Shader Language | 1 | 198 | 13 | 32 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,348 | 492 |
+| Markdown | 6 | 0 | 2,357 | 492 |
 | Plain Text | 7 | 0 | 299 | 0 |
-| **Total** | **93** | **57,831** | **4,209** | **4,503** |
+| **Total** | **95** | **59,056** | **4,260** | **4,600** |
 
 ## Rust by module
 
@@ -23,32 +23,33 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | File | Production | Test |
 |:--|--:|--:|
 | `src/render.rs` | 3,282 | 1,298 |
-| `src/model.rs` | 2,736 | 3,228 |
+| `src/model.rs` | 2,810 | 3,398 |
 | `src/coop.rs` | 2,706 | 1,363 |
 | `src/necropolis.rs` | 1,995 | 609 |
-| `src/main.rs` | 1,913 | 2,660 |
+| `src/main.rs` | 1,914 | 2,660 |
 | `src/tesseract.rs` | 1,053 | 561 |
+| `src/platform/macos/mod.rs` | 1,043 | 478 |
 | `src/ptolemy.rs` | 983 | 421 |
-| `src/platform/macos/mod.rs` | 962 | 387 |
 | `src/gpu.rs` | 834 | 82 |
 | `src/simulation.rs` | 675 | 762 |
 | `src/views.rs` | 644 | 540 |
-| `src/platform/linux/mod.rs` | 582 | 370 |
+| `src/platform/linux/mod.rs` | 606 | 370 |
 | `src/platform/linux/events.rs` | 581 | 317 |
-| `src/platform/macos/ffi.rs` | 564 | 12 |
+| `src/platform/macos/ffi.rs` | 571 | 12 |
 | `src/reef.rs` | 550 | 94 |
-| `src/platform/macos/logic.rs` | 498 | 672 |
-| `src/model/kernel.rs` | 492 | 473 |
+| `src/platform/macos/logic.rs` | 517 | 690 |
+| `src/model/kernel.rs` | 492 | 474 |
 | `src/cores.rs` | 488 | 243 |
 | `src/globe.rs` | 487 | 461 |
+| `src/platform/mod.rs` | 458 | 94 |
 | `src/cells.rs` | 457 | 339 |
-| `src/platform/mod.rs` | 455 | 94 |
-| `src/terminal.rs` | 449 | 107 |
+| `src/terminal.rs` | 449 | 134 |
 | `src/blackbody.rs` | 300 | 146 |
 | `src/matrix.rs` | 299 | 219 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
 | `src/places.rs` | 270 | 0 |
 | `src/platform/linux/net.rs` | 270 | 71 |
+| `src/threads.rs` | 252 | 256 |
 | `src/medium.rs` | 240 | 66 |
 | `src/geo.rs` | 229 | 134 |
 | `src/strata.rs` | 205 | 47 |
@@ -63,13 +64,14 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/macos/events.rs` | 107 | 60 |
 | `src/layout.rs` | 105 | 76 |
 | `src/platform/linux/journal.rs` | 101 | 53 |
+| `src/platform/linux/threads.rs` | 101 | 100 |
 | `src/platform/linux/memory.rs` | 86 | 121 |
 | `src/palette.rs` | 75 | 58 |
 | `src/render/shared.rs` | 68 | 47 |
 | `src/geometry.rs` | 50 | 15 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **27,367** | **17,947** |
+| **Total** | **27,929** | **18,610** |
 
 ## Largest files
 
@@ -77,14 +79,14 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 7,013 | over limit |
+| `src/model.rs` | 7,296 | over limit |
 | `src/render.rs` | 5,150 | over limit |
-| `src/main.rs` | 5,045 | over limit |
+| `src/main.rs` | 5,046 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
 | `src/necropolis.rs` | 2,905 | over limit |
+| `src/platform/macos/mod.rs` | 1,884 | over limit |
 | `src/tesseract.rs` | 1,849 | over limit |
 | `src/simulation.rs` | 1,774 | over limit |
-| `src/platform/macos/mod.rs` | 1,681 | over limit |
 | `src/ptolemy.rs` | 1,589 | over limit |
 | `src/views.rs` | 1,501 | over limit |
 
@@ -96,7 +98,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 |:--|--:|
 | `#[expect(clippy::too_many_lines` | 15 |
 | `#[expect(clippy::too_many_arguments` | 7 |
-| `unsafe` blocks | 103 |
+| `unsafe` blocks | 107 |
 | `unwrap_or(0` sites | 27 |
 | `unwrap_or(0.0` sites | 15 |
 | `known_unstable` harness entries | 9 |
@@ -107,7 +109,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 610 |
+| `#[test]` functions | 628 |
 | Views in the registry | 14 |
 | Views with a README mapping table | 4 of 14 |
 | Direct crate dependencies | 10 |

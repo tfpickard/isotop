@@ -662,9 +662,62 @@ pub fn table(
     files
 }
 
+/// The Linux state letter of a Mach thread run state (`pth_run_state`, TH_STATE_* in
+/// mach/thread_info.h): running R, waiting S, uninterruptible D, stopped T and halted Z, the
+/// nearest of the five letters threads show on Linux. `'?'` for a value the header does not
+/// list.
+pub fn thread_state(run_state: i32) -> char {
+    match run_state {
+        1 => 'R',
+        2 => 'T',
+        3 => 'S',
+        4 => 'D',
+        5 => 'Z',
+        _ => '?',
+    }
+}
+
+/// The unique ids of a process's threads in the order a list shows them: oldest first. The
+/// kernel numbers threads as it creates them and never reuses a number within a boot, so the
+/// smallest id is the oldest thread, which macOS has as the main thread.
+pub fn oldest_first(ids: &mut [u64]) {
+    ids.sort_unstable();
+}
+
+/// The thread id a unique 64-bit thread id stands for: its low 32 bits.
+pub fn thread_tid(unique: u64) -> u32 {
+    unique as u32
+}
+
+/// What a thread is called: its own name, or the process's when it has none.
+pub fn thread_name(own: &str, process: &str) -> String {
+    if own.is_empty() { process } else { own }.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_oldest_thread_leads_on_macos() {
+        let mut ids = [3_753_481, 3_753_475, 3_753_480];
+        oldest_first(&mut ids);
+        assert_eq!(ids, [3_753_475, 3_753_480, 3_753_481]);
+        // The id is 64 bits wide, the thread id its low half.
+        assert_eq!(thread_tid(0x1_0000_0007), 7);
+        assert_eq!(thread_tid(3_753_475), 3_753_475);
+        assert_eq!(thread_name("", "Safari"), "Safari");
+        assert_eq!(
+            thread_name("com.apple.main-thread", "Safari"),
+            "com.apple.main-thread"
+        );
+    }
+
+    #[test]
+    fn macos_run_states_map_to_linux_letters() {
+        let letters: Vec<char> = (0..=6).map(thread_state).collect();
+        assert_eq!(letters, ['?', 'R', 'T', 'S', 'D', 'Z', '?']);
+    }
 
     fn counters(
         time: u64,

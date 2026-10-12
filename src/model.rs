@@ -14,6 +14,7 @@ use crate::platform::{
     OpenEvents, RawProcess, Source, Sources, Taken,
 };
 use crate::simulation::{Rng, hash, hash_identity, smoothing};
+use crate::threads::{self, Target, ThreadList, ThreadScan};
 use kernel::{KernelReadings, KernelScan, Readers};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -113,6 +114,12 @@ pub struct Process {
     /// Its memory by kind, from `smaps_rollup` (`Source::MemoryDetail`). Read only for the
     /// `ROLLUP_PROCESSES` processes with the largest resident set while the source is demanded.
     pub memory_detail: Measured<Rollup>,
+    /// Its threads, read on the background thread only while a shown view demands
+    /// `Source::Threads`: `Pending` otherwise, and for a process the last pass has not reached
+    /// yet. `Unreadable` for another user's process without privileges. The true count stays
+    /// `threads`: a list that is not `complete` was cut by `threads::THREADS_PER_PROCESS` or
+    /// `threads::THREADS_PER_PASS`.
+    pub thread_list: Measured<ThreadList>,
 }
 
 /// A process's place in the out-of-memory killer's ranking.
@@ -227,6 +234,7 @@ impl Default for Process {
             started: 0.0,
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         }
     }
 }
@@ -746,6 +754,9 @@ struct Extras {
     locks: Measured<platform::Locks>,
     /// The kernel counters this cycle read, for the sources that were demanded.
     kernel: KernelReadings,
+    /// The threads of the processes the last pass reached (`Source::Threads`), by identity; empty
+    /// while nothing demands them.
+    threads: HashMap<Identity, Measured<ThreadList>>,
     /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table,
     /// and the demanded optional sources that could not be read.
     missing: Sources,
@@ -860,6 +871,9 @@ pub struct Collector {
     /// The pids of the `ROLLUP_PROCESSES` largest processes while `Source::MemoryDetail` is
     /// demanded, which the background thread reads rollups for; empty otherwise.
     rollup_pids: Arc<Mutex<Vec<u32>>>,
+    /// The processes whose threads the background thread reads, busiest first, while
+    /// `Source::Threads` is demanded; empty otherwise.
+    thread_targets: Arc<Mutex<Vec<Target>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
@@ -881,6 +895,7 @@ fn background(
     demand: Arc<Mutex<Demand>>,
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
     rollup_pids: Arc<Mutex<Vec<u32>>>,
+    thread_targets: Arc<Mutex<Vec<Target>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
         let gpu = platform::Gpu::load();
@@ -893,6 +908,8 @@ fn background(
         let mut kept = KeptFiles::default();
         let mut memory = MemoryReads::new();
         let mut kernel = KernelScan::default();
+        let mut thread_reader = platform::Threads::new();
+        let mut thread_scan = ThreadScan::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -949,6 +966,17 @@ fn background(
                 platform::rollup,
             );
             let kernel = kernel.scan(Readers::PLATFORM, &mut reads, &mut latency);
+            let targets = thread_targets
+                .lock()
+                .map(|targets| targets.clone())
+                .unwrap_or_default();
+            let thread_lists = read_threads(
+                &mut reads,
+                &mut thread_scan,
+                &mut thread_reader,
+                &targets,
+                &mut latency,
+            );
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -960,6 +988,7 @@ fn background(
                 files,
                 locks,
                 kernel,
+                threads: thread_lists,
                 missing,
                 sources: reads.active,
                 geo: geo.source.clone(),
@@ -977,6 +1006,27 @@ fn background(
 /// reading taken earlier stands in until the scan comes round again, but only while its pid still
 /// names that process: a reused pid starts out unscanned instead of showing its predecessor's.
 struct Kept<T>(HashMap<u32, (Identity, T)>);
+
+/// Reads the threads of `targets` through `reader` when `Source::Threads` is demanded, and records
+/// the source as read. Nothing is read otherwise, and the CPU the scan tracked is dropped, so a
+/// view that asks again later starts without readings instead of averaging over the gap.
+fn read_threads(
+    reads: &mut Reads,
+    scan: &mut ThreadScan,
+    reader: &mut impl threads::ThreadReader,
+    targets: &[Target],
+    latency: &mut Vec<(Source, Duration)>,
+) -> HashMap<Identity, Measured<ThreadList>> {
+    let found = reads.read(Source::Threads, || {
+        Some(timed(latency, Source::Threads, || {
+            scan.pass(targets, reader)
+        }))
+    });
+    found.unwrap_or_else(|| {
+        scan.forget();
+        HashMap::new()
+    })
+}
 
 impl<T> Default for Kept<T> {
     fn default() -> Self {
@@ -1035,6 +1085,11 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         process.gpu_memory = extras.gpu.get(&process.id.pid).filter(|_| scanned).copied();
         merge_files(process, &extras.files, &extras.locks, scanned);
         merge_memory(process, extras, scanned);
+        process.thread_list = extras
+            .threads
+            .get(&process.id)
+            .cloned()
+            .unwrap_or(Measured::Pending);
         // A holder that has exited since released its locks, so nothing waits on it any more.
         process.blocked_on = process.blocked_on.filter(|blocker| match blocker {
             Blocker::Process(holder) => id(holder).is_some(),
@@ -1817,6 +1872,7 @@ impl Collector {
             demand: Arc::new(Mutex::new(Demand::default())),
             identities: Arc::new(Mutex::new(HashMap::new())),
             rollup_pids: Arc::new(Mutex::new(Vec::new())),
+            thread_targets: Arc::new(Mutex::new(Vec::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -1865,6 +1921,17 @@ impl Collector {
         snapshot.unreadable = self.sampler.unreadable();
         snapshot.shadows = self.sampler.shadows();
         snapshot.processes.sort_by_key(|p| p.id);
+        let demand = self
+            .demand
+            .lock()
+            .map_or_else(|error| *error.into_inner(), |demand| *demand);
+        if let Ok(mut targets) = self.thread_targets.lock() {
+            *targets = if demand.contains(Source::Threads) {
+                threads::targets(&snapshot.processes)
+            } else {
+                Vec::new()
+            };
+        }
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = snapshot
                 .processes
@@ -1900,6 +1967,7 @@ impl Collector {
                 Arc::clone(&self.demand),
                 Arc::clone(&self.identities),
                 Arc::clone(&self.rollup_pids),
+                Arc::clone(&self.thread_targets),
             );
         }
         if let Some(background) = &self.background {
@@ -2262,6 +2330,14 @@ pub struct DemoOptions {
     /// time. Counts grow from a day of uptime and rates wander, both pure functions of `time`.
     /// Off, the three fields hold what an unread source holds: Pending, Pending and None.
     pub kernel_counters: bool,
+    /// Gives every process, the transients and the observer included, the threads
+    /// `threads::demo_list` synthesizes (`Process::thread_list`): as many as `Process::threads`
+    /// (at most `THREADS_PER_PROCESS`, which no demo process reaches), the leader's tid the pid,
+    /// their CPU summing to the process's, their ids, names and start times fixed by the
+    /// process's identity. It also lists `Source::Threads` in `Snapshot::sources`, as a live run
+    /// does while the source is demanded. Off, `thread_list` is `Pending`, as in any view that
+    /// demands no threads, and `sources` stays empty.
+    pub threads: bool,
 }
 
 impl DemoOptions {
@@ -2275,6 +2351,7 @@ impl DemoOptions {
         mortality: false,
         oom_and_memory_detail: false,
         kernel_counters: false,
+        threads: false,
     };
 }
 
@@ -2809,6 +2886,7 @@ impl Transient {
             started: demo_transient_started(self.birth),
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         }
     }
 }
@@ -3135,6 +3213,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -3284,6 +3363,11 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     } else {
         (Measured::Pending, Measured::Pending, None)
     };
+    if options.threads {
+        for process in &mut processes {
+            process.thread_list = Measured::Known(threads::demo_list(process, time));
+        }
+    }
     Snapshot {
         processes,
         memory_total: Some(DEMO_MEMORY_TOTAL),
@@ -3301,7 +3385,11 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         remotes,
         unattributed_locks: 1,
         missing: Sources::default(),
-        sources: Sources::default(),
+        sources: if options.threads {
+            Sources::from(Source::Threads)
+        } else {
+            Sources::default()
+        },
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
@@ -3319,7 +3407,13 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             name: "Amsterdam".into(),
         }),
         geo: "demo locations".into(),
-        observer: options.observer.then(|| demo_observer(time)),
+        observer: options.observer.then(|| {
+            let mut observer = demo_observer(time);
+            if options.threads {
+                observer.thread_list = Measured::Known(threads::demo_list(&observer, time));
+            }
+            observer
+        }),
         interrupts,
         softirqs,
         oom_kills,
@@ -3647,6 +3741,28 @@ mod tests {
                 .iter()
                 .any(|p| p.core != snapshot.processes[0].core)
         );
+        // Threads come only when a row asks for them.
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|p| p.thread_list == Measured::Pending)
+        );
+        let threaded = demo_with(
+            30.0,
+            128,
+            DemoOptions {
+                threads: true,
+                ..DemoOptions::NONE
+            },
+        );
+        assert!(threaded.processes.iter().all(|p| {
+            p.thread_list
+                .known()
+                .is_some_and(|list| list.threads.len() == p.threads as usize)
+        }));
+        assert!(snapshot.sources.is_empty());
+        assert!(threaded.sources.contains(Source::Threads));
     }
 
     #[test]
@@ -4761,6 +4877,7 @@ mod tests {
                 started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
                 oom: Measured::Pending,
                 memory_detail: Measured::Pending,
+                thread_list: Measured::Pending,
             });
         }
         let id = |i: usize| processes[i % count].id;
@@ -5563,6 +5680,7 @@ mod tests {
             Arc::new(Mutex::new(Demand::default())),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .expect("the sampler thread starts");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -5602,6 +5720,171 @@ mod tests {
             .contains(source)),
             "no kernel counter file was opened"
         );
+    }
+
+    /// Lists one thread per process, leader first, and remembers which pids it was asked about.
+    #[derive(Default)]
+    struct CountingReader {
+        listed: Vec<u32>,
+        ticks: u64,
+    }
+
+    impl threads::ThreadReader for CountingReader {
+        fn ticks_per_second(&self) -> f64 {
+            100.0
+        }
+
+        fn list(&mut self, target: &Target, _: usize) -> threads::Listing {
+            self.listed.push(target.id.pid);
+            threads::Listing::Found {
+                threads: vec![threads::RawThread {
+                    tid: target.id.pid,
+                    start: target.id.start,
+                    name: target.name.clone(),
+                    ticks: self.ticks,
+                    state: 'S',
+                    leader: true,
+                }],
+                complete: true,
+            }
+        }
+    }
+
+    fn own_identity() -> Identity {
+        platform::Sampler::new()
+            .processes()
+            .unwrap()
+            .into_iter()
+            .find(|raw| raw.process.id.pid == std::process::id())
+            .expect("the sampler lists this process")
+            .process
+            .id
+    }
+
+    #[test]
+    fn threads_are_read_only_when_a_view_asks() {
+        let process = |pid: u32| Target {
+            id: Identity { pid, start: 1 },
+            name: format!("p{pid}"),
+        };
+        let targets = [process(7), process(8)];
+        let mut scan = ThreadScan::default();
+        let mut reader = CountingReader::default();
+        let mut latency = Vec::new();
+
+        // Not demanded: the reader is never asked, nothing is timed, and the source is neither
+        // active nor missing.
+        let mut idle = Reads::new(Demand::default());
+        let found = read_threads(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(found.is_empty() && reader.listed.is_empty() && latency.is_empty());
+        assert!(idle.active.is_empty() && idle.missing.is_empty());
+
+        // Demanded: every target is read, in the order given, and the source is active.
+        let mut demand = Demand::default();
+        demand.insert(Source::Threads);
+        let mut asked = Reads::new(demand);
+        let found = read_threads(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        assert_eq!(reader.listed, [7, 8]);
+        assert_eq!(found.len(), 2);
+        assert!(asked.active.contains(Source::Threads) && asked.missing.is_empty());
+        assert_eq!(latency.len(), 1);
+        assert_eq!(latency[0].0, Source::Threads);
+
+        // A cycle that read none drops what the scan tracked, so the next reading has no CPU
+        // rather than an average over the gap.
+        reader.ticks = 100;
+        let found = read_threads(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        let cpu = |found: &HashMap<Identity, Measured<ThreadList>>| {
+            found[&targets[0].id].known().unwrap().threads[0].cpu
+        };
+        assert!(
+            cpu(&found).is_some(),
+            "the second consecutive pass has a delta"
+        );
+        read_threads(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        reader.ticks = 200;
+        let found = read_threads(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        assert_eq!(cpu(&found), None);
+
+        // The real thread, started with nothing demanded, reads nothing and reports no threads.
+        let own = own_identity();
+        let start = |demand: Demand| {
+            let targets = Arc::new(Mutex::new(vec![Target {
+                id: own,
+                name: "isotop".into(),
+            }]));
+            background(
+                None,
+                Arc::new(Mutex::new(HashSet::new())),
+                Arc::new(Mutex::new(demand)),
+                Arc::new(Mutex::new(HashMap::from([(own.pid, own)]))),
+                Arc::new(Mutex::new(Vec::new())),
+                targets,
+            )
+            .expect("the sampler thread starts")
+        };
+        let wait = |thread: &Background| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while thread.extras().finished.is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                thread.extras().finished.is_some(),
+                "the first cycle finished"
+            );
+        };
+        let quiet = start(Demand::default());
+        wait(&quiet);
+        assert!(quiet.extras().threads.is_empty());
+        assert!(!quiet.extras().sources.contains(Source::Threads));
+        assert!(
+            quiet
+                .extras()
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::Threads)
+        );
+        // Demanded, it lists this process's own threads, leader first.
+        let busy = start(demand);
+        wait(&busy);
+        let extras = busy.extras();
+        let list = extras.threads[&own].known().expect("this process is read");
+        assert!(list.threads[0].leader && list.complete);
+        assert!(extras.sources.contains(Source::Threads));
+        assert!(!extras.missing.contains(Source::Threads));
+    }
+
+    #[test]
+    fn a_process_takes_only_the_threads_read_for_its_own_identity() {
+        let current = Identity { pid: 5, start: 10 };
+        let reused = Identity { pid: 5, start: 99 };
+        let listed = Measured::Known(ThreadList {
+            threads: Arc::from([]),
+            complete: true,
+        });
+        let extras = Extras {
+            identities: HashMap::from([(5, current)]),
+            threads: HashMap::from([(current, listed.clone())]),
+            ..Extras::default()
+        };
+        let mut snapshot = Snapshot {
+            processes: vec![
+                Process {
+                    id: current,
+                    ..testing::process(5, 1)
+                },
+                Process {
+                    id: reused,
+                    ..testing::process(5, 1)
+                },
+                testing::process(6, 1),
+            ],
+            ..Snapshot::default()
+        };
+        merge(&mut snapshot, &extras);
+        assert_eq!(snapshot.processes[0].thread_list, listed);
+        assert_eq!(snapshot.processes[1].thread_list, Measured::Pending);
+        assert_eq!(snapshot.processes[2].thread_list, Measured::Pending);
     }
 
     #[test]

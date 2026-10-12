@@ -56,6 +56,12 @@
 //!     `id`, None when they cannot be read (`Source::IrqAffinity`);
 //!   - `oom_kills() -> Option<u64>`: the kernel's count of OOM kills since boot
 //!     (`Source::OomKills`). macOS reads none of the four, and `Sampler::missing` says so.
+//!   - `Threads::new() -> Threads`, a `threads::ThreadReader`, read only while `Source::Threads`
+//!     is demanded: `ticks_per_second()` is the unit of its cumulative CPU counters, and
+//!     `list(target, limit)` lists the threads of one process, leader first, at most `limit` of
+//!     them (`Listing::Unreadable` for another user's process). The pass that walks the
+//!     processes within the caps and derives per-thread CPU is `threads::ThreadScan`, shared by
+//!     both platforms.
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -191,11 +197,13 @@ pub enum Source {
     IrqAffinity,
     /// `Snapshot::oom_kills`, the kernel's count of OOM kills (`oom_kill` in `/proc/vmstat`).
     OomKills,
+    /// `Process::thread_list`, each process's threads with their names, CPU and states.
+    Threads,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 30] = [
+    pub const ALL: [Source; 31] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -226,6 +234,7 @@ impl Source {
         Source::Softirqs,
         Source::IrqAffinity,
         Source::OomKills,
+        Source::Threads,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -261,6 +270,7 @@ impl Source {
             Source::Softirqs => "softirqs",
             Source::IrqAffinity => "irq affinity",
             Source::OomKills => "oom kills",
+            Source::Threads => "threads",
         }
     }
 

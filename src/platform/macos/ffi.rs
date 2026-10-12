@@ -289,6 +289,29 @@ const _: () = assert!(size_of::<libc::proc_bsdinfo>() == 136);
 const _: () = assert!(size_of::<proc_bsdinfowithuniqid>() == 192);
 const _: () = assert!(align_of::<proc_bsdinfowithuniqid>() == 8);
 
+// proc_pidinfo flavors for the threads of a process, from xnu bsd/sys/proc_info.h.
+// PROC_PIDTHREADID64INFO is in the SDK header; PROC_PIDLISTTHREADIDS (flavor 28) is not, so its
+// value comes from xnu and was checked on macOS: it lists the unique 64-bit ids that
+// pthread_threadid_np returns, where PROC_PIDLISTTHREADS (6) lists pthread handles.
+
+/// `PROC_PIDLISTTHREADIDS`: the unique 64-bit ids of a process's threads, 8 bytes each, which
+/// are never reused within a boot. xnu fills at most the buffer and says nothing when it cuts
+/// the list short.
+pub const PROC_PIDLISTTHREADIDS: c_int = 28;
+
+/// `PROC_PIDTHREADID64INFO`: the `proc_threadinfo` of the thread whose unique id is the argument.
+/// Its times (`pth_user_time`, `pth_system_time`) are in nanoseconds, unlike the Mach absolute
+/// time of `proc_taskinfo`.
+pub const PROC_PIDTHREADID64INFO: c_int = 15;
+
+// libc declares `struct proc_threadinfo`: two u64 times, eight int32 and the 64-byte name, which
+// the header sizes at 112 (`PROC_PIDTHREADID64INFO_SIZE`).
+const _: () = assert!(size_of::<libc::proc_threadinfo>() == 112);
+const _: () = assert!(align_of::<libc::proc_threadinfo>() == 8);
+const _: () = assert!(offset_of!(libc::proc_threadinfo, pth_system_time) == 8);
+const _: () = assert!(offset_of!(libc::proc_threadinfo, pth_run_state) == 24);
+const _: () = assert!(offset_of!(libc::proc_threadinfo, pth_name) == 48);
+
 // struct socket_fdinfo and its members, from xnu bsd/sys/proc_info.h. The text of these structs
 // is identical from xnu-7195 (macOS 11) to main. Every field is a fixed-width scalar and nothing
 // is packed, so repr(C) reproduces the C layout; the assertions below pin it.

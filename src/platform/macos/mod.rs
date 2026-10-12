@@ -26,6 +26,7 @@ use crate::model::{
     Softirq, Unit,
 };
 use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources, Taken};
+use crate::threads::{Listing, RawThread, Target, ThreadReader};
 
 pub use events::{monotonic_ns, open_events};
 pub use journal::{JOURNAL, journal};
@@ -277,6 +278,7 @@ impl Sampler {
             oom: Measured::Pending,
             // macOS has no smaps_rollup: `Source::MemoryDetail` is one of its gaps.
             memory_detail: Measured::Unreadable,
+            thread_list: Measured::Pending,
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -1254,6 +1256,108 @@ impl Gpu {
     }
 }
 
+/// The ids of a process's threads are 64 bits wide and kept in a buffer that grows with the
+/// largest list seen, up to this many.
+const MAX_THREAD_IDS: usize = 1 << 16;
+
+/// Reads the threads of a process: their unique ids with `PROC_PIDLISTTHREADIDS`, then each
+/// thread's `proc_threadinfo` by that id. Its CPU times are in nanoseconds, so the process's
+/// CPU (converted from Mach time) and a thread's count the same unit. A process of another user
+/// is refused with EPERM, as for the other flavors. The identity of the process is not checked
+/// against the pid again: macOS hands pids out in turn and takes a long time to reuse one.
+pub struct Threads {
+    ids: Vec<u64>,
+}
+
+impl Threads {
+    pub fn new() -> Self {
+        Threads { ids: Vec::new() }
+    }
+}
+
+/// Lists the unique ids of the threads of `pid` into `ids`, a buffer reused between processes.
+/// An error when the process cannot be listed: EPERM for another user's, ESRCH for one that
+/// has exited. The list is empty for a process with no task.
+fn list_thread_ids(pid: c_int, ids: &mut Vec<u64>) -> io::Result<()> {
+    if ids.len() < 64 {
+        ids.resize(64, 0);
+    }
+    loop {
+        let bytes = ids.len() * size_of::<u64>();
+        // libproc returns 0 both for an empty list and for an error, which alone sets errno.
+        // SAFETY: __error returns this thread's errno, which is always writable.
+        unsafe { *libc::__error() = 0 };
+        // SAFETY: the buffer is valid for writes of `bytes` bytes.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                ffi::PROC_PIDLISTTHREADIDS,
+                0,
+                ids.as_mut_ptr().cast(),
+                bytes as c_int,
+            )
+        };
+        let Ok(written) = usize::try_from(written).map(|written| written.min(bytes)) else {
+            return Err(io::Error::last_os_error());
+        };
+        if written == 0 {
+            ids.clear();
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(0) | None => Ok(()),
+                Some(_) => Err(error),
+            };
+        }
+        // The kernel fills at most the whole buffer and says nothing when it truncates.
+        if written < bytes || ids.len() >= MAX_THREAD_IDS {
+            ids.truncate(written / size_of::<u64>());
+            return Ok(());
+        }
+        let grown = ids.len() * 2;
+        ids.resize(grown, 0);
+    }
+}
+
+impl ThreadReader for Threads {
+    /// `pth_user_time` and `pth_system_time` count nanoseconds.
+    fn ticks_per_second(&self) -> f64 {
+        1e9
+    }
+
+    fn list(&mut self, target: &Target, limit: usize) -> Listing {
+        let pid = target.id.pid as c_int;
+        match list_thread_ids(pid, &mut self.ids) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return Listing::Unreadable,
+            Err(_) => return Listing::Gone,
+        }
+        logic::oldest_first(&mut self.ids);
+        let complete = self.ids.len() <= limit;
+        let mut threads = Vec::with_capacity(self.ids.len().min(limit));
+        for &id in self.ids.iter().take(limit) {
+            match pid_info::<libc::proc_threadinfo>(pid, ffi::PROC_PIDTHREADID64INFO, id) {
+                Ok(info) => threads.push(RawThread {
+                    tid: logic::thread_tid(id),
+                    start: id,
+                    name: logic::thread_name(&c_text(&info.pth_name), &target.name),
+                    ticks: info.pth_user_time.saturating_add(info.pth_system_time),
+                    state: logic::thread_state(info.pth_run_state),
+                    leader: false,
+                }),
+                Err(Absent::Unreadable) => return Listing::Unreadable,
+                // The thread exited after the list was taken.
+                Err(Absent::Gone) => {}
+            }
+        }
+        // The oldest thread that is still there leads.
+        let Some(oldest) = threads.first_mut() else {
+            return Listing::Gone;
+        };
+        oldest.leader = true;
+        Listing::Found { threads, complete }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1660,6 +1764,105 @@ mod tests {
         };
         assert_eq!((files, listed), (Files::default(), 0));
         child.wait().unwrap();
+    }
+
+    /// This process, as the thread reader is asked about it.
+    fn myself() -> Target {
+        Target {
+            id: Identity {
+                pid: std::process::id(),
+                start: 0,
+            },
+            name: "isotop".into(),
+        }
+    }
+
+    #[test]
+    fn the_threads_of_this_process_are_listed_oldest_first_with_their_names_and_cpu() {
+        // Two threads that stay, named, until the end of the test.
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = ["probe-a", "probe-b"]
+            .into_iter()
+            .map(|name| {
+                let (ready, release) = (
+                    std::sync::Arc::clone(&ready),
+                    std::sync::Arc::clone(&release),
+                );
+                std::thread::Builder::new()
+                    .name(name.into())
+                    .spawn(move || {
+                        ready.wait();
+                        release.wait();
+                    })
+                    .unwrap()
+            })
+            .collect();
+        ready.wait();
+        let mut reader = Threads::new();
+        let Listing::Found { threads, complete } = reader.list(&myself(), 1024) else {
+            panic!("this process's threads are readable");
+        };
+        assert!(complete);
+        assert!(threads.len() >= 3, "{threads:?}");
+        assert!(threads[0].leader, "the oldest thread leads");
+        assert_eq!(threads.iter().filter(|thread| thread.leader).count(), 1);
+        let starts: Vec<u64> = threads.iter().map(|thread| thread.start).collect();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "{starts:?}"
+        );
+        assert!(
+            threads
+                .iter()
+                .all(|thread| thread.tid == thread.start as u32)
+        );
+        let named = |name: &str| threads.iter().any(|thread| thread.name == name);
+        assert!(named("probe-a") && named("probe-b"), "{threads:?}");
+        assert!(
+            threads.iter().all(|thread| !thread.name.is_empty()),
+            "an unnamed thread takes the process's name"
+        );
+        assert!(threads.iter().any(|thread| thread.ticks > 0));
+        // A smaller limit keeps the oldest threads and says the list is cut.
+        let Listing::Found {
+            threads: cut,
+            complete,
+        } = reader.list(&myself(), 2)
+        else {
+            panic!("readable");
+        };
+        assert!(!complete);
+        assert_eq!(cut.len(), 2);
+        assert_eq!(cut[0].start, threads[0].start);
+        release.wait();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn another_users_threads_are_unreadable_and_an_exited_process_is_gone() {
+        let mut reader = Threads::new();
+        // SAFETY: getuid cannot fail and has no preconditions.
+        if unsafe { libc::getuid() } != 0 {
+            let launchd = Target {
+                id: Identity { pid: 1, start: 0 },
+                name: "launchd".into(),
+            };
+            assert_eq!(reader.list(&launchd, 1024), Listing::Unreadable);
+        }
+        let gone = Target {
+            id: Identity {
+                pid: 99_998,
+                start: 0,
+            },
+            name: "none".into(),
+        };
+        // pid 99998 is one the kernel does not hand out near here; skip when it exists.
+        if pid_info::<libc::proc_bsdshortinfo>(99_998, libc::PROC_PIDT_SHORTBSDINFO, 0).is_err() {
+            assert_eq!(reader.list(&gone, 1024), Listing::Gone);
+        }
     }
 
     #[test]
