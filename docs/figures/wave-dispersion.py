@@ -39,7 +39,7 @@ def group_ratio(symbol, nu, k, theta):
 
 
 figure = Figure(
-    1200, 440,
+    1200, 490,
     "Lattice dispersion of the pond's wave scheme",
     "Phase speed, group speed and angular frequency of plane waves on the nine-point and five-point "
     "lattices at Courant number 0.5, against the continuum. Wavelengths of the pond's pebbles span "
@@ -49,22 +49,21 @@ figure.heading("Lattice dispersion at Courant number 0.5",
                "Plane waves on the discrete pond. The continuum is the line at 1 (left, middle) and omega = c k (right).")
 
 wavelengths = [3 * (60 / 3) ** (i / 160) for i in range(161)]
+# Along an axis the two stencils have the same symbol, so one curve stands for both.
 curves = [
-    ("5-point, along an axis", BLUE, None, s5, 0.0),
-    ("5-point, along a diagonal", BLUE, "5 3", s5, math.pi / 4),
-    ("9-point, along an axis", ORANGE, None, s9, 0.0),
-    ("9-point, along a diagonal", ORANGE, "5 3", s9, math.pi / 4),
+    ("either stencil, along an axis", INK, None, s9, 0.0),
+    ("5-point, along a diagonal", BLUE, "6 3", s5, math.pi / 4),
+    ("9-point, along a diagonal", ORANGE, "2 2", s9, math.pi / 4),
 ]
 
 a = Axes(figure, 60, 90, 330, 280, (3, 60), (0.84, 1.02), xlog=True, xlabel="wavelength (cells)",
          ylabel="phase speed / c", title="Phase speed", xticks=[3, 4, 6, 8, 12, 20, 40, 60],
          yticks=[0.85, 0.9, 0.95, 1.0])
 a.vband(11.19, 42.0, AQUA, 0.16)
-a.label(16.5, 0.847, "pebble band", 11, "middle", AQUA)
+a.label(21.0, 0.855, "pebble band", 11, "middle", AQUA)
 a.hline(1.0, MUTED, 1.0, "2 3")
 for name, color, dash, symbol, theta in curves:
     a.plot(wavelengths, [phase_ratio(symbol, NU, 2 * math.pi / w, theta) for w in wavelengths], color, 1.9, dash)
-a.legend([(n, c, d) for n, c, d, _, _ in curves], "bl")
 
 b = Axes(figure, 460, 90, 330, 280, (3, 60), (0.0, 1.05), xlog=True, xlabel="wavelength (cells)",
          ylabel="group speed / c", title="Group speed (energy travels at this)",
@@ -82,16 +81,17 @@ c = Axes(figure, 860, 90, 310, 280, (0, math.pi), (0, 3.2), xlabel="wavenumber k
          yticks=[0, 1, 2, 3])
 c.vband(0.1495, 0.5613, AQUA, 0.22)
 c.plot(ks, ks, MUTED, 1.4, "2 3")
-c.plot(ks, [omega(s9, NU, k, 0.0) for k in ks], ORANGE, 2.0)
-c.plot(ks, [omega(s9, NU, k, math.pi / 4) for k in ks], ORANGE, 2.0, "5 3")
-c.plot(ks, [omega(s5, NU, k, 0.0) for k in ks], BLUE, 2.0)
+c.plot(ks, [omega(s9, NU, k, 0.0) for k in ks], INK, 2.0)
+c.plot(ks, [omega(s5, NU, k, math.pi / 4) for k in ks], BLUE, 2.0, "6 3")
+c.plot(ks, [omega(s9, NU, k, math.pi / 4) for k in ks], ORANGE, 2.0, "2 2")
+c.legend([(n, col, d) for n, col, d, _, _ in curves], "br")
 c.label(0.62, 0.38, "pebbles", 11, "start", AQUA)
 c.label(2.0, 2.0, "continuum", 11, "start", MUTED, dx=-6, dy=-18)
-c.label(1.55, 1.58, "axis lattice flattens", 11, "start", ORANGE, dy=26)
-c.label(1.55, 1.58, "toward the Nyquist limit k = pi", 11, "start", ORANGE, dy=40)
+c.label(0.9, 2.55, "the lattice flattens toward", 11, "start", MUTED)
+c.label(0.9, 2.3, "the Nyquist limit k = pi", 11, "start", MUTED)
 
-figure.text(60, 412, "Courant number 0.5 is isotop's ceiling (Wave::advance); the 9-point stencil is stable to sqrt(3)/2 = 0.866, the 5-point to 1/sqrt(2) = 0.707.",
+figure.text(60, 450, "Courant number 0.5 is isotop's ceiling (Wave::advance); the 9-point stencil is stable to sqrt(3)/2 = 0.866, the 5-point to 1/sqrt(2) = 0.707.",
             11, "start", MUTED)
-figure.text(60, 428, "The Klein-Gordon term (0.5 per s squared) and the damping are left out here; see the source-band figure on View Ripple.",
+figure.text(60, 468, "The Klein-Gordon term (0.5 per s squared) and the damping are left out here; see the source-band figure on View Ripple.",
             11, "start", MUTED)
 figure.save(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "media", "figures", "wave-dispersion.svg"))
