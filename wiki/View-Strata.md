@@ -145,8 +145,7 @@ The front of each ridge, $(0, y, \text{top})$, is its pick anchor and `stage.pos
 **Stable layout.** Rows are stable by construction and the harness enforces it (no known failures). The profile of a
 ridge changes only by new samples arriving at the front.
 
-**Sources.** CPU only. Where a process's CPU is unreadable the platform marks the process unmeasured and it gets no
-ridge. No optional source is demanded.
+**Sources.** CPU only (`Process::cpu`). No optional source is demanded, so nothing here appears in `Snapshot::missing`.
 
 ## Reading the picture
 
@@ -155,8 +154,7 @@ ridge. No optional source is demanded.
 * **Heights saturate.** Above about 400 % the curve is flat to the eye; a process on 1600 % and one on 400 % differ by
   1.5 world units. Do not compare tall ridges.
 * **Absent is zero.** A process that did not exist for part of the minute is drawn at the floor there; the picture does
-  not mark births, and a process that exited drops out at its next sample (its ridge freezes if its row is kept
-  until its peak falls below 0.5 in the window, but it is no longer drawn once the process is gone).
+  not mark births. A process that exits vanishes from the landscape at its next sample and its row is freed.
 * **Rows are ranks, not rankings.** A ridge's row does not say which process used more; the kind owns the quarter.
 * **Colour is current.** A ridge turns pink or orange for its whole length if the process is a zombie or stopped now.
 * **Hidden is hidden.** Tall ridges at the front hide low ridges behind them; click or use search to find a covered
