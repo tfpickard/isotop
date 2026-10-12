@@ -97,7 +97,7 @@ The built-in arm is `BuiltIn::Orbit`: `Scene::hubs` then `Scene::draw_orbits` ov
 
 **Sizes.** `weigh` sums memory and process count over each subtree (`Scene::mass` for stars). `radii` follow from `mass_radius`; `reach` multiplies the radius by `ring_scale(threads)` = $1.55 + 0.28(\text{rings}-1)$ so that neighbours clear the rings. `measure` computes each body's `extent`: a leaf's is its `reach`; a parent's is the `reach` returned by `shells` over its children's extents.
 
-**Shells.** `elements(pid)` hashes the **parent's** pid into $e \in [0.06, 0.22]$ and $\omega$, shared by all that parent's shells. `shells(body, sizes, e)` then packs the children: the first shell's semi-major axis puts periapsis at $a(1-e) = r_\mathrm{body} + \max(\text{extent}) + 0.6 + 1$; bodies fill a shell in order while $\sum (2\,\mathrm{extent}_i + 0.6) \le 2\pi a\sqrt{(1-e)/(1+e)}$; the slack is shared out so bodies are evenly spaced in mean anomaly; the next shell's $a$ grows so that the **periapsis** gap is $\mathrm{extent}_\mathrm{widest\ here} + \mathrm{extent}_\mathrm{widest\ after} + 0.6$ (divided by $1-e$ for $a$). Siblings on a shell share one ellipse; consecutive shells are offset by half a turn in mean anomaly (`shell * 0.5`). The test `kepler_solution_and_shells_keep_bodies_apart` checks Newton's solution, periapsis at $a(1-e)$ and the gaps.
+**Shells.** `elements(pid)` hashes the **parent's** pid into $e \in [0.06, 0.22]$ and $\omega$, shared by all that parent's shells. `shells(body, sizes, e)` then packs the children: the first shell's semi-major axis puts periapsis at $a(1-e) = \mathrm{reach}_\mathrm{body} + \max(\text{extent}) + 0.6 + 1$; bodies fill a shell in order while $\sum (2\,\mathrm{extent}_i + 0.6) \le 2\pi a\sqrt{(1-e)/(1+e)}$; the slack is shared out so bodies are evenly spaced in mean anomaly; the next shell's $a$ grows so that the **periapsis** gap is $\mathrm{extent}_\mathrm{widest\ here} + \mathrm{extent}_\mathrm{widest\ after} + 0.6$ (divided by $1-e$ for $a$). Siblings on a shell share one ellipse; each shell starts 0.5 rad of mean anomaly further round than the one inside it (`shell * 0.5`). The test `kepler_solution_and_shells_keep_bodies_apart` checks Newton's solution, periapsis at $a(1-e)$ and the gaps.
 
 **Systems.** `place_systems` needs a disc of radius `extent + SYSTEM_GAP` (2.5) per root and reserves 1.08 times that; a system keeps its place while its need stays within its reservation and is otherwise placed again with `layout::vacant`, the first point on a golden-angle spiral (step $\max(0.4R, 1)$) where its disc clears all the others; the largest are placed first, ties by `Identity`. Systems whose root is hidden by focus or `--limit` keep their places (test `focusing_and_clearing_focus_keeps_every_orbit_system_in_place`).
 
@@ -119,7 +119,7 @@ The built-in arm is `BuiltIn::Orbit`: `Scene::hubs` then `Scene::draw_orbits` ov
 
 ## Reading the picture
 
-What the demo render shows (`--demo --view orbit --width 1600 --output ... --renderer cpu`): twelve solar systems, one per demo family (a head process with fifteen children), arranged on a golden-angle spiral with the biggest in the middle. Each has a central star, one or two elliptical shells with its planets spaced round them, planets of visibly different sizes, Saturn-style rings on the more threaded ones, orange-yellow glows (and short comet trails) on the busy ones, thin green ellipses where the demo's fake GPU processes are, and cyan arcs and pink beams crossing between systems. Orbits of different systems have different eccentricities (0.065 to 0.208 for the heads). Without a name label there is no way to tell what a body is without hovering it.
+What the demo render shows (`--demo --view orbit --width 1600 --output ... --renderer cpu`): twelve solar systems, one per demo family (a head process with fifteen children), arranged on a golden-angle spiral with the biggest in the middle. Each has a central star, one or two elliptical shells with its planets spaced round them, planets of visibly different sizes, Saturn-style rings on the more threaded ones, orange-yellow glows (and short comet trails) on the busy ones, thin green ellipses where the demo's fake GPU processes are, and cyan arcs and pink beams crossing between systems. Orbits of different systems have different eccentricities (0.064 to 0.208 for the heads). The PNG carries no labels (they are terminal text laid over the image), so naming a body takes a hover in the terminal.
 
 **You can infer**
 
@@ -150,7 +150,7 @@ What the demo render shows (`--demo --view orbit --width 1600 --output ... --ren
 | 4 GiB | 10.6 | 46 | 119 | 335 |
 | 6 GiB (a demo family) | 8.7 | 37.7 | 96.8 | 274 |
 
-For the demo's twelve families (subtree 4.2 to 6.8 GiB, shells at $a \approx 8$ to $16$), I computed 45 to 103 s per revolution (a Python port of `shells`, `period` and the placement, whose layout I compared against the render: same twelve systems, one or two shells each, the same golden-angle arrangement). A system with no memory to speak of, such as kernel threads, sits on the 600 s clamp in every shell.
+For the demo's twelve families (subtree 4.2 to 6.6 GiB, shells at $a \approx 10$ to $21$), I computed 52 to 158 s per revolution (a Python port of `shells`, `period` and the placement, whose layout I compared against the render by eye: the same twelve systems with one or two shells each in the same arrangement; the sub-pixel numbers are from the port, not the binary). A system with no memory to speak of, such as kernel threads, sits on the 600 s clamp in every shell.
 
 ![A system and the period law](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/orbit-system.svg)
 
@@ -161,7 +161,7 @@ For the demo's twelve families (subtree 4.2 to 6.8 GiB, shells at $a \approx 8$ 
 ```sh
 ./target/release/isotop --demo --view orbit
 ./target/release/isotop --demo --view orbit --width 1600 --output orbit.png --renderer cpu
-./target/release/isotop --demo --view orbit --time 40 --output orbit40.png   # the same layout, later in the motion
+./target/release/isotop --demo --view orbit --time 40 --output orbit40.png   # the same layout, later in the planets' motion
 ./target/release/isotop --view orbit
 ```
 
@@ -192,6 +192,6 @@ Keys: `2` selects it; click a body for its inspector (memory of the system it an
 * W. Hohmann, *Die Erreichbarkeit der Himmelskörper* (Oldenbourg, 1925).
 * J. M. A. Danby, *Fundamentals of Celestial Mechanics*, 2nd ed. (Willmann-Bell, 1988).
 * C. D. Murray and S. F. Dermott, *Solar System Dynamics* (Cambridge University Press, 1999).
-* R. A. Mardling and S. J. Aarseth, "Tidal interactions in star cluster simulations", *Monthly Notices of the Royal Astronomical Society* 321 (2001), 398-404.
+* R. A. Mardling and S. J. Aarseth, "Tidal interactions in star cluster simulations", *Monthly Notices of the Royal Astronomical Society* 321 (2001), 398 (unverified page range).
 * V. C. Rubin and W. K. Ford Jr., "Rotation of the Andromeda Nebula from a spectroscopic survey of emission regions", *The Astrophysical Journal* 159 (1970), 379-403.
 * [Theory Stable Layout](Theory-Stable-Layout) for the layout invariant that the waived properties qualify.
