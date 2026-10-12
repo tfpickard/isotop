@@ -61,7 +61,7 @@ def hexc(rgb):
 
 
 def main():
-    svg = Svg(1100, 840, "The isotop palette under colour-vision deficiency, and mix against linear light",
+    svg = Svg(1100, 820, "The isotop palette under colour-vision deficiency, and mix against linear light",
               "Eight palette colours for normal vision and for protanopia, deuteranopia and tritanopia, then the mix of SYSTEM and "
               "SESSION as the code computes it (a lerp of encoded bytes) against the linear-light blend, with relative luminance.")
     x0, cw, ch = 150, 118, 50
@@ -70,20 +70,20 @@ def main():
         svg.text(x0 + i * cw + (cw - 6) / 2, 28, name, 11, INK, "middle", weight="600")
         svg.text(x0 + i * cw + (cw - 6) / 2, 44, hexc(rgb), 10, MUTED, "middle")
     for r, (label, kind) in enumerate(rows):
-        y = 56 + r * (ch + 12)
+        y = 56 + r * (ch + 26)
         svg.text(20, y + ch / 2 + 4, label, 12, INK)
         for i, (name, rgb) in enumerate(PALETTE):
             shown = rgb if kind is None else simulate(rgb, kind)
             svg.rect(x0 + i * cw, y, cw - 6, ch, hexc(shown), None)
             if kind is None:
                 svg.text(x0 + i * cw + (cw - 6) / 2, y + ch + 11, "Y %.3f" % luminance(rgb), 10, MUTED, "middle")
-    yb = 56 + 4 * (ch + 12) + 16
+    yb = 56 + 4 * (ch + 26) + 4
     svg.text(20, yb + 4, "closest pairs, ΔE00:  normal SESSION–STOPPED 4.5   deuteranopia SYSTEM–UNKNOWN_CORE 1.6, SESSION–STOPPED 3.8   tritanopia ZOMBIE–BLOCKED 4.5", 11, MUTED)
 
     # strips
     ys = yb + 30
     a, b = PALETTE[1][1], PALETTE[2][1]
-    steps, sw = 40, 20
+    steps, sw = 36, 20
     svg.text(20, ys + 22, "mix(SYSTEM, SESSION, t)", 11, INK)
     svg.text(20, ys + 36, "encoded bytes (the code)", 10, MUTED)
     svg.text(20, ys + 22 + 44, "linear-light blend", 11, INK)
@@ -96,12 +96,12 @@ def main():
         svg.rect(x0 + k * sw, ys + 44, sw, 38, hexc(linear_blend(a, b, t)))
         s = 0.25 + (1.2 - 0.25) * k / (steps - 1)
         svg.rect(x0 + k * sw, ys + 88, sw, 38, hexc(tint(PALETTE[2][1], s)))
-    svg.text(x0 + steps * sw + 12, ys + 24, "midpoint (154, 180, 145)  Y 0.416", 11, INK)
-    svg.text(x0 + steps * sw + 12, ys + 68, "midpoint (179, 181, 157)  Y 0.451", 11, INK)
-    svg.text(x0 + steps * sw + 12, ys + 112, "Y goes as s^2.2 until a channel clips at 255", 11, INK)
+    svg.text(x0 + steps * sw + 12, ys + 24, "t = 0.5: (154, 180, 145), Y 0.416", 11, INK)
+    svg.text(x0 + steps * sw + 12, ys + 68, "t = 0.5: (179, 181, 157), Y 0.451", 11, INK)
+    svg.text(x0 + steps * sw + 12, ys + 112, "Y ~ s^2.2 until R clips at 255", 11, INK)
 
     # luminance curves
-    py = ys + 160
+    py = ys + 196
     for p, (title, c0, c1, xo) in enumerate([("SYSTEM → SESSION", a, b, 70), ("white → black", (255, 255, 255), (0, 0, 0), 600)]):
         lo, hi = (min(luminance(c0), luminance(c1)), max(luminance(c0), luminance(c1)))
         ax = Axes(svg, xo, py, 430, 150, (0.0, 1.0), (max(0, lo - 0.03), hi + 0.03))
@@ -109,9 +109,9 @@ def main():
         ts = [i / 100 for i in range(101)]
         ax.path(ts, [luminance(mix(c0, c1, t)) for t in ts], ORANGE, 2.2)
         ax.path(ts, [luminance(linear_blend(c0, c1, t)) for t in ts], AQUA, 2.2, "7 4")
-        svg.text(xo + 8, py + 14, title, 12, INK, weight="600")
-        svg.text(xo + 8, py + 30, "orange: mix of encoded bytes", 11, ORANGE)
-        svg.text(xo + 8, py + 44, "green dashed: linear-light blend", 11, AQUA)
+        svg.text(xo, py - 40, title, 12, INK, weight="600")
+        svg.text(xo, py - 24, "orange: mix of encoded bytes", 11, ORANGE)
+        svg.text(xo, py - 8, "green dashed: linear-light blend", 11, AQUA)
     svg.save("docs/media/figures/colour-palette.svg")
 
 

@@ -19,7 +19,7 @@ Figure script: `docs/figures/fourier-epicycle-reconstruction.py`.*
 
 ### 1.1 Phasors
 
-Identify the plane with the complex numbers, so a point is `z = x + iy`. The function $t -> a e^{i(\omega t + \varphi)}$
+Identify the plane with the complex numbers, so a point is `z = x + iy`. The function $t \mapsto a e^{i(\omega t + \varphi)}$
 is a point moving on a circle of radius `|a| = a`, with angular velocity $\omega$ (counter-clockwise when $\omega > 0$) and
 phase $\varphi$ at `t = 0`. Add a second such term and the sum is a point on a circle whose centre itself moves on
 a circle: an *epicycle*. A chain of `K` terms is
@@ -72,7 +72,7 @@ coefficient is `c_k = X_k / N`. Two facts matter.
   the periodic assumption allows. The view evaluates it at every frame, so it needs no resampling.
 
 The transform assumes the window is one period of a periodic signal. A minute of a process is not periodic; the
-discontinuity between the last sample and the first is a real feature of the model (section 1.6).
+discontinuity between the last sample and the first is a real feature of the model (section 1.5).
 
 ### 1.4 Parseval, and which `K` terms are best
 
