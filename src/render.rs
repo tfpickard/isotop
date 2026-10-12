@@ -11,7 +11,7 @@ use crate::palette::{DISTRICTS, kind_color, process_color, tint};
 use crate::platform::Shadow;
 use crate::simulation::{growth, hash, smoothing};
 use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
-use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
+use crate::{coop, globe, glyphs, matrix};
 
 pub mod field;
 pub mod shared;
@@ -1381,13 +1381,8 @@ pub struct Scene {
     pub tour: Vec<TourTarget>,
     pub popup: Vec<(Identity, String)>,
     pub callout: Vec<(Identity, String)>,
-    pub(crate) cores: cores::Track,
-    cells: cells::Dishes,
-    pub(crate) strata: strata::Strata,
     /// Every process's CPU and memory over the last samples, recorded whichever view is shown.
     pub(crate) history: History,
-    globe: globe::Globe,
-    reef: reef::Reef,
     pub coop: coop::Coop,
     pub matrix: matrix::Rain,
     /// The views this scene draws, one row each: `REGISTRY`, unless a test brings its own.
@@ -1447,12 +1442,7 @@ impl Scene {
             tour: Vec::new(),
             popup: Vec::new(),
             callout: Vec::new(),
-            cores: cores::Track::default(),
-            cells: cells::Dishes::default(),
-            strata: strata::Strata::default(),
             history: History::default(),
-            globe: globe::Globe::default(),
-            reef: reef::Reef::default(),
             coop: coop::Coop::default(),
             matrix: matrix::Rain::default(),
             rows,
@@ -1559,11 +1549,6 @@ impl Scene {
                 }
             }
         }
-    }
-
-    #[cfg(test)]
-    fn strata_rows(&self) -> Vec<Identity> {
-        self.strata.rows()
     }
 
     fn city_positions(&mut self, processes: &[&Process], snapshot: &Snapshot) {
@@ -1844,15 +1829,7 @@ impl Scene {
                 self.matrix.draw(frame, time);
                 self.visible = 0;
             }
-            Some(
-                BuiltIn::Cores
-                | BuiltIn::Cells
-                | BuiltIn::Strata
-                | BuiltIn::Globe
-                | BuiltIn::Reef
-                | BuiltIn::Coop,
-            )
-            | None => {
+            Some(BuiltIn::Coop) | None => {
                 self.positions.clear();
                 let mut stage = Stage {
                     frame,
@@ -1880,11 +1857,6 @@ impl Scene {
                     callout: &mut self.callout,
                 };
                 let shown = match arm {
-                    Some(BuiltIn::Cores) => self.cores.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Cells) => self.cells.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Strata) => self.strata.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Globe) => self.globe.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Reef) => self.reef.draw(&mut stage, processes, snapshot),
                     Some(BuiltIn::Coop) => self.coop.draw(&mut stage, processes, snapshot),
                     Some(_) => unreachable!(),
                     None => self.modules[view.index()]
@@ -3947,8 +3919,8 @@ pub(crate) mod hiding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::demo;
     use crate::model::testing::process;
-    use crate::model::{Kind, demo};
     use crate::simulation::GROW_SECONDS;
     use crate::views::{testing, view};
 
@@ -4798,49 +4770,6 @@ mod tests {
             " probe: 0 draws | 3 records | keys []",
             "a hidden view records too"
         );
-        // The built-in hooks: Strata keeps a history while the city is shown.
-        let mut scene = Scene::new();
-        for step in 0..=10 {
-            let snapshot = demo(step as f64, 64);
-            scene.record(&snapshot, step as f32);
-            render(&mut scene, &snapshot, view("city"), step as f32);
-        }
-        render(&mut scene, &demo(10.0, 64), view("strata"), 10.0);
-        assert!(
-            scene
-                .notes
-                .values()
-                .any(|notes| notes[0].ends_with("over the last 10 s")),
-            "{:?}",
-            scene.notes.values().next()
-        );
-    }
-
-    #[test]
-    fn marbles_hop_lanes_when_the_scheduler_moves_them() {
-        let mut snapshot = demo(1.0, 16);
-        for p in &mut snapshot.processes {
-            p.cpu = 0.0;
-            p.state = 'S';
-        }
-        snapshot.processes[3].cpu = 60.0;
-        snapshot.processes[3].core = Some(0);
-        let id = snapshot.processes[3].id;
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("cores"), 1.0);
-        let resting = scene.positions[&id][2];
-        snapshot.processes[3].core = Some(12);
-        render(&mut scene, &snapshot, view("cores"), 1.1);
-        render(&mut scene, &snapshot, view("cores"), 1.4);
-        assert!(scene.positions[&id][2] > resting + 0.5, "airborne mid-hop");
-        assert!(scene.notes[&id][0].contains("cpu12") && scene.notes[&id][0].contains("1 hop "));
-        render(&mut scene, &snapshot, view("cores"), 2.0);
-        let landed = scene.positions[&id];
-        assert!(
-            landed[0].hypot(landed[1]) > 20.0,
-            "efficiency lanes are outside"
-        );
-        assert_eq!(scene.visible, 1, "idle processes stay off the track");
     }
 
     #[test]
@@ -4862,105 +4791,6 @@ mod tests {
         assert_eq!(series.len(), 4);
         assert!(series.iter().all(|reading| reading.is_some()));
         assert_eq!(scene.history.arrived(), 3.0);
-    }
-
-    #[test]
-    fn strata_ridges_follow_busy_processes_in_kind_order() {
-        let mut scene = Scene::new();
-        let mut snapshot = demo(0.0, 64);
-        for step in 0..30 {
-            snapshot.elapsed = step as f64;
-            for (i, p) in snapshot.processes.iter_mut().enumerate() {
-                p.cpu = if i % 4 == 0 { 30.0 + step as f32 } else { 0.0 };
-            }
-            // History builds up while another view is shown.
-            scene.record(&snapshot, step as f32);
-            render(&mut scene, &snapshot, view("city"), step as f32);
-        }
-        render(&mut scene, &snapshot, view("strata"), 29.0);
-        assert_eq!(scene.visible, 16);
-        let first = snapshot.processes[0].id;
-        assert!(
-            scene.notes[&first][0].ends_with("over the last 29 s"),
-            "{:?}",
-            scene.notes[&first]
-        );
-        let rows: HashMap<Identity, f32> =
-            scene.positions.iter().map(|(id, p)| (*id, p[1])).collect();
-        snapshot.elapsed = 30.0;
-        snapshot.processes[33].cpu = 50.0;
-        render(&mut scene, &snapshot, view("strata"), 30.0);
-        assert_eq!(scene.visible, 17, "a newly busy process earns a ridge");
-        for (id, y) in &rows {
-            assert_eq!(scene.positions[id][1], *y, "an existing ridge moved row");
-        }
-        let order: Vec<u8> = scene
-            .strata_rows()
-            .iter()
-            .map(|id| {
-                let kind = snapshot
-                    .processes
-                    .iter()
-                    .find(|p| p.id == *id)
-                    .unwrap()
-                    .kind;
-                [Kind::Kernel, Kind::System, Kind::Session, Kind::Container]
-                    .iter()
-                    .position(|&k| k == kind)
-                    .unwrap() as u8
-            })
-            .collect();
-        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "{order:?}");
-    }
-
-    #[test]
-    fn dishes_and_globe_talkers_keep_their_places() {
-        let mut snapshot = demo(10.0, 128);
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("cells"), 10.0);
-        let containers: Vec<(Identity, Point)> = snapshot
-            .processes
-            .iter()
-            .filter(|p| p.kind == Kind::Container)
-            .map(|p| (p.id, scene.positions[&p.id]))
-            .collect();
-        let session = snapshot
-            .processes
-            .iter()
-            .find(|p| p.kind == Kind::Session)
-            .unwrap()
-            .cgroup
-            .clone();
-        snapshot.units.get_mut(&session).unwrap().memory *= 400;
-        render(&mut scene, &snapshot, view("cells"), 10.1);
-        render(&mut scene, &snapshot, view("cells"), 10.2);
-        for (id, at) in &containers {
-            assert_eq!(scene.positions[id], *at, "the container dish moved");
-        }
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("globe"), 0.0);
-        let mut talkers: Vec<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
-        talkers.sort();
-        let before: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
-        snapshot.remotes.retain(|r| r.id != talkers[0]);
-        render(&mut scene, &snapshot, view("globe"), 0.0);
-        let after: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
-        assert_eq!(
-            before, after,
-            "a process closing its connections reshuffled the others"
-        );
-    }
-
-    #[test]
-    fn globe_shows_only_processes_with_remote_connections() {
-        let snapshot = demo(10.0, 128);
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("globe"), 10.0);
-        let talkers: HashSet<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
-        assert_eq!(scene.visible, talkers.len());
-        assert!(scene.positions.keys().all(|id| talkers.contains(id)));
-        let id = snapshot.remotes[0].id;
-        assert!(scene.notes[&id][0].contains(&snapshot.remotes[0].address.to_string()));
     }
 
     #[test]

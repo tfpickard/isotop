@@ -15,6 +15,7 @@ use crate::palette::{kind_color, tint};
 use crate::platform::Source;
 use crate::render::{Camera, Color, LOWEST_PITCH, NONE, Point, SCALE, Stage, mass_radius};
 use crate::simulation::hash;
+use crate::views::ViewModule;
 
 pub(crate) const RADIUS: f32 = 20.0;
 const SPIN_SECONDS: f32 = 300.0;
@@ -59,14 +60,9 @@ enum Spot {
     Address(IpAddr),
 }
 
-impl Globe {
+impl ViewModule for Globe {
     #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
-    pub fn draw(
-        &mut self,
-        stage: &mut Stage,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-    ) -> usize {
+    fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         if self.coast.is_empty() {
             self.coast = coastline();
         }
@@ -365,6 +361,21 @@ impl Globe {
         }
         talkers.len()
     }
+
+    /// The status legend, saying what the snapshot's platform leaves out.
+    fn legend(&self, snapshot: &Snapshot) -> String {
+        if snapshot.missing.contains(Source::SocketTraffic) {
+            format!(
+                " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
+                snapshot.geo
+            )
+        } else {
+            format!(
+                " Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}",
+                snapshot.geo
+            )
+        }
+    }
 }
 
 /// How far the earth has turned by `time` while it is free, in radians about its axis. The
@@ -553,21 +564,6 @@ fn coastline() -> Vec<Vec<[f32; 2]>> {
     lines
 }
 
-/// The status legend, saying what the snapshot's platform leaves out.
-pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(Source::SocketTraffic) {
-        format!(
-            " Arcs = TCP connections from home | no per-connection rates or RTT on macOS | {}",
-            snapshot.geo
-        )
-    } else {
-        format!(
-            " Arcs = TCP connections from home, brighter with traffic | cyan = mostly download, pink = mostly upload | {}",
-            snapshot.geo
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +618,11 @@ mod tests {
             camera.pitch,
             "a point already in view keeps the pitch"
         );
+    }
+
+    /// The legend of the view as the scene shows it with no process inspected.
+    fn legend(snapshot: &Snapshot) -> String {
+        Globe::default().legend(snapshot)
     }
 
     #[test]
@@ -1069,5 +1070,45 @@ mod tests {
             assert!((dot(north, north) - 1.0).abs() < 1e-5, "{up:?}");
             assert!(dot(east, north).abs() < 1e-5 && dot(east, up).abs() < 1e-5);
         }
+    }
+
+    /// Renders one 320 by 180 frame of the globe and rasterizes it.
+    fn render(scene: &mut crate::render::Scene, snapshot: &Snapshot, time: f32) {
+        let mut frame = scene.render(&crate::render::RenderInput::small(
+            snapshot,
+            view("globe"),
+            &Camera::default(),
+            time,
+        ));
+        frame.rasterize();
+    }
+
+    #[test]
+    fn globe_talkers_keep_their_places_when_one_closes_its_connections() {
+        let mut snapshot = demo(10.0, 128);
+        let mut scene = crate::render::Scene::new();
+        render(&mut scene, &snapshot, 0.0);
+        let mut talkers: Vec<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
+        talkers.sort();
+        let before: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
+        snapshot.remotes.retain(|r| r.id != talkers[0]);
+        render(&mut scene, &snapshot, 0.0);
+        let after: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
+        assert_eq!(
+            before, after,
+            "a process closing its connections reshuffled the others"
+        );
+    }
+
+    #[test]
+    fn globe_shows_only_processes_with_remote_connections() {
+        let snapshot = demo(10.0, 128);
+        let mut scene = crate::render::Scene::new();
+        render(&mut scene, &snapshot, 10.0);
+        let talkers: HashSet<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
+        assert_eq!(scene.visible, talkers.len());
+        assert!(scene.positions.keys().all(|id| talkers.contains(id)));
+        let id = snapshot.remotes[0].id;
+        assert!(scene.notes[&id][0].contains(&snapshot.remotes[0].address.to_string()));
     }
 }

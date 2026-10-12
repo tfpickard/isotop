@@ -11,6 +11,7 @@ use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::palette::{CONTAINER, tint};
 use crate::render::{Color, NONE, Point, Stage};
 use crate::simulation::{hash, sprout};
+use crate::views::ViewModule;
 
 /// Height of the water surface above the sand.
 const DEPTH: f32 = 14.0;
@@ -45,13 +46,8 @@ struct Swimmer {
     velocity: Point,
 }
 
-impl Reef {
-    pub fn draw(
-        &mut self,
-        stage: &mut Stage,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-    ) -> usize {
+impl ViewModule for Reef {
+    fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         let time = stage.time;
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1));
         self.last = Some(time);
@@ -207,6 +203,13 @@ impl Reef {
         shown
     }
 
+    /// The status legend.
+    fn legend(&self, _snapshot: &Snapshot) -> String {
+        " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into()
+    }
+}
+
+impl Reef {
     /// Rippled sand lit by caustics, kelp swaying at the edges, and light shafts from the surface.
     fn draw_seabed(&self, stage: &mut Stage, reach: f32, time: f32) {
         let camera = stage.camera;

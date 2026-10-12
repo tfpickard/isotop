@@ -16,6 +16,7 @@ use crate::render::{
     Color, NONE, Point, Stage, WARM, mass_radius, ring_bounds, without_apple_prefix,
 };
 use crate::simulation::sprout;
+use crate::views::ViewModule;
 
 const DISHES: [(Kind, &str, Color); 3] = [
     (Kind::System, "system services", SYSTEM),
@@ -68,13 +69,8 @@ struct Cell<'a> {
     named: bool,
 }
 
-impl Dishes {
-    pub fn draw(
-        &mut self,
-        stage: &mut Stage,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-    ) -> usize {
+impl ViewModule for Dishes {
+    fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         let time = stage.time;
         // Seats, cell sizes and places are reserved for every sampled process, drawn or not, so
         // focusing a subtree, or `--limit` hiding some, neither frees their seats nor drops their
@@ -231,6 +227,19 @@ impl Dishes {
         shown
     }
 
+    /// The status legend, saying what the snapshot's platform leaves out.
+    fn legend(&self, snapshot: &Snapshot) -> String {
+        if snapshot.missing.contains(Source::Cgroups) {
+            format!(
+                " Cell = {GROUP_LABEL}, size = memory | {WITHOUT_CGROUPS}, so no limits, quotas or pressure | organelles = processes"
+            )
+        } else {
+            " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
+        }
+    }
+}
+
+impl Dishes {
     /// Remembers when each cell's OOM kill count last rose. Every sampled cell is watched, shown
     /// or not, so a kill that happens while its cell is hidden does not burst when it comes back.
     fn watch_kills(&mut self, cells: &[Vec<Cell>; 3], time: f32) {
@@ -488,23 +497,17 @@ fn describe(cell: &Cell, nucleus: bool) -> Vec<String> {
     lines
 }
 
-/// The status legend, saying what the snapshot's platform leaves out.
-pub fn legend(snapshot: &Snapshot) -> String {
-    if snapshot.missing.contains(Source::Cgroups) {
-        format!(
-            " Cell = {GROUP_LABEL}, size = memory | {WITHOUT_CGROUPS}, so no limits, quotas or pressure | organelles = processes"
-        )
-    } else {
-        " Cell = cgroup, size = memory | dashed ring = memory limit | arc = CPU vs quota | trembling = pressure | red = throttled | burst = OOM kill | organelles = processes".into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::demo;
     use crate::render::{Camera, RenderInput, Scene, hiding};
     use crate::views::view;
+
+    /// The legend of the view as the scene shows it with no process inspected.
+    fn legend(snapshot: &Snapshot) -> String {
+        Dishes::default().legend(snapshot)
+    }
 
     #[test]
     fn legend_drops_limits_quotas_and_pressure_without_cgroups() {
@@ -880,6 +883,41 @@ mod tests {
         assert!(first.len() > 6);
         for _ in 0..8 {
             assert_eq!(order(), first);
+        }
+    }
+
+    #[test]
+    fn container_dishes_keep_their_places_when_a_session_cell_grows() {
+        let render = |scene: &mut Scene, snapshot: &Snapshot, time: f32| {
+            let mut frame = scene.render(&RenderInput::small(
+                snapshot,
+                view("cells"),
+                &Camera::default(),
+                time,
+            ));
+            frame.rasterize();
+        };
+        let mut snapshot = demo(10.0, 128);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, 10.0);
+        let containers: Vec<(Identity, Point)> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.kind == Kind::Container)
+            .map(|p| (p.id, scene.positions[&p.id]))
+            .collect();
+        let session = snapshot
+            .processes
+            .iter()
+            .find(|p| p.kind == Kind::Session)
+            .unwrap()
+            .cgroup
+            .clone();
+        snapshot.units.get_mut(&session).unwrap().memory *= 400;
+        render(&mut scene, &snapshot, 10.1);
+        render(&mut scene, &snapshot, 10.2);
+        for (id, at) in &containers {
+            assert_eq!(scene.positions[id], *at, "the container dish moved");
         }
     }
 }
