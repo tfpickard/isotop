@@ -191,7 +191,7 @@ Views that predate the contract do not all meet it. Verified in the tree, and tr
 | Flow | `dt` clamped to 0.1 s (runs in slow motion below 10 fps); one shared `XorShift32` seeded `GOLDEN_RATIO_32` | `render.rs` (`(time - flow.time).clamp(0.0, 0.1)`), `medium.rs` |
 | Reef | `dt` clamped to 0.1 s | `reef.rs` |
 | Cores | `dt` clamped to 0.5 s | `cores.rs` |
-| Ripple | its own clock with substeps (`Wave::advance`) | `medium.rs` |
+| Ripple | its own clock with CFL substeps | `medium.rs` |
 | Orbit | galaxy continuity decided by a frame counter (`galaxy_frame + 1 == frames`) | `render.rs` (`revolve`) |
 | Matrix | reads `$USER` | `matrix.rs` |
 | pid-only seeding | `hash::knuth(pid)` etc. at about ten sites | `palette.rs`, `reef.rs`, `render.rs`, `coop.rs`, `necropolis.rs` |
@@ -366,9 +366,10 @@ accounts for.
   their results enter the frame loop only as whole values merged at the sample boundary.
 * **Frame pacing.** Frame times in a live run are wall-clock and jitter. The animation clock is an `f32`
   sum of per-frame `elapsed`, so its resolution degrades as the run ages: the spacing of `f32` values near
-  $t$ is $2^{\lfloor\log_2 t\rfloor-23}$ seconds, 1 ms at about 2.3 hours, 7.8 ms at about 27 hours, 0.125 s
-  at 12 days. A `FixedStep` of 0.05 s sees quantised time past about five days, and a 0.1 s increment is
-  rounded past about 20 days (a derived limit, not an observed failure).
+  $t$ is $2^{\lfloor\log_2 t\rfloor-23}$ seconds: 1 ms from 2.3 hours, 7.8 ms from 18 hours, 0.0625 s from 6
+  days, 0.125 s from 12 days. A `FixedStep` of 0.05 s therefore sees time quantised coarser than its step past
+  about six days, and a 0.1 s frame increment is lost entirely past 24 days (a derived limit, not an observed
+  failure).
 * **The first live frame.** A live run sets `scene.intro = true`, so the first sample's processes get a birth
   time and grow in over `GROW_SECONDS = 0.9`; a headless run leaves births at negative infinity, so its frame
   is fully grown. Same code path, different declared initial condition.
