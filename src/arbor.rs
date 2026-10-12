@@ -20,6 +20,7 @@ use crate::render::{Color, Item, NONE, Point, SCALE, Stage, TourTarget, label_na
 use crate::simulation::{FixedStep, Rng, hash_identity, smoothstep};
 use crate::status::{missing_note, unreadable_note};
 use crate::terminal::clean_text;
+use crate::threads::Thread;
 use crate::views::ViewModule;
 
 /// Separates this view's draws of the identity hash from every other view's.
@@ -692,45 +693,93 @@ struct Leaf {
     angle: f32,
     size: f32,
     shade: f32,
-    /// CPU as a fraction of one core.
+    /// CPU as a fraction of one core: `measured` plus `unmeasured` of the process's per-thread
+    /// share, which a frame takes from the process as it is eased.
     cpu: f32,
+    measured: f32,
+    unmeasured: f32,
 }
 
-/// A leaf's id among its process's: the thread's id, a bucket of threads' number, or the number
-/// of a leaf drawn without thread data.
+/// A leaf's id among its process's: a thread's (tid, start), a bucket of threads' number, or the
+/// number of a leaf drawn without thread data.
 const BUCKET: u64 = 1 << 32;
 const UNLISTED: u64 = 2 << 32;
 
-/// The leaves a process hangs: `(id, cpu fraction)`, at most `cap`. Threads past the cap are
-/// bucketed by tid, and a bucket's leaf shows its mean CPU. A process with no thread list draws
-/// one leaf per thread, all shaded by `cpu / threads`.
-fn leaf_specs(process: &Process, cap: usize) -> Vec<(u64, f32)> {
-    let threads = process.threads.max(1) as f32;
-    let each = process.cpu / threads / 100.0;
+/// The id of the leaf of a thread: its tid, and 30 bits of its start time above the bucket flags,
+/// so a tid the system reuses is a new leaf.
+fn thread_leaf(thread: &Thread) -> u64 {
+    u64::from(thread.tid) | ((thread.start.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 34) << 34)
+}
+
+/// What one leaf shows of CPU: the mean of its threads' own readings, and the fraction of its
+/// threads with none, which show the process's CPU divided by its threads.
+#[derive(Clone, Copy, Debug)]
+struct Spec {
+    id: u64,
+    measured: f32,
+    unmeasured: f32,
+}
+
+impl Spec {
+    /// CPU as a fraction of one core, given the process's share per thread.
+    fn cpu(&self, each: f32) -> f32 {
+        self.measured + self.unmeasured * each
+    }
+}
+
+/// A process's CPU per thread, as a fraction of one core.
+fn each_cpu(process: &Process) -> f32 {
+    process.cpu / process.threads.max(1) as f32 / 100.0
+}
+
+/// The leaves a process hangs, at most `cap`. Threads past the cap are bucketed by tid, and a
+/// bucket's leaf shows its mean CPU. A process with no thread list draws one leaf per thread, all
+/// shaded by `cpu / threads`.
+fn leaf_specs(process: &Process, cap: usize) -> Vec<Spec> {
     match &process.thread_list {
         Measured::Known(list) if !list.threads.is_empty() => {
-            let share = |cpu: Option<f32>| cpu.map_or(each, |cpu| cpu / 100.0);
+            let reading = |thread: &Thread| thread.cpu.map(|cpu| cpu / 100.0);
             if list.threads.len() <= cap {
                 list.threads
                     .iter()
-                    .map(|thread| (u64::from(thread.tid), share(thread.cpu)))
+                    .map(|thread| {
+                        let (measured, unmeasured) =
+                            reading(thread).map_or((0.0, 1.0), |cpu| (cpu, 0.0));
+                        Spec {
+                            id: thread_leaf(thread),
+                            measured,
+                            unmeasured,
+                        }
+                    })
                     .collect()
             } else {
-                let mut sums = vec![(0.0_f32, 0_u32); cap];
+                // Per bucket: the sum of the readings, the threads without one, all its threads.
+                let mut sums = vec![(0.0_f32, 0_u32, 0_u32); cap];
                 for thread in list.threads.iter() {
                     let bucket = &mut sums[thread.tid as usize % cap];
-                    bucket.0 += share(thread.cpu);
-                    bucket.1 += 1;
+                    match reading(thread) {
+                        Some(cpu) => bucket.0 += cpu,
+                        None => bucket.1 += 1,
+                    }
+                    bucket.2 += 1;
                 }
                 sums.iter()
                     .enumerate()
-                    .filter(|(_, (_, members))| *members > 0)
-                    .map(|(bucket, &(sum, members))| (BUCKET | bucket as u64, sum / members as f32))
+                    .filter(|(_, (_, _, members))| *members > 0)
+                    .map(|(bucket, &(sum, unread, members))| Spec {
+                        id: BUCKET | bucket as u64,
+                        measured: sum / members as f32,
+                        unmeasured: unread as f32 / members as f32,
+                    })
                     .collect()
             }
         }
         _ => (0..(process.threads.max(1) as usize).min(cap))
-            .map(|leaf| (UNLISTED | leaf as u64, each))
+            .map(|leaf| Spec {
+                id: UNLISTED | leaf as u64,
+                measured: 0.0,
+                unmeasured: 1.0,
+            })
             .collect(),
     }
 }
@@ -744,12 +793,26 @@ fn leaf_demand(process: &Process) -> usize {
 }
 
 /// The per-twig cap: `LEAVES_PER_TWIG`, lowered for every twig alike until the scene holds at
-/// most `LEAF_CAP` leaves.
+/// most `LEAF_CAP` leaves. It stops at one; `sampled_twigs` keeps the twigs that fit then.
 fn twig_cap(demands: impl Iterator<Item = usize> + Clone) -> usize {
     (1..=LEAVES_PER_TWIG)
         .rev()
         .find(|&cap| demands.clone().map(|demand| demand.min(cap)).sum::<usize>() <= LEAF_CAP)
         .unwrap_or(1)
+}
+
+/// Which of `twigs` (a process and the node it hangs on) hang leaves when one leaf each would
+/// still pass `LEAF_CAP`: the `LEAF_CAP` with the lowest hash of their identity, so the choice is
+/// the same every sample and a process that stays keeps its leaves. All of them otherwise.
+fn sampled_twigs(twigs: Vec<(Identity, usize)>) -> Vec<usize> {
+    let mut twigs = twigs;
+    if twigs.len() > LEAF_CAP {
+        twigs.sort_by_key(|&(id, _)| (hash_identity(id, SALT ^ 0x5a3d), id));
+        twigs.truncate(LEAF_CAP);
+    }
+    let mut nodes: Vec<usize> = twigs.into_iter().map(|(_, node)| node).collect();
+    nodes.sort_unstable();
+    nodes
 }
 
 /// The colour of a leaf that is using `cpu` of one core: green idle, through yellow, to red.
@@ -984,6 +1047,14 @@ impl Sway {
     }
 }
 
+/// The threads a sample listed for a process, by `(tid, start)`, and the leaf each hung on.
+/// Only a complete list says which threads are gone: one cut short by a cap or the scan's budget
+/// does not list every thread there is.
+struct Listing {
+    complete: bool,
+    leaves: HashMap<(u32, u64), u64>,
+}
+
 /// What the view remembers between frames.
 #[derive(Default)]
 pub struct Arbor {
@@ -994,7 +1065,7 @@ pub struct Arbor {
     /// Every leaf of the last sample, by its process and id, and the leaf each listed thread
     /// hung on.
     memo: HashMap<(Identity, u64), Memo>,
-    listed: HashMap<Identity, HashMap<u32, u64>>,
+    listed: HashMap<Identity, Listing>,
     falls: Vec<Fall>,
     sway: Sway,
     /// Pale branches drawn and whether the trunk is PID 1, for the legend.
@@ -1035,7 +1106,13 @@ impl Arbor {
             .processes
             .iter()
             .map(|process| Key::Process(process.id))
-            .chain(shadows.iter().map(|shadow| Key::Shadow(shadow.pid)))
+            // Focus hides the pale branches without ending them: their seats stay.
+            .chain(
+                snapshot
+                    .shadows
+                    .iter()
+                    .map(|shadow| Key::Shadow(shadow.pid)),
+            )
             .collect();
         self.slots.forget(&alive);
         self.tree = Tree::build(processes, shadows, &mut self.slots);
@@ -1059,6 +1136,16 @@ impl Arbor {
         self.hang_leaves(time, processes, &present);
     }
 
+    /// Brings the colour of the leaves that borrow their process's CPU up to the figure the scene
+    /// has eased it to this frame, without touching the tree.
+    fn ease_leaves(&mut self, processes: &[&Process]) {
+        for leaf in &mut self.leaves {
+            if leaf.unmeasured > 0.0 {
+                leaf.cpu = leaf.measured + leaf.unmeasured * each_cpu(processes[leaf.owner]);
+            }
+        }
+    }
+
     /// Hangs this sample's leaves and lets those of the last sample that are gone fall.
     fn hang_leaves(&mut self, time: f32, processes: &[&Process], present: &HashSet<Identity>) {
         let eligible = |node: &Node| {
@@ -1067,42 +1154,48 @@ impl Arbor {
                     .process
                     .is_some_and(|slot| processes[slot].state != 'Z')
         };
-        let cap = twig_cap(
-            self.tree
-                .nodes
-                .iter()
-                .filter(|node| eligible(node))
-                .filter_map(|node| node.process)
-                .map(|slot| leaf_demand(processes[slot])),
-        );
+        let twigs: Vec<(Identity, usize)> = self
+            .tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| eligible(node))
+            .filter_map(|(index, node)| Some((processes[node.process?].id, index)))
+            .collect();
+        let hanging = sampled_twigs(twigs);
+        let cap = twig_cap(hanging.iter().filter_map(|&index| {
+            self.tree.nodes[index]
+                .process
+                .map(|slot| leaf_demand(processes[slot]))
+        }));
         let mut leaves = Vec::new();
         let mut memo = HashMap::new();
-        let mut listed: HashMap<Identity, HashMap<u32, u64>> = HashMap::new();
-        for (index, node) in self.tree.nodes.iter().enumerate() {
-            if !eligible(node) {
-                continue;
-            }
+        let mut listed: HashMap<Identity, Listing> = HashMap::new();
+        for index in hanging {
+            let node = &self.tree.nodes[index];
             let slot = node.process.expect("an eligible node is a process");
             let process = processes[slot];
-            let specs = leaf_specs(process, cap);
-            for &(id, cpu) in &specs {
-                let (s, offset, angle, size, shade) = place_leaf(node, process, id);
+            let each = each_cpu(process);
+            for spec in leaf_specs(process, cap) {
+                let (s, offset, angle, size, shade) = place_leaf(node, process, spec.id);
                 let leaf = Leaf {
                     node: index,
                     owner: slot,
-                    key: (process.id, id),
+                    key: (process.id, spec.id),
                     s,
                     offset,
                     angle,
                     size,
                     shade,
-                    cpu,
+                    cpu: spec.cpu(each),
+                    measured: spec.measured,
+                    unmeasured: spec.unmeasured,
                 };
                 memo.insert(
                     leaf.key,
                     Memo {
                         position: add(node.point(s), offset),
-                        color: leaf_color(cpu),
+                        color: leaf_color(leaf.cpu),
                     },
                 );
                 leaves.push(leaf);
@@ -1113,17 +1206,21 @@ impl Arbor {
                 let bucketed = list.threads.len() > cap;
                 listed.insert(
                     process.id,
-                    list.threads
-                        .iter()
-                        .map(|thread| {
-                            let id = if bucketed {
-                                BUCKET | (u64::from(thread.tid) % cap as u64)
-                            } else {
-                                u64::from(thread.tid)
-                            };
-                            (thread.tid, id)
-                        })
-                        .collect(),
+                    Listing {
+                        complete: list.complete,
+                        leaves: list
+                            .threads
+                            .iter()
+                            .map(|thread| {
+                                let id = if bucketed {
+                                    BUCKET | (u64::from(thread.tid) % cap as u64)
+                                } else {
+                                    thread_leaf(thread)
+                                };
+                                ((thread.tid, thread.start), id)
+                            })
+                            .collect(),
+                    },
                 );
             }
         }
@@ -1148,14 +1245,23 @@ impl Arbor {
                 (ids, EXIT_FALLS)
             } else if let (Some(before), Some(after)) = (old_listed.get(&id), self.listed.get(&id))
             {
-                // Each listed thread that is gone drops a leaf from where it hung.
-                let mut gone: Vec<u32> = before
-                    .keys()
-                    .filter(|tid| !after.contains_key(tid))
-                    .copied()
-                    .collect();
-                gone.sort_unstable();
-                (gone.iter().map(|tid| before[tid]).collect(), THREAD_FALLS)
+                // Each listed thread that is gone drops a leaf from where it hung, when both
+                // lists are whole: a list cut short says nothing of the threads it left out.
+                if before.complete && after.complete {
+                    let mut gone: Vec<(u32, u64)> = before
+                        .leaves
+                        .keys()
+                        .filter(|thread| !after.leaves.contains_key(thread))
+                        .copied()
+                        .collect();
+                    gone.sort_unstable();
+                    (
+                        gone.iter().map(|thread| before.leaves[thread]).collect(),
+                        THREAD_FALLS,
+                    )
+                } else {
+                    (Vec::new(), 0)
+                }
             } else if hung.contains(&id)
                 && !old_listed.contains_key(&id)
                 && !self.listed.contains_key(&id)
@@ -1459,16 +1565,20 @@ impl Arbor {
         }
     }
 
-    fn paint_leaves(&self, stage: &mut Stage, scene: &Drawing) {
+    /// Draws the leaves, and returns where each hangs in this frame's wind, in `self.leaves`
+    /// order, culled or not.
+    fn paint_leaves(&self, stage: &mut Stage, scene: &Drawing) -> Vec<Point> {
         let Drawing {
             processes, pose, ..
         } = scene;
         let camera = stage.camera;
         let zoom = camera.zoom * SCALE;
         let (width, height) = (stage.frame.width as f32, stage.frame.height as f32);
+        let mut places = Vec::with_capacity(self.leaves.len());
         for leaf in &self.leaves {
             let process = processes[leaf.owner];
             let at = pose.point(leaf.node, leaf.s, leaf.offset);
+            places.push(at);
             let [x, y, depth] = stage.frame.project(camera, at);
             let reach = LEAF_HALF_LENGTH * leaf.size * zoom * 1.5;
             if x < -reach || x > width + reach || y < -reach || y > height + reach {
@@ -1492,6 +1602,7 @@ impl Arbor {
                     .push(Item::Triangle(triangle, color, leaf.owner as u32));
             }
         }
+        places
     }
 
     fn paint_falls(&self, stage: &mut Stage) {
@@ -1719,6 +1830,7 @@ impl Arbor {
 impl ViewModule for Arbor {
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         self.observe(stage.time, stage.focus.is_some(), processes, snapshot);
+        self.ease_leaves(processes);
         stage
             .bounds
             .extend(ring_bounds([0.0, 0.0], FIT_RADIUS, -SOIL_DEPTH, FIT_TOP));
@@ -1745,10 +1857,17 @@ impl ViewModule for Arbor {
             pose: &pose,
         };
         self.paint_branches(stage, &scene);
-        self.paint_leaves(stage, &scene);
+        let hung = self.paint_leaves(stage, &scene);
         self.paint_falls(stage);
         self.paint_blossoms(stage, &scene);
         self.report(stage, &scene);
+        // What the next sample lets fall starts from where the leaf was drawn, wind and all.
+        for (leaf, at) in self.leaves.iter().zip(hung) {
+            if let Some(memo) = self.memo.get_mut(&leaf.key) {
+                memo.position = at;
+                memo.color = leaf_color(leaf.cpu);
+            }
+        }
         self.tree
             .nodes
             .iter()
@@ -1854,13 +1973,19 @@ mod tests {
 
     /// A process with the given threads, each using `cpu` percent.
     fn with_threads(process: Process, tids: &[u32], cpu: f32) -> Process {
-        let threads: Vec<Thread> = tids
+        let incarnations: Vec<(u32, u64)> = tids.iter().map(|&tid| (tid, u64::from(tid))).collect();
+        with_incarnations(process, &incarnations, Some(cpu))
+    }
+
+    /// A process with the given `(tid, start)` threads, each using `cpu` percent where known.
+    fn with_incarnations(process: Process, threads: &[(u32, u64)], cpu: Option<f32>) -> Process {
+        let threads: Vec<Thread> = threads
             .iter()
-            .map(|&tid| Thread {
+            .map(|&(tid, start)| Thread {
                 tid,
-                start: u64::from(tid),
+                start,
                 name: format!("t{tid}"),
-                cpu: Some(cpu),
+                cpu,
                 state: 'S',
                 leader: false,
             })
@@ -1870,6 +1995,20 @@ mod tests {
             thread_list: Measured::Known(ThreadList {
                 threads: Arc::from(threads),
                 complete: true,
+            }),
+            ..process
+        }
+    }
+
+    /// `process` with its thread list cut short, as a scan that ran out of budget leaves it.
+    fn cut_short(process: Process) -> Process {
+        let Measured::Known(list) = process.thread_list else {
+            panic!("a thread list to cut short");
+        };
+        Process {
+            thread_list: Measured::Known(ThreadList {
+                complete: false,
+                ..list
             }),
             ..process
         }
@@ -2566,6 +2705,266 @@ mod tests {
         draw(&mut scene, &snapshot_of(crowd), 10.0);
         draw(&mut scene, &snapshot_of(vec![process(1, 0)]), 11.0);
         assert_eq!(arbor(&scene).falls.len(), FALLEN_CAP);
+    }
+
+    #[test]
+    fn threads_missing_from_an_incomplete_list_do_not_fall() {
+        let full = [50, 51, 52, 53, 54, 55];
+        let short = [50, 51, 52];
+        let cut = |tids: &[u32]| {
+            snapshot_of(vec![
+                process(1, 0),
+                cut_short(with_threads(process(50, 1), tids, 30.0)),
+            ])
+        };
+        // A scan that stopped partway lists fewer threads, and none of the rest has exited.
+        let mut scene = Scene::new();
+        draw(&mut scene, &pool(&full), 10.0);
+        draw(&mut scene, &cut(&short), 11.0);
+        assert!(arbor(&scene).falls.is_empty());
+        // Nor does the full list that follows say anything of the short one before it.
+        let mut scene = Scene::new();
+        draw(&mut scene, &cut(&full), 10.0);
+        draw(&mut scene, &pool(&short), 11.0);
+        assert!(arbor(&scene).falls.is_empty());
+        let mut scene = Scene::new();
+        draw(&mut scene, &cut(&full), 10.0);
+        draw(&mut scene, &cut(&short), 11.0);
+        assert!(arbor(&scene).falls.is_empty());
+        // Between whole lists the missing threads fall.
+        let mut scene = Scene::new();
+        draw(&mut scene, &pool(&full), 10.0);
+        draw(&mut scene, &pool(&short), 11.0);
+        assert_eq!(arbor(&scene).falls.len(), 3);
+    }
+
+    #[test]
+    fn a_reused_thread_id_is_a_new_leaf_and_the_old_one_falls() {
+        let at = |start: u64, elapsed: f64| {
+            let mut snapshot = snapshot_of(vec![
+                process(1, 0),
+                with_incarnations(process(50, 1), &[(50, 1), (51, start)], Some(30.0)),
+            ]);
+            snapshot.elapsed = elapsed;
+            snapshot
+        };
+        let mut scene = Scene::new();
+        draw(&mut scene, &at(7, 1.0), 10.0);
+        let before: HashSet<u64> = arbor(&scene)
+            .leaves
+            .iter()
+            .filter(|leaf| leaf.key.0.pid == 50)
+            .map(|leaf| leaf.key.1)
+            .collect();
+        draw(&mut scene, &at(7, 2.0), 11.0);
+        assert!(arbor(&scene).falls.is_empty(), "the same thread stays put");
+        // The thread with tid 51 exits and another takes the tid before the next sample.
+        draw(&mut scene, &at(9, 3.0), 12.0);
+        let state = arbor(&scene);
+        assert_eq!(state.falls.len(), 1, "the old thread's leaf falls");
+        let after: HashSet<u64> = state
+            .leaves
+            .iter()
+            .filter(|leaf| leaf.key.0.pid == 50)
+            .map(|leaf| leaf.key.1)
+            .collect();
+        assert_eq!(after.len(), 2);
+        assert_eq!(
+            after.intersection(&before).count(),
+            1,
+            "the other thread keeps its leaf"
+        );
+        assert_eq!(leaves_of_fifty(&scene), 2);
+    }
+
+    #[test]
+    fn focus_does_not_make_the_pale_branches_forget_their_seats() {
+        let mut snapshot = snapshot_of(vec![
+            process(1, 0),
+            process(100, 500),
+            process(101, 500),
+            process(102, 1),
+        ]);
+        snapshot.shadows = vec![Shadow {
+            pid: 500,
+            parent: 1,
+            name: "root-daemon".into(),
+        }];
+        let tips = |scene: &Scene| -> HashMap<Key, Point> {
+            arbor(scene)
+                .tree
+                .nodes
+                .iter()
+                .map(|node| (node.key(), node.point(1.0)))
+                .collect()
+        };
+        let camera = Camera::default();
+        let mut scene = Scene::new();
+        scene.render(&RenderInput::small(&snapshot, view(), &camera, 1.0));
+        let before = tips(&scene);
+        assert!(before.contains_key(&Key::Shadow(500)));
+        let mut focused = RenderInput::small(&snapshot, view(), &camera, 2.0);
+        focused.focus = Some(snapshot.processes[1].id);
+        scene.render(&focused);
+        assert_eq!(arbor(&scene).pale, 0);
+        scene.render(&RenderInput::small(&snapshot, view(), &camera, 3.0));
+        assert_eq!(tips(&scene), before, "nothing moved when the focus cleared");
+    }
+
+    #[test]
+    fn more_twigs_than_the_leaf_cap_hang_a_stable_sample_of_one_leaf_each() {
+        let crowd = |skipped: Option<u32>| {
+            let mut processes = vec![process(1, 0)];
+            for pid in 10..(10 + LEAF_CAP as u32 + 100) {
+                if Some(pid) != skipped {
+                    processes.push(process(pid, 1));
+                }
+            }
+            snapshot_of(processes)
+        };
+        let camera = Camera::default();
+        let mut scene = Scene::new();
+        let render = |scene: &mut Scene, snapshot: &Snapshot, time: f32| {
+            let mut input = RenderInput::small(snapshot, view(), &camera, time);
+            input.limit = 10_000;
+            scene.render(&input);
+        };
+        render(&mut scene, &crowd(None), 1.0);
+        let state = arbor(&scene);
+        assert_eq!(state.leaves.len(), LEAF_CAP);
+        let hung: HashSet<Identity> = state.leaves.iter().map(|leaf| leaf.key.0).collect();
+        assert_eq!(
+            hung.len(),
+            LEAF_CAP,
+            "one leaf for each twig that hangs any"
+        );
+        // A twig that had no leaf exits: the others keep theirs.
+        let bare = (10..(10 + LEAF_CAP as u32 + 100))
+            .find(|&pid| {
+                !hung.contains(&Identity {
+                    pid,
+                    start: u64::from(pid),
+                })
+            })
+            .expect("a twig without a leaf");
+        render(&mut scene, &crowd(Some(bare)), 2.0);
+        let again: HashSet<Identity> = arbor(&scene).leaves.iter().map(|leaf| leaf.key.0).collect();
+        assert_eq!(again.len(), LEAF_CAP);
+        assert!(again.is_superset(&hung) && hung.is_superset(&again));
+        assert!(
+            arbor(&scene).falls.is_empty(),
+            "leaves left out do not fall"
+        );
+    }
+
+    #[test]
+    fn a_falling_leaf_starts_from_where_the_wind_had_it() {
+        let mut snapshot = pool(&[50, 51, 52, 53, 54, 55]);
+        snapshot.pressure = [80.0, 0.0, 0.0];
+        let mut scene = Scene::new();
+        for frame in 0..80 {
+            draw(&mut scene, &snapshot, 10.0 + frame as f32 * 0.1);
+        }
+        // Where the last frame drew each leaf, from the wind it had then.
+        let state = arbor(&scene);
+        let bases = state.sway.bases(&state.tree);
+        let pose = Pose {
+            tree: &state.tree,
+            bases: &bases,
+            motion: &state.sway.motion,
+        };
+        let drawn: HashMap<u64, Point> = state
+            .leaves
+            .iter()
+            .map(|leaf| (leaf.key.1, pose.point(leaf.node, leaf.s, leaf.offset)))
+            .collect();
+        let rest: HashMap<u64, Point> = state
+            .leaves
+            .iter()
+            .map(|leaf| {
+                let node = &state.tree.nodes[leaf.node];
+                (leaf.key.1, add(node.point(leaf.s), leaf.offset))
+            })
+            .collect();
+        let mut next = pool(&[50, 51, 52]);
+        next.pressure = snapshot.pressure;
+        next.elapsed = 1.0;
+        draw(&mut scene, &next, 18.0);
+        let state = arbor(&scene);
+        assert_eq!(state.falls.len(), 3);
+        let kept: HashSet<u64> = state.leaves.iter().map(|leaf| leaf.key.1).collect();
+        let gone: Vec<u64> = drawn
+            .keys()
+            .filter(|id| !kept.contains(id))
+            .copied()
+            .collect();
+        assert_eq!(gone.len(), 3);
+        let mut starts: Vec<Point> = state.falls.iter().map(|fall| fall.from).collect();
+        let mut wanted: Vec<Point> = gone.iter().map(|id| drawn[id]).collect();
+        let order = |a: &Point, b: &Point| a.partial_cmp(b).expect("finite");
+        starts.sort_by(order);
+        wanted.sort_by(order);
+        assert_eq!(starts, wanted, "each leaf falls from where it was drawn");
+        assert!(
+            gone.iter().any(|id| drawn[id] != rest[id]),
+            "the wind had moved them off their rest points"
+        );
+    }
+
+    #[test]
+    fn leaves_without_thread_readings_follow_the_cpu_the_scene_eases() {
+        let idle = snapshot_of(vec![
+            process(1, 0),
+            Process {
+                threads: 4,
+                cpu: 0.0,
+                ..process(50, 1)
+            },
+        ]);
+        let mut busy = idle.clone();
+        busy.processes[1].cpu = 400.0;
+        busy.elapsed = 1.0;
+        let mut scene = Scene::new();
+        draw(&mut scene, &idle, 10.0);
+        let cpus = |scene: &Scene| -> Vec<f32> {
+            arbor(scene)
+                .leaves
+                .iter()
+                .filter(|leaf| leaf.key.0.pid == 50)
+                .map(|leaf| leaf.cpu)
+                .collect()
+        };
+        assert!(cpus(&scene).iter().all(|&cpu| cpu == 0.0));
+        draw(&mut scene, &busy, 10.5);
+        let early = cpus(&scene)[0];
+        let signature = arbor(&scene).signature;
+        let place = rest_places(&scene);
+        draw(&mut scene, &busy, 12.0);
+        let later = cpus(&scene)[0];
+        assert!(early > 0.0 && later > early, "{early} then {later}");
+        assert!(later < 1.0, "still easing: {later}");
+        assert_eq!(
+            arbor(&scene).signature,
+            signature,
+            "the tree was not rebuilt"
+        );
+        assert_eq!(rest_places(&scene), place);
+        // A thread without a reading of its own does the same.
+        let listed = |cpu: f32| {
+            let mut snapshot = snapshot_of(vec![
+                process(1, 0),
+                with_incarnations(process(50, 1), &[(50, 50), (51, 51)], None),
+            ]);
+            snapshot.processes[1].cpu = cpu;
+            snapshot.elapsed = f64::from(cpu);
+            snapshot
+        };
+        let mut scene = Scene::new();
+        draw(&mut scene, &listed(0.0), 10.0);
+        draw(&mut scene, &listed(200.0), 10.5);
+        let early = cpus(&scene)[0];
+        draw(&mut scene, &listed(200.0), 12.0);
+        assert!(cpus(&scene)[0] > early);
     }
 
     /// The pixels of every triangle that picks `slot`: their colours.
