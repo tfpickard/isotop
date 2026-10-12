@@ -491,14 +491,6 @@ pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         links: LinkRule::All,
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#116",
-                reason: "pebble clusters are placed again when memory grows their pebbles",
-            }],
-            ..Contract::DEFAULT
-        },
         ..ViewInfo::new(
             "ripple",
             "RIPPLE",
