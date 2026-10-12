@@ -29,7 +29,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -179,6 +179,7 @@ cache is stale.
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
+| CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -211,8 +212,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the seventeen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon and murmuration are reached with Tab, Shift+Tab,
+the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
@@ -652,6 +653,44 @@ Every thread is a starling in one flock over a roost at dusk, and every process 
 
 On macOS the threads and their CPU are read as on Linux, but there is no count of OOM kills: the falcon comes from memory pressure only, where the kernel's level (warning reads 25, critical 75) stands in for the stall percentage. See [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
 
+### Arbor
+
+![Arbor: the process tree as a great tree at dusk, a thick trunk branching in golden-angle slots, a canopy of green and red leaves with pink blossoms, fallen leaves on a cut-away slab of soil and blue roots under it](docs/media/arbor.webp)
+
+The process tree drawn as a tree: PID 1 is the trunk, its descendants are the branches, the threads are the leaves and the kernel threads are the roots under the soil.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Branch thickness | Memory (RSS; the physical footprint on macOS), summed over the process and every process below it | Leonardo's rule: radius r = 1.6 sqrt(A / A_trunk) world units, A the subtree memory, never under 0.05. Along a branch the area before each junction is the node's own memory plus every child attached further out, so at a fork the area of the branch equals the areas of what leaves it |
+| Branch | A process, and `Process::parent` | The trunk is PID 1, or the root of the subtree with the most processes where there is no PID 1. A process whose parent is not drawn hangs on the trunk |
+| Where a branch leaves its parent | The order in which the parent was first seen to have it, by start time | Child number k of a parent (a counter that only rises, so a branch that exits frees nothing) leaves at azimuth k x 137.5 degrees round the parent, at 0.35 + 0.6 (1 - 0.8^(k + 1)) of its length, 50 degrees off the parent's axis for the trunk's children and 40 degrees deeper. A reparented process takes a new slot on its new parent |
+| Branch length | Depth in the tree | 14 x 0.78^depth world units |
+| Leaf | One thread (`Process::thread_list`, read while arbor is shown) | At most 32 leaves to a twig: above that the threads are bucketed by tid, and a bucket's leaf shows the bucket's mean. At most 6,000 leaves in all, the cap per twig falling for every twig alike. A process whose threads are not read draws one leaf per `Process::threads`, all shaded by its CPU divided by its threads |
+| Leaf colour | The thread's CPU, percent of one core | Green (74, 150, 72) when idle, (104, 170, 70) at 8%, yellow (214, 196, 60) at 30%, orange (236, 120, 44) at 60% and red (220, 52, 44) at a whole core |
+| Blossom | A process the scene first saw after its first frame | Six blossoms at the twig for 5 s: open over 0.7 s, closed again over the last 0.8 s. Processes that were running when isotop started never blossom |
+| Falling leaf | A thread that is gone | Falls for 4 s, drifting downwind and fluttering, rests on the soil for 30 s and goes. A process that exits drops all its leaves (at most 32), a thread of a live process drops one (at most 8 a sample). At most 400 leaves fall or rest at once |
+| Zombie | A process in state Z | A bare grey twig (128, 128, 128) with no leaves |
+| Root | A kernel process that is top-level or a child of the trunk, with its subtree | Grows downwards under the soil. **Root thickness is the number of kernel threads**: kernel threads have no memory to speak of, so r = 0.88 sqrt(n / N) with n the kernel threads of the root and N those of all roots |
+| Root tip glow | The kernel thread's CPU | Strength 0.2 + 0.5 x p / (p + 6), p percent of a core |
+| Wind | CPU pressure (some, 10 s average) | w = p / (p + 20), followed with a time constant of 1.5 s; the legend names `wind = CPU pressure N%`. With no pressure the air is still and nothing sways |
+| Sway | Each branch's length and thickness, and the wind | A damped oscillator in the ground plane, stiffer for thick branches and softer for long ones: f = clamp(0.6 sqrt(r / 0.18) / sqrt(L / 6), 0.15, 3) Hz, damping ratio 0.12, pulled towards a gust of w x 0.09 L (a steady push along the wind and two gusts of unrelated periods). The gust's phase is seeded by the branch's identity; a child leaves its parent where the parent has swayed to |
+| Pale branch | A parent isotop can see but not measure (`Snapshot::shadows`, another user's process) | Drawn with no memory of its own, so its thickness is what it carries, pale and not pickable |
+| Bark and leaf shading | The one light every lit surface shares (`render::shared::LIGHT`) | Each face of a branch is 0.35 + 0.65 max(n . LIGHT, 0) bright; a leaf takes the outward direction from the crown as its normal |
+
+**Decorative:** the dusk sky, the soil slab, its strata and the checkered lawn on it, the colours of bark, roots, soil and blossoms, the number of sides of a branch (8, 6 or 4 by its thickness on the screen), the upward bend and wobble of each branch (seeded by its identity), the shape, size (0.8 to 1.2), tilt and brightness of each leaf and where it hangs on its twig (seeded by process and thread id), the heading of the wind and the steady push in it, and the flutter of falling leaves.
+
+**Layout.** A branch's place depends on the tree and nothing else: the slot, the parent's own place and the branch's seed. CPU, memory and population never move a branch, and a process that stays keeps its slot while others come and go.
+
+**Simulation.** The wind steps at a fixed 0.05 s (at most 10 steps a frame, a gap of more than 0.5 s counted as 0.5 s) whatever the frame rate, and holds still while paused. Falling leaves and blossoms are closed forms of the time since they began, so they follow the same path at any frame rate. The tree is rebuilt once per sample, and each frame runs only the wind and the projection.
+
+**Caps.** At most 32 leaves to a twig, 6,000 leaves, 400 fallen leaves, and one step of radius for every 2% of a branch where children leave it (hundreds of children are a few tube pieces).
+
+**What cannot be measured.** Another user's threads are unreadable without privileges, and until the first pass has read the threads (up to two seconds after the view opens) leaves are shaded by their process's CPU; the legend counts them or says `no threads: leaves use process CPU`. Without CPU pressure the legend says `no cpu pressure: still air`, without kernel threads `no kernel threads reported: no roots`.
+
+**Platform.** On Linux everything above, and pale branches appear when isotop does not run as root. On macOS the tree, the areas, the leaves, the blossoms and the falling leaves are as on Linux; without sudo launchd is the pale trunk; there is no CPU pressure and no thread of the kernel (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)).
+
+Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -750,7 +789,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -847,7 +886,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -859,7 +898,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-58,097 lines of Rust (34,201 production, 23,896 test) in 59 files, 792 tests, 17 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+60,840 lines of Rust (35,851 production, 24,989 test) in 60 files, 814 tests, 18 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

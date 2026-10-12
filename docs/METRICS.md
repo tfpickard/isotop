@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 59 | 58,083 | 1,303 | 3,330 |
-| Python | 28 | 12,273 | 634 | 1,412 |
+| Rust | 60 | 60,826 | 1,356 | 3,456 |
+| Python | 28 | 12,282 | 634 | 1,412 |
 | WebGPU Shader Language | 1 | 212 | 17 | 34 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,448 | 516 |
+| Markdown | 6 | 0 | 2,477 | 527 |
 | Plain Text | 7 | 0 | 302 | 0 |
-| **Total** | **105** | **70,634** | **4,705** | **5,303** |
+| **Total** | **106** | **73,386** | **4,787** | **5,440** |
 
 ## Rust by module
 
@@ -22,11 +22,12 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/render.rs` | 3,349 | 1,496 |
-| `src/model.rs` | 3,093 | 3,898 |
+| `src/render.rs` | 3,359 | 1,496 |
+| `src/model.rs` | 3,127 | 4,015 |
 | `src/coop.rs` | 2,706 | 1,363 |
 | `src/necropolis.rs` | 1,995 | 610 |
-| `src/main.rs` | 1,979 | 2,816 |
+| `src/main.rs` | 1,980 | 2,816 |
+| `src/arbor.rs` | 1,577 | 935 |
 | `src/cortex.rs` | 1,220 | 540 |
 | `src/platform/macos/mod.rs` | 1,197 | 609 |
 | `src/tesseract.rs` | 1,053 | 561 |
@@ -34,7 +35,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/murmuration.rs` | 925 | 782 |
 | `src/gpu.rs` | 852 | 145 |
 | `src/horizon/disk.rs` | 796 | 274 |
-| `src/views.rs` | 723 | 619 |
+| `src/views.rs` | 752 | 660 |
 | `src/simulation.rs` | 647 | 762 |
 | `src/platform/linux/mod.rs` | 609 | 370 |
 | `src/platform/macos/ffi.rs` | 594 | 12 |
@@ -51,7 +52,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/cells.rs` | 457 | 339 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
-| `src/render/strokes.rs` | 383 | 317 |
+| `src/render/strokes.rs` | 386 | 317 |
 | `src/platform/linux/net.rs` | 320 | 278 |
 | `src/matrix.rs` | 299 | 219 |
 | `src/blackbody.rs` | 292 | 146 |
@@ -75,13 +76,13 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/journal.rs` | 101 | 53 |
 | `src/platform/linux/threads.rs` | 101 | 100 |
 | `src/platform/linux/memory.rs` | 86 | 121 |
-| `src/render/shared.rs` | 78 | 47 |
 | `src/palette.rs` | 75 | 58 |
+| `src/render/shared.rs` | 74 | 47 |
 | `src/geometry.rs` | 50 | 15 |
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **34,201** | **23,896** |
+| **Total** | **35,851** | **24,989** |
 
 ## Largest files
 
@@ -89,16 +90,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 8,219 | over limit |
-| `src/render.rs` | 5,453 | over limit |
-| `src/main.rs` | 5,286 | over limit |
+| `src/model.rs` | 8,388 | over limit |
+| `src/render.rs` | 5,469 | over limit |
+| `src/main.rs` | 5,287 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
+| `src/arbor.rs` | 2,831 | over limit |
 | `src/platform/macos/mod.rs` | 2,223 | over limit |
 | `src/murmuration.rs` | 1,966 | over limit |
 | `src/cortex.rs` | 1,965 | over limit |
 | `src/tesseract.rs` | 1,849 | over limit |
-| `src/simulation.rs` | 1,746 | over limit |
 
 ## Debt counters
 
@@ -119,10 +120,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 792 |
-| Views in the registry | 17 |
-| Views with a README mapping table | 7 of 17 |
+| `#[test]` functions | 814 |
+| Views in the registry | 18 |
+| Views with a README mapping table | 8 of 18 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`.

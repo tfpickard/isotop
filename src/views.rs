@@ -13,7 +13,9 @@ use std::fmt;
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
-use crate::{cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract};
+use crate::{
+    arbor, cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract,
+};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -889,6 +891,40 @@ pub static REGISTRY: &[ViewInfo] = &[
             "MURMURATION",
             Backdrop::Twilight,
             Hooks::Module(|| Box::new(murmuration::Murmuration::default())),
+        )
+    },
+    ViewInfo {
+        // Sockets join the tips of the processes that hold them, as hairlines.
+        link_strokes: true,
+        // A thread that exits drops its leaf, and a process that exits all of its leaves.
+        flash: false,
+        // The tree stands at its own point of the camera; a tour or a search centres the point
+        // itself, since a twig is far above the ground under it.
+        face: Some(|_, goal| (goal.rotation, goal.pitch)),
+        // The camera looks across the canopy more than down on it.
+        pitch: Some(0.48),
+        sources: Sources::of(&[Source::Threads]),
+        // Eight seconds of wind, blossoms and falling leaves, a frame at a time, as a live run
+        // would have drawn them.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 8,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            threads: true,
+            thread_churn: true,
+            unreadable_parent: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new(
+            "arbor",
+            "ARBOR",
+            Backdrop::Dusk,
+            Hooks::Module(|| Box::new(arbor::Arbor::default())),
         )
     },
 ];

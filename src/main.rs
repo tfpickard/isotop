@@ -1,3 +1,4 @@
+mod arbor;
 mod blackbody;
 mod cells;
 mod coop;

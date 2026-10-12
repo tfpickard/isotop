@@ -4,10 +4,6 @@
 //!
 //! A triangle scans its whole bounding box on the CPU, so every piece is kept to at most
 //! `PIECE` pixels along each of its two directions, which bounds its box at 64 x 64 pixels.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by views added after this PR")
-)]
 
 use std::f32::consts::TAU;
 
@@ -30,6 +26,13 @@ const MOST_DASHES: f32 = 4096.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Width {
     /// World units, scaled with the zoom: `w * zoom * SCALE` pixels.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "arbor sizes its strokes in pixels; a later view may not"
+        )
+    )]
     World(f32),
     /// Frame pixels, whatever the zoom.
     Pixels(f32),

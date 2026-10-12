@@ -1164,7 +1164,6 @@ impl Stage<'_> {
     /// scene's first frame (it did not start while anyone watched) and while `time` is before
     /// that moment (a rewind). `growth` is an easing fraction that the app's intro also
     /// animates for processes already running; this is the true age of one that arrived.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub fn age(&self, id: Identity) -> Option<f32> {
         let arrived = *self.arrivals.get(&id)?;
         (self.time >= arrived).then_some(self.time - arrived)
