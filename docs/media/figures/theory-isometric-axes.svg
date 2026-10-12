@@ -55,7 +55,7 @@
 <circle cx="721.26" cy="158.57" r="4" fill="#c9d1d9" stroke="none"/>
 <text x="921.00" y="114.04" font-size="11" fill="#3fb950" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">across axis: SCALE = 1.2247, constant</text>
 <text x="598.00" y="154.04" font-size="11" fill="#58a6ff" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">world z: SCALE cos(pitch)</text>
-<text x="921.00" y="179.33" font-size="11" fill="#f0883e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">ground depth: SCALE sin(pitch)</text>
+<text x="845.92" y="295.71" font-size="11" fill="#f0883e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">ground depth: SCALE sin(pitch)</text>
 <text x="590.00" y="394.00" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">At ISOMETRIC the z curve reads 1.000 and the depth curve 0.707;</text>
 <text x="590.00" y="410.00" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">the world x and y axes lie 45 deg to the depth axis and also</text>
 <text x="590.00" y="426.00" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">come out at 1.000: SCALE = sqrt(3/2) undoes the foreshortening.</text>

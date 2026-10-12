@@ -154,7 +154,7 @@ def main():
     svg.circle(X(ISOMETRIC), Y(SCALE * math.cos(ISOMETRIC)), 4, FG)
     svg.text(px1 - 4, Y(SCALE) - 6, "across axis: SCALE = 1.2247, constant", 11, GREEN, "end")
     svg.text(px0 + 8, Y(SCALE) + 34, "world z: SCALE cos(pitch)", 11, BLUE)
-    svg.text(px1 - 4, Y(SCALE * math.sin(1.0)) + 26, "ground depth: SCALE sin(pitch)", 11, ORANGE, "end")
+    svg.text(X(1.2), Y(0.2), "ground depth: SCALE sin(pitch)", 11, ORANGE, "end")
     svg.text(px0, py1 + 64, "At ISOMETRIC the z curve reads 1.000 and the depth curve 0.707;", 11, DIM)
     svg.text(px0, py1 + 80, "the world x and y axes lie 45 deg to the depth axis and also", 11, DIM)
     svg.text(px0, py1 + 96, "come out at 1.000: SCALE = sqrt(3/2) undoes the foreshortening.", 11, DIM)
