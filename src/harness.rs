@@ -3,7 +3,8 @@
 //! registered. A row's `Contract` sets how far its processes may move, whether they are checked
 //! where they are drawn or at their anchors, and which properties it is known to fail.
 //!
-//! Every run is a headless `--output` run at `TIME`: the row's warm-up (`warm_up`), then frames
+//! Every run is a headless `--output` run at the row's `Contract::time`, 12 s unless the view
+//! needs a fuller history: the row's warm-up (`warm_up`), then frames
 //! drawn by `App::render` and rasterized on the CPU. The stability properties compare two runs
 //! that differ only in the sample after the first frame, frame for frame at the same times, so
 //! whatever moves by itself (orbits, walking chickens) moves alike in both.
@@ -22,7 +23,7 @@ use crate::{App, Options, demo_snapshot, warm_up};
 /// The frame width, the smallest `--width` takes; the height follows at 16:9. Small, so the
 /// harness stays quick in a debug build and under emulation.
 const WIDTH: u32 = 160;
-/// The demo time of the first frame: the default reference time.
+/// The default reference time, which the harness's own tests sample the demo at.
 const TIME: f64 = 12.0;
 /// The demo population, `--processes`' default.
 const PROCESSES: usize = 192;
@@ -108,10 +109,9 @@ impl Session {
         );
         let scene = &self.app.scene;
         let positions = scene.positions.clone();
-        let places = match self.app.row().contract.anchors {
-            Some(anchors) => anchors(scene),
-            None => positions.clone(),
-        };
+        let places = scene
+            .anchors(self.app.view)
+            .unwrap_or_else(|| positions.clone());
         Render {
             frame,
             positions,
@@ -140,9 +140,16 @@ impl Session {
     }
 }
 
-/// The demo sample a run of `view` starts from: what `--demo --time TIME` gives the view.
+/// The demo time of a run's first frame: the row's reference time.
+fn start_time(rows: &'static [ViewInfo], view: View) -> f64 {
+    rows[view.index()].contract.time
+}
+
+/// The demo sample a run of `view` starts from: what `--demo --time` at the row's reference time
+/// gives the view, a default `--sample-ms` after the sample before.
 fn base(rows: &'static [ViewInfo], view: View) -> Snapshot {
-    demo_snapshot(&rows[view.index()], TIME, PROCESSES)
+    let time = start_time(rows, view);
+    demo_snapshot(&rows[view.index()], time - 1.0, time, PROCESSES)
 }
 
 /// `snapshot` with each process's CPU scaled by a factor between 0.25 and 4 and its memory by
@@ -271,15 +278,16 @@ impl Runs {
 
     /// A demo run from `base` whose next sample is `next`: its first frame and its last.
     fn run(&self, next: Snapshot) -> (Session, Render, Render) {
+        let time = start_time(self.rows, self.view);
         let (mut session, first) = Session::start(
             self.rows,
             self.view,
             base(self.rows, self.view),
-            TIME,
+            time,
             WIDTH,
             true,
         );
-        let last = session.after(next, TIME);
+        let last = session.after(next, time);
         (session, first, last)
     }
 
@@ -389,16 +397,17 @@ impl Runs {
     /// An empty machine draws, from the first frame and after every process of the steady run
     /// exited.
     fn empty_machine(&mut self) -> Outcome {
+        let start = start_time(self.rows, self.view);
         let (mut empty, _) = Session::start(
             self.rows,
             self.view,
             Snapshot::default(),
-            TIME,
+            start,
             WIDTH,
             false,
         );
-        empty.frame(TIME as f32 + AFTER_STEP);
-        let time = TIME + AFTER_FRAMES as f64 * AFTER_STEP as f64;
+        empty.frame(start as f32 + AFTER_STEP);
+        let time = start + AFTER_FRAMES as f64 * AFTER_STEP as f64;
         let session = &mut self.steady().0;
         let gone = session.after(Snapshot::default(), time);
         if gone.visible > 0 {
@@ -411,20 +420,22 @@ impl Runs {
     }
 }
 
-/// Every pick is `NONE` or an index into the frame's identities.
+/// Every pick is `NONE`, an index into the frame's identities or a thing pick naming one of its
+/// things.
 fn valid_picks(frame: &Frame) -> Outcome {
-    let identities = frame.identities.len();
     let invalid: Vec<u32> = frame
         .picks
         .iter()
         .copied()
-        .filter(|&pick| pick != NONE && pick as usize >= identities)
+        .filter(|&pick| pick != NONE && frame.target(pick).is_none())
         .collect();
     match invalid.first() {
         None => Outcome::Pass,
         Some(pick) => Outcome::Fail(format!(
-            "{} pixels pick past the frame's {identities} identities, such as {pick}",
-            invalid.len()
+            "{} pixels pick past the frame's {} identities and {} things, such as {pick:#x}",
+            invalid.len(),
+            frame.identities.len(),
+            frame.things.len()
         )),
     }
 }
@@ -553,6 +564,17 @@ mod tests {
     }
 
     #[test]
+    fn a_view_that_draws_things_satisfies_the_view_contract() {
+        for (property, verdict) in check(testing::THINGS, View::at(0)) {
+            assert!(
+                matches!(verdict, Verdict::Pass | Verdict::Exempt),
+                "{}: {verdict:?}",
+                property.name()
+            );
+        }
+    }
+
+    #[test]
     fn the_harness_detects_a_view_that_reshuffles() {
         let verdicts = check(testing::SHUFFLED, View::at(0));
         let verdict = |wanted: Property| {
@@ -602,6 +624,14 @@ mod tests {
             Verdict::NowPasses("ISSUE_LISTED_RESOURCE_CHANGE")
         );
         assert_eq!(*verdict(Property::NonEmpty), Verdict::Pass);
+    }
+
+    #[test]
+    fn a_module_view_is_checked_at_its_anchors_and_its_own_reference_time() {
+        let verdicts = check(testing::ANCHORED, View::at(0));
+        for (property, verdict) in &verdicts {
+            assert_eq!(*verdict, Verdict::Pass, "{property:?}");
+        }
     }
 
     #[test]

@@ -12,8 +12,8 @@ use std::fmt;
 
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
-use crate::render::{Backdrop, Camera, Point, Scene, Stage};
-use crate::{cells, cores, globe};
+use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
+use crate::{cells, cores, globe, necropolis, ptolemy, tesseract};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,6 +83,10 @@ pub struct ViewInfo {
     pub warmup: &'static [Warmup],
     /// Which socket links the scene draws over the view. Default: `LinkRule::Quiet`.
     pub links: LinkRule,
+    /// Whether the scene draws those links as hairlines (`Frame::hairline`, thin triangles), which the CPU
+    /// and the GPU rasterize alike, rather than as beams, whose one-pixel lines they do not.
+    /// Default: off, the beams the built-in views were blessed with; a new view turns it on.
+    pub link_strokes: bool,
     /// The generic exit flash: an expanding ring and glow where a process left. Default: on.
     pub flash: bool,
     /// The pressure haze tinting the sky. Default: on.
@@ -111,6 +115,9 @@ pub struct ViewInfo {
     /// integral. Every demo snapshot taken while the view is shown follows it. Default: none,
     /// which is `model::demo` exactly.
     pub demo: DemoOptions,
+    /// The view's own keys, for the `?` help line while it is shown, such as `b boost`; they
+    /// reach the view as `ViewKey::Local`. Default: none.
+    pub keys: &'static str,
     /// What the shared view harness expects of the view (`harness.rs`). Default: it draws
     /// processes, checked where they are drawn within 1 world unit, and fails nothing.
     #[cfg_attr(
@@ -152,6 +159,7 @@ impl ViewInfo {
             hooks,
             warmup: &[],
             links: LinkRule::Quiet,
+            link_strokes: false,
             flash: true,
             haze: true,
             pitch: None,
@@ -163,7 +171,10 @@ impl ViewInfo {
             demo: DemoOptions {
                 churn: false,
                 exact_cpu_time: false,
+                observer: false,
+                mortality: false,
             },
+            keys: "",
             contract: Contract::DEFAULT,
         }
     }
@@ -183,9 +194,12 @@ pub struct Contract {
     /// change. Default: 1.
     pub tolerance: f32,
     /// Where the stability properties look for a process instead of where it is drawn: its
-    /// anchor (seat, house), for a view whose creatures wander. Default: None, which checks
-    /// `Scene::positions`.
+    /// anchor (seat, house), for a built-in view whose creatures wander. Default: None, which
+    /// checks `Scene::positions`. A module view returns its anchors from `ViewModule::anchors`.
     pub anchors: Option<Anchors>,
+    /// The demo time, in seconds, the harness checks the view at: the default reference time, or
+    /// a later one for a view whose history window is not full by then. Default: 12.
+    pub time: f64,
     /// Properties the view is known to fail, each with the issue that tracks it. The harness
     /// still checks them, reports one that starts to pass, and does not fail on them.
     pub known_unstable: &'static [Unstable],
@@ -199,6 +213,7 @@ impl Contract {
         draws_processes: true,
         tolerance: 1.0,
         anchors: None,
+        time: 12.0,
         known_unstable: &[],
     };
 
@@ -288,13 +303,6 @@ pub enum Hooks {
     },
     /// A view drawn through `ViewModule`. The scene builds one with this function when it is
     /// created and owns it from then on; nothing outside the module reaches into its state.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view is a module view until the first new view"
-        )
-    )]
     Module(fn() -> Box<dyn ViewModule>),
 }
 
@@ -322,13 +330,6 @@ pub enum LinkRule {
     /// Only the links of highlighted processes: selected, hovered or toured.
     Quiet,
     /// None: the view draws its own.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view draws its own links until the first new view"
-        )
-    )]
     DrawnByView,
 }
 
@@ -344,11 +345,18 @@ pub struct Warmup {
 pub enum Phase {
     /// For each whole second from `seconds` back to 1 before `time`, makes the demo sample of
     /// that second the whole history and rasterizes a frame at it; then leaves the history at the
-    /// sample of `time`. It replays demo samples, so it belongs under `When::DemoOutput`.
+    /// sample of `time`. It replays demo samples, so it belongs under `When::DemoOutput`. Every
+    /// frame it rasterizes records its sample in the scene's history, so a row with a due
+    /// `History` phase skips `main.rs`'s replay of the shared history.
     History { seconds: u32 },
     /// Feeds the demo samples of the `seconds` whole seconds before `time` to `Scene::record`,
     /// skipping those before 0, without rasterizing.
     Record { seconds: u32 },
+    /// The same as `Record`, with the samples `--sample-ms` apart, as a live run takes them.
+    /// With `before_start`, the samples before time 0 are replayed too (the demo workload is
+    /// defined there as well), so a view whose record hook keeps minutes is settled at the
+    /// reference time of 12 s.
+    Replay { seconds: u32, before_start: bool },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
     /// The same as `Settle`, in `f64` seconds, handing the journal lines that arrived since the
@@ -365,6 +373,9 @@ pub enum When {
     Output,
     /// `--output` or `--benchmark`, live or demo. A new view's warm-up uses this.
     Headless,
+    /// `--demo` with `--output` or `--benchmark`: for a phase that replays demo samples, which
+    /// a live run must not mix into its own.
+    DemoHeadless,
 }
 
 /// The settling the simulated media and creatures need before a captured frame.
@@ -417,6 +428,22 @@ pub trait ViewModule {
     /// A line that replaces the inspector line, the second status line, and hides the inspector
     /// popup, for a view that draws no processes. It starts with a space.
     fn inspector_line(&self) -> Option<String> {
+        None
+    }
+
+    /// The inspector card of `thing`, one of the things the view drew with `Frame::thing_pick`,
+    /// or None once it no longer shows it. Called only for the selected or hovered thing, so
+    /// build the card here from the view's own state, never one per thing per frame. The
+    /// snapshot is the shown sample, for figures the view does not keep itself.
+    fn card(&self, _thing: Thing, _snapshot: &Snapshot) -> Option<Card> {
+        None
+    }
+
+    /// Where the view harness looks for each drawn process instead of where it is drawn, for a
+    /// view whose bodies move by themselves: the place each one keeps, read after a frame. None,
+    /// the default, checks `Scene::positions`.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
         None
     }
 }
@@ -587,7 +614,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::BuiltIn {
                 arm: BuiltIn::Strata,
                 legend: strata_legend,
-                record: Some(|scene, snapshot, time| scene.strata.record(snapshot, time)),
+                record: None,
                 inspector_line: None,
             },
         )
@@ -686,6 +713,84 @@ pub static REGISTRY: &[ViewInfo] = &[
                 record: Some(|scene, snapshot, _| scene.coop.record(snapshot)),
                 inspector_line: None,
             },
+        )
+    },
+    ViewInfo {
+        // Stars flash their own novae and fades.
+        flash: false,
+        // Trail strokes are opaque, blended against the plain space sky.
+        haze: false,
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: false,
+            observer: true,
+            mortality: false,
+        },
+        // The window of 60 samples is full only after a minute.
+        contract: Contract {
+            time: 300.0,
+            ..Contract::DEFAULT
+        },
+        ..ViewInfo::new(
+            "ptolemy",
+            "PTOLEMY",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(ptolemy::Ptolemy::default())),
+        )
+    },
+    ViewInfo {
+        links: LinkRule::All,
+        link_strokes: true,
+        keys: ", . quarter turn | ; plane | b boost",
+        // A minute of worldlines, replayed as a live run would have recorded it.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 60,
+                before_start: false,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: true,
+            observer: false,
+            mortality: false,
+        },
+        ..ViewInfo::new(
+            "tesseract",
+            "TESSERACT",
+            Backdrop::Dusk,
+            Hooks::Module(|| Box::new(tesseract::Tesseract::default())),
+        )
+    },
+    ViewInfo {
+        // Graves are drawn by the view; the zombies have no socket links worth drawing.
+        links: LinkRule::DrawnByView,
+        // A reaped zombie sinks into its pit instead of flashing; fog stands for memory pressure.
+        flash: false,
+        haze: false,
+        // The tour visits processes, and the living are not drawn.
+        tour: false,
+        sources: Sources::of(&[Source::LifeEvents]),
+        // Ten minutes of deaths, so the reference frame at 12 s shows ten rows.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 600,
+                before_start: true,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: false,
+            observer: false,
+            mortality: true,
+        },
+        ..ViewInfo::new(
+            "necropolis",
+            "NECROPOLIS",
+            Backdrop::Dusk,
+            Hooks::Module(|| Box::new(necropolis::Necropolis::default())),
         )
     },
 ];
@@ -971,6 +1076,72 @@ pub mod testing {
         }
     }
 
+    /// The line `Witness` adds to the tour callout of the process the tour visits.
+    pub const WITNESS_CALLOUT: &str = "witness: toured";
+
+    /// A module view that seats every process on a line and tells what the stage handed it: its
+    /// legend shows the toured process, the focus and the limit of the last frame. It adds a
+    /// line to the tour callout of the toured process.
+    #[derive(Default)]
+    pub struct Witness {
+        seen: String,
+    }
+
+    impl ViewModule for Witness {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            self.seen = format!(
+                "toured {:?} | focus {:?} | limit {}",
+                stage.toured.map(|id| id.pid),
+                stage.focus.map(|id| id.pid),
+                stage.limit
+            );
+            for (index, process) in processes.iter().enumerate() {
+                let position = [index as f32 * 4.0, 0.0, 0.0];
+                stage.positions.insert(process.id, position);
+                stage.frame.sphere(
+                    stage.camera,
+                    position,
+                    1.0,
+                    [200, 200, 200],
+                    index as u32,
+                    false,
+                );
+            }
+            if let Some(id) = stage.toured {
+                stage.callout.push((id, WITNESS_CALLOUT.into()));
+            }
+            processes.len()
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" witness: {}", self.seen)
+        }
+    }
+
+    /// `witness`, whose keys the help line shows, then `probe`.
+    pub static WITNESSED: &[ViewInfo] = &[
+        ViewInfo {
+            keys: "m witness mode",
+            ..ViewInfo::new(
+                "witness",
+                "WITNESS",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Witness::default())),
+            )
+        },
+        ViewInfo::new(
+            "probe",
+            "PROBE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        ),
+    ];
+
     /// `shuffle`, then `listed`, the same view with its churn failure listed as known, and a
     /// resource-change failure it does not have.
     pub static SHUFFLED: &[ViewInfo] = &[
@@ -1005,6 +1176,55 @@ pub mod testing {
         },
     ];
 
+    /// A module view that seats processes by rank as `Shuffle` does, so one exit moves the rest,
+    /// but anchors each at a place fixed by its pid, and shows nothing before 30 s of demo time:
+    /// the harness must look at its anchors and run it at its own reference time to pass it.
+    #[derive(Default)]
+    pub struct Anchored {
+        anchors: HashMap<Identity, Point>,
+    }
+
+    impl ViewModule for Anchored {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            self.anchors.clear();
+            if snapshot.elapsed < 30.0 {
+                return 0;
+            }
+            for process in processes {
+                self.anchors
+                    .insert(process.id, [process.id.pid as f32 * 3.0, 0.0, 0.0]);
+            }
+            Shuffle.draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            " anchored".into()
+        }
+
+        fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+            Some(self.anchors.clone())
+        }
+    }
+
+    /// `anchored`, checked at 40 s.
+    pub static ANCHORED: &[ViewInfo] = &[ViewInfo {
+        contract: Contract {
+            time: 40.0,
+            ..Contract::DEFAULT
+        },
+        ..ViewInfo::new(
+            "anchored",
+            "ANCHORED",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Anchored::default())),
+        )
+    }];
+
     /// Two module views: `probe`, with every optional field at its default, then `quiet`, which
     /// sets them otherwise: no links, flash, haze or tour, a pitch of its own and fixed counts.
     pub static ROWS: &[ViewInfo] = &[
@@ -1030,6 +1250,175 @@ pub mod testing {
         },
     ];
 
+    /// The kind of thing `Lanterns` draws.
+    pub const LANTERN: &str = "lantern";
+
+    /// A line the card of every lantern carries, with terminal controls in it, as untrusted
+    /// text can.
+    pub const WICK: &str = "wick \x1b[2J\x07lit";
+
+    /// The title of lantern `key`'s card, which ends in a terminal control as well.
+    pub fn lantern_title(key: u64) -> String {
+        format!("lantern {key}\x1b]0;flare\x07")
+    }
+
+    /// A module view that seats each process by its pid, so its seat never moves, and hangs a
+    /// lantern on a line in front of them for each of the first three, framing both: a thing drawn as a sphere with a pick-only halo around
+    /// it. `x` puts out the last lantern still lit. Its legend names the key of the thing
+    /// `Stage::thing` named last, and it builds a card for a lit lantern from what it keeps.
+    #[derive(Default)]
+    pub struct Lanterns {
+        lit: Vec<(u64, Point)>,
+        out: usize,
+        highlighted: Option<Thing>,
+    }
+
+    impl Lanterns {
+        /// Where lantern `index` hangs.
+        pub fn position(index: usize) -> Point {
+            [index as f32 * 4.0, -6.0, 0.0]
+        }
+    }
+
+    impl ViewModule for Lanterns {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            self.highlighted = stage.thing;
+            for (index, process) in processes.iter().enumerate() {
+                let pid = process.id.pid;
+                let position = [(pid % 32) as f32 * 3.0, (pid / 32 % 32) as f32 * 3.0, 0.0];
+                stage.positions.insert(process.id, position);
+                stage.bounds.push(position);
+                stage.frame.sphere(
+                    stage.camera,
+                    position,
+                    1.0,
+                    [200, 200, 200],
+                    index as u32,
+                    false,
+                );
+            }
+            stage.bounds.extend((0..3).map(Self::position));
+            let count = processes.len().min(3).saturating_sub(self.out);
+            self.lit = (0..count)
+                .map(|index| (100 + index as u64, Self::position(index)))
+                .collect();
+            for &(key, position) in &self.lit {
+                let pick = stage.frame.thing_pick(Thing { kind: LANTERN, key });
+                stage
+                    .frame
+                    .sphere(stage.camera, position, 0.5, [255, 200, 90], pick, false);
+                stage.frame.pick_disc(stage.camera, position, 12.0, pick);
+            }
+            processes.len()
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            match self.highlighted {
+                Some(thing) => format!(" lanterns | highlighted {}", thing.key),
+                None => " lanterns".into(),
+            }
+        }
+
+        fn key(&mut self, key: ViewKey) -> bool {
+            if key == ViewKey::Local('x') {
+                self.out += 1;
+            }
+            false
+        }
+
+        fn card(&self, thing: Thing, _snapshot: &Snapshot) -> Option<Card> {
+            let &(key, at) = self
+                .lit
+                .iter()
+                .find(|(key, _)| thing.kind == LANTERN && *key == thing.key)?;
+            Some(Card {
+                title: lantern_title(key),
+                lines: vec![WICK.into()],
+                at,
+            })
+        }
+    }
+
+    /// `lanterns`, then `probe` to switch to.
+    pub static THINGS: &[ViewInfo] = &[
+        ViewInfo::new(
+            "lanterns",
+            "LANTERNS",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Lanterns::default())),
+        ),
+        ViewInfo::new(
+            "probe",
+            "PROBE",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        ),
+    ];
+
+    /// `beamed` and `stroked`, which draw every link, as beams and as strokes.
+    pub static LINKED: &[ViewInfo] = &[
+        ViewInfo {
+            links: LinkRule::All,
+            ..ViewInfo::new(
+                "beamed",
+                "BEAMED",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Probe::default())),
+            )
+        },
+        ViewInfo {
+            links: LinkRule::All,
+            link_strokes: true,
+            ..ViewInfo::new(
+                "stroked",
+                "STROKED",
+                Backdrop::Space,
+                Hooks::Module(|| Box::new(Probe::default())),
+            )
+        },
+    ];
+
+    /// `replaying`, which replays four seconds of demo samples before a headless frame of a demo
+    /// run.
+    pub static REPLAYING: &[ViewInfo] = &[ViewInfo {
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 4,
+                before_start: false,
+            },
+            when: When::DemoHeadless,
+        }],
+        ..ViewInfo::new(
+            "replaying",
+            "REPLAYING",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        )
+    }];
+
+    /// `remembering`, which replays twenty seconds of demo samples, those before time 0 as well,
+    /// before a headless frame of a demo run.
+    pub static REMEMBERING: &[ViewInfo] = &[ViewInfo {
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 20,
+                before_start: true,
+            },
+            when: When::DemoHeadless,
+        }],
+        ..ViewInfo::new(
+            "remembering",
+            "REMEMBERING",
+            Backdrop::Space,
+            Hooks::Module(|| Box::new(Probe::default())),
+        )
+    }];
+
     /// Two module views for the demo options: `plain`, which asks for nothing, then `demanding`,
     /// which asks for births, exits and exact CPU time and replays two seconds of history before
     /// a captured frame.
@@ -1054,6 +1443,8 @@ pub mod testing {
             demo: DemoOptions {
                 churn: true,
                 exact_cpu_time: true,
+                observer: false,
+                mortality: false,
             },
             ..ViewInfo::new(
                 "demanding",
@@ -1082,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn only_strata_and_coop_record_and_only_matrix_replaces_the_inspector() {
+    fn only_coop_records_and_only_matrix_replaces_the_inspector() {
         let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
             REGISTRY
                 .iter()
@@ -1098,8 +1489,8 @@ mod tests {
                     ..
                 }
             )),
-            ["strata", "coop"],
-            "Strata records before Coop, as it always has"
+            ["coop"],
+            "Strata reads the shared history, so it has no record hook"
         );
         assert_eq!(
             with(|hooks| matches!(
@@ -1111,6 +1502,9 @@ mod tests {
             )),
             ["matrix"]
         );
-        assert!(with(|hooks| matches!(hooks, Hooks::Module(_))).is_empty());
+        assert_eq!(
+            with(|hooks| matches!(hooks, Hooks::Module(_))),
+            ["ptolemy", "tesseract", "necropolis"]
+        );
     }
 }

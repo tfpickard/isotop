@@ -23,7 +23,13 @@ ON_LINUX = sys.platform.startswith("linux")
 
 # Views reached through the `v` picker after the fixed steps. Each later view adds its name here;
 # names this platform does not list in `--list-views` are skipped.
-PICKER_VISITS = ["reef"]
+PICKER_VISITS = ["reef", "ptolemy", "tesseract", "necropolis"]
+
+# A view's own keys, sent right after the picker shows it, each with what the terminal must show
+# afterwards before the next keys go out.
+VIEW_KEYS = {
+    "tesseract": [(b".;", [b"plane YW"]), (b"b\x1b", [b"/ TESSERACT /"])],
+}
 
 
 def listed_views(binary):
@@ -101,16 +107,28 @@ def exercise(binary, demo, shared_memory):
     # Each key step waits for the header it should produce before the next keys go out, so two
     # steps can never land before a frame is drawn between them. `since_sent` holds what the
     # terminal received after the latest step, and a step is done once it holds every needle.
-    steps = [
-        (b"\x1b[Z", [b"/ COOP /"]),
+    # Shift+Tab from city wraps to the last view; the views registered after coop come first,
+    # then coop, and Tab goes forward through them again to wrap to city.
+    after_coop = supported[supported.index("coop") + 1 :]
+
+    def header(name):
+        return f"/ {name.upper()} /".encode()
+
+    steps = [(b"\x1b[Z", [header(name)]) for name in reversed(after_coop)]
+    steps += [(b"\x1b[Z", [b"/ COOP /"])]
+    steps += [(b"\t", [header(name)]) for name in after_coop]
+    steps += [
         (b"\t", [b"/ CITY /"]),
         (b"\t", [b"/ ORBIT /"]),
         (b"/worker\r+ef \x1b", [b"/ PAUSED"]),
         (b"7 g", [b"/ STRATA /", b"/ TOUR"]),
     ]
-    steps += [(b"v" + name.encode() + b"\r", [f"/ {name.upper()} /".encode()]) for name in visits]
-    required_frames = 8 + 2 * len(visits)
-    time_limit = 20 + 5 * len(visits)
+    for name in visits:
+        steps.append((b"v" + name.encode() + b"\r", [f"/ {name.upper()} /".encode()]))
+        steps += VIEW_KEYS.get(name, [])
+    view_keys = sum(len(VIEW_KEYS.get(name, [])) for name in visits)
+    required_frames = 8 + 2 * len(visits) + view_keys
+    time_limit = 20 + 5 * len(visits) + 2 * len(after_coop) + 2 * view_keys
     child = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave)
     buffer = b""
     payload = b""
@@ -245,7 +263,7 @@ def exercise(binary, demo, shared_memory):
                 shm_unlink(name.encode())
         assert not leftovers, f"shared memory left behind: {leftovers}"
         transport = "shared memory" if shared_memory else "inline zlib"
-        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, back-tab to coop, search, focus, pause, number keys, tour, picker visits ({', '.join(visits) or 'none'}), quit, terminal restoration passed")
+        print(f"{'demo' if demo else 'live'}: {frame_count} valid RGB frames via {transport}; query, view switch, back-tab to coop, search, focus, pause, number keys, tour, picker visits ({', '.join(visits) or 'none'}), view keys ({view_keys} steps), quit, terminal restoration passed")
     finally:
         if child.poll() is None:
             child.kill()

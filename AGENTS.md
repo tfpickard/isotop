@@ -24,8 +24,12 @@ The README covers usage. This file covers how to work on the code.
    follower in `main.rs` runs while the demand contains `Source::Journal` and for
    `JOURNAL_LINGER` (30 s) after; no view is special-cased. `Snapshot.sources` lists the
    optional sources read for the sample, and `Snapshot.missing` those demanded and unreadable;
-   one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there. On Linux
-   the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
+   one nobody demanded is in neither. `--demo` starts no thread, so `sources` is empty there.
+   While the demand contains `Source::LifeEvents`, `Collector::sample` also runs a second thread,
+   `isotop-events` (`platform/linux/events.rs`: the proc connector and taskstats;
+   `platform/macos/events.rs`: kqueue), which fills a bounded `LifeQueue` that each sample drains
+   and merges with sample diffing into `Snapshot.life`; dropping the queue when the demand ends
+   stops it. On Linux the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
    `main.rs` keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`). `Scene::render` turns a snapshot into a display list of
@@ -40,29 +44,35 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`), headless PNG and benchmark, and `warm_up`, which runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
-| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists, and `exact_cpu_time`; `demo` is the unoptioned test shorthand), `describe` |
-| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, and the platform-neutral `Network`, `Files` and `Locks`; selects the implementation by `target_os` |
+| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`, and the time of the sample before, for the life events in between), headless PNG and benchmark, and `warm_up`, which replays the shared history (headless demo runs, unless the row's `Phase::History` fills it) and runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
+| `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), `Life` (merges the event thread's observations with sample diffing into `Snapshot.life`: one exit per `Identity`, never revised), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists and `demo_events` turns into life events, `exact_cpu_time`, `observer` for `Snapshot::observer`, isotop itself, and `mortality`, which shapes the churn's deaths for a graveyard (every cause, a burst, a stopped unit, a reused pid); `DEMO_EPOCH`, the wall clock of demo time 0; `demo` is the unoptioned test shorthand), `describe` |
+| `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `open_events`, `journal`), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, the platform-neutral `Network`, `Files` and `Locks`, and the life event types (`LifeEvent`, `Cause`, `ExitRecord`, what an event source `Observed`, and the `LifeQueue` it fills); selects the implementation by `target_os` |
 | `platform/linux/mod.rs` | Linux `Sampler`: `/proc` parsing, CPUs, pressure, core kinds, cgroup v2 accounting, and the gaps it reports through `missing` (cpufreq, schedstat, core kinds, cgroup v2) |
 | `platform/linux/net.rs` | Socket links: `/proc/net/tcp*`, sock_diag netlink (Unix peers, inet TCP with `tcp_info`) |
 | `platform/linux/files.rs` | Open regular files and deleted-but-open files per process (`/proc/<pid>/fd`, bounded per scan) and file locks with their waiters (`/proc/locks`) |
 | `platform/linux/nvml.rs` | NVIDIA per-process GPU memory via `dlopen`; never wakes a runtime-suspended GPU |
 | `platform/linux/journal.rs` | `journalctl` in export format and its parser |
+| `platform/linux/events.rs` | The `isotop-events` thread on Linux: proc connector fork, exec and exit events and taskstats exit records over netlink, decoded by byte offset from the uapi headers, thread records summed per process |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source |
 | `cores.rs`, `cells.rs`, `strata.rs`, `globe.rs`, `reef.rs` | Module views, each a state struct with `draw(&mut Stage, processes, snapshot) -> usize`: the CPU core track, cgroup petri dishes, a minute of CPU history as ridges, TCP connections on a turning earth, and the coral reef |
 | `matrix.rs`, `glyphs.rs` | The Matrix view (`Rain`, drawn from journal lines, not processes) and its 7x14 bitmap font |
 | `geo.rs`, `places.rs`, `coastline.bin` | Local GeoIP lookup and home from the time zone (`geo.rs`), country label points and legacy GeoIP country order (`places.rs`), and the packed coastlines the globe draws |
+| `ptolemy.rs` | The Ptolemy module view: isotop as Earth, the seven most varied processes as planets on deferents carrying `simulation::dft` epicycle chains that replay their last minute, trails tinted where retrograde, and every other process a fixed star (`stellar`) with novae and fades from `History::changes` |
+| `tesseract.rs` | The Tesseract module view: the `Worldlines` recorder (cumulative CPU time at most every 0.25 s for 180 s, recorded in every view) and its seat bands, the 4D rotation, the Lorentz boost and the display compression, then the Schlegel-projected worldlines, heads, fork vertices and I/O marks |
+| `necropolis.rs` | The Necropolis module view: deaths from `Snapshot::life` buried by `record` in every view (rows by UTC minute, families together, mass graves, OOM claims, mausoleums for stopped units, unmarked markers, ghosts on pid reuse, the 600-grave cap), stones built once per grave, and the fogged cemetery, zombies in pits and the real moon drawn from them; `moon_age`, `moon_lit`, `lifetime_text` and `Death` |
 | `coop.rs` | The Coop module view: Vicsek flocks per cgroup, henhouses, nests (eggs for open files, brooding and queueing for file locks), feeders, chicks, dust and foxes, stepped at a fixed 20 Hz |
 | `simulation.rs` | Shared pure simulation helpers: `SpatialHash` (2D) and `SpatialHash3` (3D, with exact k-nearest) neighbour queries, the seeded `Rng` (uniform and `normal`), `Complex` with `dft`, `fft` and `inverse_fft`, the `FixedStep` clock, hashes, and the `growth`, `sprout` and `smoothing` easing |
 | `status.rs` | The legend wording for optional sources, so every view says it alike: `missing_note` (` \| no <source>: <consequence>`) and `sources_note` (` \| sources: a, b`) |
+| `stellar.rs` | Stellar photometry for views that draw processes as stars: `magnitude` (from memory, `-2.5 log10(memory / 1 GiB)`, floored at 1 MiB), `spread` (core and halo size and strength from a magnitude and the frame height), `Frame::star` (one pickable pixel-sized sphere and at most one glow, existing items only), and the nova, fade and supernova timelines (`Flash`, `exit_flash`, `flash`), which depend only on age |
 | `palette.rs` | Every process-kind, process-state and core-kind colour, `mix`, `tint`, `kind_color`, `core_color` and `core_name` |
 | `geometry.rs` | `dot`, `normalize`, `normalize_or_zero` and the shaded `cuboid` |
 | `picker.rs` | The view picker opened by `v` and the Tab playlist: `Picker` (filter, highlight, popup lines), the name and title filter, `playlist` (the `--views` rules) and the `cycle` and `toggle` rules; pure, so the tests drive it without a terminal |
 | `layout.rs` | Stable placement: `Seats`, `Discs`, the golden-angle `spiral`, `vacant` and `spin` |
+| `history.rs` | The shared per-process CPU and memory history: `History` (a ring of `CAPACITY` samples sorted by `Identity`, recorded by `Scene` on every sample whichever view is shown; `window` by `elapsed` time, `recent` and `series` by count, `changes` for the births and exits between consecutive samples), `Reading`, `Sample` (with an absolute `sequence`), `Change`. Views read it through `Stage::history`; `warm_up` replays it for headless demo runs |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer |
 | `terminal.rs` | Graphics-capability probe, frame transfer, text overlay, terminal restoration |
@@ -70,6 +80,7 @@ The README covers usage. This file covers how to work on the code.
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions |
 | `platform/macos/logic.rs` | Pure macOS decisions with no FFI: kinds, groups, parents, the Mach scheduling policy, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing, open and deleted-but-open files from `vinfo_stat` |
 | `platform/macos/journal.rs` | The unified-log follower (`log show`, then `log stream`) and its std-only JSON line parser |
+| `platform/macos/events.rs` | The `isotop-events` thread on macOS: exec and exit of the sampled processes from kqueue (`EVFILT_PROC`) |
 
 `agents_file_table_lists_every_source_file` fails when a `.rs` file under `src/` has no row. Name
 files by path relative to `src/` in the first column; a row may list several.
@@ -97,10 +108,14 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 **The view contract.** A view is one module plus one row of `views::REGISTRY`. The module owns
 a state struct and implements `views::ViewModule`:
 `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize` and
-`legend`, and where it needs them `record` (every sample, whichever view is shown), `key` and
-`inspector_line`. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back
-only through `Stage` outputs. `Stage` carries in the frame, camera, selection, time, `dt`, births
-and growth; what the platform could not measure is `snapshot.missing`, which `Stage` does not
+`legend`, and where it needs them `record` (every sample, whichever view is shown), `key`,
+`inspector_line` and `card` (the inspector card of a `Thing` it drew, built on demand). A view
+reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage`
+outputs. `Stage` carries in the frame, camera, selection (and `thing`, the selected or hovered
+thing), the process the tour visits (`toured`), the focused subtree's root, `--limit`, time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
+history (`history.rs`), which `Scene` fills on every sample whichever view is shown and a view
+reads from the shown snapshot's `elapsed` (`History::window`, `History::series`); what the
+platform could not measure is `snapshot.missing`, which `Stage` does not
 copy. `stage.dt` is the one step policy for new code, computed once per frame by `Scene`: 0 on
 the first frame, while paused and when time goes back (a rewind), otherwise the time since the
 last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulation with it or
@@ -108,8 +123,8 @@ with a fixed-step clock fed from `stage.time`; the older views keep their own cl
 writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
 `stage.places`, `stage.notes` (popup lines after the sockets), `stage.tour` (`TourTarget { id,
-position, weight }`, which the tour visits heaviest first) and `stage.popup` (popup lines right
-after the process's own figures), and returns how many processes it showed; the rest count as
+position, weight }`, which the tour visits heaviest first) `stage.popup` (popup lines right
+after the process's own figures) and `stage.callout` (lines for the tour's callout of a process), and returns how many processes it showed; the rest count as
 collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
 time, limit, focus and whether the app is paused). Orbit, Ripple and Flow still report through
 `scene.stars`, `scene.mass` and `scene.hub_names`, which `main.rs` reads besides the outputs
@@ -139,14 +154,18 @@ onto `ViewModule`, so write new views the module way and never add an arm.
   rasterized (sky, sphere shading, glow falloff, depth mapping), change `render.rs` and
   `shaders.wgsl` together. Shared constants live in `render::shared`; never write them in WGSL
   directly. To check, render the same view with `--renderer cpu` and
-  `--renderer gpu` and compare the PNGs.
+  `--renderer gpu` and compare the PNGs with `scripts/compare_png.py` against the tolerance in
+  `docs/VIEW_CONVENTIONS.md` (`CPU/GPU parity`).
 - **Layouts are stable.** A process keeps its place when CPU, memory or the population changes.
   Systems and districts are only re-placed when their structure outgrows the reservation, and
   tests enforce this: the view harness checks every registered view (`harness.rs`). Don't
   introduce a layout that reshuffles every sample.
-- **Picking.** A pickable item carries an index into `frame.identities`. `NONE` means "not
-  pickable", and lines clear picking where they draw. Mouse input is cell-coarse, so
-  `pick_near` searches a radius.
+- **Picking.** A pickable item carries an index into `frame.identities`, or a thing pick from
+  `Frame::thing_pick` (an index into `frame.things` with the `THING` bit set) for something that
+  is not a process. `NONE` means "not pickable", and lines clear picking where they draw.
+  `Item::Pick` writes picks only, for blended content. Mouse input is cell-coarse, so
+  `target_near` (and `pick_near`, processes only) searches a radius. Never mint a synthetic
+  `Identity` for a thing.
 - **Process and system sampling lives in `platform/`.** Nothing outside it reads `/proc` or
   `/sys` or spawns OS tools; terminal I/O (`terminal.rs`) and local lookups (`geo.rs`) are the
   exceptions. Both platforms provide the same names; a macOS build must compile without
@@ -174,6 +193,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 python3 scripts/smoke_terminal.py
+python3 scripts/code_report.py --check
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`; to bump it, change that file and `rust-version` in `Cargo.toml` together in a dedicated PR.
@@ -193,6 +213,23 @@ every_view_matches`, then run it again without `ISOTOP_BLESS` after the change t
 The smoke test drives the release binary through a pseudo-terminal. It runs once in demo mode
 over shared memory and once in live mode inline, and exercises view switching, search, focus,
 pause, quit and terminal restoration.
+
+## Metrics
+
+`docs/METRICS.md` and the "By the numbers" block in the README (between `<!-- metrics:start -->`
+and `<!-- metrics:end -->`) are generated by `scripts/code_report.py` (python3 standard library
+plus the `tokei` tool, never a crate dependency; install with `brew install tokei`, `paru -S tokei`
+or `cargo install tokei --locked`). The report holds tokei's per-language table, Rust code lines
+per file split into production and test, the ten largest files (marked over 1,200 lines), debt
+counters (`#[expect(clippy::too_many_lines`/`too_many_arguments`, `unsafe` blocks, `unwrap_or(0`
+and `unwrap_or(0.0` sites, `known_unstable` entries) and health counters (tests, views, README
+mapping tables, dependencies). The output is deterministic and records the tokei version, which CI
+pins.
+
+A PR that changes code runs `python3 scripts/code_report.py` and commits the result; on a conflict,
+regenerate. `--check` is the last gate and fails CI when either file is stale; `--self-test` runs
+the script's fixture tests without tokei. Debt counters should only go down: a PR that raises one
+says why.
 
 ## Visual checks
 
@@ -245,14 +282,17 @@ match your own shell.
   - One `ViewInfo` at the end of `REGISTRY` in `views.rs`, built with
     `ViewInfo::new(name, title, backdrop, Hooks::Module(...))`, setting only the fields that
     differ from these defaults: `available` (everywhere; a runtime probe lives in `platform/`),
-    `warmup` (none; a new view's phases run under `When::Headless`), `links` (`Quiet`; or `All`,
-    or `DrawnByView`), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
+    demo samples, such as `Phase::Replay` at `--sample-ms`, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
+    or `DrawnByView`), `link_strokes` (off: the scene's links are beams; a new view turns it on,
+    so its links are hairlines that rasterize alike on the CPU and the GPU), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
-    wheel pans), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
+    wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
+    shown), `sources` (none), `demo` (`DemoOptions::default()`) and `contract`
     (`Contract::DEFAULT`: it draws processes, which may move at most 1 world unit over the
-    ground, checked where they are drawn, and it is known to fail nothing). Tab, Shift+Tab, the
-    `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow from the table. Never
-    reorder the first ten rows: the digits pick them.
+    ground, checked where they are drawn at 12 s of demo time, and it is known to fail nothing).
+    Tab, Shift+Tab, the `v` picker, `--view`, `--views`, `--list-views` and `--verbose` follow
+    from the table. Never reorder the first ten rows: the digits pick them.
   - View-local keys reach `ViewModule::key` as a `ViewKey`: `Local` for `b i j k m o p u x y z ,
     . ;` only, `Reset` for Home and `r` (the global reset happens as well) and `Escape`
     (returning true consumes that press). Every other key is global, and no key reaches the view
@@ -263,7 +303,9 @@ match your own shell.
     that no surviving process moves when CPU and memory change (CPU scaled 0.25 to 4, memory 0.5
     to 2) or when a tenth of the processes exit and as many start, and that an empty machine
     draws. A new view needs tests only for what is its own beyond that. Set its tolerance on
-    the row's `contract`; a view whose creatures wander declares `anchors` (Coop's seats). Never
+    the row's `contract`, and a later `time` there if its history window is not full at 12 s;
+    a module view whose bodies move by themselves returns the places they keep from
+    `ViewModule::anchors` (a built-in view declares `anchors` on the contract, as Coop's seats). Never
     add a `known_unstable` entry for a new view: those record debt of the views that predate the
     harness, each with its issue, and the harness reports one that starts to pass.
   - Test the module through `Scene::with_rows` and a table of its own, as `views::testing` does.

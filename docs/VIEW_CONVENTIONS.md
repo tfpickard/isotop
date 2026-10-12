@@ -48,21 +48,20 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
    - legend
    - per-sample record hook
    - headless warm-up (see "Demo synthesis")
-   - links rule: all, quiet, or drawn by the view
+   - links rule: all, quiet, or drawn by the view, and whether the scene draws the links as hairlines (`link_strokes`)
    - generic birth and death flash, on or off
    - pressure haze, on or off
    - default pitch
    - tour participation
    - header-count override
    - view-local key hook
-   - card hook (from [B9 (#36)](https://github.com/tfpickard/isotop/issues/36))
    - `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27))
    - `demo` options (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25))
-   - the harness `contract` (from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)): whether it draws processes, its stability tolerance, and anchors for creatures that wander
+   - the harness `contract` (from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)): whether it draws processes, its stability tolerance, the demo time it is checked at, and anchors for creatures that wander (a module view returns them from `ViewModule::anchors`)
 3. Draw with the signature the module views already use (`cells.rs`, `cores.rs`, `strata.rs`, `reef.rs`, `coop.rs`):
    `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
-   The return value is the number of processes shown; the rest count as collapsed. A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
-4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets).
+   The return value is the number of processes shown; the rest count as collapsed. The trait's other hooks, each with a default, are `record`, `key`, `inspector_line` and `card(&self, Thing, &Snapshot) -> Option<Card>` (the inspector card of a thing the view drew; see "Picking"). A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
+4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets), and extra tour callout lines in `stage.callout`. `stage.toured` names the process the tour is visiting, `stage.focus` the root of a focused subtree and `stage.limit` the `--limit` a view keeps within when it draws more than the slice (exited processes).
 5. Add a smoke-test line, a README section and the key help. See "Tests", "README section" and "Keys".
 
 `isotop --list-views` (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)) prints the views available on the running platform. [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) and the smoke test use it.
@@ -70,7 +69,7 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 ## Module shape
 
 - Keep state that spans samples in the view's struct, keyed by `Identity` (pid plus start), never by pid alone. Prune identities that are no longer alive.
-- History that must already exist when the view is first opened is recorded on every sample in every view, through the record hook. Use [B1 (#28)](https://github.com/tfpickard/isotop/issues/28)'s `History` for per-process CPU and memory rather than a ring of your own. The exception is a view that needs data `History` does not hold (another cadence, a longer window, or cumulative CPU seconds rather than CPU percent); its issue says so and names what it records. Example: [tesseract (#57)](https://github.com/tfpickard/isotop/issues/57) records cumulative CPU seconds every 0.25 s for 180 s.
+- History that must already exist when the view is first opened is recorded on every sample in every view, through the record hook. Use [B1 (#28)](https://github.com/tfpickard/isotop/issues/28)'s `History` (`stage.history`, read from the shown snapshot's `elapsed`) for per-process CPU and memory rather than a ring of your own; the scene fills it on every sample, and a headless demo run replays it, so it needs no record hook or warm-up phase. Births and exits come from `History::changes`, which compares consecutive samples, so a view that flashes them needs no tracking of its own and shows them in a headless frame too. The exception is a view that needs data `History` does not hold (another cadence, a longer window, or cumulative CPU seconds rather than CPU percent); its issue says so and names what it records. Example: [tesseract (#57)](https://github.com/tfpickard/isotop/issues/57) records cumulative CPU seconds every 0.25 s for 180 s.
 - Deduplicate records on `snapshot.elapsed > last`. Draw the window that ends at `snapshot.elapsed`, so pause and rewind (`[` `]`) work.
 - Express time windows in seconds of `snapshot.elapsed`, not as sample counts. `--sample-ms` ranges from 100 to 10000.
 - Recompute expensive derived data (fits, routes, ownership grids, shadows) once per new sample, or spread it over several frames. Nothing O(n²) in processes runs per frame.
@@ -95,22 +94,22 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
 
 ## Demo synthesis
 
-- `model::demo(time, count)` must stay byte-identical. A view that needs births and exits, or an exact CPU-time integral, sets `DemoOptions { churn, exact_cpu_time }` on its registry row (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25)). Use `demo_with`, `demo_life` and `demo_cpu_seconds`, all from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25). Other views' demo frames do not change.
+- `model::demo(time, count)` must stay byte-identical. A view that needs births and exits, an exact CPU-time integral, or isotop's own process (`Snapshot::observer`), sets `DemoOptions { churn, exact_cpu_time, observer }` on its registry row (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25)). Use `demo_with`, `demo_life` and `demo_cpu_seconds`, all from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25). Other views' demo frames do not change.
 - Demo data for a new field goes into that new field. Never alter a field that existing views draw.
 - A new field on `Process`, `Snapshot` or `RawProcess` follows the rule in `AGENTS.md`: decide it in `parse_stat` (`platform/linux/mod.rs`), `Sampler::process` (`platform/macos/mod.rs`) and `model::demo`, and set it in `Default for Process` (`model.rs`), which the test helper builds on; a `RawProcess` field also passes through `measure` in `model.rs`. **Decision:** in `model::demo` the field takes its empty value (`Default`, an empty collection or `None`), so existing frames stay byte-identical. Synthesized values for it come only through `demo_with` (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25)) when a registry row asks for them. A building block that needs this adds a `DemoOptions` field that defaults to off.
-- Calendar-dependent visuals use `SystemTime::now()` in live mode. In demo mode they use the fixed epoch 2026-10-10T04:12:00Z plus `--time`.
+- Calendar-dependent visuals read the sample's wall clock, `Snapshot::wall`: the system clock in live mode, and in demo mode the fixed epoch 2026-10-10T04:12:00Z (`model::DEMO_EPOCH`) plus `--time`. A view never reads the clock itself, since it cannot tell a demo run from a live one. Demo transients start on the same clock.
 - Headless warm-ups:
   - **Existing views.** The warm-ups in `main.rs` today (strata, coop, ripple, flow, reef, cores, matrix) differ in kind: some rasterize frames, some only record samples, and some run only under `--demo` with `--output`. [P1 (#17)](https://github.com/tfpickard/isotop/issues/17) moves each one to its registry row unchanged, with the same phases, step counts, rasterizing and `--demo`/`--output`/`--benchmark` conditions. Their PNGs and benchmark behaviour stay as they are.
-  - **New views.** A view that needs a settled frame declares a warm-up on its registry row. It runs before both `--output` and `--benchmark`, in live and demo runs, so the benchmark measures a settled scene. It replays N seconds of demo samples through the record hook, steps the simulation without rasterizing, or both. It rasterizes frames only if the view builds state inside `draw`, and the PR says why under `## Decisions`.
+  - **New views.** A view that needs a settled frame declares a warm-up on its registry row. It runs before both `--output` and `--benchmark`, in live and demo runs, so the benchmark measures a settled scene. It replays N seconds of demo samples through the record hook (`Phase::Replay`, at `--sample-ms`, under `When::DemoHeadless`, since a live run must not take in demo samples; with `before_start` it replays the demo before time 0 as well, so a view that keeps minutes is settled at `--time 12`), steps the simulation without rasterizing, or both. It rasterizes frames only if the view builds state inside `draw`, and the PR says why under `## Decisions`.
   - Two runs with the same `--time` produce byte-identical PNGs.
-- The default reference time is `--time 12`. A view whose history window is not full at 12 s states a later time in its issue (for example `--time 300`) and uses it for parity, the mockup comparison and the README image.
+- The default reference time is `--time 12`. A view whose history window is not full at 12 s states a later time in its issue (for example `--time 300`) and uses it for parity, the mockup comparison, the README image and the view harness (`time` on the row's `contract`).
 - Prove that existing views are unchanged after any change to shared code. Render every existing view with `--demo --time 12 --renderer cpu --width 960 --output` before and after, compare the files with `cmp`, and paste the result.
 
 ## Degradation and the status strip
 
 - A source the platform lacks is a `Source` variant (`platform/mod.rs`) in `Snapshot.missing`, a `Sources` bit set; the variant's `name()` is a short lowercase noun, for example "socket traffic", "interrupts", "oom score", "wait channel" or "temperature". A PR that adds a source adds its variant, and views match on `Source::X`, never on the name. A process that refuses a read is `Measured::Unreadable`. A read not reached yet is `Measured::Pending`. Never substitute zero. A value that is not measured in a sample (the first reading of a rate, a counter that went backwards, a file that could not be read) is `None` in an `Option`; use `Measured` only where a view must tell pending from unreadable. A view that has to draw something for `None` converts it at its own boundary, as it would draw a zero.
 - Active optional sources are listed in `Snapshot.sources` (a `Sources` bit set, from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)), in `Source` declaration order; a demanded source that cannot be read is in `Snapshot.missing` instead, and one nobody demanded is in neither. `--demo` starts no background thread, so a demo snapshot leaves `sources` empty and each building block's demo fills its own fields.
-- Optional background sources run only while the shown view declares them in the `sources` of its registry row (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)): `main` hands `Collector::demand` that set at startup and on every view change, and the background thread reads a source through `Demand::read_if` (or `Reads::read`) once per cycle, so a source no shown view draws is never read. A new source is a `Source` variant plus a read there. On the first sample after a view change the data may not be there yet; a view treats that as warming up, not as missing. Budgeted per-process selections use `model::top_n` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)).
+- Optional background sources run only while the shown view declares them in the `sources` of its registry row (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)): `main` hands `Collector::demand` that set at startup and on every view change, and the background thread reads a source through `Demand::read_if` (or `Reads::read`) once per cycle, so a source no shown view draws is never read. A source with a thread of its own (`Source::LifeEvents` and the `isotop-events` thread) starts with the demand and stops when it ends, in `Collector::sample`. A new source is a `Source` variant plus a read there. On the first sample after a view change the data may not be there yet; a view treats that as warming up, not as missing. Budgeted per-process selections use `model::top_n` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)).
 - The legend line is the third status line. It starts with a space, like the existing legends, and is built in this order:
   1. Dynamic parts first (counts, names), so they survive 80 columns.
   2. Degradation notes: ` | no <source>: <what is used instead>`, from `status::missing_note` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27)).
@@ -155,9 +154,10 @@ Add a `### <Name>` section under `## Worlds`, modelled on `### Coop`:
 
 ## Picking
 
-- Process items carry an index into `frame.identities`. `NONE` means not pickable. Only triangles and spheres write picks; lines clear picking where they draw. Decorative strokes near bodies are therefore `Beam`s, or sit behind the body in depth.
-- Non-process things (IRQ lines, files, graves, core blocks) use `Thing { kind, key }` and `Frame::thing_pick` (from [B9 (#36)](https://github.com/tfpickard/isotop/issues/36)). The key stays the same across frames, and the card is built on demand through the card hook. Never mint a synthetic `Identity`.
-- Translucent or splatted content stays pickable through [B9 (#36)](https://github.com/tfpickard/isotop/issues/36)'s pick-only item.
+- Process items carry an index into `frame.identities`. `NONE` means not pickable. Only triangles, spheres and `Item::Pick` write picks; lines clear picking where they draw. Decorative strokes near bodies are therefore `Beam`s, or sit behind the body in depth.
+- Non-process things (IRQ lines, files, graves, core blocks) use `Thing { kind, key }` and `Frame::thing_pick`, which returns the thing's index in `frame.things` with the `THING` bit set. Call it once per thing per frame and give every item of the thing that value. `kind` is a short lowercase noun; the key stays the same across frames. Never mint a synthetic `Identity`. `Frame::target` and `Frame::target_near` resolve a pick to a `Target` (a process or a thing); `pick_near` still finds processes only.
+- The card of a thing is built on demand by `ViewModule::card`, from the view's own retained state, for the selected or hovered thing only; never build one per thing per frame. It returns None once the view no longer shows the thing, and the popup then says `<kind> no longer shown`. `Card { title, lines, at }` places the popup beside the world point `at`; hovering the thing shows ` title - first line `, as a process's hover tag shows its name and what it is. Card text is untrusted (see "Untrusted text"). `stage.thing` is the selected thing, or else the hovered one, for the view to highlight.
+- Translucent or splatted content stays pickable through `Item::Pick` (`Frame::pick_disc`): a disc that writes only picks, depth-tested like a sphere, with no colour and no depth. Record it after the geometry it lies over.
 - Grid content picks through the [P3 (#19)](https://github.com/tfpickard/isotop/issues/19) owner grid. An absent owner grid gives `NONE`.
 - On the GPU, picks are read back only in a 160 px window around the pointer (`PICK_WINDOW` in `gpu.rs`). Any test that picks away from the pointer rasterizes on the CPU.
 
@@ -184,19 +184,37 @@ Render the same frame twice and compare the two files:
 ```sh
 ./target/release/isotop --demo --view <name> --time <T> --width 960 --renderer cpu --output cpu.png
 ./target/release/isotop --demo --view <name> --time <T> --width 960 --renderer gpu --output gpu.png
-python3 scripts/compare_png.py cpu.png gpu.png      # from [S1 (#22)](https://github.com/tfpickard/isotop/issues/22)
+python3 scripts/compare_png.py cpu.png gpu.png
 ```
 
-**Tolerance.** [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) records the tolerance in this section. Two limits apply: the per-channel mean absolute difference, and the share of pixels with any channel more than 2 levels off.
+**Tolerance.** Two limits apply: the per-channel mean absolute difference, and the share of pixels with any channel more than 2 levels off (`--levels 2`). `scripts/compare_png.py` uses the default limits unless told otherwise, and prints one line.
 
 | Limit | Mean | Share | Views |
 |---|---|---|---|
-| Default | ≤ 0.25 | ≤ 0.25 % | all |
-| Line-dominant (only if [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) records it) | ≤ 0.5 | ≤ 1.0 % | named by [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) |
+| Default | ≤ 0.25 | ≤ 0.25 % | every view not named below, including every new view |
+| Line-dominant | ≤ 0.5 | ≤ 1.0 % | city, ripple, cores, cells, globe |
 
-These values are provisional until [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) replaces them with measured numbers. A view PR never loosens them.
+The line-dominant limit exists because hardware line rasterization (the diamond-exit rule for `Line` and `Beam`) differs from the CPU DDA. A new view that needs one-pixel strokes to match draws them with `Frame::hairline` (thin triangles, which both rasterizers fill alike), and a row with `links: LinkRule::All` sets `link_strokes` so the scene draws its links that way too. A view on that row passes with `--max-mean 0.5 --max-share 1.0`. No new view may use it. A view PR never loosens these numbers.
 
-- `Gpu::new` refuses software adapters, and CI has no hardware GPU on Linux. Without a GPU, take both PNGs from the `parity-macOS` CI artifact (from [S1 (#22)](https://github.com/tfpickard/isotop/issues/22)) and say so in the PR.
+Measured on an Apple GPU (Metal), `--demo --time 12 --width 960`:
+
+| View | Mean | Share % | Max | Limit |
+|---|---|---|---|---|
+| city | 0.1194 | 0.7413 | 160 | line-dominant |
+| orbit | 0.3914 | 1.2724 | 235 | exceeds both (share) |
+| ripple | 0.1891 | 0.9053 | 113 | line-dominant |
+| flow | 2.9492 | 10.7836 | 225 | exceeds both |
+| cores | 0.1900 | 0.2905 | 231 | line-dominant |
+| cells | 0.2216 | 0.2602 | 238 | line-dominant |
+| strata | 0.5268 | 0.5766 | 241 | exceeds both (mean) |
+| globe | 0.3366 | 0.4558 | 185 | line-dominant |
+| reef | 0.0485 | 0.1524 | 123 | default |
+| matrix | 0.0335 | 0.0000 | 2 | default |
+| coop | 0.0149 | 0.0237 | 192 | default |
+
+Orbit, flow and strata exceed even the line-dominant limit. They are known parity debt of the older views, not a tolerance to copy; fixing them belongs to the rasterizer, not to a view PR.
+
+- `Gpu::new` refuses software adapters, and CI has no hardware GPU on Linux. Without a GPU, take both PNGs from the `parity-macOS` CI artifact; its `parity.txt` has one line per view and say so in the PR.
 - Attach both PNGs and the script output to the PR.
 
 ## Performance budget
@@ -219,7 +237,7 @@ These values are provisional until [S1 (#22)](https://github.com/tfpickard/isoto
 ## Tests
 
 - Tests live in a `tests` module at the bottom of the file. Name them as sentences about behaviour, e.g. `worldlines_keep_their_seat_when_resources_change`. Rendering tests use `model::demo` or the `process(pid, parent)` helper in `render.rs`.
-- Every view is covered by the view harness (`harness.rs`, from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)) by being registered. `every_view_satisfies_the_view_contract` checks that the same inputs give the same pixels and picks, that the demo shows processes with positions and something to click, that every pick names a process, that an empty machine draws, and layout stability: no surviving process moves more than the row's tolerance (1 world unit over the ground by default) when every CPU is scaled by 0.25 to 4 and every memory by 0.5 to 2, or when a tenth of the processes exit and as many start. A view whose creatures wander declares `anchors` on its row's `contract` (Coop's seats), and the harness checks those instead of the drawn positions. A new view never lands with a `known_unstable` entry.
+- Every view is covered by the view harness (`harness.rs`, from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)) by being registered. `every_view_satisfies_the_view_contract` checks that the same inputs give the same pixels and picks, that the demo shows processes with positions and something to click, that every pick names a process, that an empty machine draws, and layout stability: no surviving process moves more than the row's tolerance (1 world unit over the ground by default) when every CPU is scaled by 0.25 to 4 and every memory by 0.5 to 2, or when a tenth of the processes exit and as many start. A view whose creatures wander has anchors, and the harness checks those instead of the drawn positions: a module view returns them from `ViewModule::anchors`, a built-in view declares `anchors` on its row's `contract` (Coop's seats). The harness runs each view at its row's `contract.time`, 12 s by default. A new view never lands with a `known_unstable` entry.
 - Beyond the harness, a view tests only what is its own. A stability test of its own states exactly what is frozen, e.g. "closed rows are frozen; the open row may re-pack".
 - Every simulation view has a test that 10 fps and 60 fps produce the same state at the same wall-clock time. Coop's `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second` is the model.
 - Every view passes `every_view_renders_the_demo_and_an_empty_machine` in `render.rs`. It must show something, have positions, and have something to click. The test iterates the registry and skips a view whose row's `contract` says it draws no processes (Matrix).
@@ -251,7 +269,7 @@ Rules:
 - `m` is the conventional key for a view's alternate mode.
 - Home, r or Esc may gain an extra view effect only if the global meaning still happens, at most one press later.
 - No new view gets a digit. Digits stay bound to the first ten registry rows; never reorder those rows. New views are reached by Tab within the playlist, the `v` picker, `--view` or `--views`.
-- List each view-local key in the view's README section, in `## Controls`, and on the `?` help line while the view is shown.
+- List each view-local key in the view's README section, in `## Controls`, and on the `?` help line while the view is shown (the row's `keys`).
 - Per-view options that are not keys are flags named `--<view>-<option>`.
 
 Assignments:

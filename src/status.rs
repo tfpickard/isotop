@@ -6,10 +6,6 @@ use crate::platform::Source;
 /// ` | no <source>: <consequence>` when `source` is missing from `snapshot`, which the legend
 /// appends where it names what the view does without; None when the source is there or was never
 /// asked for.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no legend uses it until the first new view")
-)]
 pub fn missing_note(snapshot: &Snapshot, source: Source, consequence: &str) -> Option<String> {
     snapshot
         .missing
@@ -26,6 +22,13 @@ pub fn missing_note(snapshot: &Snapshot, source: Source, consequence: &str) -> O
 pub fn sources_note(snapshot: &Snapshot) -> Option<String> {
     let names: Vec<&str> = snapshot.sources.iter().map(Source::name).collect();
     (!names.is_empty()).then(|| format!(" | sources: {}", names.join(", ")))
+}
+
+/// ` | <what> unreadable for <count>` when `count` processes could not be measured for `what`,
+/// a per-process gap such as I/O that the kernel refuses for other users' processes; None when
+/// every process was measured.
+pub fn unreadable_note(what: &str, count: usize) -> Option<String> {
+    (count > 0).then(|| format!(" | {what} unreadable for {count}"))
 }
 
 #[cfg(test)]
@@ -71,6 +74,15 @@ mod tests {
         assert_eq!(
             sources_note(&snapshot),
             Some(" | sources: cpu clock, remote locations, journal".to_owned())
+        );
+    }
+
+    #[test]
+    fn unreadable_note_counts_processes_and_is_absent_when_all_were_measured() {
+        assert_eq!(unreadable_note("I/O", 0), None);
+        assert_eq!(
+            unreadable_note("I/O", 12),
+            Some(" | I/O unreadable for 12".to_owned())
         );
     }
 }

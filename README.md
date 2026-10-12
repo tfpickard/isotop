@@ -1,10 +1,12 @@
 # isotop
 
-A living picture of your machine inside the terminal, in eleven views: a process
+A living picture of your machine inside the terminal, in fourteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, a chicken yard, and the system
-log (the systemd journal, or the unified log on macOS) as Matrix rain. Written in
+history, a globe of network connections, a coral reef, a chicken yard, a geocentric
+cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
+macOS) as Matrix rain, a minute of process worldlines in a tesseract whose fourth
+axis is time, and a moonlit cemetery of the processes that exited. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -26,7 +28,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -171,6 +173,8 @@ cache is stale.
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
+| Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
+| Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
 (pid 0) is the kernel. A process is a container if its executable is a
@@ -202,8 +206,9 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the eleven views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop is reached with Tab, Shift+Tab or `--view coop`.
+the fourteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract and the necropolis are reached with Tab, Shift+Tab,
+the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
@@ -449,6 +454,113 @@ Decorative: the grass grid and the dirt band under the feeders, the hedge, the f
 
 The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) with its four bugs fixed: it updated headings in place instead of synchronously, its alignment readout summed speed magnitudes so it was always 1, it stepped once per frame instead of by time, and it searched neighbours in O(N²).
 
+### Ptolemy
+
+![Ptolemy: Earth at the centre, planets on deferents with epicycle chains and looping trails, fixed stars on the outer ring](docs/media/ptolemy.webp)
+
+A geocentric sky seen from above: isotop itself is Earth at the centre, the seven processes whose CPU and memory varied most over the last minute are planets on deferents and epicycles, and every other process is a fixed star.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Earth | isotop's own process | At the centre, labelled `isotop (pid N)` and `X cores \| Y MiB` (CPU / 100, memory in MiB); clickable when isotop is among the drawn processes |
+| Planet (a wanderer) | The seven drawn processes with the highest score over their last 60 samples of the shared history | Score = variance of CPU in cores (cpu / 100) + variance of memory in doublings (log2 of MiB, floored at 1 MiB); a planet needs at least 30 samples and a score above 0. An incumbent keeps its sphere while it is alive and ranks tenth or better; an empty sphere takes the best of the rest |
+| Sphere | Mean CPU over the window | When the membership changes, the seven are sorted busiest innermost: Moon, Mercury, Venus, Sun, Mars, Jupiter, Saturn, at 0.245, 0.33, 0.415, 0.5, 0.585, 0.67 and 0.755 of the sky radius (40 units). A planet that changes sphere eases there over 1.5 s. Labelled `Sphere of Mars: name` |
+| Deferent and its circle | Sphere radius | Period 1200 s × (r / r_Saturn)^1.5 (Kepler's third law); the starting angle comes from the identity hash |
+| Epicycle chain | CPU in cores + i × memory in doublings, minus their means, over the last 60 samples | A direct 60-point DFT; the 12 largest terms without the mean, drawn largest first from the point on the deferent, whose tip is the planet. Samples before a process's first are held at its first reading. Coefficients ease to each new sample with a smoothstep over the measured sample interval, clamped to 0.1 to 10 s. Epicycles under 1.5 pixels across are not drawn |
+| Chain length | The sum of a chain's coefficient magnitudes | One global gain: gain = K L tanh(T / L) / T with T = K Σ\|c\|, K = 0.085 × 40 = 3.4 units per core or doubling and L = 0.19 × 40 = 7.6 units, so no chain is longer than 7.6 units however wild the process |
+| Planet size | Memory | 0.34 + 0.105 × log2(max(memory / 64 MiB, 1)) units, at most 1.2 |
+| Planet and trail colour | Kind and state | The same colours as the other views |
+| Trail | The planet's path | Positions from the current coefficients and the deferent over the last min(240 s, 0.8 × deferent period), on a 0.25 s grid aligned to multiples of 0.25 s; the oldest 45 % fades out |
+| Red trail and red glow | Retrograde: the apparent longitude seen from Earth falling | d lambda / dt = Im(conj(p) p') / \|p\|² < 0, from the position p and its analytic derivative |
+| Dashed red sight line and marker | A planet in retrograde now | From Earth out to the ecliptic scale, the marker pointing back |
+| Fixed star | Every other drawn process | Angle and radius (0.935 + 0.06 u) × 40 units from the identity hash, on a ring that turns once a minute |
+| Star brightness | Memory (RSS; the physical footprint on macOS) | m = -2.5 log10(memory / 1 GiB), floored at 1 MiB; core and halo from the shared point-spread |
+| Nova | A process that appeared since the sample before | Brightens by 4 magnitudes over 0.3 s, then decays with an e-folding time of 2 s, for 6 s |
+| Fade | A process that exited | Dims out over 1.5 s at its place on the ring |
+| Legend lead | Samples in the window, planets in retrograde | `the heavens are still forming: N of 30 samples` until 30 samples exist, then `compiler-90 is in retrograde` (or `A and B are in retrograde`) |
+
+**Decorative:** the armillary rings (the outer sphere, the two ecliptic hoops and the two tilted hoops), the ecliptic degree scale and its labels, the faint spokes from Earth to each deferent point, the dot on the deferent, the colours of the epicycle circles and the chain arm, and Earth's continents.
+
+**The replay.** Each chain replays its process's last minute once a minute, at any `--sample-ms`. The chain at time t is Σ c'_k e^{2πi f_k t / 60}, and each coefficient c'_k = c_k e^{-2πi f_k s0 / 60} is turned back by its phase at the absolute number s0 of the oldest sample, so the coefficients barely change when the window slides on by a sample. A process that swings about a steady mean draws a closed loop on top of its steady revolution, as Ptolemy's planets did.
+
+**Retrograde.** A planet runs backwards against the stars when the process's swings outrun its steady revolution: when its epicycles carry it across the line of sight faster than its deferent carries it forward. The stretch of trail where that happened turns red, and the status line names the planets doing it now.
+
+**The trail is deterministic.** It is computed every frame from the current coefficients and the deferent, not recorded, so it needs no warm-up and is the same at any frame rate: it shows where the planet would have gone with the epicycles it has now.
+
+**Births and exits** come from the shared history, which compares each sample with the one before, so a new process flares as a nova and an exited one fades even in a headless frame. A process that was a planet when it exited does not fade on the ring.
+
+**Caps.** Seven planets, 12 epicycles each (a few more while terms trade places after a sample), and trails of at most 961 points; every other drawn process is a star, up to `--limit`. The selection and the DFTs run once per sample; scoring is 60 readings per process.
+
+**What cannot be measured.** Ptolemy reads only per-process CPU and memory and isotop's own row, so it has no optional sources to lose. If isotop's own process was not read, Earth has no figures and is labelled `isotop`. The demo synthesizes Earth outside the processes (pid 999), so there it cannot be clicked. The pressure haze is off: trail strokes are opaque and blended against the plain sky, which a haze would show through. On macOS memory is the physical footprint; the picture is otherwise the same.
+
+### Tesseract
+
+![Tesseract: worldlines of the last minute in a Schlegel-projected tesseract, superluminal processes leaving through the +x cell in Cherenkov blue](docs/media/tesseract.webp)
+
+Each process is a worldline through four dimensions over the last 60 seconds, drawn inside a wireframe tesseract in Schlegel projection: the outer cube is now, the inner cube a minute ago.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| w (outer cube to inner cube) | Wall-clock time of each sample (`elapsed`) | w = 1 + (t − now) / 30 s: +1 now, −1 sixty seconds ago; between samples the window scrolls on by up to one sampling interval |
+| x | CPU time (`cpu_time`, user plus system) | x = −1 + (CPU-seconds since the window opened) / 30, the start interpolated at the window's left edge (or the first sample of a later process); a falling counter counts as no growth. x and w share a scale, so the slope dx/dw is the CPU use in cores |
+| y (up) | Memory (RSS; the physical footprint on macOS) | y = −1 + 2 √(MiB / (MiB + 220)) |
+| z | Seat | Four bands, kernel, system, session, containers, share −0.9 to 0.9 in proportion to their capacities; a newcomer takes the lowest free seat in its band (newcomers of one sample by cgroup, then start); a seat is held until the worldline has left the window; a band holds a power of two of at least 16 seats (the first sample reserves twice what it fills) and doubles when full, never shrinking |
+| Head sphere | A process alive in the drawn sample | At w = +1, its last segment extended to now; radius ∝ the perspective factor and 0.6 + 0.3 (y + 1); colour by kind, darker the further back in w it sits; a newborn grows in |
+| Worldline | The process's samples in the window | At most one sample per 1 s bin; runs whose slopes differ by less than 0.02 (with memory within 0.002) merge into one segment, so an idle process is one line |
+| Blue segment | CPU above one core | Slope > 1.05: only a multithreaded process can, since one thread's CPU time cannot outrun wall time |
+| Cherenkov glow and cone | A superluminal head | β = slope over the last 5 s; 12 hairlines on a cone of half-angle acos(1/β) trailing the head |
+| Dashed diagonal, "c = one core" | Exactly one core | The line x = w on the x-w face at y = z = +1 |
+| Fork vertex and curve | A process first seen after the first recorded sample whose parent was a recorded live process | The child starts at its parent's (x, y, z) and smoothsteps y and z to its own over 2 s; a small glow marks the vertex |
+| Exited worldline | A process no longer listed | Kept, without a head, until it slides out of the window 60 s later; drawn only without subtree focus, newest exits first, within `--limit` |
+| Cyan marks on a worldline | Disk I/O (`io_rate` > 0) at that sample | A 2.4-pixel-wide stretch of the worldline 0.4 s either side of the sample, one per sample with I/O, at most 2000 a frame, newest first |
+| Links | Sockets between processes | The shared link code between heads; `c` cycles them |
+
+**Decorative:** the wireframe tesseract itself (a frame of reference: the now cell brighter, the past cell dimmer), the drift and the 4D orientation (camera only), and the dim tilted cube drawn while boosted (the lab frame's now cell seen from the boosted frame).
+
+**Frames of reference.** The 4D rotation is camera only: it composes rotations in the XW, YW and ZW planes from the canonical angles (0.12, 0.10, −0.08), eased with a 0.2 s time constant, and drifts a full turn in XW every 120 s (a function of the clock, so `--time` repeats it). Points are compressed beyond ±1 in x and w to 1 + 0.6 tanh((|v| − 1) / 0.6), then divided along w from an eye at w = 3.5. A quarter turn in XW makes time the horizontal axis and CPU the depth along w: the only orientation in which the view reads like a chart is a quarter turn away from the default, and there CPU is the distance from you along a direction you cannot see. A boost is physics, not camera: `b` applies a Lorentz boost in the (w, x) plane about the selected head, with β the chord slope of its visible worldline and the rapidity eased with a 0.4 s time constant, so its worldline stands vertical and the others tilt. A process at or above β = 0.999 has no rest frame, and the legend says so. The guided tour boosts into each process it visits; one without a rest frame stays in the lab frame and its callout says "no rest frame".
+
+**History.** The view keeps its own recorder (cumulative CPU seconds need another cadence than the shared history): at most one sample every 0.25 s per process, kept for 180 s so a rewound frame still has its minute, recorded whichever view is shown. Pause and rewind draw the minute that ends at the shown sample. Headless demo runs replay 60 s of samples at `--sample-ms` first; a live headless run starts with its two samples, so its window is short, and the legend says `window Ns` until it holds a minute.
+
+**What cannot be measured.** A process whose I/O counters are unreadable (other users' processes without privileges) has no I/O marks, and the legend counts them (`I/O unreadable for N`). A rewound frame older than the seat release can show an exited worldline on a seat that has since been given to a newcomer.
+
+On macOS, forks branch from the responsible app rather than the Unix parent, because `parent` is the responsible process there.
+
+Keys while the tesseract is shown: `,` and `.` turn a quarter turn back and forward in the current plane, `;` cycles the plane (XW, YW, ZW), `b` boosts into the selected process's rest frame and `b` again or Esc returns to the lab frame (the next Esc has its usual meaning), and Home and `r` also restore the canonical orientation, the lab frame and the drift. Any of `,` `.` `;` stops the drift.
+
+### Necropolis
+
+![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and the waning moon](docs/media/necropolis.webp)
+
+Exited processes as headstones in a cemetery at night, one row per minute of death with the newest in front.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Row | The UTC minute of the death (`Snapshot::wall` at the exit's time) | One row per minute with deaths, 3.1 apart, newest in front; when a new minute opens a row the others ease back one spacing over 1.2 s. A row is two lines of 26 units, the second 1.5 behind, filled from the left; graves beyond both are counted on the label (`+N`). Closed rows are frozen; a late death joins the end of its minute's row |
+| Row label | The minute | `HH:MM UTC` for the newest row, `HH:MM` for older ones |
+| Stone height | Lifetime CPU time: taskstats utime + stime, else the last sampled `cpu_time` | 0.55 + 0.36 log10(max(ms, 3)), at most 3.2 |
+| Stone width | Peak memory: taskstats `hiwater_rss`, else the most any sample saw | 0.62 + 0.15 log2(max(MiB, 1)), at most 2.4 |
+| Stone tint | Process kind | Slate (kernel), green granite (system), sandstone (session), lilac marble (containers) |
+| Place in the row | Parent and child | In the open row, a death whose parent or child is already buried there takes the slot after that family, and only the graves after it move |
+| Epitaph (hover, click) | Name, pid, lifetime, cause, kind, cgroup, parent | `name-pid`, `lived <lifetime>   <cause>`, `kind \| cgroup \| parent name-pid`. Lifetime from taskstats `etime`, else wall clock minus start; the cause is the first rule that matches: SIGKILL while the cgroup's `oom_kills` rises in the same or the next sample, "taken by the OOM killer" (each rise claims the largest victim); a core dump, "dumped core"; another signal, "killed by SIGTERM" (Linux names, else "killed by signal N"); AFORK with exit 0, "forked, never exec'd"; exit N > 0, "exited N"; exit 0, "exited peacefully"; no cause, "died between samples" |
+| Mass grave | More than 8 deaths from one parent within 1 s | One low slab 0.42 high and 2.4 + 0.1 N long (at most 3.6), labelled `comm x N mass grave (parent-pid)`; it counts as one grave |
+| Zombie in an open pit | A live process in state Z | A pink figure in a pit in front of the newest row, pickable as the process; a pit is kept for life. Reaped, it sinks over 0.5 s and is buried |
+| Mausoleum | A `.service` cgroup with no live process and at least 3 standing graves | Its graves leave their rows (the gaps stay, nothing else moves); it stands in the lot at the left end of the row of its last death, two rows deep, labelled `unit (unit stopped, N graves)`; later graves of the unit join it |
+| Unmarked marker | An exit of a process no sample listed | A marker 0.28 high in the corner field, the newest 120 drawn, all counted: `N died between samples` |
+| Ghost | A new process whose pid is that of a standing grave, with another start time | Five stacked glows over the grave rising for 4 s and fading for 2 s, labelled `pid N reused` and `name-pid rests below`; not pickable |
+| Fog | Memory pressure (stall percentage, 10 s average) | Each face blended towards the fog colour by its distance from the front of the plot as a share of its depth times 0.4 + 1.2 p / (p + 10), at most 0.6; 4 to 16 wisps (4 + 12 p / (p + 10)), Gaussian patches on the ground up to 12% of the frame wide, add up to 0.3 |
+| Sinking rows | The number of standing graves | Above 600 the oldest whole rows are dropped; from 450 the oldest row sinks by up to 1.5 and is fully fogged at 600, the second oldest half as much |
+| Moon | The date (`Snapshot::wall`) | age = (days since 2000-01-06 18:14 UTC) mod 29.530588853; lit = (1 − cos(2π age / 29.530588853)) / 2, the lit side on the right while waxing |
+
+**Decorative:** the fence and its gate, the gravel paths, the grass, the soil beds in front of the stones, the two bare oaks, the stars, the earthshine on the moon's dark side, the shapes of the stones (round, slab, gothic, cross, and an obelisk for some of the tallest, drawn from the identity), the lines engraved on them, a zombie's sway, and the fog's base density of 0.4.
+
+**Burial.** Deaths are taken in from the fork, exec and exit events (see [Fork, exec and exit events](#fork-exec-and-exit-events)) on every sample, whichever view is shown, while the events are read. A death is buried 1 s after it happened and at least one sample later, so a mass grave and an OOM kill are known by then; a process still listed (a zombie) waits until it is gone. Everything a grave shows is fixed when it is dug, and its stone is built once.
+
+**Caps.** 600 graves (whole rows go), 120 markers drawn, four ghosts at once, 16 wisps. A grave costs at most about 40 triangles, culled when they face away.
+
+**What cannot be measured.** The events are read only while the necropolis is shown, so deaths while another view is shown are not seen. Without taskstats (it needs CAP_NET_ADMIN), causes come from the proc connector's exit status, heights and widths from what the samples saw and lifetimes from the start time, and the legend says "no exit records"; where only sample diffing works (an ordinary container), every cause is "died between samples" and there are no unmarked markers, and the legend says "no fork events". Live mode never invents a cause.
+
+On macOS only sample diffing and kqueue see deaths: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -492,6 +604,33 @@ New processes fly out of their parent (orbit) or rise from their plot (city).
 The processes already running when isotop starts bloom in the same way. Exiting
 processes leave a brief flash and an expanding ring.
 
+### Fork, exec and exit events
+
+A view that shows births and deaths as they happen asks for life events, and isotop
+then takes each fork, exec and exit from the best source the machine allows. The
+status strip names the sources in use, and what is missing:
+
+| Source | What it adds | Needs |
+|---|---|---|
+| proc connector | Every fork, exec and exit with its exact time, its parent and its exit status or signal, including processes that live and die between two samples | Linux 6.6 or later (CAP_NET_ADMIN before), and the initial PID and user namespaces |
+| taskstats | A record of every exit: command, start, run time, CPU time of all its threads, peak memory, storage I/O, context switches, and whether it forked without ever calling exec | CAP_NET_ADMIN, and the initial namespaces |
+| kqueue (macOS) | The exact time of each exec and exit of your own processes, without the exit status | Nothing |
+| sample diff | Births, exits and execs found by comparing two samples, always on; it misses a process that lives between them | Nothing |
+
+isotop never raises its own privileges. Taskstats records, and the connector on a
+kernel older than 6.6, need CAP_NET_ADMIN, which you may choose to grant the binary
+yourself:
+
+```sh
+sudo setcap cap_net_admin+ep ./target/release/isotop
+```
+
+Inside a container with its own PID namespace only sample diffing works, and the
+status strip says "no fork events" and "no exit records". Without the connector,
+Linux has no exec counter, so sample diffing counts a process whose name changed as
+an exec; a process that renames itself (`prctl(PR_SET_NAME)`) counts too. The events
+reach a sample through a queue of 4096; what does not fit is dropped and counted.
+
 ### Labels, hover, and the tour
 
 System names (`init`, `systemd --user`, `kthreadd`, ...) and the busiest
@@ -512,7 +651,7 @@ Any key or mouse movement ends the tour.
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -525,10 +664,10 @@ Any key or mouse movement ends the tour.
 | `Q` / `e` | Rotate a quarter turn counterclockwise / clockwise |
 | PgUp / PgDn | Tilt up / down |
 | `t` | Toggle top-down and isometric |
-| Home | Fit scene |
-| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again |
-| Hover | Name and description of the process under the pointer |
-| Left click | Select the nearest process and open its inspector popup |
+| Home | Fit scene (in the tesseract, also the canonical 4D orientation, the lab frame and the drift) |
+| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again; in the tesseract, as Home |
+| Hover | Name and description of the process under the pointer, or the title of a thing a view draws |
+| Left click | Select the nearest process, or thing, and open its inspector popup |
 | Left click on empty space | Close the popup |
 | Left drag | Pan (on the globe too) |
 | `l` | Toggle labels |
@@ -542,7 +681,10 @@ Any key or mouse movement ends the tour.
 | Esc | Leave search, close the popup, or clear subtree focus |
 | Space | Pause / resume |
 | `[` / `]` | Previous / next retained snapshot |
-| `?` | Toggle help |
+| `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
+| `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
+| `b` | Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame |
+| `?` | Toggle help; the second line leads with the shown view's own keys |
 | `q` / Ctrl-C | Quit |
 
 On the globe, scrolling follows your fingers the way panning moves the other
@@ -553,7 +695,7 @@ Scrolling at all stops the earth's own turn, and a turned globe holds still unti
 stands the earth upright on the match.
 
 **View picker.** `v` lists the views this platform supports, one row each, such as
-`> * 11 coop   COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
+`> * 11 coop    COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
 the number the view's place in the list. The picker takes every key until it closes:
 
 | Key | Action |
@@ -583,7 +725,11 @@ Kitty do), hover and clicks are pixel-precise; otherwise clicks pick the nearest
 object within about a cell. The popup inspector follows the selected process and
 reports exact values, threads, NVIDIA GPU memory, the memory of the system a
 body anchors, socket counts, command line, parent, and cgroup. Process identity
-combines PID and start time to distinguish PID reuse.
+combines PID and start time to distinguish PID reuse. Some views also draw things
+that are not processes (interrupt lines, files, graves); clicking one opens the
+card the view writes for it, and the card says so when the view no longer shows
+the thing. Esc closes a thing's card first; switching views closes it too.
+Search, focus, links and the tour work on processes only.
 
 ## Headless rendering and performance
 
@@ -597,7 +743,10 @@ combines PID and start time to distinguish PID reuse.
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
 uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
 the media and creatures have settled, demo strata replays a minute of
-history, and demo coop replays 30 seconds of samples for CPU variation. Live headless output takes two samples to measure CPU, so live strata
+history (ptolemy does too, but its planets need 30 samples, so its reference renders use
+`--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
+replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -605,6 +754,12 @@ reports presented frame throughput after restoring the terminal.
 
 The scene admits at most 1024 processes by default (`--limit` changes this).
 Selection can bring a process beyond the cap into the scene.
+
+<!-- metrics:start -->
+## By the numbers
+
+41,810 lines of Rust (25,753 production, 16,057 test) in 43 files, 545 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+<!-- metrics:end -->
 
 ## Development
 
@@ -614,7 +769,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
 python3 scripts/smoke_terminal.py
+python3 scripts/code_report.py --check
 ```
+
+`python3 scripts/code_report.py` regenerates `docs/METRICS.md` and the block above; it needs
+[tokei](https://github.com/XAMPPRocky/tokei) (`brew install tokei`, `paru -S tokei` or
+`cargo install tokei --locked`).
 
 The smoke test emulates a graphics-capable terminal through a pseudo-terminal,
 reads frames both inline and through shared memory, and exercises interactive

@@ -210,3 +210,34 @@ fn glyph_fragment(input: GlyphVarying) -> Targets {
     }
     return Targets(vec4<f32>(input.color.rgb, 1.0), NONE);
 }
+
+// A pick-only disc: the same integer-pixel sampling as a ball, depth-tested at a flat depth. The
+// pipeline masks the colour target and does not write depth, so only the pick survives.
+struct Splat {
+    @location(0) center: vec2<f32>,
+    @location(1) radius: f32,
+    @location(2) depth: f32,
+    @location(3) pick: u32,
+};
+
+struct SplatVarying {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) center: vec2<f32>,
+    @location(1) @interpolate(flat) radius: f32,
+    @location(2) @interpolate(flat) pick: u32,
+};
+
+@vertex
+fn splat_vertex(@builtin(vertex_index) index: u32, splat: Splat) -> SplatVarying {
+    let position = splat.center + CORNERS[index] * (splat.radius + 1.0);
+    return SplatVarying(vec4<f32>(clip(position), normalized(splat.depth), 1.0), splat.center, splat.radius, splat.pick);
+}
+
+@fragment
+fn splat_fragment(input: SplatVarying) -> Targets {
+    let n = (floor(input.position.xy) - input.center) / input.radius;
+    if dot(n, n) > 1.0 {
+        discard;
+    }
+    return Targets(vec4<f32>(0.0), input.pick);
+}

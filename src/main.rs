@@ -8,21 +8,26 @@ mod glyphs;
 mod gpu;
 #[cfg(test)]
 mod harness;
+mod history;
 mod journal;
 mod layout;
 mod matrix;
 mod medium;
 mod model;
+mod necropolis;
 mod palette;
 mod picker;
 mod places;
 mod platform;
+mod ptolemy;
 mod reef;
 mod render;
 mod simulation;
 mod status;
+mod stellar;
 mod strata;
 mod terminal;
+mod tesseract;
 mod views;
 
 use std::cmp::Reverse;
@@ -44,10 +49,11 @@ use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, de
 use picker::{Entry, Picker, Toggle};
 use platform::Source;
 use render::{
-    Camera, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, label_name,
+    Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target,
+    Thing, label_name,
 };
 use terminal::{Label, Popup, Terminal, Tone};
-use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, When};
+use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
 /// How long the journal follower keeps running after the demand last contained
@@ -157,6 +163,11 @@ impl Options {
     /// Whether the run draws without a terminal: `--output` or `--benchmark`.
     fn headless(&self) -> bool {
         self.output.is_some() || self.benchmark.is_some()
+    }
+
+    /// `--sample-ms` in seconds: how far back the sample before the first one is.
+    fn sample_seconds(&self) -> f64 {
+        f64::from(self.sample_ms) / 1000.0
     }
 }
 
@@ -324,6 +335,8 @@ struct App {
     rendered: Camera,
     view: View,
     selected: Option<Identity>,
+    /// The selected thing; never Some while a process is selected.
+    thing: Option<Thing>,
     focus: Option<Identity>,
     history: VecDeque<Snapshot>,
     paused: bool,
@@ -342,6 +355,9 @@ struct App {
     labels: bool,
     hover: Option<Pointer>,
     hovered: Option<Identity>,
+    /// The thing under the pointer in the last frame, which the view highlights while no thing
+    /// is selected.
+    hovered_thing: Option<Thing>,
     dragging: Option<(MouseButton, [f32; 2])>,
     dismiss: bool,
     animation: f32,
@@ -374,6 +390,7 @@ impl App {
             rendered: Camera::default(),
             view,
             selected: None,
+            thing: None,
             focus: None,
             history: VecDeque::from([snapshot]),
             paused: false,
@@ -390,6 +407,7 @@ impl App {
             labels: true,
             hover: None,
             hovered: None,
+            hovered_thing: None,
             dragging: None,
             dismiss: false,
             animation: 0.0,
@@ -494,10 +512,13 @@ impl App {
         place_panel(lines, None, layout, false, 40)
     }
 
-    /// Shows `view`, framed, at its row's pitch if it has one.
+    /// Shows `view`, framed, at its row's pitch if it has one. Things belong to the view that
+    /// drew them, so a selected or hovered one is let go.
     fn switch(&mut self, view: View) {
         self.view = view;
         self.fit = true;
+        self.thing = None;
+        self.hovered_thing = None;
         if let Some(pitch) = self.row().pitch {
             self.goal.pitch = pitch;
         }
@@ -583,10 +604,12 @@ impl App {
             width,
             height,
             selected: self.selected,
+            thing: self.thing.or(self.hovered_thing),
             time,
             limit,
             focus: self.focus,
             paused: self.paused,
+            toured: self.tour.as_ref().map(|tour| tour.target),
         };
         let mut frame = self.scene.render(&input);
         if self.fit {
@@ -638,6 +661,7 @@ impl App {
     fn select_match(&mut self) {
         if let Some(&id) = self.matches.get(self.match_index) {
             self.selected = Some(id);
+            self.thing = None;
             if let Some(&p) = self.scene.positions.get(&id) {
                 self.goal.center = [p[0], p[1]];
                 self.face(p);
@@ -775,6 +799,7 @@ impl App {
         });
         if self.tour.is_some() {
             self.selected = None;
+            self.thing = None;
             self.goal.zoom = self.fit_zoom * 2.2;
         }
     }
@@ -849,7 +874,12 @@ impl App {
         } else if self.picker.is_some() {
             lines.push(" Type to filter views | Up/Down move | Enter show | Space add or remove from the Tab playlist | Esc close".into());
         } else if self.show_help {
-            lines.push(" Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links".into());
+            // The shown view's own keys lead, so they survive a narrow terminal.
+            let keys = match row.keys {
+                "" => String::new(),
+                keys => format!(" {keys} |"),
+            };
+            lines.push(format!("{keys} Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links"));
         } else {
             let scroll = if self.row().turn.is_some() {
                 "scroll turn/tilt | drag pan"
@@ -876,6 +906,18 @@ impl App {
         lines
     }
 
+    /// Notes the process or thing under the pointer in `frame`, for the next frame to highlight.
+    fn hover_over(&mut self, frame: &Frame, radius: f32) {
+        let target = self
+            .hover
+            .and_then(|h| frame.target_near(h.frame[0], h.frame[1], radius));
+        (self.hovered, self.hovered_thing) = match target {
+            Some(Target::Process(id)) => (Some(id), None),
+            Some(Target::Thing(thing)) => (None, Some(thing)),
+            None => (None, None),
+        };
+    }
+
     fn screen(&self, frame: &Frame, id: Identity) -> Option<[f32; 2]> {
         let &p = self.scene.positions.get(&id)?;
         frame.locate(&self.camera, p)
@@ -888,7 +930,31 @@ impl App {
             .filter(|_| self.scene.inspector_line(self.view).is_none())
     }
 
+    /// The selected thing's popup: its card's title and lines beside the point the card names,
+    /// or a note that the view no longer shows it.
+    fn thing_popup(&self, thing: Thing, frame: &Frame, layout: &Layout) -> Option<Popup> {
+        let (lines, anchor) = match self.scene.card(self.view, thing, self.snapshot()) {
+            Some(card) => {
+                let mut lines = vec![card.title];
+                lines.extend(card.lines);
+                lines.push("Esc close".into());
+                (lines, frame.locate(&self.camera, card.at))
+            }
+            None => (
+                vec![
+                    format!("{} no longer shown", thing.kind),
+                    "Esc close".into(),
+                ],
+                None,
+            ),
+        };
+        place_panel(lines, anchor.map(|a| layout.cell_of(a)), layout, false, 32)
+    }
+
     fn popup(&self, frame: &Frame, layout: &Layout) -> Option<Popup> {
+        if let Some(thing) = self.thing {
+            return self.thing_popup(thing, frame, layout);
+        }
         let id = self.inspected()?;
         let snapshot = self.snapshot();
         let lines = match snapshot.processes.iter().find(|p| p.id == id) {
@@ -1023,7 +1089,7 @@ impl App {
                 .tour_point(tour.target)
                 .and_then(|point| frame.locate(&self.camera, point))
         {
-            let lines = vec![
+            let mut lines = vec![
                 p.name.clone(),
                 describe(p),
                 format!(
@@ -1034,6 +1100,13 @@ impl App {
                     p.id.pid
                 ),
             ];
+            lines.extend(
+                self.scene
+                    .callout
+                    .iter()
+                    .filter(|(owner, _)| *owner == tour.target)
+                    .map(|(_, line)| line.clone()),
+            );
             if let Some(panel) = place_panel(lines, Some(layout.cell_of(anchor)), layout, true, 24)
             {
                 let [w, h] = layout.cell_size();
@@ -1050,13 +1123,27 @@ impl App {
                 panels.push(panel);
             }
         }
-        if let Some(hover) = self.hover
-            && let Some(id) = frame.pick_near(hover.frame[0], hover.frame[1], radius)
-            && Some(id) != self.selected
-            && self.tour.as_ref().is_none_or(|tour| tour.target != id)
-            && let Some(p) = lookup.get(&id)
+        let tag = match self
+            .hover
+            .and_then(|hover| frame.target_near(hover.frame[0], hover.frame[1], radius))
         {
-            let text = format!(" {} - {} ", p.name, describe(p));
+            Some(Target::Process(id))
+                if Some(id) != self.selected
+                    && self.tour.as_ref().is_none_or(|tour| tour.target != id) =>
+            {
+                lookup
+                    .get(&id)
+                    .map(|p| format!(" {} - {} ", p.name, describe(p)))
+            }
+            Some(Target::Thing(thing)) if Some(thing) != self.thing => self
+                .scene
+                .card(self.view, thing, snapshot)
+                .map(|card| thing_tag(&card)),
+            _ => None,
+        };
+        if let Some(hover) = self.hover
+            && let Some(text) = tag
+        {
             let width = text.chars().count() as u16;
             let column = (hover.cell.0 + 2).min(layout.columns.saturating_sub(width));
             let row = hover.cell.1.saturating_sub(1);
@@ -1177,6 +1264,9 @@ impl App {
                 }
                 _ => {}
             }
+            return false;
+        }
+        if code == KeyCode::Esc && self.thing.take().is_some() {
             return false;
         }
         if let Some(key) = view_key(code) {
@@ -1345,15 +1435,17 @@ impl App {
             MouseEventKind::Down(MouseButton::Left)
                 if in_scene && !panels.iter().any(|p| p.contains(column, row)) =>
             {
-                let picked = frame.pick_near(
+                let picked = frame.target_near(
                     pointer.frame[0],
                     pointer.frame[1],
                     layout.pick_radius(pixels),
                 );
                 // Clicking empty space closes the popup, unless the press turns into a drag.
                 self.dismiss = picked.is_none();
-                if picked.is_some() {
-                    self.selected = picked;
+                match picked {
+                    Some(Target::Process(id)) => (self.selected, self.thing) = (Some(id), None),
+                    Some(Target::Thing(thing)) => (self.selected, self.thing) = (None, Some(thing)),
+                    None => {}
                 }
                 self.dragging = Some((MouseButton::Left, pointer.frame));
             }
@@ -1382,6 +1474,7 @@ impl App {
                 self.dragging = None;
                 if button == MouseButton::Left && std::mem::take(&mut self.dismiss) {
                     self.selected = None;
+                    self.thing = None;
                 }
             }
             _ => {}
@@ -1592,14 +1685,17 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     let mut collector = Collector::new(options.geoip.clone(), options.home);
     collector.demand(demand);
     let mut journal = (demand.contains(Source::Journal) && !options.demo).then(Journal::start);
+    // The demo's clock: the time of its latest sample.
+    let mut demo_time = if options.headless() {
+        options.time
+    } else {
+        0.0
+    };
     let mut snapshot = if options.demo {
         demo_snapshot(
             view.info(),
-            if options.headless() {
-                options.time
-            } else {
-                0.0
-            },
+            demo_time - options.sample_seconds(),
+            demo_time,
             options.processes as usize,
         )
     } else {
@@ -1673,11 +1769,9 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
             app.animation += elapsed;
             if last_sample.elapsed() >= Duration::from_millis(options.sample_ms as u64) {
                 let snapshot = if options.demo {
-                    demo_snapshot(
-                        app.row(),
-                        origin.elapsed().as_secs_f64(),
-                        options.processes as usize,
-                    )
+                    let previous = demo_time;
+                    demo_time = origin.elapsed().as_secs_f64();
+                    demo_snapshot(app.row(), previous, demo_time, options.processes as usize)
                 } else {
                     collector.sample()?
                 };
@@ -1716,9 +1810,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
         let mut frame = app.render(layout.width, layout.height, limit);
         let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         let pixels = terminal.pixel_mouse && layout.cell.is_some();
-        app.hovered = app
-            .hover
-            .and_then(|h| frame.pick_near(h.frame[0], h.frame[1], layout.pick_radius(pixels)));
+        app.hover_over(&frame, layout.pick_radius(pixels));
         let (labels, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(pixels));
         let transport = if terminal.shared_memory {
             "shared memory".to_owned()
@@ -1789,15 +1881,65 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
 
 /// The demo workload at `time` for `count` processes, with what `row`, the shown view's registry
 /// row, asks the demo to synthesize. Every demo snapshot goes through here, so a view sees the
-/// same workload whether it is the first sample, a warm-up replay or a live one.
-fn demo_snapshot(row: &ViewInfo, time: f64, count: usize) -> Snapshot {
-    model::demo_with(time, count, row.demo)
+/// same workload whether it is the first sample, a warm-up replay or a live one. `previous` is
+/// the time of the sample before: with churn, the snapshot's life events are those in between.
+fn demo_snapshot(row: &ViewInfo, previous: f64, time: f64, count: usize) -> Snapshot {
+    let mut snapshot = model::demo_with(time, count, row.demo);
+    if row.demo.churn {
+        snapshot.life = model::demo_events(previous, time, count, row.demo);
+        // A view that demands the events is told where they come from, as a live run tells it.
+        if row.sources.contains(Source::LifeEvents) {
+            snapshot.sources = model::demo_life_sources(row.demo);
+        }
+    }
+    snapshot
 }
 
-/// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured,
-/// by running the shown view's warm-up phases (`ViewInfo::warmup`) whose condition holds. The
-/// golden render test runs this too, so the hashes it checks are the PNGs' frames.
+/// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured:
+/// the shared history, then the shown view's warm-up phases (`ViewInfo::warmup`) whose condition
+/// holds. The golden render test runs this too, so the hashes it checks are the PNGs' frames.
 fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
+    replay_history(app, options);
+    run_phases(app, options, journal);
+}
+
+/// Whether a warm-up phase runs in this run.
+fn due(warmup: &Warmup, options: &Options) -> bool {
+    match warmup.when {
+        When::DemoOutput => options.demo && options.output.is_some(),
+        When::Output => options.output.is_some(),
+        When::Headless => options.headless(),
+        When::DemoHeadless => options.demo && options.headless(),
+    }
+}
+
+/// Fills the scene's shared history, which a live run has by the time a view opens, with the
+/// demo samples of the `history::SERIES` whole seconds before `--time`, skipping those before 0.
+/// The samples go straight into `scene.history`, not through `Scene::record`, so no view's own
+/// record hook sees them and the views that warm up through `Phase::Record` are unchanged. A row
+/// whose due `Phase::History` already fills the history while it rasterizes skips the replay.
+fn replay_history(app: &mut App, options: &Options) {
+    let row = app.row();
+    let filled = row
+        .warmup
+        .iter()
+        .any(|warmup| matches!(warmup.phase, Phase::History { .. }) && due(warmup, options));
+    if !options.demo || !options.headless() || filled {
+        return;
+    }
+    let count = options.processes as usize;
+    for back in (1..=history::SERIES).rev() {
+        let at = options.time - back as f64;
+        if at >= 0.0 {
+            app.scene
+                .history
+                .record(&demo_snapshot(row, at - 1.0, at, count), at as f32);
+        }
+    }
+}
+
+/// Runs the shown view's warm-up phases whose condition holds.
+fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
     let (width, height, limit) = (
         options.width,
         options.headless_height(),
@@ -1806,30 +1948,45 @@ fn warm_up(app: &mut App, options: &Options, journal: Option<&Journal>) {
     let count = options.processes as usize;
     let row = app.row();
     for warmup in row.warmup {
-        let due = match warmup.when {
-            When::DemoOutput => options.demo && options.output.is_some(),
-            When::Output => options.output.is_some(),
-            When::Headless => options.headless(),
-        };
-        if !due {
+        if !due(warmup, options) {
             continue;
         }
         match warmup.phase {
             Phase::History { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
-                    app.history = VecDeque::from([demo_snapshot(row, at, count)]);
+                    app.history = VecDeque::from([demo_snapshot(row, at - 1.0, at, count)]);
                     app.animation = at as f32;
                     let frame = app.render(width, height, limit);
                     app.scene.spare = frame.release();
                 }
-                app.history = VecDeque::from([demo_snapshot(row, options.time, count)]);
+                app.history = VecDeque::from([demo_snapshot(
+                    row,
+                    options.time - options.sample_seconds(),
+                    options.time,
+                    count,
+                )]);
             }
             Phase::Record { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
                     if at >= 0.0 {
-                        app.scene.record(&demo_snapshot(row, at, count), at as f32);
+                        let snapshot = demo_snapshot(row, at - 1.0, at, count);
+                        app.scene.record(&snapshot, at as f32);
+                    }
+                }
+            }
+            Phase::Replay {
+                seconds,
+                before_start,
+            } => {
+                let step = options.sample_seconds();
+                let samples = (f64::from(seconds) / step).round() as u32;
+                for back in (1..=samples).rev() {
+                    let at = options.time - f64::from(back) * step;
+                    if at >= 0.0 || before_start {
+                        let snapshot = demo_snapshot(row, at - step, at, count);
+                        app.scene.record(&snapshot, at as f32);
                     }
                 }
             }
@@ -1871,6 +2028,15 @@ fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64)
     }
 }
 
+/// The hover tag of a thing: like a process's, a name and what it is, here the card's title and
+/// its first line.
+fn thing_tag(card: &Card) -> String {
+    match card.lines.first() {
+        Some(line) => format!(" {} - {line} ", card.title),
+        None => format!(" {} ", card.title),
+    }
+}
+
 fn main() {
     match run(Options::parse()) {
         Ok(0) => {}
@@ -1887,7 +2053,7 @@ mod tests {
     use super::*;
     use crate::model::DemoOptions;
     use crate::simulation::hash::fnv1a_64_bytes as fnv1a;
-    use crate::views::view;
+    use crate::views::{testing, view};
 
     /// Every registered view available, as on Linux and macOS today.
     fn all_available() -> Vec<bool> {
@@ -2523,6 +2689,8 @@ mod tests {
         let asked = DemoOptions {
             churn: true,
             exact_cpu_time: true,
+            observer: false,
+            mortality: false,
         };
         let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
         app.scene = Scene::with_rows(rows);
@@ -2530,7 +2698,7 @@ mod tests {
         assert_eq!(app.scene.row(demanding).demo, asked);
         let processes = |app: &App, time: f64| {
             let row = app.row();
-            demo_snapshot(row, time, 64).processes
+            demo_snapshot(row, time - 1.0, time, 64).processes
         };
         // The first view asks for nothing, so it gets `demo` exactly.
         assert_eq!(
@@ -2548,7 +2716,7 @@ mod tests {
             f64::from(model::demo_cpu_seconds(40.0, 5) as f32)
         );
         assert_eq!(
-            format!("{:?}", demo_snapshot(app.row(), 40.0, 64).processes),
+            format!("{:?}", demo_snapshot(app.row(), 39.0, 40.0, 64).processes),
             format!("{:?}", model::demo_with(40.0, 64, asked).processes)
         );
         // And back again.
@@ -2574,6 +2742,67 @@ mod tests {
             format!("{:?}", app.history[0].processes),
             format!("{:?}", model::demo_with(12.0, 64, asked).processes)
         );
+        // With churn a sample carries the life events since the one a `--sample-ms` before it;
+        // without, none.
+        assert_eq!(
+            app.history[0].life,
+            model::demo_events(11.0, 12.0, 64, asked)
+        );
+        let interval = |view| demo_snapshot(app.scene.row(view), 0.0, 120.0, 64).life;
+        assert_eq!(
+            interval(demanding),
+            model::demo_events(0.0, 120.0, 64, asked)
+        );
+        assert!(!interval(demanding).is_empty());
+        assert!(interval(plain).is_empty());
+    }
+
+    /// The frame a headless demo run of `name` captures, and the app it came from.
+    fn warmed_frame(name: &str, replay: bool) -> (App, Vec<u8>) {
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "75",
+            "--processes",
+            "64",
+            "--width",
+            "160",
+            "--renderer",
+            "cpu",
+            "--output",
+            "warm.png",
+            "--view",
+            name,
+        ]);
+        let view = View::all().find(|view| view.name() == name).unwrap();
+        let mut app = App::new(
+            view,
+            demo_snapshot(view.info(), options.time - 1.0, options.time, 64),
+            all_available(),
+        );
+        if replay {
+            warm_up(&mut app, &options, None);
+        } else {
+            run_phases(&mut app, &options, None);
+        }
+        app.animation = options.time as f32;
+        let frame = app.render(160, options.headless_height(), options.limit as usize);
+        (app, frame.pixels.to_vec())
+    }
+
+    #[test]
+    fn headless_replay_leaves_coop_warm_up_unchanged() {
+        let (replayed, with) = warmed_frame("coop", true);
+        let (bare, without) = warmed_frame("coop", false);
+        assert!(with == without, "the replay changed coop's frame");
+        // The replay fills the shared history, one sample a second before the captured one; coop's
+        // own `Record` phase reaches it through `Scene::record` for its 30 seconds only.
+        assert_eq!(replayed.scene.history.window(75.0, 60.0).count(), 61);
+        assert_eq!(bare.scene.history.window(75.0, 60.0).count(), 31);
+        // Strata fills it by rasterizing, so it is not replayed on top.
+        let (strata, _) = warmed_frame("strata", true);
+        assert_eq!(strata.scene.history.window(75.0, 60.0).count(), 61);
     }
 
     #[test]
@@ -2958,6 +3187,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn module_views_learn_the_tour_target_focus_and_limit_and_add_callout_lines() {
+        let rows = views::testing::WITNESSED;
+        let snapshot = model::demo(12.0, 16);
+        let mut app = App::new(View::at(0), snapshot, vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        let layout = Layout {
+            columns: 120,
+            rows: 40,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 7);
+        let legend = |app: &App| app.scene.legend(app.view, app.snapshot());
+        assert_eq!(legend(&app), " witness: toured None | focus None | limit 7");
+        let callouts = |app: &App, frame: &mut Frame| -> Vec<String> {
+            let (_, panels) = app.overlay(frame, &layout, 4.0);
+            panels.into_iter().flat_map(|panel| panel.lines).collect()
+        };
+        assert!(!callouts(&app, &mut frame).contains(&views::testing::WITNESS_CALLOUT.into()));
+        app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
+        let target = app.tour.as_ref().map(|tour| tour.target).expect("a tour");
+        let mut frame = app.render(320, 180, 7);
+        assert_eq!(
+            legend(&app),
+            format!(
+                " witness: toured Some({}) | focus None | limit 7",
+                target.pid
+            )
+        );
+        let lines = callouts(&app, &mut frame);
+        let at = lines
+            .iter()
+            .position(|line| line == views::testing::WITNESS_CALLOUT)
+            .expect("the view's line is in the callout");
+        assert!(lines[at - 1].starts_with("CPU "), "{lines:?}");
+        app.tour = None;
+        app.focus = Some(target);
+        app.render(320, 180, 7);
+        assert_eq!(
+            legend(&app),
+            format!(
+                " witness: toured None | focus Some({}) | limit 7",
+                target.pid
+            )
+        );
+    }
+
+    #[test]
+    fn the_help_line_leads_with_the_shown_views_keys() {
+        let rows = views::testing::WITNESSED;
+        let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        app.show_help = true;
+        let help = |app: &App| app.text(1.0, "test", 10, 512)[3].clone();
+        assert!(
+            help(&app).starts_with(" m witness mode | Arrows/WASD pan"),
+            "{}",
+            help(&app)
+        );
+        app.switch(View::at(1));
+        assert!(help(&app).starts_with(" Arrows/WASD pan"), "{}", help(&app));
+    }
+
+    #[test]
+    fn a_replay_feeds_demo_samples_at_the_sample_interval_and_only_to_demo_runs() {
+        let records = |arguments: &[&str]| {
+            let rows = views::testing::REPLAYING;
+            let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+            app.scene = Scene::with_rows(rows);
+            let mut all = vec!["--time", "12", "--processes", "16"];
+            all.extend_from_slice(arguments);
+            warm_up(&mut app, &options(&all), None);
+            app.scene.legend(app.view, app.snapshot())
+        };
+        let counted = |count: usize| format!(" probe: 0 draws | {count} records | keys []");
+        assert_eq!(records(&["--demo", "--output", "x.png"]), counted(4));
+        assert_eq!(records(&["--demo", "--benchmark", "3"]), counted(4));
+        assert_eq!(
+            records(&["--demo", "--output", "x.png", "--sample-ms", "250"]),
+            counted(16)
+        );
+        assert_eq!(
+            records(&["--output", "x.png"]),
+            counted(0),
+            "a live run keeps demo samples out of its history"
+        );
+        assert_eq!(
+            records(&["--demo"]),
+            counted(0),
+            "only headless runs warm up"
+        );
+    }
+
+    #[test]
+    fn a_replay_from_before_the_start_feeds_the_demo_samples_before_time_zero_too() {
+        let rows = views::testing::REMEMBERING;
+        let records = |arguments: &[&str]| {
+            let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+            app.scene = Scene::with_rows(rows);
+            let mut all = vec!["--time", "12", "--processes", "16"];
+            all.extend_from_slice(arguments);
+            warm_up(&mut app, &options(&all), None);
+            app.scene.legend(app.view, app.snapshot())
+        };
+        let counted = |count: usize| format!(" probe: 0 draws | {count} records | keys []");
+        assert_eq!(records(&["--demo", "--output", "x.png"]), counted(20));
+        assert_eq!(records(&["--output", "x.png"]), counted(0));
+    }
+
     /// The checked-in golden hashes, which are those of Linux on x86_64.
     const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden.txt");
 
@@ -2988,7 +3328,12 @@ mod tests {
         ]);
         let mut app = App::new(
             view,
-            demo_snapshot(view.info(), options.time, options.processes as usize),
+            demo_snapshot(
+                view.info(),
+                options.time - options.sample_seconds(),
+                options.time,
+                options.processes as usize,
+            ),
             all_available(),
         );
         // The matrix greets `$USER`, which differs between machines.
@@ -3280,7 +3625,10 @@ mod tests {
         );
         press(&mut app, KeyCode::Backspace);
         type_text(&mut app, "eef");
-        assert_eq!(picker_lines(&app, 31)[1].trim_end(), "> *  9 reef   REEF");
+        assert_eq!(
+            picker_lines(&app, 31)[1].trim_end(),
+            "> *  9 reef       REEF"
+        );
         assert_eq!(app.view, view("city"), "typing never switches");
     }
 
@@ -3548,7 +3896,187 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/11");
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/14");
+    }
+
+    /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
+    const THING_LAYOUT: Layout = Layout {
+        columns: 200,
+        rows: 56,
+        width: 1600,
+        height: 896,
+        cell: Some([8.0, 16.0]),
+    };
+
+    /// An app on the lantern view of `testing::THINGS`, and its first frame.
+    fn lantern_app() -> (App, Frame) {
+        let scene = Scene::with_rows(testing::THINGS);
+        let mut app = App::with_scene(scene, View::at(0), model::demo(1.0, 16), vec![true; 2]);
+        let frame = app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        (app, frame)
+    }
+
+    /// Where lantern `index` is drawn in `frame`.
+    fn lantern_at(app: &App, frame: &Frame, index: usize) -> [f32; 2] {
+        frame
+            .locate(&app.camera, testing::Lanterns::position(index))
+            .expect("the lantern is on screen")
+    }
+
+    /// A left click at frame pixel `at`, pressed and released in place.
+    fn click(app: &mut App, frame: &Frame, at: [f32; 2]) {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            let event = MouseEvent {
+                kind,
+                column: at[0] as u16,
+                row: at[1] as u16,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.mouse(event, &THING_LAYOUT, frame, &[], true);
+        }
+    }
+
+    /// The text of the open popup, if one is open.
+    fn popup_lines(app: &App, frame: &mut Frame) -> Option<Vec<String>> {
+        let radius = THING_LAYOUT.pick_radius(true);
+        let (_, panels) = app.overlay(frame, &THING_LAYOUT, radius);
+        panels.first().map(|panel| panel.lines.clone())
+    }
+
+    #[test]
+    fn a_selected_thing_opens_its_card_and_esc_closes_it() {
+        let (mut app, mut frame) = lantern_app();
+        assert_eq!(frame.things.len(), 3);
+        let hovered = lantern_at(&app, &frame, 1);
+        app.hover = Some(Pointer {
+            frame: hovered,
+            cell: THING_LAYOUT.cell_of(hovered),
+        });
+        let radius = THING_LAYOUT.pick_radius(true);
+        let (labels, _) = app.overlay(&mut frame, &THING_LAYOUT, radius);
+        let tags: Vec<String> = labels
+            .into_iter()
+            .filter(|label| label.tone == Tone::Tag)
+            .map(|label| label.text)
+            .collect();
+        assert_eq!(
+            tags,
+            [format!(
+                " {} - {} ",
+                testing::lantern_title(101),
+                testing::WICK
+            )],
+            "a hovered thing shows its title and its card's first line"
+        );
+        app.hover = None;
+        let lantern = Thing {
+            kind: testing::LANTERN,
+            key: 100,
+        };
+        let spot = lantern_at(&app, &frame, 0);
+        click(&mut app, &frame, spot);
+        assert_eq!((app.thing, app.selected), (Some(lantern), None));
+        assert_eq!(
+            popup_lines(&app, &mut frame).expect("the card is open"),
+            [
+                testing::lantern_title(100).as_str(),
+                testing::WICK,
+                "Esc close"
+            ]
+        );
+        app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        assert_eq!(
+            app.scene.legend(app.view, app.snapshot()),
+            " lanterns | highlighted 100",
+            "the view highlights the selected thing"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.thing, None);
+        assert_eq!(popup_lines(&app, &mut frame), None);
+        app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        assert_eq!(app.scene.legend(app.view, app.snapshot()), " lanterns");
+        let spot = lantern_at(&app, &frame, 0);
+        click(&mut app, &frame, spot);
+        let process = app.snapshot().processes[0].id;
+        let at = app
+            .screen(&frame, process)
+            .expect("the process is on screen");
+        click(&mut app, &frame, at);
+        assert_eq!(
+            (app.thing, app.selected),
+            (None, Some(process)),
+            "selecting a process lets the thing go"
+        );
+    }
+
+    #[test]
+    fn a_thing_that_vanishes_says_so() {
+        let (mut app, mut frame) = lantern_app();
+        let spot = lantern_at(&app, &frame, 2);
+        click(&mut app, &frame, spot);
+        assert_eq!(app.thing.map(|thing| thing.key), Some(102));
+        press(&mut app, KeyCode::Char('x'));
+        frame = app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
+        assert_eq!(frame.things.len(), 2, "the last lantern went out");
+        assert_eq!(
+            popup_lines(&app, &mut frame).expect("the popup stays open"),
+            ["lantern no longer shown", "Esc close"]
+        );
+    }
+
+    #[test]
+    fn switching_views_clears_the_selected_thing() {
+        let (mut app, frame) = lantern_app();
+        let spot = lantern_at(&app, &frame, 0);
+        click(&mut app, &frame, spot);
+        assert!(app.thing.is_some());
+        press(&mut app, KeyCode::Tab);
+        assert_eq!((app.view, app.thing), (View::at(1), None));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!((app.view, app.thing), (View::at(0), None));
+    }
+
+    #[test]
+    fn thing_card_text_cannot_inject_terminal_controls() {
+        let (mut app, mut frame) = lantern_app();
+        let radius = THING_LAYOUT.pick_radius(true);
+        let at = lantern_at(&app, &frame, 0);
+        app.hover = Some(Pointer {
+            frame: at,
+            cell: THING_LAYOUT.cell_of(at),
+        });
+        let (labels, _) = app.overlay(&mut frame, &THING_LAYOUT, radius);
+        click(&mut app, &frame, at);
+        app.hover = None;
+        let (_, panels) = app.overlay(&mut frame, &THING_LAYOUT, radius);
+        let tag = labels.iter().find(|label| label.tone == Tone::Tag);
+        assert!(tag.expect("the hover tag").text.contains('\x1b'));
+        assert!(panels[0].lines.iter().any(|line| line == testing::WICK));
+        let mut output = Vec::new();
+        for label in &labels {
+            terminal::draw_label(&mut output, label, THING_LAYOUT.columns).unwrap();
+        }
+        for panel in &panels {
+            terminal::draw_popup(&mut output, panel).unwrap();
+        }
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            output.contains("lantern 100?]0;flare?"),
+            "the tag: {output:?}"
+        );
+        assert!(
+            output.contains("wick ?[2J?lit"),
+            "the card's line: {output:?}"
+        );
+        for control in ["\x1b]0;", "\x1b[2J", "\x07"] {
+            assert!(
+                !output.contains(control),
+                "{control:?} reached the terminal"
+            );
+        }
     }
 
     #[test]
@@ -3607,7 +4135,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("coop"))
+                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -3622,7 +4150,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("coop"))
+                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
         );
     }
 

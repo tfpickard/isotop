@@ -38,6 +38,16 @@
 //!     cannot be read (the collector then reports `Source::FileLocks` missing);
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, GpuMemory>`: GPU
 //!     memory per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
+//! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
+//!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
+//!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
+//!     source this machine allows once (Linux: the proc connector and taskstats; macOS:
+//!     kqueue, which watches the pids in `identities`, the latest sample's processes) and
+//!     starts the `isotop-events` thread that reads them into `queue`, returning the sources it
+//!     opened. None, with no thread started, when none opens: no permission, no kernel support,
+//!     or a namespace other than the initial one. It never escalates privilege. The thread runs
+//!     while anything besides itself holds `queue`, and ends within 200 ms after that, closing
+//!     what it opened.
 //! - `journal() -> io::Result<(Child, JournalParser)>`: a running log follower with piped
 //!   stdout and stderr, and the parser that reads one entry at a time from its stdout;
 //!   `JOURNAL: &str` names the follower (`journalctl` or `log`) in the messages isotop prints
@@ -55,9 +65,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{self, BufRead};
 use std::net::IpAddr;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::journal::Line;
-use crate::model::{Blocker, IoBytes, Process, SyscallCounts};
+use crate::model::{Blocker, Identity, IoBytes, Process, SyscallCounts};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -124,11 +135,32 @@ pub enum Source {
     SyscallIo,
     /// The system journal: `journalctl` on Linux, the unified log on macOS.
     Journal,
+    /// The fork, exec and exit stream, `Snapshot::life`, which a view demands. While it is
+    /// demanded, `Snapshot::sources` holds it with the event sources that deliver it, and
+    /// `Snapshot::missing` the kinds of detail none of them can give (`ForkEvents`,
+    /// `ExitRecords`).
+    LifeEvents,
+    /// Fork, exec and exit events from the Linux proc connector: exact times, parents and exit
+    /// statuses.
+    ProcConnector,
+    /// Linux taskstats exit records over generic netlink; they need CAP_NET_ADMIN.
+    Taskstats,
+    /// Exec and exit events of the sampled processes from kqueue on macOS: exact times, no exit
+    /// status.
+    Kqueue,
+    /// Births, exits and execs found by comparing two samples, which always works but misses a
+    /// process that lives between them.
+    SampleDiff,
+    /// Forks with an exact time and both identities. Without them births come from sample
+    /// diffing, at the time of the sample that saw them.
+    ForkEvents,
+    /// Exit records (`ExitRecord`): an exit has no command, CPU, memory or I/O totals.
+    ExitRecords,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 16] = [
+    pub const ALL: [Source; 23] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -145,6 +177,13 @@ impl Source {
         Source::Locations,
         Source::SyscallIo,
         Source::Journal,
+        Source::LifeEvents,
+        Source::ProcConnector,
+        Source::Taskstats,
+        Source::Kqueue,
+        Source::SampleDiff,
+        Source::ForkEvents,
+        Source::ExitRecords,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -166,6 +205,13 @@ impl Source {
             Source::Locations => "remote locations",
             Source::SyscallIo => "syscall io",
             Source::Journal => "journal",
+            Source::LifeEvents => "life events",
+            Source::ProcConnector => "proc connector",
+            Source::Taskstats => "taskstats",
+            Source::Kqueue => "kqueue",
+            Source::SampleDiff => "sample diff",
+            Source::ForkEvents => "fork events",
+            Source::ExitRecords => "exit records",
         }
     }
 
@@ -277,6 +323,9 @@ pub struct RawProcess {
     pub syscalls: Option<SyscallCounts>,
     /// Cumulative major page faults (macOS: pages paged in), or None when unreadable.
     pub major_faults: Option<u64>,
+    /// Changes when the process calls exec, within one `Identity`: macOS's pid version
+    /// (`p_idversion`). None where the platform has no such number (Linux).
+    pub generation: Option<i64>,
 }
 
 /// A process the platform can see but not measure, because it belongs to another user: only
@@ -288,6 +337,267 @@ pub struct Shadow {
     /// Its short command name, unsanitized like every process name.
     pub name: String,
 }
+
+/// One fork, exec or exit, as `Snapshot::life` lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LifeEvent {
+    /// When it happened, in seconds of `Snapshot::elapsed`: the kernel's timestamp for the proc
+    /// connector, when it was received for taskstats and kqueue, and the sample that saw the
+    /// change for sample diffing.
+    pub at: f64,
+    pub kind: LifeKind,
+    pub source: LifeSource,
+    /// An identity in it is a guess: a forked child gone before its start could be read has the
+    /// start its fork's timestamp gives, and a process nothing names has start 0. An estimated
+    /// identity never matches a sampled process.
+    pub estimated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LifeKind {
+    /// A new process; a new thread is not one.
+    Fork {
+        parent: Identity,
+        child: Identity,
+    },
+    Exec {
+        id: Identity,
+    },
+    /// A process ended. `record` comes from taskstats only.
+    Exit {
+        id: Identity,
+        cause: Cause,
+        record: Option<ExitRecord>,
+    },
+}
+
+/// Where an event came from. For an exit the merge prefers them in this order, the most detailed
+/// first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifeSource {
+    Taskstats,
+    Connector,
+    Kqueue,
+    Diff,
+}
+
+impl LifeSource {
+    /// Every mechanism, most detailed first: with `source`, what picks the delivering ones out of
+    /// `Snapshot::sources`, which also holds the demanded stream (`Source::LifeEvents`) and other
+    /// views' sources.
+    pub const ALL: [LifeSource; 4] = [
+        LifeSource::Taskstats,
+        LifeSource::Connector,
+        LifeSource::Kqueue,
+        LifeSource::Diff,
+    ];
+
+    /// The `Source` that `Snapshot::sources` lists while this one delivers.
+    pub fn source(self) -> Source {
+        match self {
+            LifeSource::Taskstats => Source::Taskstats,
+            LifeSource::Connector => Source::ProcConnector,
+            LifeSource::Kqueue => Source::Kqueue,
+            LifeSource::Diff => Source::SampleDiff,
+        }
+    }
+
+    /// "taskstats", "proc connector", "kqueue" or "sample diff".
+    pub fn name(self) -> &'static str {
+        self.source().name()
+    }
+}
+
+/// Why a process ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// It exited with this status.
+    Code(i32),
+    /// A signal killed it, and it dumped core or not.
+    Signal { number: i32, core: bool },
+    /// Sample diffing and kqueue see that a process is gone, not why.
+    Unknown,
+}
+
+impl Cause {
+    /// The cause a wait status gives (`exit_code` of the proc connector, `ac_exitcode` of
+    /// taskstats): the low 7 bits are the signal that killed it, 0 for a normal exit, bit 7 says
+    /// it dumped core, and the next byte is the exit status.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "only Linux sources report a wait status")
+    )]
+    pub fn of_status(status: u32) -> Cause {
+        match status & 0x7f {
+            0 => Cause::Code(((status >> 8) & 0xff) as i32),
+            number => Cause::Signal {
+                number: number as i32,
+                core: status & 0x80 != 0,
+            },
+        }
+    }
+}
+
+impl Cause {
+    /// The name of signal `number` in Linux's numbering (signal(7)), which every wait status
+    /// isotop reads uses: macOS reports no exit status. None for a real-time or unknown signal.
+    pub fn signal_name(number: i32) -> Option<&'static str> {
+        const NAMES: [&str; 31] = [
+            "SIGHUP",
+            "SIGINT",
+            "SIGQUIT",
+            "SIGILL",
+            "SIGTRAP",
+            "SIGABRT",
+            "SIGBUS",
+            "SIGFPE",
+            "SIGKILL",
+            "SIGUSR1",
+            "SIGSEGV",
+            "SIGUSR2",
+            "SIGPIPE",
+            "SIGALRM",
+            "SIGTERM",
+            "SIGSTKFLT",
+            "SIGCHLD",
+            "SIGCONT",
+            "SIGSTOP",
+            "SIGTSTP",
+            "SIGTTIN",
+            "SIGTTOU",
+            "SIGURG",
+            "SIGXCPU",
+            "SIGXFSZ",
+            "SIGVTALRM",
+            "SIGPROF",
+            "SIGWINCH",
+            "SIGIO",
+            "SIGPWR",
+            "SIGSYS",
+        ];
+        usize::try_from(number)
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| NAMES.get(index).copied())
+    }
+}
+
+/// What taskstats reports of a process that ended, summed over its threads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExitRecord {
+    /// Its command name (`ac_comm`), unsanitized like every process name.
+    pub comm: String,
+    /// When it started, in seconds since the Unix epoch.
+    pub btime: u64,
+    /// How long it ran, and the user plus system CPU time of all its threads, in microseconds.
+    pub etime: u64,
+    pub cpu: u64,
+    /// The most resident memory it held, in bytes.
+    pub hiwater_rss: u64,
+    /// Bytes it read from and wrote to storage, over all its threads.
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    /// Voluntary and involuntary context switches of all its threads.
+    pub nvcsw: u64,
+    pub nivcsw: u64,
+    /// It forked and never called exec (AFORK).
+    pub forked_never_execd: bool,
+    /// How many thread records were summed into it.
+    pub threads: u32,
+}
+
+/// One thing an event source saw, before the collector names the processes in it and merges it
+/// into `Snapshot::life`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Observed {
+    /// When, in nanoseconds of `monotonic_ns()`: the kernel's timestamp where the source gives
+    /// one (the proc connector), the time it was received otherwise.
+    pub at: u64,
+    pub source: LifeSource,
+    pub what: Observation,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Observation {
+    /// A new process, `parent` the process (tgid) that forked it. Each start is None when it
+    /// could not be read; `estimated_start` is the child's start as the event's timestamp gives
+    /// it, which stands in for an unread one.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "kqueue names no forked child")
+    )]
+    Fork {
+        parent: u32,
+        child: u32,
+        parent_start: Option<u64>,
+        child_start: Option<u64>,
+        estimated_start: u64,
+    },
+    /// `start` when the source knows which process it was, None for the collector to name the
+    /// pid.
+    Exec { pid: u32, start: Option<u64> },
+    Exit {
+        pid: u32,
+        start: Option<u64>,
+        cause: Cause,
+    },
+    /// A taskstats record of the process `tgid`, its threads' records summed. `start` is when it
+    /// began in the unit of a Linux `Identity::start` (ticks since boot), None when the boot time
+    /// is unknown.
+    #[cfg_attr(
+        all(target_os = "macos", not(test)),
+        expect(dead_code, reason = "taskstats is Linux only")
+    )]
+    Record {
+        tgid: u32,
+        record: ExitRecord,
+        cause: Cause,
+        start: Option<u64>,
+    },
+}
+
+/// The bounded queue from the event thread to `Collector::sample`, which drains it every sample.
+#[derive(Default)]
+pub struct LifeQueue(Mutex<Queued>);
+
+#[derive(Default)]
+struct Queued {
+    observed: Vec<Observed>,
+    dropped: u32,
+}
+
+impl LifeQueue {
+    /// The most observations it holds; what arrives while it is full is counted and dropped.
+    pub const CAPACITY: usize = 4096;
+
+    pub fn push(&self, observed: Observed) {
+        let mut queued = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if queued.observed.len() < Self::CAPACITY {
+            queued.observed.push(observed);
+        } else {
+            queued.dropped = queued.dropped.saturating_add(1);
+        }
+    }
+
+    /// Counts one observation lost before it reached the queue: the kernel had more for the
+    /// socket than its buffer held.
+    #[cfg(target_os = "linux")]
+    pub fn overrun(&self) {
+        let mut queued = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        queued.dropped = queued.dropped.saturating_add(1);
+    }
+
+    /// Everything queued, in the order it arrived, and how many were dropped since the last
+    /// drain.
+    pub fn drain(&self) -> (Vec<Observed>, u32) {
+        let mut queued = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let dropped = std::mem::take(&mut queued.dropped);
+        (std::mem::take(&mut queued.observed), dropped)
+    }
+}
+
+/// `open_events`, or what a test puts in its place.
+pub type OpenEvents = fn(Arc<LifeQueue>, Arc<Mutex<HashMap<u32, Identity>>>) -> Option<Sources>;
 
 /// Reads one journal entry from the follower's output; `Ok(None)` at the end of the stream.
 pub type JournalParser = fn(&mut dyn BufRead) -> io::Result<Option<Line>>;
@@ -404,6 +714,50 @@ mod tests {
         let unique: HashSet<&str> = names.iter().copied().collect();
         assert_eq!(unique.len(), names.len(), "{names:?}");
         assert!(Source::ALL.len() <= 64, "a source is one bit of a u64");
+    }
+
+    #[test]
+    fn signals_are_named_in_linux_numbering() {
+        assert_eq!(Cause::signal_name(9), Some("SIGKILL"));
+        assert_eq!(Cause::signal_name(15), Some("SIGTERM"));
+        assert_eq!(Cause::signal_name(11), Some("SIGSEGV"));
+        assert_eq!(Cause::signal_name(31), Some("SIGSYS"));
+        assert_eq!(Cause::signal_name(0), None);
+        assert_eq!(
+            Cause::signal_name(34),
+            None,
+            "real-time signals have no name"
+        );
+        assert_eq!(Cause::signal_name(-1), None);
+    }
+
+    #[test]
+    fn life_sources_are_named_as_the_sources_they_report() {
+        let named = [
+            LifeSource::Connector,
+            LifeSource::Taskstats,
+            LifeSource::Kqueue,
+            LifeSource::Diff,
+        ]
+        .map(LifeSource::name);
+        assert_eq!(
+            named,
+            ["proc connector", "taskstats", "kqueue", "sample diff"]
+        );
+        let reported: Sources = LifeSource::ALL
+            .map(LifeSource::source)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            reported.iter().collect::<Vec<_>>(),
+            [
+                Source::ProcConnector,
+                Source::Taskstats,
+                Source::Kqueue,
+                Source::SampleDiff
+            ],
+            "every mechanism is listed once, and none is the demanded stream"
+        );
     }
 
     #[test]

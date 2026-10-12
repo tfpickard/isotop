@@ -40,6 +40,18 @@ pub(crate) const DISTRICTS: [Color; 8] = [
     [166, 185, 104],
 ];
 
+/// The stone a process of each kind is remembered in (Necropolis): slate for kernel threads, green
+/// granite for system services, sandstone for the session and lilac marble for containers, so
+/// the kinds read alike in moonlight without the bright kind colours.
+pub(crate) fn stone_color(kind: Kind) -> Color {
+    match kind {
+        Kind::Kernel => [104, 112, 132],
+        Kind::System => [112, 138, 134],
+        Kind::Session => [166, 142, 108],
+        Kind::Container => [134, 118, 160],
+    }
+}
+
 /// Linear mix of two colours, `a` at 0 and `b` at 1, each channel truncated to a byte.
 pub(crate) fn mix(a: Color, b: Color, t: f32) -> Color {
     [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * t) as u8)

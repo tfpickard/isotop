@@ -169,19 +169,7 @@ impl Terminal {
         }
         write!(output, "\x1b_Ga=d,d=I,i={previous},q=2\x1b\\")?;
         for label in labels {
-            let style = match label.tone {
-                Tone::Quiet => "\x1b[38;2;150;172;198m",
-                Tone::Bright => "\x1b[1;38;2;214;226;240m",
-                Tone::Tag => "\x1b[38;2;255;226;170;48;2;12;19;31m",
-            };
-            let room = columns.saturating_sub(label.column) as usize;
-            write!(
-                output,
-                "\x1b[{};{}H{style}{}\x1b[0m",
-                label.row + 1,
-                label.column + 1,
-                clean_text(&label.text, room)
-            )?;
+            draw_label(&mut output, label, columns)?;
         }
         for panel in panels {
             draw_popup(&mut output, panel)?;
@@ -454,7 +442,24 @@ fn primary_attributes(response: &[u8]) -> bool {
     })
 }
 
-fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> {
+/// Writes `label` over the image, its text cut to the `columns` left of it.
+pub(crate) fn draw_label(output: &mut Vec<u8>, label: &Label, columns: u16) -> io::Result<()> {
+    let style = match label.tone {
+        Tone::Quiet => "\x1b[38;2;150;172;198m",
+        Tone::Bright => "\x1b[1;38;2;214;226;240m",
+        Tone::Tag => "\x1b[38;2;255;226;170;48;2;12;19;31m",
+    };
+    let room = columns.saturating_sub(label.column) as usize;
+    write!(
+        output,
+        "\x1b[{};{}H{style}{}\x1b[0m",
+        label.row + 1,
+        label.column + 1,
+        clean_text(&label.text, room)
+    )
+}
+
+pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> {
     let border = "\x1b[22;38;2;92;122;158;48;2;12;19;31m";
     let inner = popup.width.saturating_sub(4) as usize;
     let rule = "─".repeat(popup.width.saturating_sub(2) as usize);
