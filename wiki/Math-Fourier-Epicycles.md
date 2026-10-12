@@ -215,10 +215,10 @@ three times that budget, and the view makes no claim about elephants.
 |---|---|---|
 | Signal | The last `SERIES = 60` samples of the shared history: `z[n] = cpu / 100 + i * log2(max(MiB, 1))`, a sample before a process's first held at its first reading and a gap held at the last reading; then the mean over the window subtracted | `signal()`, `history::SERIES` |
 | Transform | The direct, O(N^2), `f64`-accumulating `dft()`, forward sign `exp(-2 pi i k n / N)`, no scaling. N = 60 is not a power of two, so the radix-2 `fft()` in the same file is not used | `simulation::dft` |
-| Selection | Indices `1 .. N-1` sorted by `|X_k|` descending (ties by index), the first `TERMS = 12` kept, the mean (k = 0) dropped: it is the planet's place on the deferent | `epicycles()` |
+| Selection | Indices `1 .. N-1` sorted by `\|X_k\|` descending (ties by index), the first `TERMS = 12` kept, the mean (k = 0) dropped: it is the planet's place on the deferent | `epicycles()` |
 | Folding | Signed frequency `k` if `k < N/2`, else `k - N`, in turns per `REPLAY = 60` s | `epicycles()` |
 | Coefficient | `X_k / N` times `exp(-2 pi i (k * oldest mod N) / N)` with `oldest` the absolute number of the window's first sample (the sliding-window correction of 1.6) | `epicycles()` |
-| Scale | One global gain: with `T = K * sum |c|`, `gain = K L tanh(T / L) / T`, `K = GAIN = 0.085 * 40 = 3.4` world units per core or doubling and `L = REACH = 0.19 * 40 = 7.6` | `scaled()` |
+| Scale | One global gain: with `T = K * sum \|c\|`, `gain = K L tanh(T / L) / T`, `K = GAIN = 0.085 * 40 = 3.4` world units per core or doubling and `L = REACH = 0.19 * 40 = 7.6` | `scaled()` |
 | Replay | The tip is `sum c_j exp(2 pi i f_j t / 60 s)` at scene time `t`: the minute replays once a minute, whatever `--sample-ms` | `chain()`, `rotor()` |
 | Easing | When a sample arrives, coefficients ease from their current value to the new target with a smoothstep over the measured sample interval, clamped to 0.1 to 10 s; a term that left the twelve eases to nothing | `Planet::retarget`, `EASE` |
 | Retrograde | `Im(conj(p) p') < 0` with `p` the deferent point plus the chain and `p'` the sum of both velocities | `retrograde()`, `chain_velocity()` |
