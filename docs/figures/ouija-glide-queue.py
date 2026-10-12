@@ -37,7 +37,7 @@ def under(t, zeta=0.5, omega=8.0):
 
 
 def main():
-    svg = kit.Svg(960, 340, "Planchette glide profiles and the queue pacing rule",
+    svg = kit.Svg(960, 352, "Planchette glide profiles and the queue pacing rule",
                   "Position and speed of four glide models, and the equilibrium queue and skip rate "
                   "of the ouija pacing rule.")
     svg.title_text("Ouija: one glide, four models; and the pacing rule under load")
@@ -73,7 +73,7 @@ def main():
     c.hline(8, color=kit.MUTED)
     c.label(0.02, 8, "queue cap 8", color=kit.MUTED, size=10, dy=-4)
     c.legend(entries, corner="br", size=10)
-    svg.text(480, 326, "c: equilibrium queued lines q* = L * lam - 4, capped at 8; above lam = 12 / L "
+    svg.text(480, 342, "c: equilibrium queued lines q* = L * lam - 4, capped at 8; above lam = 12 / L "
              "lines per second the excess is skipped and counted", size=10.5, anchor="middle",
              fill=kit.MUTED)
     svg.save("ouija-glide-queue")
