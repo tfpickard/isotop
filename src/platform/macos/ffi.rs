@@ -574,6 +574,37 @@ pub struct vnode_fdinfo {
     pub pvi: vnode_info,
 }
 
+// The jetsam priority list, from xnu bsd/sys/kern_memorystatus.h, which the public SDK does not
+// ship. Only root may ask (`memorystatus_control` answers EPERM to anyone else).
+
+/// `MEMORYSTATUS_CMD_GET_PRIORITY_LIST`: the buffer receives one `memorystatus_priority_entry`
+/// per process; with a null buffer the call returns the bytes the list needs.
+pub const MEMORYSTATUS_CMD_GET_PRIORITY_LIST: u32 = 1;
+
+/// `memorystatus_priority_entry_t`: a process, its jetsam priority band (0 is killed first, and
+/// larger bands later), the memory limit in MB and the `P_MEMSTAT_*` state flags.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct memorystatus_priority_entry {
+    pub pid: libc::pid_t,
+    pub priority: i32,
+    pub user_data: u64,
+    pub limit: i32,
+    pub state: u32,
+}
+
+unsafe extern "C" {
+    /// The `memorystatus_control` system call of libSystem: returns -1 with errno set on
+    /// failure, otherwise a command-specific count (for the priority list, bytes).
+    pub fn memorystatus_control(
+        command: u32,
+        pid: i32,
+        flags: u32,
+        buffer: *mut c_void,
+        buffer_size: usize,
+    ) -> c_int;
+}
+
 macro_rules! assert_layout {
     ($t:ty, $size:expr, $align:expr) => {
         const _: () = assert!(size_of::<$t>() == $size);
@@ -586,6 +617,12 @@ macro_rules! assert_offset {
         const _: () = assert!(offset_of!($t, $field) == $offset);
     };
 }
+
+assert_layout!(memorystatus_priority_entry, 24, 8);
+assert_offset!(memorystatus_priority_entry, priority, 4);
+assert_offset!(memorystatus_priority_entry, user_data, 8);
+assert_offset!(memorystatus_priority_entry, limit, 16);
+assert_offset!(memorystatus_priority_entry, state, 20);
 
 assert_layout!(proc_fileinfo, 24, 8);
 assert_layout!(vinfo_stat, 136, 8);

@@ -2370,7 +2370,7 @@ mod tests {
     }
 
     /// The macOS gaps, as the collector reports them on a Mac without cluster clocks.
-    const MACOS: [Source; 9] = [
+    const MACOS: [Source; 10] = [
         Source::CpuPressure,
         Source::IoPressure,
         Source::LastCpu,
@@ -2380,6 +2380,7 @@ mod tests {
         Source::SocketTraffic,
         Source::FileLocks,
         Source::GpuMemory,
+        Source::MemoryDetail,
     ];
 
     /// The status text of `view` over the demo workload with the given gaps, after one frame so

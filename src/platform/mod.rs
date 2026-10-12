@@ -38,6 +38,14 @@
 //!     cannot be read (the collector then reports `Source::FileLocks` missing);
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, GpuMemory>`: GPU
 //!     memory per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
+//!   - `oom_scores(pids: &[u32]) -> Option<HashMap<u32, Option<Oom>>>`: the out-of-memory ranking of
+//!     each pid, None for one that could not be read; a pid that has exited is absent. None for
+//!     the whole call when the platform cannot rank at all (the collector then reports
+//!     `Source::Oom` missing);
+//!   - `MEMORY_DETAIL: bool` and `rollup(pid: u32) -> Taken<Rollup>`: whether this platform reads
+//!     a process's memory by kind, and one such reading (the collector keeps to the
+//!     `model::ROLLUP_PROCESSES` largest and to a time budget). Without it the collector reports
+//!     `Source::MemoryDetail` missing.
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -156,11 +164,19 @@ pub enum Source {
     ForkEvents,
     /// Exit records (`ExitRecord`): an exit has no command, CPU, memory or I/O totals.
     ExitRecords,
+    /// `Process::oom`, the out-of-memory ranking: Linux `oom_score` and `oom_score_adj`; macOS
+    /// jetsam priorities, which only root can list.
+    Oom,
+    /// `Process::memory_detail`, `smaps_rollup` for the largest processes: none on macOS.
+    MemoryDetail,
+    /// The split of the proportional set size into anonymous, file and shared-memory pages
+    /// (`Rollup::pss_anon` and the two after it), which needs Linux 5.3.
+    MemorySplit,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 23] = [
+    pub const ALL: [Source; 26] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -184,6 +200,9 @@ impl Source {
         Source::SampleDiff,
         Source::ForkEvents,
         Source::ExitRecords,
+        Source::Oom,
+        Source::MemoryDetail,
+        Source::MemorySplit,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -212,6 +231,9 @@ impl Source {
             Source::SampleDiff => "sample diff",
             Source::ForkEvents => "fork events",
             Source::ExitRecords => "exit records",
+            Source::Oom => "oom score",
+            Source::MemoryDetail => "memory detail",
+            Source::MemorySplit => "memory split",
         }
     }
 
@@ -293,6 +315,19 @@ impl fmt::Debug for Sources {
             .entries(self.iter().map(Source::name))
             .finish()
     }
+}
+
+/// How reading one process's detail came out.
+#[cfg_attr(
+    all(target_os = "macos", not(test)),
+    expect(dead_code, reason = "only Linux reads a process's memory by kind")
+)]
+pub enum Taken<T> {
+    Value(T),
+    /// It exists but this user may not read it, or the kernel lacks the file.
+    Unreadable,
+    /// It exited before or while it was read, so there is nothing to keep, not even a gap.
+    Gone,
 }
 
 /// One process as the OS reports it, before isotop smooths anything.

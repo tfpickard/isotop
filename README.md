@@ -171,6 +171,8 @@ cache is stale.
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
+| Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
@@ -758,7 +760,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-42,248 lines of Rust (26,054 production, 16,194 test) in 44 files, 551 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+43,360 lines of Rust (26,505 production, 16,855 test) in 45 files, 572 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

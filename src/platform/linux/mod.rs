@@ -5,6 +5,7 @@
 mod events;
 mod files;
 mod journal;
+mod memory;
 mod net;
 mod nvml;
 
@@ -22,6 +23,7 @@ use crate::platform::{Files, Network, RawProcess, Shadow, Source, Sources};
 pub use events::{monotonic_ns, open_events};
 pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};
+pub use memory::{MEMORY_DETAIL, oom_scores, rollup};
 pub use nvml::Nvml as Gpu;
 
 /// What `Process::memory` measures here: the resident set size.
@@ -698,6 +700,8 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCoun
             major_faults: None,
             // Needs the boot time, which `Sampler::processes` adds.
             started: 0.0,
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
         },
         StatCounters {
             ticks: number(11)?.saturating_add(number(12)?),

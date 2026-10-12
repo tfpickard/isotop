@@ -9,7 +9,7 @@ use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{
     self, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation, Observed,
-    OpenEvents, RawProcess, Source, Sources,
+    OpenEvents, RawProcess, Source, Sources, Taken,
 };
 use crate::simulation::{Rng, hash, hash_identity, smoothing};
 
@@ -103,7 +103,55 @@ pub struct Process {
     /// When it started, in seconds since the Unix epoch; 0 when the platform cannot tell (Linux
     /// without `btime` in /proc/stat).
     pub started: f64,
+    /// How soon the out-of-memory killer would pick it (`Source::Oom`). Read for every process
+    /// while the source is demanded; `Pending` otherwise, `Unreadable` where the platform
+    /// cannot say (`Snapshot::missing` then holds the source).
+    pub oom: Measured<Oom>,
+    /// Its memory by kind, from `smaps_rollup` (`Source::MemoryDetail`). Read only for the
+    /// `ROLLUP_PROCESSES` processes with the largest resident set while the source is demanded.
+    pub memory_detail: Measured<Rollup>,
 }
+
+/// A process's place in the out-of-memory killer's ranking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Oom {
+    /// The kernel's `oom_score` as read, not normalized: its range differs between kernel
+    /// versions. A higher value is killed sooner. macOS: the negated jetsam priority.
+    pub badness: i32,
+    /// `oom_score_adj`, -1000 to 1000, which is added to the score in proportion to memory;
+    /// None where the platform has no such setting (macOS) or it could not be parsed.
+    pub adjust: Option<i16>,
+    /// The kernel never picks it (`oom_score_adj` is -1000).
+    pub exempt: bool,
+}
+
+/// A process's memory by kind, in bytes, from `/proc/<pid>/smaps_rollup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rollup {
+    /// Resident set size: the four `shared` and `private` parts below add up to it.
+    pub rss: u64,
+    /// Proportional set size: each shared page counted in proportion to its sharers.
+    pub pss: u64,
+    /// The parts of `pss` that are anonymous, file-backed and shared-memory pages. None before
+    /// Linux 5.3, which `Source::MemorySplit` reports.
+    pub pss_anon: Option<u64>,
+    pub pss_file: Option<u64>,
+    pub pss_shmem: Option<u64>,
+    pub shared_clean: u64,
+    pub shared_dirty: u64,
+    pub private_clean: u64,
+    pub private_dirty: u64,
+    /// Pages swapped out, and the same in proportion to their sharers.
+    pub swap: u64,
+    pub swap_pss: u64,
+}
+
+/// How many processes get a `Process::memory_detail`: the ones with the largest resident set.
+pub const ROLLUP_PROCESSES: usize = 64;
+
+/// The most time one background cycle spends reading rollups; the processes it did not reach
+/// keep their previous reading and are read first in the next cycle.
+const ROLLUP_BUDGET: Duration = Duration::from_millis(50);
 
 /// The scheduling class of a process's main thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -174,6 +222,8 @@ impl Default for Process {
             syscall_io: None,
             major_faults: None,
             started: 0.0,
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
         }
     }
 }
@@ -186,6 +236,8 @@ impl Process {
             id,
             files: Measured::Unreadable,
             locks_held: Measured::Unreadable,
+            oom: Measured::Unreadable,
+            memory_detail: Measured::Unreadable,
             ..Process::default()
         }
     }
@@ -491,10 +543,6 @@ impl Reads {
 /// The `n` processes with the largest `key`, largest first. Ties go to the smaller `Identity`,
 /// and a NaN key sorts after every number, so the choice is the same in every sample that has
 /// the same keys.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no budgeted selection uses it yet")
-)]
 pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
     let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
     let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
@@ -646,6 +694,11 @@ struct Extras {
     latency: Vec<(Source, Duration)>,
     /// When the cycle that measured all this finished; None before the first.
     finished: Option<Instant>,
+    /// The out-of-memory ranking per pid, None for one that could not be read; empty unless
+    /// `Source::Oom` was demanded and readable.
+    oom: HashMap<u32, Option<Oom>>,
+    /// The rollups kept for the processes chosen for them, None for an unreadable one.
+    rollups: HashMap<u32, Option<Rollup>>,
 }
 
 /// The background thread, as the frame loop sees it: what it measured last and whether it is
@@ -742,6 +795,9 @@ pub struct Collector {
     demand: Arc<Mutex<Demand>>,
     /// The processes of the latest sample by pid, which the background scans are joined against.
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
+    /// The pids of the `ROLLUP_PROCESSES` largest processes while `Source::MemoryDetail` is
+    /// demanded, which the background thread reads rollups for; empty otherwise.
+    rollup_pids: Arc<Mutex<Vec<u32>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
@@ -762,6 +818,7 @@ fn background(
     wanted: Arc<Mutex<HashSet<String>>>,
     demand: Arc<Mutex<Demand>>,
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
+    rollup_pids: Arc<Mutex<Vec<u32>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
         let gpu = platform::Gpu::load();
@@ -772,6 +829,7 @@ fn background(
         let mut retained = HashSet::new();
         let mut files = platform::FileScan::new();
         let mut kept = KeptFiles::default();
+        let mut memory = MemoryReads::new();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -815,6 +873,18 @@ fn background(
             let locks = timed(&mut latency, Source::FileLocks, || {
                 platform::locks().map_or(Measured::Unreadable, Measured::Known)
             });
+            let selected = rollup_pids
+                .lock()
+                .map(|pids| pids.clone())
+                .unwrap_or_default();
+            let found = memory.read(
+                &mut reads,
+                &mut latency,
+                &identities,
+                &selected,
+                platform::oom_scores,
+                platform::rollup,
+            );
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -830,33 +900,43 @@ fn background(
                 geo: geo.source.clone(),
                 latency,
                 finished: None,
+                oom: found.oom,
+                rollups: found.rollups,
             }
         }
     })
 }
 
-/// Open-file tables kept between background cycles, each with the process it was read for. The
-/// file scan is bounded and reaches every pid only over several cycles, so a table read earlier
-/// stands in until the scan comes round again, but only while its pid still names that process:
-/// a reused pid starts out unscanned instead of showing its predecessor's files.
-#[derive(Default)]
-struct KeptFiles(HashMap<u32, (Identity, Option<platform::Files>)>);
+/// Readings kept between background cycles, each with the process it was read for. A scan that
+/// is bounded (open files) or budgeted (rollups) reaches every pid only over several cycles, so a
+/// reading taken earlier stands in until the scan comes round again, but only while its pid still
+/// names that process: a reused pid starts out unscanned instead of showing its predecessor's.
+struct Kept<T>(HashMap<u32, (Identity, T)>);
 
-impl KeptFiles {
-    /// Takes the tables this cycle's scan read, against `identities` (the processes by pid when
-    /// the cycle began), and returns every table that still belongs to the process its pid names
-    /// there.
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Kept(HashMap::new())
+    }
+}
+
+/// The open-file tables of the file scan.
+type KeptFiles = Kept<Option<platform::Files>>;
+
+impl<T: Clone> Kept<T> {
+    /// Takes the readings this cycle's scan took, against `identities` (the processes by pid
+    /// when the cycle began), and returns every reading that still belongs to the process its
+    /// pid names there.
     fn update(
         &mut self,
-        scanned: HashMap<u32, Option<platform::Files>>,
+        scanned: HashMap<u32, T>,
         identities: &HashMap<u32, Identity>,
-    ) -> HashMap<u32, Option<platform::Files>> {
+    ) -> HashMap<u32, T> {
         self.0
             .retain(|pid, (id, _)| identities.get(pid) == Some(id));
-        for (pid, files) in scanned {
+        for (pid, reading) in scanned {
             match identities.get(&pid) {
                 Some(&id) => {
-                    self.0.insert(pid, (id, files));
+                    self.0.insert(pid, (id, reading));
                 }
                 // Born since the cycle began, so it is not joined this cycle; its next scan
                 // will have an identity to keep it under.
@@ -867,7 +947,7 @@ impl KeptFiles {
         }
         self.0
             .iter()
-            .map(|(&pid, (_, files))| (pid, files.clone()))
+            .map(|(&pid, (_, reading))| (pid, reading.clone()))
             .collect()
     }
 }
@@ -889,6 +969,7 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         let scanned = extras.identities.get(&process.id.pid) == Some(&process.id);
         process.gpu_memory = extras.gpu.get(&process.id.pid).filter(|_| scanned).copied();
         merge_files(process, &extras.files, &extras.locks, scanned);
+        merge_memory(process, extras, scanned);
         // A holder that has exited since released its locks, so nothing waits on it any more.
         process.blocked_on = process.blocked_on.filter(|blocker| match blocker {
             Blocker::Process(holder) => id(holder).is_some(),
@@ -976,6 +1057,151 @@ fn merge_files(
         Measured::Known(_) | Measured::Pending => (Measured::Pending, None),
         Measured::Unreadable => (Measured::Unreadable, None),
     };
+}
+
+/// Sets a process's out-of-memory ranking and memory rollup from the background scans. A pid the
+/// scans did not reach, or reached as another process (`scanned` false), is pending; where the
+/// platform cannot rank at all the ranking is unreadable. Where the platform has no rollups the
+/// sampler has set the field unreadable, and it stays.
+fn merge_memory(process: &mut Process, extras: &Extras, scanned: bool) {
+    let pid = process.id.pid;
+    process.oom = match extras.oom.get(&pid).filter(|_| scanned) {
+        Some(Some(oom)) => Measured::Known(*oom),
+        Some(None) => Measured::Unreadable,
+        None if extras.missing.contains(Source::Oom) => Measured::Unreadable,
+        None => Measured::Pending,
+    };
+    process.memory_detail = match extras.rollups.get(&pid).filter(|_| scanned) {
+        Some(Some(rollup)) => Measured::Known(*rollup),
+        Some(None) => Measured::Unreadable,
+        None if platform::MEMORY_DETAIL => Measured::Pending,
+        None => process.memory_detail.clone(),
+    };
+}
+
+/// The pids that get a rollup: the `ROLLUP_PROCESSES` with the largest resident set, which
+/// `top_n` picks the same way in every sample that has the same sizes. A process with no resident
+/// memory has nothing to roll up.
+fn rollup_pids(processes: &[Process]) -> Vec<u32> {
+    top_n(processes, ROLLUP_PROCESSES, |process| process.memory as f64)
+        .into_iter()
+        .filter(|process| process.memory > 0)
+        .map(|process| process.id.pid)
+        .collect()
+}
+
+/// What one background cycle found of the out-of-memory ranking and the rollups.
+#[derive(Default)]
+struct MemoryFound {
+    oom: HashMap<u32, Option<Oom>>,
+    rollups: HashMap<u32, Option<Rollup>>,
+}
+
+/// The two memory sources of the background thread, and what the rollup pass keeps between
+/// cycles.
+struct MemoryReads {
+    /// Whether the platform reads rollups at all.
+    detail: bool,
+    /// How long one rollup pass may run once it has read a process.
+    budget: Duration,
+    /// Where the next rollup pass starts in its list, so that a pass cut short by the budget does
+    /// not starve the processes at the end of the list.
+    cursor: usize,
+    kept: Kept<Option<Rollup>>,
+}
+
+impl MemoryReads {
+    fn new() -> Self {
+        MemoryReads {
+            detail: platform::MEMORY_DETAIL,
+            budget: ROLLUP_BUDGET,
+            cursor: 0,
+            kept: Kept::default(),
+        }
+    }
+
+    /// Reads the sources `reads` demands. `oom` ranks the pids of `identities` (None where the
+    /// platform cannot, which makes `Source::Oom` missing), and `rollup` reads one of `selected`,
+    /// the pids chosen on the frame loop. A rollup read without the split of its proportional
+    /// set size makes `Source::MemorySplit` missing.
+    fn read(
+        &mut self,
+        reads: &mut Reads,
+        latency: &mut Vec<(Source, Duration)>,
+        identities: &HashMap<u32, Identity>,
+        selected: &[u32],
+        oom: impl FnOnce(&[u32]) -> Option<HashMap<u32, Option<Oom>>>,
+        rollup: impl FnMut(u32) -> Taken<Rollup>,
+    ) -> MemoryFound {
+        let oom = reads
+            .read(Source::Oom, || {
+                let pids: Vec<u32> = identities.keys().copied().collect();
+                timed(latency, Source::Oom, || oom(&pids))
+            })
+            .unwrap_or_default();
+        let scanned = reads.read(Source::MemoryDetail, || {
+            self.detail.then(|| {
+                timed(latency, Source::MemoryDetail, || {
+                    self.scan(selected, rollup)
+                })
+            })
+        });
+        let rollups = match scanned {
+            Some(scanned) => {
+                // Only the selected processes keep a rollup, so one that fell out of the
+                // largest loses it.
+                let chosen: HashSet<u32> = selected.iter().copied().collect();
+                let chosen: HashMap<u32, Identity> = identities
+                    .iter()
+                    .filter(|(pid, _)| chosen.contains(pid))
+                    .map(|(&pid, &id)| (pid, id))
+                    .collect();
+                self.kept.update(scanned, &chosen)
+            }
+            None => {
+                self.kept = Kept::default();
+                HashMap::new()
+            }
+        };
+        if rollups
+            .values()
+            .flatten()
+            .any(|rollup| rollup.pss_anon.is_none())
+        {
+            reads.missing.insert(Source::MemorySplit);
+        }
+        MemoryFound { oom, rollups }
+    }
+
+    /// Reads rollups for `pids` in order from the cursor until `budget` is spent, always at
+    /// least one. A process that is unreadable is None, and one that exited is left out.
+    fn scan(
+        &mut self,
+        pids: &[u32],
+        mut rollup: impl FnMut(u32) -> Taken<Rollup>,
+    ) -> HashMap<u32, Option<Rollup>> {
+        let mut found = HashMap::new();
+        if pids.is_empty() {
+            self.cursor = 0;
+            return found;
+        }
+        let started = Instant::now();
+        let first = self.cursor % pids.len();
+        for step in 0..pids.len() {
+            if step > 0 && started.elapsed() >= self.budget {
+                self.cursor = (first + step) % pids.len();
+                return found;
+            }
+            let pid = pids[(first + step) % pids.len()];
+            match rollup(pid) {
+                Taken::Value(reading) => found.insert(pid, Some(reading)),
+                Taken::Unreadable => found.insert(pid, None),
+                Taken::Gone => None,
+            };
+        }
+        self.cursor = first;
+        found
+    }
 }
 
 /// Where each of `sockets` is, in order, from the GeoIP database; None when no database can be
@@ -1522,6 +1748,7 @@ impl Collector {
             wanted: Arc::new(Mutex::new(HashSet::new())),
             demand: Arc::new(Mutex::new(Demand::default())),
             identities: Arc::new(Mutex::new(HashMap::new())),
+            rollup_pids: Arc::new(Mutex::new(Vec::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -1578,6 +1805,17 @@ impl Collector {
                 .map(|p| p.cgroup.clone())
                 .collect();
         }
+        let demand = self
+            .demand
+            .lock()
+            .map_or_else(|error| *error.into_inner(), |demand| *demand);
+        if let Ok(mut pids) = self.rollup_pids.lock() {
+            *pids = if demand.contains(Source::MemoryDetail) {
+                rollup_pids(&snapshot.processes)
+            } else {
+                Vec::new()
+            };
+        }
         if let Ok(mut identities) = self.identities.lock() {
             *identities = snapshot
                 .processes
@@ -1593,6 +1831,7 @@ impl Collector {
                 Arc::clone(&self.wanted),
                 Arc::clone(&self.demand),
                 Arc::clone(&self.identities),
+                Arc::clone(&self.rollup_pids),
             );
         }
         if let Some(background) = &self.background {
@@ -1604,10 +1843,6 @@ impl Collector {
             .iter()
             .find(|process| process.id.pid == std::process::id())
             .cloned();
-        let demand = self
-            .demand
-            .lock()
-            .map_or_else(|error| *error.into_inner(), |demand| *demand);
         if demand.contains(Source::LifeEvents) {
             // After the identities are published, which kqueue watches.
             self.life.start(self.open_events, &self.identities);
@@ -1942,6 +2177,15 @@ pub struct DemoOptions {
     /// kills; and one exit in ten seen only by sample diffing, with no cause or record. Off, the
     /// churn is as described above.
     pub mortality: bool,
+    /// Synthesizes `Process::oom` for every process and `Process::memory_detail` for the
+    /// `ROLLUP_PROCESSES` largest, from hashes of each process's identity apart from every other
+    /// stream. The score is about 1000 times its share of `memory_total` (the kernel's, with a
+    /// few points of page tables); the first three System processes that are not zombies have
+    /// `oom_score_adj` -1000 and are exempt, the fourth -250, and kernel threads and zombies
+    /// score 0. A rollup is consistent: its four parts add up to `rss`, `pss` lies between the
+    /// private part and `rss`, its three `pss_` parts add up to `pss`, and `swap_pss <= swap`.
+    /// One of the 64 is unreadable. Off, both are `Pending`, as in `demo`.
+    pub oom_and_memory_detail: bool,
 }
 
 impl DemoOptions {
@@ -1953,8 +2197,18 @@ impl DemoOptions {
         exact_cpu_time: false,
         observer: false,
         mortality: false,
+        oom_and_memory_detail: false,
     };
 }
+
+/// The machine's memory in the demo: `Snapshot::memory_total`.
+const DEMO_MEMORY_TOTAL: u64 = 32 * 1024_u64.pow(3);
+
+/// Seeds the demo's out-of-memory scores, apart from every other use of an identity.
+const DEMO_OOM_SALT: u64 = 0x00a1_c0de_5c0e;
+
+/// Seeds the demo's memory rollups; the second hash of a process takes the xor of `1`.
+const DEMO_ROLLUP_SALT: u64 = 0x0071_11b0_7ea5;
 
 /// One transient family per this many base processes.
 const DEMO_FAMILY_SIZE: usize = 16;
@@ -2476,6 +2730,8 @@ impl Transient {
             syscall_io: running.then(|| demo_syscall_io(index, io_rate, write_rate)),
             major_faults: running.then(|| demo_major_faults(index, phase)),
             started: demo_transient_started(self.birth),
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
         }
     }
 }
@@ -2800,6 +3056,8 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
             major_faults: Some(demo_major_faults(i, phase)),
             started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -2939,9 +3197,12 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         }
         processes.extend(transients);
     }
+    if options.oom_and_memory_detail {
+        demo_oom_and_memory_detail(&mut processes, count);
+    }
     Snapshot {
         processes,
-        memory_total: Some(32 * 1024_u64.pow(3)),
+        memory_total: Some(DEMO_MEMORY_TOTAL),
         memory_available: Some(12 * 1024_u64.pow(3)),
         cores: 16,
         elapsed: time,
@@ -2975,6 +3236,92 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         }),
         geo: "demo locations".into(),
         observer: options.observer.then(|| demo_observer(time)),
+    }
+}
+
+/// Fills `Process::oom` of every process and `Process::memory_detail` of the largest, which
+/// `DemoOptions::oom_and_memory_detail` asks for. `base` is how many processes come before the
+/// transients.
+fn demo_oom_and_memory_detail(processes: &mut [Process], base: usize) {
+    let mut exempt = 0;
+    for (index, process) in processes.iter_mut().enumerate() {
+        let hash = hash_identity(process.id, DEMO_OOM_SALT);
+        let ranked = process.kind != Kind::Kernel && process.state != 'Z';
+        let adjust: i16 = match exempt {
+            0..=2 if index < base && ranked && process.kind == Kind::System => {
+                exempt += 1;
+                -1000
+            }
+            3 if index < base && ranked && process.kind == Kind::System => {
+                exempt += 1;
+                -250
+            }
+            _ => 0,
+        };
+        // The kernel scores a process by its share of memory in thousandths, plus a little for
+        // its page tables, plus the adjustment; a process it never picks, or without memory of
+        // its own, reads 0.
+        let share = (u128::from(process.memory) * 1000 / u128::from(DEMO_MEMORY_TOTAL)) as i64;
+        let badness = if ranked && adjust != -1000 {
+            (share + (hash % 4) as i64 + i64::from(adjust)).clamp(0, 1000)
+        } else {
+            0
+        };
+        process.oom = Measured::Known(Oom {
+            badness: badness as i32,
+            adjust: Some(adjust),
+            exempt: adjust == -1000,
+        });
+    }
+    let chosen = rollup_pids(processes);
+    let unreadable = chosen
+        .iter()
+        .filter_map(|pid| processes.iter().find(|p| p.id.pid == *pid))
+        .min_by_key(|p| hash_identity(p.id, DEMO_ROLLUP_SALT ^ 2))
+        .map(|p| p.id);
+    for process in processes.iter_mut().filter(|p| chosen.contains(&p.id.pid)) {
+        process.memory_detail = if Some(process.id) == unreadable {
+            Measured::Unreadable
+        } else {
+            Measured::Known(demo_rollup(process.id, process.memory))
+        };
+    }
+}
+
+/// A consistent memory rollup for a process that holds `rss` bytes, from its identity alone.
+fn demo_rollup(id: Identity, rss: u64) -> Rollup {
+    let (first, second) = (
+        hash_identity(id, DEMO_ROLLUP_SALT),
+        hash_identity(id, DEMO_ROLLUP_SALT ^ 1),
+    );
+    let unit = |hash: u64, shift: u32| ((hash >> shift) & 0xffff) as f64 / 65535.0;
+    let part = |whole: u64, fraction: f64| (whole as f64 * fraction) as u64;
+    let shared = part(rss, 0.2 + 0.4 * unit(first, 0));
+    let private = rss - shared;
+    let shared_dirty = part(shared, 0.15 * unit(first, 16));
+    let private_dirty = part(private, 0.3 + 0.5 * unit(first, 32));
+    // Each shared page counts in proportion to its sharers, so the proportional size lies
+    // between the private part and the resident set.
+    let pss = private + part(shared, 0.2 + 0.5 * unit(first, 48));
+    let anonymous = part(pss, 0.45 + 0.35 * unit(second, 0));
+    let file = part(pss - anonymous, 0.6 + 0.35 * unit(second, 16));
+    let swap = if hash_identity(id, DEMO_ROLLUP_SALT ^ 3).is_multiple_of(3) {
+        0
+    } else {
+        part(rss, 0.3 * unit(second, 32))
+    };
+    Rollup {
+        rss,
+        pss,
+        pss_anon: Some(anonymous),
+        pss_file: Some(file),
+        pss_shmem: Some(pss - anonymous - file),
+        shared_clean: shared - shared_dirty,
+        shared_dirty,
+        private_clean: private - private_dirty,
+        private_dirty,
+        swap,
+        swap_pss: part(swap, 0.5 + 0.5 * unit(second, 48)),
     }
 }
 
@@ -4325,6 +4672,8 @@ mod tests {
                 syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
                 major_faults: Some(demo_major_faults(i, phase)),
                 started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
+                oom: Measured::Pending,
+                memory_detail: Measured::Pending,
             });
         }
         let id = |i: usize| processes[i % count].id;
@@ -5119,6 +5468,7 @@ mod tests {
             Arc::new(Mutex::new(HashSet::new())),
             Arc::new(Mutex::new(Demand::default())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .expect("the sampler thread starts");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -6048,5 +6398,503 @@ mod tests {
         collector.demand(Demand::default());
         collector.sample().expect("sampled");
         assert_eq!(settled((0, 0)), (0, 0), "gone once the demand is");
+    }
+
+    /// A rollup of `rss` bytes with the split present or not.
+    fn rollup_of(rss: u64, split: bool) -> Rollup {
+        Rollup {
+            rss,
+            pss: rss / 2,
+            pss_anon: split.then_some(rss / 4),
+            pss_file: split.then_some(rss / 8),
+            pss_shmem: split.then_some(rss / 8),
+            shared_clean: rss / 2,
+            shared_dirty: 0,
+            private_clean: 0,
+            private_dirty: rss / 2,
+            swap: 0,
+            swap_pss: 0,
+        }
+    }
+
+    /// Processes 1 to `count` with sizes that grow with the pid.
+    fn sized(count: u32) -> Vec<Process> {
+        (1..=count)
+            .map(|pid| Process {
+                memory: u64::from(pid) << 20,
+                ..testing::process(pid, 0)
+            })
+            .collect()
+    }
+
+    fn by_pid(processes: &[Process]) -> HashMap<u32, Identity> {
+        processes.iter().map(|p| (p.id.pid, p.id)).collect()
+    }
+
+    /// The `Extras` a cycle that found `found` would publish for `processes`.
+    fn extras_with(processes: &[Process], found: MemoryFound, missing: Sources) -> Extras {
+        Extras {
+            identities: by_pid(processes),
+            oom: found.oom,
+            rollups: found.rollups,
+            missing,
+            ..Extras::default()
+        }
+    }
+
+    /// A pass that reads rollups whatever the platform says.
+    fn reading_memory() -> MemoryReads {
+        MemoryReads {
+            detail: true,
+            ..MemoryReads::new()
+        }
+    }
+
+    fn ranked(badness: i32) -> Option<Oom> {
+        Some(Oom {
+            badness,
+            adjust: Some(0),
+            exempt: false,
+        })
+    }
+
+    #[test]
+    fn memory_detail_goes_to_the_largest_processes_by_rss_only() {
+        let processes = sized(100);
+        let chosen = rollup_pids(&processes);
+        assert_eq!(chosen.len(), ROLLUP_PROCESSES);
+        assert_eq!(chosen[0], 100, "largest first");
+        assert!(
+            chosen
+                .iter()
+                .all(|&pid| pid > 100 - ROLLUP_PROCESSES as u32)
+        );
+        // Equal sizes go to the smaller identity, and a process without resident memory has
+        // nothing to roll up.
+        let mut equal = sized(100);
+        for process in &mut equal {
+            process.memory = 5 << 20;
+        }
+        equal[0].memory = 0;
+        let chosen = rollup_pids(&equal);
+        assert_eq!(chosen, (2..=65).collect::<Vec<u32>>());
+        // The scan merges only what it read: the rest stay pending.
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| Taken::Value(rollup_of(u64::from(pid) << 20, true)),
+        );
+        let extras = extras_with(&processes, found, Sources::default());
+        let mut merged = processes.clone();
+        for process in &mut merged {
+            merge_memory(process, &extras, true);
+        }
+        let known = merged
+            .iter()
+            .filter(|p| matches!(p.memory_detail, Measured::Known(_)))
+            .count();
+        assert_eq!(known, ROLLUP_PROCESSES);
+        assert_eq!(merged[0].memory_detail, Measured::Pending, "pid 1 is small");
+        assert_eq!(
+            merged[99].memory_detail,
+            Measured::Known(rollup_of(100 << 20, true))
+        );
+    }
+
+    #[test]
+    fn oom_and_rollups_are_read_only_while_demanded() {
+        let processes = sized(10);
+        let selected = rollup_pids(&processes);
+        let mut memory = reading_memory();
+        let (mut oom_calls, mut rollup_calls) = (0, 0);
+        let mut cycle = |memory: &mut MemoryReads, demand: Sources| {
+            let mut reads = Reads::new(Demand::from(demand));
+            let found = memory.read(
+                &mut reads,
+                &mut Vec::new(),
+                &by_pid(&processes),
+                &selected,
+                |pids| {
+                    oom_calls += 1;
+                    Some(pids.iter().map(|&pid| (pid, ranked(7))).collect())
+                },
+                |pid| {
+                    rollup_calls += 1;
+                    Taken::Value(rollup_of(u64::from(pid), true))
+                },
+            );
+            (found, reads)
+        };
+        let (found, reads) = cycle(&mut memory, Sources::default());
+        assert!(found.oom.is_empty() && found.rollups.is_empty());
+        assert!(reads.active.is_empty() && reads.missing.is_empty());
+        let (found, reads) = cycle(&mut memory, Source::Oom.into());
+        assert_eq!((found.oom.len(), found.rollups.len()), (10, 0));
+        assert_eq!(reads.active, Sources::from(Source::Oom));
+        let (found, reads) = cycle(&mut memory, Source::MemoryDetail.into());
+        assert_eq!((found.oom.len(), found.rollups.len()), (0, 10));
+        assert_eq!(reads.active, Sources::from(Source::MemoryDetail));
+        assert!(reads.missing.is_empty(), "the split is there");
+        // Dropping the demand drops what was kept, so the next demand starts from nothing.
+        let (found, _) = cycle(&mut memory, Sources::default());
+        assert!(found.rollups.is_empty());
+        assert_eq!((oom_calls, rollup_calls), (1, 10));
+    }
+
+    #[test]
+    fn a_platform_that_cannot_rank_makes_oom_missing_and_unreadable() {
+        let processes = sized(3);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::Oom)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &[],
+            |_| None,
+            |_| Taken::Gone,
+        );
+        assert_eq!(reads.missing, Sources::from(Source::Oom));
+        let extras = extras_with(&processes, found, reads.missing);
+        let mut process = processes[0].clone();
+        merge_memory(&mut process, &extras, true);
+        assert_eq!(process.oom, Measured::Unreadable, "a gap, not pending");
+        // Not demanded, it stays pending.
+        let extras = extras_with(&processes, MemoryFound::default(), Sources::default());
+        merge_memory(&mut process, &extras, true);
+        assert_eq!(process.oom, Measured::Pending);
+    }
+
+    #[test]
+    fn a_platform_without_rollups_makes_memory_detail_missing() {
+        let processes = sized(3);
+        let mut memory = MemoryReads {
+            detail: false,
+            ..MemoryReads::new()
+        };
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |_| panic!("nothing to read"),
+        );
+        assert_eq!(reads.missing, Sources::from(Source::MemoryDetail));
+        assert!(found.rollups.is_empty());
+    }
+
+    #[test]
+    fn unreadable_rollups_are_marked_unreadable_not_zero() {
+        let processes = sized(4);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| {
+                if pid == 2 {
+                    Taken::Unreadable
+                } else {
+                    Taken::Value(rollup_of(u64::from(pid) << 20, true))
+                }
+            },
+        );
+        let extras = extras_with(&processes, found, Sources::default());
+        let mut merged = processes.clone();
+        for process in &mut merged {
+            merge_memory(process, &extras, true);
+        }
+        assert_eq!(merged[1].memory_detail, Measured::Unreadable);
+        assert!(merged[2].memory_detail.known().is_some());
+        // A ranking that could not be read is the same.
+        let mut extras = extras;
+        extras.oom.insert(2, None);
+        merge_memory(&mut merged[1], &extras, true);
+        assert_eq!(merged[1].oom, Measured::Unreadable);
+    }
+
+    #[test]
+    fn exited_processes_are_dropped_not_zeroed() {
+        let processes = sized(3);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| {
+                if pid == 3 {
+                    Taken::Gone
+                } else {
+                    Taken::Value(rollup_of(1 << 20, true))
+                }
+            },
+        );
+        assert!(!found.rollups.contains_key(&3), "gone is no reading");
+        // A process that exited since the scan, or whose pid another process took, gets
+        // nothing, not the old reading and not zeros.
+        let extras = extras_with(&processes, found, Sources::default());
+        let mut reused = processes[0].clone();
+        reused.id.start += 1;
+        merge_memory(&mut reused, &extras, false);
+        assert_eq!(reused.memory_detail, Measured::Pending);
+        let mut gone = processes[2].clone();
+        merge_memory(&mut gone, &extras, true);
+        assert_eq!(gone.memory_detail, Measured::Pending);
+        // Through `merge`, a pid the sample no longer lists is simply not there.
+        let mut snapshot = Snapshot {
+            processes: processes[..2].to_vec(),
+            ..Snapshot::default()
+        };
+        merge(&mut snapshot, &extras);
+        assert!(
+            snapshot.processes.iter().all(|process| {
+                process.memory_detail == Measured::Known(rollup_of(1 << 20, true))
+            })
+        );
+    }
+
+    #[test]
+    fn a_process_the_budget_did_not_reach_keeps_its_previous_rollup() {
+        let processes = sized(3);
+        let selected = [3, 2, 1];
+        let mut memory = reading_memory();
+        let reads = || Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let mut generation = 0;
+        let mut cycle = |memory: &mut MemoryReads| {
+            generation += 1;
+            let tag = generation << 20;
+            let found = memory.read(
+                &mut reads(),
+                &mut Vec::new(),
+                &by_pid(&processes),
+                &selected,
+                |_| None,
+                |_| Taken::Value(rollup_of(tag, true)),
+            );
+            found.rollups
+        };
+        // The first cycle has time for all three.
+        let first = cycle(&mut memory);
+        assert_eq!(first.len(), 3);
+        // With no time left it still reads one, and the others keep what they had.
+        memory.budget = Duration::ZERO;
+        let tags = |rollups: &HashMap<u32, Option<Rollup>>| -> Vec<u64> {
+            selected
+                .iter()
+                .map(|pid| rollups[pid].unwrap().rss >> 20)
+                .collect()
+        };
+        assert_eq!(tags(&first), [1, 1, 1]);
+        let second = cycle(&mut memory);
+        assert_eq!(tags(&second), [2, 1, 1], "only the first was reached");
+        // The next pass resumes where the budget stopped it, so the last is not starved.
+        let third = cycle(&mut memory);
+        assert_eq!(tags(&third), [2, 3, 1]);
+        let fourth = cycle(&mut memory);
+        assert_eq!(tags(&fourth), [2, 3, 4]);
+        // Merged, the one the pass did not reach still shows its earlier reading.
+        let extras = extras_with(
+            &processes,
+            MemoryFound {
+                rollups: third,
+                ..MemoryFound::default()
+            },
+            Sources::default(),
+        );
+        let mut last = processes[0].clone();
+        merge_memory(&mut last, &extras, true);
+        assert_eq!(
+            last.memory_detail,
+            Measured::Known(rollup_of(1 << 20, true))
+        );
+    }
+
+    #[test]
+    fn a_rollup_without_the_split_makes_the_split_missing() {
+        let processes = sized(2);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| Taken::Value(rollup_of(u64::from(pid), pid != 2)),
+        );
+        assert_eq!(reads.missing, Sources::from(Source::MemorySplit));
+        assert_eq!(reads.active, Sources::from(Source::MemoryDetail));
+    }
+
+    #[test]
+    fn demo_memory_detail_is_consistent_and_repeatable() {
+        let asking = DemoOptions {
+            oom_and_memory_detail: true,
+            ..DemoOptions::NONE
+        };
+        for options in [
+            asking,
+            DemoOptions {
+                churn: true,
+                ..asking
+            },
+        ] {
+            let snapshot = demo_with(12.0, 192, options);
+            assert_eq!(
+                fingerprint(&snapshot),
+                fingerprint(&demo_with(12.0, 192, options)),
+                "repeatable"
+            );
+            assert!(snapshot.processes.iter().all(|p| p.oom.known().is_some()));
+            let detailed: Vec<&Process> = snapshot
+                .processes
+                .iter()
+                .filter(|p| p.memory_detail != Measured::Pending)
+                .collect();
+            assert_eq!(detailed.len(), ROLLUP_PROCESSES);
+            let unreadable = detailed
+                .iter()
+                .filter(|p| p.memory_detail == Measured::Unreadable)
+                .count();
+            assert_eq!(unreadable, 1, "one of the 64 cannot be read");
+            let smallest = detailed.iter().map(|p| p.memory).min().unwrap();
+            assert!(
+                snapshot
+                    .processes
+                    .iter()
+                    .filter(|p| p.memory_detail == Measured::Pending)
+                    .all(|p| p.memory <= smallest),
+                "the rollups go to the largest"
+            );
+            for process in detailed {
+                let Some(rollup) = process.memory_detail.known() else {
+                    continue;
+                };
+                assert_eq!(rollup.rss, process.memory);
+                assert_eq!(
+                    rollup.shared_clean
+                        + rollup.shared_dirty
+                        + rollup.private_clean
+                        + rollup.private_dirty,
+                    rollup.rss
+                );
+                let split =
+                    rollup.pss_anon.unwrap() + rollup.pss_file.unwrap() + rollup.pss_shmem.unwrap();
+                assert_eq!(split, rollup.pss);
+                assert!(rollup.pss <= rollup.rss);
+                assert!(rollup.pss >= rollup.private_clean + rollup.private_dirty);
+                assert!(rollup.swap_pss <= rollup.swap);
+            }
+        }
+    }
+
+    #[test]
+    fn demo_oom_scores_follow_memory_and_exempt_a_few_system_processes() {
+        let snapshot = demo_with(
+            12.0,
+            192,
+            DemoOptions {
+                oom_and_memory_detail: true,
+                ..DemoOptions::NONE
+            },
+        );
+        let total = snapshot.memory_total.unwrap();
+        let exempt: Vec<&Process> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.oom.known().is_some_and(|oom| oom.exempt))
+            .collect();
+        assert_eq!(exempt.len(), 3);
+        assert!(exempt.iter().all(|p| p.kind == Kind::System));
+        assert!(
+            exempt
+                .iter()
+                .all(|p| p.oom.known().is_some_and(|oom| oom.badness == 0))
+        );
+        let protected: Vec<&Process> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.oom.known().and_then(|oom| oom.adjust) == Some(-250))
+            .collect();
+        assert_eq!(protected.len(), 1);
+        for process in snapshot.processes.iter().filter(|p| {
+            p.kind != Kind::Kernel
+                && p.state != 'Z'
+                && p.oom.known().is_some_and(|o| o.adjust == Some(0))
+        }) {
+            let oom = process.oom.known().unwrap();
+            let share = (u128::from(process.memory) * 1000 / u128::from(total)) as i32;
+            assert!(
+                (share..share + 4).contains(&oom.badness),
+                "{oom:?} for {share}"
+            );
+        }
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .filter(|p| p.kind == Kind::Kernel)
+                .all(|p| p.oom.known().is_some_and(|oom| oom.badness == 0))
+        );
+    }
+
+    #[test]
+    fn the_plain_demo_has_no_ranking_and_no_rollups() {
+        let snapshot = demo(12.0, 192);
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|p| p.oom == Measured::Pending && p.memory_detail == Measured::Pending)
+        );
+    }
+
+    #[test]
+    #[ignore = "live: times the memory sources on this machine"]
+    #[cfg(target_os = "linux")]
+    fn live_memory_sources_are_timed_and_reach_the_largest_processes() {
+        let _serial = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut collector = Collector::new(None, None);
+        collector.demand(Demand::from(Sources::from([
+            Source::Oom,
+            Source::MemoryDetail,
+        ])));
+        let mut snapshot = collector.sample().expect("live sampling works");
+        for _ in 0..3 {
+            std::thread::sleep(BACKGROUND_PERIOD + Duration::from_millis(300));
+            snapshot = collector.sample().expect("live sampling works");
+        }
+        let count = snapshot.processes.len();
+        let known =
+            |read: fn(&Process) -> bool| snapshot.processes.iter().filter(|p| read(p)).count();
+        let ranked = known(|p| p.oom.known().is_some());
+        let detailed = known(|p| p.memory_detail.known().is_some());
+        let unreadable = known(|p| p.memory_detail == Measured::Unreadable);
+        println!(
+            "processes {count}: ranked {ranked}, rollups known {detailed}, unreadable {unreadable}; \
+             sources {:?}, missing {:?}",
+            snapshot.sources, snapshot.missing
+        );
+        for (source, took) in &snapshot.sampler.scan_latency {
+            if matches!(source, Source::Oom | Source::MemoryDetail) {
+                println!("{}: {:.2} ms", source.name(), took.as_secs_f64() * 1e3);
+            }
+        }
+        assert!(snapshot.sources.contains(Source::Oom));
+        assert!(snapshot.sources.contains(Source::MemoryDetail));
+        assert!(ranked > 0 && detailed > 0 && detailed + unreadable <= ROLLUP_PROCESSES);
     }
 }

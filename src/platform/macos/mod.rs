@@ -21,8 +21,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Child;
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources};
+use crate::model::{
+    CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Oom, Process, Rollup, Unit,
+};
+use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources, Taken};
 
 pub use events::{monotonic_ns, open_events};
 pub use journal::{JOURNAL, journal};
@@ -271,6 +273,9 @@ impl Sampler {
             syscall_io: None,
             major_faults: None,
             started: logic::start_seconds(bsd.pbi_start_tvsec, bsd.pbi_start_tvusec),
+            oom: Measured::Pending,
+            // macOS has no smaps_rollup: `Source::MemoryDetail` is one of its gaps.
+            memory_detail: Measured::Unreadable,
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -477,6 +482,49 @@ impl Sampler {
     pub fn shadows(&self) -> Vec<Shadow> {
         self.shadows.clone()
     }
+}
+
+/// macOS has no `smaps_rollup`: memory by kind is one of its gaps (`Source::MemoryDetail`).
+pub const MEMORY_DETAIL: bool = false;
+
+/// Never called: `MEMORY_DETAIL` is false.
+pub fn rollup(_pid: u32) -> Taken<Rollup> {
+    Taken::Unreadable
+}
+
+const _: () = assert!(logic::JETSAM_ENTRY_SIZE == size_of::<ffi::memorystatus_priority_entry>());
+
+/// The jetsam rank of each of `pids`. Only root may list the priority bands, so anyone else gets
+/// None, as does a call that fails or returns bytes that are not that list; the collector then
+/// reports `Source::Oom` missing. A pid the list does not hold is absent.
+pub fn oom_scores(pids: &[u32]) -> Option<HashMap<u32, Option<Oom>>> {
+    // SAFETY: geteuid cannot fail and has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let priorities = logic::jetsam_priorities(&jetsam_list()?)?;
+    Some(
+        pids.iter()
+            .filter_map(|pid| Some((*pid, Some(logic::jetsam_oom(*priorities.get(pid)?)))))
+            .collect(),
+    )
+}
+
+/// The bytes of the kernel's jetsam priority list, or None when the call fails.
+fn jetsam_list() -> Option<Vec<u8>> {
+    let command = ffi::MEMORYSTATUS_CMD_GET_PRIORITY_LIST;
+    // SAFETY: with a null buffer the call only returns how many bytes the list needs; it
+    // reads and writes no memory of ours.
+    let needed = unsafe { ffi::memorystatus_control(command, 0, 0, std::ptr::null_mut(), 0) };
+    let needed = usize::try_from(needed).ok().filter(|&needed| needed > 0)?;
+    // Room for processes that start between the two calls.
+    let mut bytes = vec![0u8; needed + 16 * logic::JETSAM_ENTRY_SIZE];
+    // SAFETY: `bytes` is writable for `bytes.len()` bytes, and the kernel copies out at most
+    // the buffer size it is given.
+    let written =
+        unsafe { ffi::memorystatus_control(command, 0, 0, bytes.as_mut_ptr().cast(), bytes.len()) };
+    bytes.truncate(usize::try_from(written).ok()?);
+    Some(bytes)
 }
 
 /// Ends the log follower and everything it started, then reaps it. `journal` makes the child
@@ -1481,6 +1529,31 @@ mod tests {
                 open_files(1, BOUNDS, &mut Vec::new()),
                 Err(Absent::Unreadable)
             ));
+        }
+    }
+
+    #[test]
+    fn the_jetsam_list_is_refused_without_root_and_ranks_this_process_with_it() {
+        let me = std::process::id();
+        // SAFETY: geteuid cannot fail and has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(oom_scores(&[me]), None, "rank only for root");
+            // SAFETY: with a null buffer the call reads and writes no memory of ours.
+            let answer = unsafe {
+                ffi::memorystatus_control(
+                    ffi::MEMORYSTATUS_CMD_GET_PRIORITY_LIST,
+                    0,
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            assert_eq!(answer, -1, "the call links, and only root may list");
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        } else {
+            let found = oom_scores(&[me]).expect("root lists the bands");
+            let oom = found[&me].expect("this process has a band");
+            assert_eq!(oom.adjust, None);
         }
     }
 

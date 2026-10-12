@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::model::{CoreKind, Kind, Policy};
+use crate::model::{CoreKind, Kind, Oom, Policy};
 use crate::platform::{DeletedFile, Files, Network, Remote, Source, Sources};
 
 /// Executables that run virtual machines or containers. A trailing `*` matches any suffix.
@@ -204,8 +204,8 @@ pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
 
 /// What macOS never measures: the pressures it has no stall accounting for, the last CPU, the
 /// run queue, cgroups, socket traffic, the lock table, GPU memory (Apple GPUs share memory
-/// with the CPU and report none per process) and syscall I/O (no per-process counters of the
-/// bytes and calls of read and write). The clock is missing too unless it is measured
+/// with the CPU and report none per process), syscall I/O (no per-process counters of the
+/// bytes and calls of read and write) and memory by kind (no smaps_rollup). The clock is missing too unless it is measured
 /// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
 pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
     let mut missing = Sources::from([
@@ -218,6 +218,7 @@ pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
         Source::FileLocks,
         Source::GpuMemory,
         Source::SyscallIo,
+        Source::MemoryDetail,
     ]);
     if !clocked {
         missing.insert(Source::CpuClock);
@@ -226,6 +227,45 @@ pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
         missing.insert(Source::CoreKinds);
     }
     missing
+}
+
+/// Bytes in one `memorystatus_priority_entry` (`ffi.rs` asserts the layout): `pid` at 0 and
+/// `priority` at 4, both little-endian `i32`.
+pub const JETSAM_ENTRY_SIZE: usize = 24;
+
+/// The jetsam priority band of each pid in the bytes `memorystatus_control` returned for
+/// `MEMORYSTATUS_CMD_GET_PRIORITY_LIST`. None when the bytes cannot be that list: empty, or an
+/// entry whose pid is negative or whose band is far outside the 0 to 210 the kernel uses
+/// (a wrong layout reads as such). A trailing partial entry is ignored.
+pub fn jetsam_priorities(bytes: &[u8]) -> Option<HashMap<u32, i32>> {
+    let word = |entry: &[u8], offset: usize| {
+        i32::from_le_bytes([
+            entry[offset],
+            entry[offset + 1],
+            entry[offset + 2],
+            entry[offset + 3],
+        ])
+    };
+    let mut priorities = HashMap::new();
+    for entry in bytes.as_chunks::<JETSAM_ENTRY_SIZE>().0 {
+        let (pid, priority) = (word(entry, 0), word(entry, 4));
+        if pid < 0 || !(-2..=1000).contains(&priority) {
+            return None;
+        }
+        priorities.insert(pid as u32, priority);
+    }
+    (!priorities.is_empty()).then_some(priorities)
+}
+
+/// The ranking a jetsam band gives. Jetsam kills the lowest bands first, so the band negated is
+/// the badness: higher is killed sooner. There is no adjustment setting and no exemption to
+/// report.
+pub fn jetsam_oom(priority: i32) -> Oom {
+    Oom {
+        badness: -priority,
+        adjust: None,
+        exempt: false,
+    }
 }
 
 /// Bytes the kernel can hand out without paging out application memory. `free` from
@@ -925,6 +965,63 @@ mod tests {
             assert!(!gaps.contains(Source::MemoryPressure) && !gaps.contains(Source::CoreKinds));
         }
         assert!(missing(true, false).contains(Source::CoreKinds));
+    }
+
+    #[test]
+    fn macos_reports_memory_detail_as_missing_and_leaves_oom_to_root() {
+        for clocked in [false, true] {
+            let gaps = missing(clocked, true);
+            assert!(gaps.contains(Source::MemoryDetail), "{gaps:?}");
+            assert!(!gaps.contains(Source::Oom), "root can read it: {gaps:?}");
+        }
+        assert_eq!(Source::MemoryDetail.name(), "memory detail");
+        assert_eq!(Source::Oom.name(), "oom score");
+    }
+
+    /// The list `memorystatus_control` returns for these `(pid, band)` pairs.
+    fn jetsam_list(entries: &[(i32, i32)]) -> Vec<u8> {
+        entries
+            .iter()
+            .flat_map(|&(pid, band)| {
+                let mut entry = [0u8; JETSAM_ENTRY_SIZE];
+                entry[0..4].copy_from_slice(&pid.to_le_bytes());
+                entry[4..8].copy_from_slice(&band.to_le_bytes());
+                // The memory limit and the state flags, which are not read.
+                entry[16..20].copy_from_slice(&4096i32.to_le_bytes());
+                entry[20..24].copy_from_slice(&0x41u32.to_le_bytes());
+                entry
+            })
+            .collect()
+    }
+
+    #[test]
+    fn jetsam_priorities_rank_lower_bands_as_killed_sooner() {
+        let bytes = jetsam_list(&[(1, 100), (42, 10), (77, 0), (0, 0), (500, 18)]);
+        let priorities = jetsam_priorities(&bytes).unwrap();
+        assert_eq!(priorities.len(), 5);
+        let badness = |pid: u32| jetsam_oom(priorities[&pid]).badness;
+        assert!(badness(77) > badness(42), "idle goes before the foreground");
+        assert!(badness(42) > badness(500));
+        assert!(badness(500) > badness(1), "the system band goes last");
+        assert_eq!(
+            jetsam_oom(10),
+            Oom {
+                badness: -10,
+                adjust: None,
+                exempt: false
+            }
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_jetsam_list_are_refused() {
+        assert_eq!(jetsam_priorities(&[]), None);
+        assert_eq!(jetsam_priorities(&[0; 23]), None, "less than one entry");
+        assert_eq!(jetsam_priorities(&jetsam_list(&[(-5, 10)])), None);
+        assert_eq!(jetsam_priorities(&jetsam_list(&[(5, 70000)])), None);
+        let mut cut = jetsam_list(&[(1, 10), (2, 20)]);
+        cut.truncate(JETSAM_ENTRY_SIZE + 9);
+        assert_eq!(jetsam_priorities(&cut).unwrap().len(), 1);
     }
 
     #[test]
