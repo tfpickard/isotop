@@ -83,3 +83,77 @@ def run(n, feed, kill, steps, seed=3, nuclei=6, snapshots=()):
         if s in wanted:
             taken[s] = [row[:] for row in v]
     return u, v, taken
+
+
+# ------------------------------------------------------------------------------------------
+# Analysis: steady states, linearisation and the dispersion relation of Gray-Scott
+
+import math
+
+# The anchor table of the morph brief: (CPU percent of one core, F, k, look).
+ANCHORS = [
+    (0.0, 0.014, 0.054, "drifting spots"),
+    (8.0, 0.030, 0.062, "solitons"),
+    (30.0, 0.037, 0.060, "fingerprint"),
+    (80.0, 0.029, 0.057, "maze"),
+    (160.0, 0.039, 0.058, "holes"),
+    (300.0, 0.018, 0.047, "turbulence"),
+]
+
+
+def feed_kill(cpu):
+    """F and k for a CPU percentage: the anchors interpolated on log(1 + cpu), clamped at 300."""
+    x = math.log1p(min(max(cpu, 0.0), 300.0))
+    for (c0, f0, k0, _), (c1, f1, k1, _) in zip(ANCHORS, ANCHORS[1:]):
+        a, b = math.log1p(c0), math.log1p(c1)
+        if x <= b:
+            t = (x - a) / (b - a)
+            return f0 + (f1 - f0) * t, k0 + (k1 - k0) * t
+    return ANCHORS[-1][1], ANCHORS[-1][2]
+
+
+def saddle_node_k(feed):
+    """The k above which no non-trivial uniform state exists: F >= 4 (F + k)^2."""
+    return math.sqrt(feed) / 2.0 - feed
+
+
+def hopf_feed(kill):
+    """F on the Hopf curve (trace of the Jacobian zero, determinant positive), for k < 1/16."""
+    root = kill * (1.0 - 4.0 * math.sqrt(kill))
+    return (math.sqrt(kill) - 2.0 * kill - math.sqrt(root)) / 2.0
+
+
+def steady_states(feed, kill):
+    """Non-trivial uniform states (u, v), upper-u branch first; empty beyond the saddle-node."""
+    disc = 1.0 - 4.0 * (feed + kill) ** 2 / feed
+    if disc < 0.0:
+        return []
+    root = math.sqrt(disc)
+    return [(u, (feed + kill) / u) for u in ((1.0 + root) / 2.0, (1.0 - root) / 2.0)]
+
+
+def jacobian(feed, kill, u, v):
+    """[[f_u, f_v], [g_u, g_v]] of the reaction terms at (u, v)."""
+    return ((-v * v - feed, -2.0 * u * v), (v * v, 2.0 * u * v - (feed + kill)))
+
+
+def growth_rate(jac, q, du=DU, dv=DV):
+    """The larger real part of the eigenvalues of J - kappa D, with kappa = 2 - 2 cos q, the
+    5-point Laplacian's symbol along a lattice axis."""
+    kappa = 2.0 - 2.0 * math.cos(q)
+    a = jac[0][0] - du * kappa
+    d = jac[1][1] - dv * kappa
+    trace = a + d
+    det = a * d - jac[0][1] * jac[1][0]
+    disc = trace * trace / 4.0 - det
+    return trace / 2.0 + (math.sqrt(disc) if disc > 0.0 else 0.0)
+
+
+def max_growth(jac, du=DU, dv=DV, samples=200):
+    best, where = -1e9, 0.0
+    for i in range(samples + 1):
+        q = math.pi * i / samples
+        rate = growth_rate(jac, q, du, dv)
+        if rate > best:
+            best, where = rate, q
+    return best, where

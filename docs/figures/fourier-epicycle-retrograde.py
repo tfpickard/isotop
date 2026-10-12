@@ -39,15 +39,15 @@ def path(radius_ratio, speed_ratio, turns):
 
 
 def main():
-    cases = [("r w_e / R w_d = 0.5: never retrograde", 0.5, 1.0, 1),
-             ("= 1: stationary points, cusps", 0.5, 2.0, 1),
-             ("= 1.5: loops", 0.5, 3.0, 1),
+    cases = [("ratio 0.5: never retrograde", 0.5, 1.0, 1),
+             ("ratio 1: stationary points, cusps", 0.5, 2.0, 1),
+             ("ratio 1.5: loops", 0.5, 3.0, 1),
              ("Mars-like: r/R = 0.658, w_e/w_d = 1.88", 39.5 / 60.0, 686.98 / 365.2422, 1)]
-    svg = Svg(1080, 330, "Retrograde loops from a deferent and an epicycle",
+    svg = Svg(1080, 340, "Retrograde loops from a deferent and an epicycle",
               "Apparent paths of a planet on a deferent circle and an epicycle for four ratios of "
               "epicycle tip speed to deferent speed; retrograde stretches in red.")
     heading(svg, "Retrograde motion: the epicycle outruns the deferent",
-            "Earth at the centre, deferent R = 1 (grey); red where the apparent longitude falls")
+            "ratio = r w_e / (R w_d); Earth at the centre, deferent R = 1 (grey); red where the apparent longitude falls")
     for index, (title, ratio, speed, _) in enumerate(cases):
         x0 = 36 + index * 262
         ax = Axes(svg, x0, 82, 236, 210, (-1.8, 1.8), (-1.8, 1.8), "", "", title, equal=True,
@@ -71,7 +71,7 @@ def main():
             retro += 1 if back_a else 0
             ax.polyline([(a.real, a.imag), (b.real, b.imag)], colour, 1.6 if back_a else 1.2, opacity=0.9)
         share = retro / (len(points) - 1)
-        ax.label(1.75, -1.62, "retrograde %.1f%% of the time" % (100 * share), 9.5, "end", MUTED)
+        svg.text(ax.x + ax.w / 2, ax.y + ax.h + 16, "retrograde %.1f%% of the time" % (100 * share), 10, "middle", MUTED)
         if index == 3:
             print("Mars-like retrograde share %.4f  = %.1f days of a 779.9-day synodic cycle"
                   % (share, share * 779.9))
