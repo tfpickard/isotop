@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 520" width="1220" height="520" font-family="system-ui, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1220 580" width="1220" height="580" font-family="system-ui, sans-serif">
 <title>An Orbit system and its period law</title>
 <desc>Left: plan view of one demo system, a head process and its fifteen children on two confocal ellipses, at time zero and fifteen seconds later; inner bodies have moved further. Right: the orbital period against semi-major axis for several parent memories, clamped to 8 to 600 seconds.</desc>
 <defs><clipPath id="clip1"><rect x="600" y="90" width="570" height="360"/></clipPath></defs>
-<rect width="1220" height="520" fill="#0e1116"/>
+<rect width="1220" height="580" fill="#0e1116"/>
 <text x="20" y="28" font-size="16" text-anchor="start" fill="#c9d1d9" font-weight="600">One system from the demo (family 1) and the third-law period</text>
 <text x="20" y="47" font-size="12" text-anchor="start" fill="#8b949e">Kepler motion about a focus; semi-major axes come from packing, periods from T = 30 (a/3)^1.5 / sqrt(M / 512 MiB).</text>
 <rect x="40" y="80" width="420" height="420" fill="none" stroke="#6e7681" stroke-width="1"/>
@@ -56,40 +56,6 @@
 <line x1="600" y1="317.09" x2="1170" y2="317.09" stroke="#262c36" stroke-width="1"/>
 <line x1="600" y1="229.82" x2="1170" y2="229.82" stroke="#262c36" stroke-width="1"/>
 <line x1="600" y1="142.54" x2="1170" y2="142.54" stroke="#262c36" stroke-width="1"/>
-<line x1="600" y1="450" x2="1170" y2="450" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="439.1" x2="1170" y2="439.1" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="430.64" x2="1170" y2="430.64" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="423.73" x2="1170" y2="423.73" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="417.89" x2="1170" y2="417.89" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="412.82" x2="1170" y2="412.82" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="408.36" x2="1170" y2="408.36" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="378.09" x2="1170" y2="378.09" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="362.73" x2="1170" y2="362.73" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="351.82" x2="1170" y2="351.82" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="343.36" x2="1170" y2="343.36" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="336.45" x2="1170" y2="336.45" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="330.61" x2="1170" y2="330.61" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="325.55" x2="1170" y2="325.55" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="321.09" x2="1170" y2="321.09" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="290.82" x2="1170" y2="290.82" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="275.45" x2="1170" y2="275.45" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="264.55" x2="1170" y2="264.55" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="256.09" x2="1170" y2="256.09" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="249.18" x2="1170" y2="249.18" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="243.34" x2="1170" y2="243.34" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="238.28" x2="1170" y2="238.28" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="233.81" x2="1170" y2="233.81" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="203.55" x2="1170" y2="203.55" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="188.18" x2="1170" y2="188.18" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="177.27" x2="1170" y2="177.27" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="168.82" x2="1170" y2="168.82" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="161.91" x2="1170" y2="161.91" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="156.06" x2="1170" y2="156.06" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="151" x2="1170" y2="151" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="146.54" x2="1170" y2="146.54" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="116.27" x2="1170" y2="116.27" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="100.9" x2="1170" y2="100.9" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
-<line x1="600" y1="90" x2="1170" y2="90" stroke="#262c36" stroke-width="0.5" stroke-opacity="0.6"/>
 <rect x="600" y="90" width="570" height="360" fill="none" stroke="#6e7681" stroke-width="1"/>
 <line x1="600" y1="450" x2="600" y2="454" stroke="#6e7681" stroke-width="1"/>
 <text x="600" y="467" font-size="11" text-anchor="middle" fill="#8b949e">1</text>
@@ -112,7 +78,7 @@
 <line x1="596" y1="229.82" x2="600" y2="229.82" stroke="#6e7681" stroke-width="1"/>
 <text x="592" y="233.82" font-size="11" text-anchor="end" fill="#8b949e">1000</text>
 <line x1="596" y1="142.54" x2="600" y2="142.54" stroke="#6e7681" stroke-width="1"/>
-<text x="592" y="146.54" font-size="11" text-anchor="end" fill="#8b949e">1e+04</text>
+<text x="592" y="146.54" font-size="11" text-anchor="end" fill="#8b949e">10000</text>
 <text x="885" y="486" font-size="12" text-anchor="middle" fill="#c9d1d9">semi-major axis a (world units)</text>
 <text x="554" y="270" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 554 270)">period T (s)</text>
 <text x="600" y="80" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">Third law with the display clamp</text>
@@ -166,5 +132,5 @@
 <text x="1009.8" y="416" font-size="11" text-anchor="start" fill="#c9d1d9">4 GiB</text>
 <line x1="983.8" y1="428" x2="1003.8" y2="428" stroke="#3987e5" stroke-width="2.2" stroke-dasharray="2 2"/>
 <text x="1009.8" y="432" font-size="11" text-anchor="start" fill="#c9d1d9">this system</text>
-<text x="600" y="490" font-size="11" text-anchor="start" fill="#8b949e">Faint lines are the unclamped law; slope 3/2. Dots are this system's shells.</text>
+<text x="600" y="532" font-size="11" text-anchor="start" fill="#8b949e">Faint lines are the unclamped law; slope 3/2. Dots are this system's shells.</text>
 </svg>

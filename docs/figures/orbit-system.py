@@ -111,7 +111,7 @@ def position(a, mean):
 
 
 figure = Figure(
-    1220, 520,
+    1220, 580,
     "An Orbit system and its period law",
     "Left: plan view of one demo system, a head process and its fifteen children on two confocal "
     "ellipses, at time zero and fifteen seconds later; inner bodies have moved further. Right: the "
@@ -156,7 +156,7 @@ figure.text(left + size - 8, top + 18 + 16 * len(axes_used), "subtree memory %.1
 # right panel: T(a)
 ax = Axes(figure, 600, 90, 570, 360, (1, 40), (3, 40000), xlog=True, ylog=True,
           xlabel="semi-major axis a (world units)", ylabel="period T (s)", title="Third law with the display clamp",
-          xticks=[1, 2, 3, 5, 10, 20, 40], yticks=[10, 100, 1000, 10000], yminor=True)
+          xticks=[1, 2, 3, 5, 10, 20, 40], yticks=[10, 100, 1000, 10000], yminor=False, yformat=lambda v: "%g" % v)
 ax.figure.rect(ax.x, ax.Y(600), ax.w, ax.Y(8) - ax.Y(600), AQUA, None, 1, 0.1)
 ax.hline(600, MUTED, 1.0, "4 3", "clamp 600 s", 1.2)
 ax.hline(8, MUTED, 1.0, "4 3", "clamp 8 s", 1.2)
@@ -169,5 +169,5 @@ for memory_mib, color, dash, name in ((1, VIOLET, "6 3", "no memory (floor 1 MiB
 ax.scatter(axes_used, [period(a, total) for a in axes_used], BLUE, 5)
 ax.legend([("no memory (floor 1 MiB)", VIOLET, "6 3"), ("64 MiB", MAGENTA, None), ("512 MiB", YELLOW, None),
            ("4 GiB", AQUA, None), ("this system", BLUE, "2 2")], "br")
-figure.text(600, 490, "Faint lines are the unclamped law; slope 3/2. Dots are this system's shells.", 11, "start", MUTED)
+figure.text(600, 532, "Faint lines are the unclamped law; slope 3/2. Dots are this system's shells.", 11, "start", MUTED)
 figure.save(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "media", "figures", "orbit-system.svg"))
