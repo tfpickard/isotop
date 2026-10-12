@@ -137,8 +137,8 @@ It is empty for kernel threads and zombies. `/proc/<pid>/cgroup` lists the cgrou
   or `lxc`; `Session` if it contains `user.slice` or `/user@`; otherwise `System` (`classify`). Kernel threads
   keep `Kind::Kernel` and no cgroup.
 
-Neither file changes in the steady state, and reading both for every process every second is most of a sampler's
-cost, so `Sampler` keeps a `Texts` record per `Identity` and re-reads it only when `reread` says so: when nothing
+Neither file changes in the steady state, and reading both for every process on every sample would double the
+number of file reads, so `Sampler` keeps a `Texts` record per `Identity` and re-reads it only when `reread` says so: when nothing
 is cached, **when `comm` is no longer the cached `comm`** (an exec renames the process), and once every
 `TEXT_REFRESH = 10` samples, staggered by `pid` so the re-reads spread over ten samples instead of arriving
 together (`cmdline_is_reread_after_exec_and_cached_otherwise` checks that exactly one of ten samples is due for a

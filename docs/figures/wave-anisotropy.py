@@ -66,8 +66,8 @@ def slope(symbol):
     return math.log(low / high) / math.log(2)
 
 
-b.label(4.0, 3e-1, "5-point: falls as k^%.1f" % slope(s5), 11, "start", BLUE)
-b.label(6.0, 1e-3, "9-point: falls as k^%.1f" % slope(s9), 11, "start", ORANGE)
+b.label(14.0, 2.0, "5-point: falls as k^%.1f" % slope(s5), 11, "start", BLUE)
+b.label(3.8, 3e-4, "9-point: falls as k^%.1f" % slope(s9), 11, "start", ORANGE)
 b.vband(11.19, 42.0, AQUA, 0.16)
 b.label(21.0, 2.0e-6, "pebble band", 11, "middle", AQUA)
 
