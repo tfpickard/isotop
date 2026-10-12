@@ -478,21 +478,6 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         links: LinkRule::All,
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#114",
-                    reason: "orbits and systems are sized by memory, so the galaxy is laid out again",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#114",
-                    reason: "an exit or a birth lays the systems and their shells out again",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
         ..ViewInfo::new(
             "orbit",
             "ORBIT",
@@ -525,21 +510,6 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#115",
-                    reason: "wells are laid out like Orbit's systems, sized by memory",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#115",
-                    reason: "an exit or a birth lays the wells out again, as in Orbit",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
         ..ViewInfo::new(
             "flow",
             "FLOW",

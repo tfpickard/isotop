@@ -6,14 +6,20 @@
 //! The bodies turn: the orbital phase follows the scene's time, and the galaxy of systems
 //! revolves about its barycenter.
 
+#[cfg(test)]
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::f32::consts::TAU;
 
 use super::ViewModule;
 use super::systems::{self, Galaxy, HUB, Layout, Orbit, is_hub, rings};
+#[cfg(test)]
+use crate::model::Identity;
 use crate::model::{Process, Snapshot, bounded};
 use crate::palette::{kind_color, tint};
 use crate::platform::Source;
+#[cfg(test)]
+use crate::render::Point;
 use crate::render::{MIN_BODY_PX, NVIDIA, Stage, WARM};
 use crate::simulation::hash;
 
@@ -23,6 +29,9 @@ pub struct Orbits {
     galaxy: Galaxy,
     /// Whether the last frame drew a hub, for the legend.
     hubs: bool,
+    /// The system each drawn process belongs to, as of the last frame: `anchors`.
+    #[cfg(test)]
+    homes: HashMap<Identity, Point>,
 }
 
 #[cfg(test)]
@@ -46,7 +55,19 @@ impl ViewModule for Orbits {
         let layout = systems::layout(&mut self.galaxy, stage, &processes, snapshot, time);
         paint(stage, &processes, &layout);
         layout.report(stage);
+        #[cfg(test)]
+        {
+            self.homes = layout.homes(&self.galaxy);
+        }
         layout.shown
+    }
+
+    /// The centre of each process's system: where a process stays as long as its system's
+    /// structure fits the room reserved for it. The orbit it travels follows memory, and the
+    /// bodies on it move.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+        Some(self.homes.clone())
     }
 
     fn legend(&self, snapshot: &Snapshot) -> String {

@@ -21,6 +21,13 @@ use crate::simulation::hash;
 pub(super) const MAX_DEPTH: usize = 3;
 const ORBIT_GAP: f32 = 0.6;
 const SYSTEM_GAP: f32 = 2.5;
+/// How much room a system reserves around what it needs when it is placed, so that a change of
+/// memory or population does not touch the layout until the system outgrows it. A body's radius
+/// follows the cube root of its memory, and shells pack by size, so an extent grows a little
+/// faster than that: 30% holds what the view harness does to a system (memory by half to double,
+/// a tenth of its processes leaving and as many arriving). A system that outgrows it is placed
+/// again.
+const HEADROOM: f32 = 1.3;
 /// The outline of a hub, a parent isotop cannot read.
 pub(super) const HUB: Color = [168, 182, 210];
 /// `Identity::start` of a hub. No process starts at the end of time, so a hub's identity never
@@ -140,8 +147,9 @@ impl Galaxy {
         }
         pending.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         for (id, need) in pending {
-            // Headroom absorbs memory drift so systems are only re-placed when their structure grows.
-            let reserved = need * 1.08;
+            // Headroom absorbs memory drift so systems are only re-placed when their structure
+            // outgrows it.
+            let reserved = need * HEADROOM;
             let placed: Vec<_> = self.systems.values().copied().collect();
             let center = vacant(&placed, reserved);
             self.systems.insert(id, (center, reserved));
@@ -256,6 +264,27 @@ pub(super) struct Layout<'a> {
 }
 
 impl Layout<'_> {
+    /// The place each drawn process keeps: the centre of its system. Its orbit, and where it
+    /// stands on that, follow memory and the siblings around it by design (a body's radius is its
+    /// memory's cube root, shells pack by size, a parent's mass sets the pace), so the home is
+    /// what stays put when CPU, memory or the population changes: a system is only placed
+    /// again when its structure outgrows the room reserved for it. Read after `layout`.
+    #[cfg(test)]
+    pub(super) fn homes(&self, galaxy: &Galaxy) -> HashMap<Identity, Point> {
+        let mut homes = HashMap::new();
+        let mut first = 0;
+        for star in &self.stars {
+            // The bodies of a system follow one another in `bodies`: its members, and the hub.
+            let size = star.members + usize::from(is_hub(&star.id));
+            let [x, y] = galaxy.systems[&star.id].0;
+            for body in &self.bodies[first..first + size] {
+                homes.insert(self.tree.processes[body.index].id, [x, y, 0.0]);
+            }
+            first += size;
+        }
+        homes
+    }
+
     /// Tells the app about the systems once their stars stand where they are drawn: the tour
     /// visits each star (a hub has no callout, so it is passed over), the titles name the
     /// systems, and the popup of a body with children says how much memory it anchors.
@@ -798,6 +827,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use crate::harness::{churned, rescaled};
     use crate::model::demo;
     use crate::model::testing::process;
     use crate::render::{Camera, Frame, NONE, RenderInput, Scene, hiding};
@@ -1063,6 +1093,83 @@ mod tests {
             galaxy.speed[&id(2)] <= galaxy.speed[&id(1)],
             "outer bands never outpace inner ones"
         );
+    }
+
+    /// A system is not placed again when the memory and CPU of its processes change by the
+    /// factors of the view harness (memory by half to double, CPU by a quarter to fourfold), or
+    /// when a tenth of the processes leave and as many arrive: `HEADROOM` is what keeps a
+    /// change of resources from moving whole systems. The galaxy still turns, at a pace that
+    /// follows the memory, about a pivot that stays put: so what is kept is each reservation,
+    /// the pivot and each system's distance from it. The scene eases a change in over a third
+    /// of a second, so each run draws three seconds of frames after it.
+    #[test]
+    fn a_system_keeps_its_place_while_resources_and_the_population_change() {
+        let sample = demo(30.0, 160);
+        let run = |view: View, next: &Snapshot| {
+            let mut scene = Scene::new();
+            hiding::place(&mut scene, &sample, view, 30.0, 4096, None, None);
+            for frame in 1..=12 {
+                let time = 30.0 + frame as f32 * 0.25;
+                hiding::place(&mut scene, next, view, time, 4096, None, None);
+            }
+            let galaxy = galaxy_of(&scene, view);
+            (galaxy.systems.clone(), galaxy.center)
+        };
+        let changes = [
+            ("rescaled", rescaled(&sample)),
+            ("churned", churned(&sample).0),
+        ];
+        for view in [view("orbit"), view("flow")] {
+            let (steady, center) = run(view, &sample);
+            assert!(steady.len() > 1, "{view:?}");
+            for (name, next) in &changes {
+                let (changed, pivot) = run(view, next);
+                assert_eq!(pivot, center, "{view:?} {name}: the pivot moved");
+                assert_eq!(
+                    changed.keys().collect::<BTreeSet<_>>(),
+                    steady.keys().collect::<BTreeSet<_>>()
+                );
+                let distance = |at: [f32; 2]| (at[0] - center[0]).hypot(at[1] - center[1]);
+                for (id, (at, reserved)) in &steady {
+                    let (to, now) = changed[id];
+                    assert_eq!(now, *reserved, "{view:?} {name}: {id:?} was placed again");
+                    assert!(
+                        (distance(to) - distance(*at)).abs() < 0.01,
+                        "{view:?} {name}: {id:?} left its orbit about the pivot"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The place a process keeps is its system's centre, where the star of the system stands.
+    #[test]
+    fn a_process_keeps_the_centre_of_its_system() {
+        let sample = demo(30.0, 64);
+        for view in [view("orbit"), view("flow")] {
+            let mut scene = Scene::new();
+            let places = hiding::place(&mut scene, &sample, view, 30.0, 4096, None, None);
+            let homes = scene.anchors(view).expect("the view declares its anchors");
+            assert_eq!(
+                homes.keys().collect::<BTreeSet<_>>(),
+                places.keys().collect::<BTreeSet<_>>(),
+                "{view:?}: every drawn process has a home"
+            );
+            let galaxy = galaxy_of(&scene, view);
+            for (star, ([x, y], _)) in &galaxy.systems {
+                assert_eq!(homes[star], [*x, *y, 0.0], "{view:?}: the star is at home");
+                assert_eq!(places[star][..2], [*x, *y], "{view:?}: and stands there");
+            }
+            let at: BTreeSet<[u32; 2]> = homes
+                .values()
+                .map(|home| [home[0].to_bits(), home[1].to_bits()])
+                .collect();
+            assert_eq!(
+                at.len(),
+                galaxy.systems.len(),
+                "{view:?}: one home per system"
+            );
+        }
     }
 
     /// The systems of `scene` after each hiding in `hides` (limit, selection, focus), which

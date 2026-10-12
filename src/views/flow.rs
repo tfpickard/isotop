@@ -29,6 +29,9 @@ pub struct Wells {
     hubs: bool,
     /// The sheet and its particles, kept while the footprint of the layout is about the same.
     sheet: Option<Flow>,
+    /// The system each drawn process belongs to, as of the last frame: `anchors`.
+    #[cfg(test)]
+    homes: HashMap<Identity, Point>,
 }
 
 #[cfg(test)]
@@ -67,7 +70,19 @@ impl ViewModule for Wells {
         let layout = systems::layout(&mut self.galaxy, stage, &processes, snapshot, 0.0);
         self.pour(stage, &processes, &layout, snapshot, stir);
         layout.report(stage);
+        #[cfg(test)]
+        {
+            self.homes = layout.homes(&self.galaxy);
+        }
         layout.shown
+    }
+
+    /// The centre of each process's system, the well it sinks into: where a process stays as
+    /// long as its system's structure fits the room reserved for it. The shells it stands on
+    /// follow memory, and the dimples with them.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+        Some(self.homes.clone())
     }
 
     fn legend(&self, _snapshot: &Snapshot) -> String {
