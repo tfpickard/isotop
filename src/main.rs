@@ -2515,6 +2515,29 @@ mod tests {
     }
 
     #[test]
+    fn a_visit_centres_a_flock_that_flies_above_the_ground() {
+        let row = view("murmuration").info();
+        let snapshot = demo_snapshot(row, 11.0, 12.0, 64);
+        let mut app = App::new(view("murmuration"), snapshot, all_available());
+        app.rng = Rng::new(7);
+        let frame = app.render(640, 360, 512);
+        press(&mut app, KeyCode::Char('g'));
+        app.update_tour(None);
+        let flock = app
+            .tour_point(visited(&app))
+            .expect("the flock has a centroid");
+        assert!(flock[2] > 5.0, "it flies above the ground: {flock:?}");
+        // The point itself, not the ground below it, is where the camera looks.
+        let goal = &app.goal;
+        let middle = frame.project(goal, [goal.center[0], goal.center[1], 0.0]);
+        let seen = frame.project(goal, flock);
+        assert!(
+            (seen[0] - middle[0]).abs() < 1.0 && (seen[1] - middle[1]).abs() < 1.0,
+            "the flock is at {seen:?}, the middle of the screen at {middle:?}"
+        );
+    }
+
+    #[test]
     fn the_press_of_a_modifier_key_does_not_end_the_tour_before_shift_space_arrives() {
         let mut app = visiting_app();
         press(&mut app, KeyCode::Char('g'));

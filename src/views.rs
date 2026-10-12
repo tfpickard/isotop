@@ -866,6 +866,9 @@ pub static REGISTRY: &[ViewInfo] = &[
         flash: false,
         // The camera looks across the sky at the flock.
         pitch: Some(LOWEST_PITCH),
+        // A flock flies high above the ground, so a tour or a search centres the flock itself
+        // rather than the ground below it; the camera turns and tilts as it is.
+        face: Some(|_, goal| (goal.rotation, goal.pitch)),
         sources: Sources::of(&[Source::Threads, Source::OomKills]),
         // Fifteen seconds of flight, a step at a time, as a live run would have drawn them: the
         // flock settles from its clumps, and the demo's samples set off its falcon.
