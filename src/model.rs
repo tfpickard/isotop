@@ -2551,6 +2551,12 @@ pub struct DemoOptions {
     /// below one thread per 100% of the process's peak CPU use. A pure function of `time`;
     /// the transients and every other field are as without it. Off, a process keeps its count.
     pub thread_churn: bool,
+    /// Hides one parent from `Snapshot::processes` and lists it in `Snapshot::shadows` instead,
+    /// as another user's process would be: the leader of the second family (index 16, `init-16`,
+    /// a child of the first process), whose fifteen siblings keep their parent pid. `unreadable`
+    /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
+    /// `unreadable` 0, as in `demo`.
+    pub unreadable_parent: bool,
 }
 
 impl DemoOptions {
@@ -2568,6 +2574,7 @@ impl DemoOptions {
         channels: false,
         oom_cycle: false,
         thread_churn: false,
+        unreadable_parent: false,
     };
 }
 
@@ -3686,6 +3693,15 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     if options.oom_cycle {
         demo_kill_cycle(time, count, &mut snapshot);
     }
+    if options.unreadable_parent && count > DEMO_FAMILY_SIZE {
+        let hidden = snapshot.processes.remove(DEMO_FAMILY_SIZE);
+        snapshot.shadows.push(platform::Shadow {
+            pid: hidden.id.pid,
+            parent: hidden.parent,
+            name: hidden.name,
+        });
+        snapshot.unreadable += 1;
+    }
     snapshot
 }
 
@@ -4254,6 +4270,55 @@ mod tests {
         for (kept, thread) in few.threads.iter().zip(many.threads.iter()) {
             assert_eq!((kept.tid, kept.start), (thread.tid, thread.start));
         }
+    }
+
+    #[test]
+    fn an_unreadable_parent_is_a_shadow_that_its_children_still_name() {
+        let hiding = DemoOptions {
+            unreadable_parent: true,
+            ..DemoOptions::NONE
+        };
+        let plain = demo_with(12.0, 192, DemoOptions::NONE);
+        assert!(plain.shadows.is_empty() && plain.unreadable == 0);
+        for options in [
+            hiding,
+            DemoOptions {
+                oom_cycle: true,
+                ..hiding
+            },
+        ] {
+            let hidden = demo_with(12.0, 192, options);
+            assert_eq!(hidden.processes.len(), 191);
+            assert_eq!(hidden.unreadable, 1);
+            assert_eq!(
+                hidden.shadows,
+                [platform::Shadow {
+                    pid: 1016,
+                    parent: 1000,
+                    name: "init-16".into()
+                }]
+            );
+            assert!(hidden.processes.iter().all(|p| p.id.pid != 1016));
+            assert_eq!(
+                hidden.processes.iter().filter(|p| p.parent == 1016).count(),
+                15,
+                "its siblings still name it"
+            );
+        }
+        // Nothing but the one process and the shadow differs from the plain demo.
+        let hidden = demo_with(12.0, 192, hiding);
+        let kept: Vec<_> = plain
+            .processes
+            .iter()
+            .filter(|p| p.id.pid != 1016)
+            .map(|p| (p.id, p.cpu, p.memory))
+            .collect();
+        let same: Vec<_> = hidden
+            .processes
+            .iter()
+            .map(|p| (p.id, p.cpu, p.memory))
+            .collect();
+        assert_eq!(kept, same);
     }
 
     #[test]
