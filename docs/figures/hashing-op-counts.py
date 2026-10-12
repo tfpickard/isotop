@@ -147,7 +147,7 @@ def knn_counts(points, s, k):
 
 def panel(svg, x, title, xr, yr, xs, tests, lookups, brute, extra=None, note=None):
     ax = Axes(svg, x, 60, 340, 300, xr, yr, True, True)
-    ax.frame([0.3, 1, 3, 10, 30], [1, 10, 100, 1000, 10000], "cell width s", None, lambda v: "%g" % v, lambda v: "%g" % v)
+    ax.frame([v for v in (0.3, 1, 3, 10, 30) if xr[0] <= v <= xr[1]], [1, 10, 100, 1000, 10000], "cell width s", None, lambda v: "%g" % v, lambda v: "%g" % v)
     svg.text(x + 170, 36, title, 13, INK, "middle", weight="600")
     svg.line(ax.x, ax.py(brute), ax.x + ax.w, ax.py(brute), MUTED, 1.4, "6 4")
     svg.text(ax.x + 6, ax.py(brute) - 6, "brute force: %g tests" % brute, 11, MUTED)
