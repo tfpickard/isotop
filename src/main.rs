@@ -2826,13 +2826,21 @@ mod tests {
         let selected = snapshot.processes[0].id;
         let mut app = App::new(view("matrix"), snapshot, all_available());
         app.selected = Some(selected);
-        app.scene
-            .matrix
-            .push(journal::Line::new(6, "sshd[1]: hello"));
+        let App {
+            history,
+            journal_totals,
+            ..
+        } = &mut app;
+        history[0].journal.add(
+            journal_totals,
+            vec![journal::Line::new(6, "sshd[1]: hello")],
+            0,
+        );
+        // The line reaches the view when it draws the sample that carries it.
+        let frame = app.render(320, 180, 512);
         let text = app.text(0.0, "test", 20, 512);
         assert_eq!(text[1], " > sshd[1]: hello");
         assert!(text[2].contains("queued"), "{}", text[2]);
-        let frame = app.render(320, 180, 512);
         let layout = Layout {
             columns: 80,
             rows: 24,
@@ -2842,6 +2850,45 @@ mod tests {
         };
         assert!(app.popup(&frame, &layout).is_none());
         assert_eq!(app.selected, Some(selected), "kept for the process views");
+    }
+
+    #[test]
+    fn matrix_lines_reach_the_view_through_the_snapshot() {
+        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
+        let line = |app: &App| {
+            app.scene
+                .inspector_line(app.view)
+                .expect("the matrix has one")
+        };
+        let legend = |app: &App| app.scene.legend(app.view, app.snapshot());
+        app.render(320, 180, 512);
+        assert_eq!(line(&app), " > waiting for the journal...");
+
+        // `main.rs` hands the frame's lines to the sample; the view takes them in when it draws.
+        feed(&mut app, None, true, 0.0, 1.0);
+        let lines = journal::demo(0.0, 1.0);
+        assert_eq!(app.history.back().unwrap().journal.lines, lines);
+        assert_eq!(line(&app), " > waiting for the journal...", "not drawn yet");
+        app.render(320, 180, 512);
+        assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
+        let queued = legend(&app);
+
+        // Drawing the same sample again, or a newer one that brought no lines, queues none twice.
+        app.render(320, 180, 512);
+        app.history.push_back(model::demo(2.0, 16));
+        app.render(320, 180, 512);
+        assert_eq!(legend(&app), queued);
+        assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
+
+        // Lines attached to the newer sample are the next ones taken.
+        feed(&mut app, None, true, 1.0, 2.0);
+        app.render(320, 180, 512);
+        let all = journal::demo(0.0, 2.0);
+        assert_eq!(line(&app), format!(" > {}", all.last().unwrap().text));
+        assert_eq!(
+            app.history.back().unwrap().journal.through as usize,
+            all.len()
+        );
     }
 
     #[test]
@@ -4017,8 +4064,6 @@ mod tests {
             ),
             all_available(),
         );
-        // The matrix greets `$USER`, which differs between machines.
-        app.scene.matrix.user = Some("Neo".into());
         warm_up(&mut app, &options, None);
         app.animation = options.time as f32;
         let frame = app.render(

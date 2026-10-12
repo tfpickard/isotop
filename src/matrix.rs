@@ -8,9 +8,11 @@ use std::collections::VecDeque;
 
 use crate::glyphs::{self, HEIGHT, WIDTH};
 use crate::journal::{Delivery, Line};
+use crate::model::{Process, Snapshot};
 use crate::palette::mix;
-use crate::render::{Color, Frame, Item};
+use crate::render::{Color, Frame, Item, Stage};
 use crate::simulation::{Rng, hash};
+use crate::views::ViewModule;
 
 /// Seconds after arriving that a character shows even if no rain has passed over it.
 const UNVEIL: f32 = 3.0;
@@ -78,19 +80,17 @@ pub struct Rain {
     random: Rng,
     greeted: bool,
     /// Lines dropped because they arrived faster than the log could show them.
-    pub skipped: u64,
+    skipped: u64,
     /// Lines of the journal taken in so far, and the follower's drops counted in `skipped`, which
     /// is how `take` tells a delivery it has seen from one it has not.
     taken: u64,
     counted: u64,
-    /// The name in the greeting; `None` reads `$USER`.
-    pub user: Option<String>,
 }
 
 impl Rain {
     /// Takes in the lines of a sample's `Delivery` that earlier samples (or an earlier draw of
     /// this one) did not bring: each journal line is queued once however often a sample is drawn.
-    pub fn take(&mut self, delivery: &Delivery) {
+    fn take(&mut self, delivery: &Delivery) {
         for line in delivery.unseen(self.taken) {
             self.push(line.clone());
         }
@@ -100,7 +100,7 @@ impl Rain {
     }
 
     /// Queues a journal line to be written into the log.
-    pub fn push(&mut self, line: Line) {
+    fn push(&mut self, line: Line) {
         self.latest = Some(line.text.clone());
         self.pending.push_back(line);
         self.trim();
@@ -120,11 +120,11 @@ impl Rain {
     }
 
     /// The most recent journal line, for the status strip.
-    pub fn latest(&self) -> Option<&str> {
+    fn latest(&self) -> Option<&str> {
         self.latest.as_deref()
     }
 
-    pub fn pending(&self) -> usize {
+    fn pending(&self) -> usize {
         self.pending.len()
     }
 
@@ -193,11 +193,7 @@ impl Rain {
     fn advance(&mut self, time: f32) {
         if !self.greeted {
             self.greeted = true;
-            let user = self
-                .user
-                .clone()
-                .or_else(|| std::env::var("USER").ok())
-                .unwrap_or_else(|| "Neo".into());
+            let user = login().unwrap_or_else(|| "Neo".into());
             for text in [
                 "Follow the white rabbit.".into(),
                 "The Matrix has you...".into(),
@@ -255,7 +251,7 @@ impl Rain {
     }
 
     /// Advances the rain to `time` and records it into the frame.
-    pub fn draw(&mut self, frame: &mut Frame, time: f32) {
+    fn paint(&mut self, frame: &mut Frame, time: f32) {
         let grid = Self::layout(frame.width, frame.height);
         if grid != self.grid {
             // Rewrap what is on screen for the new width; it decodes again under a fresh shower.
@@ -338,6 +334,52 @@ impl Rain {
     }
 }
 
+/// Who the greeting wakes: the account the terminal runs as. Tests greet Neo, so a frame does not
+/// depend on the machine it was drawn on.
+#[cfg(not(test))]
+fn login() -> Option<String> {
+    std::env::var("USER").ok()
+}
+
+#[cfg(test)]
+fn login() -> Option<String> {
+    None
+}
+
+impl ViewModule for Rain {
+    /// Takes in the journal lines the sample brings, then lets the rain fall. It draws no
+    /// processes, so none count as shown.
+    fn draw(&mut self, stage: &mut Stage, _processes: &[&Process], snapshot: &Snapshot) -> usize {
+        self.take(&snapshot.journal);
+        self.paint(stage.frame, stage.time);
+        0
+    }
+
+    fn legend(&self, _snapshot: &Snapshot) -> String {
+        format!(
+            " Journal lines decode as the rain passes | red = error, amber = warning, green = info, teal = debug | {} queued{}",
+            self.pending(),
+            match self.skipped {
+                0 => String::new(),
+                skipped => format!(", {skipped} skipped"),
+            }
+        )
+    }
+
+    /// The newest journal line, in place of the inspector: the rain draws no processes.
+    fn inspector_line(&self) -> Option<String> {
+        Some(format!(
+            " > {}",
+            self.latest().unwrap_or("waiting for the journal...")
+        ))
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+}
+
 /// A rain glyph that changes several times a second, out of step with its neighbours.
 fn flicker(column: usize, row: usize, time: f32) -> char {
     let tick = (time * 6.0 + column as f32 * 0.37) as u64;
@@ -399,7 +441,7 @@ mod tests {
         let mut time = from;
         loop {
             let mut frame = frame();
-            rain.draw(&mut frame, time);
+            rain.paint(&mut frame, time);
             if time >= to {
                 return frame;
             }
@@ -531,7 +573,7 @@ mod tests {
         }
         assert_eq!((rain.pending(), rain.skipped), (200, 0));
         let mut first = frame();
-        rain.draw(&mut first, 0.0);
+        rain.paint(&mut first, 0.0);
         let kept = rain.grid.1 * 2;
         assert_eq!(rain.pending() + rain.rows.len(), kept);
         assert_eq!(rain.skipped as usize, 200 - kept);
@@ -548,7 +590,7 @@ mod tests {
         // 0.19, 0.40, 0.65 and 0.98 s, so five lines are due by the second frame.
         run(&mut rain, 0.0, 0.0);
         let mut late = frame();
-        rain.draw(&mut late, 1.0);
+        rain.paint(&mut late, 1.0);
         assert_eq!(rain.rows.len(), 5);
     }
 
