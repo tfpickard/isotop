@@ -115,8 +115,8 @@ kind colours (teal, slate, purple, gold). Faint small circles hang about each pl
 * **Not history.** The tip is *not* the process's current state. It is the replay of the minute (current to within the last one or two samples' easing), at a position in the replay that is a function of the clock; the trail is hypothetical. Two planets in retrograde at once are not synchronised with anything real.
 * **The wrap.** Each minute the tip snaps from the last sample back to the first. For a process whose memory climbs through the whole window this is a visible jump, with Gibbs ringing beside it.
 * **Handedness.** Counter-clockwise epicycles mean memory lags CPU by a quarter period, clockwise that it leads.
-* **Saw-teeth.** Real planets in the Ptolemaic model loop a few times per synodic cycle because the deferent is nearly as fast as the epicycle. Here epicycles (1 to 30 turns a minute) are 10 to 150 times faster than the deferents,
-  so loops are small, frequent and everywhere. The picture is therefore not a quantitative claim about the process.
+* **Saw-teeth.** Real planets in the Ptolemaic model loop a few times per synodic cycle because the deferent is nearly as fast as the epicycle. Here epicycle terms turn 1 to 30 times a minute and the deferents 0.05 to 0.27 times, so the epicycles are 4 to 600 times faster in turns
+  and loops are small, frequent and everywhere. The picture is therefore not a quantitative claim about the process.
 * **Invisible.** Anything shorter than one sample, anything longer than the window, the 47 smaller Fourier terms, and every process below the variance of the seventh planet (they are stars; a quiet process's brightness is only its memory).
 * **Stars are not positioned by data.** Angle and radius come from the identity hash; only brightness (memory) and the flare (birth) mean something.
 
