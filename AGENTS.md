@@ -81,8 +81,9 @@ The README covers usage. This file covers how to work on the code.
 | `platform/linux/events.rs` | The `isotop-events` thread on Linux: proc connector fork, exec and exit events and taskstats exit records over netlink, decoded by byte offset from the uapi headers, thread records summed per process |
 | `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines, and `Delivery`, the lines one sample carries on `Snapshot.journal` |
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends; and `testing`, module views for tests |
+| `views/city.rs` | The City module view (declared from `views.rs`): `City` keeps each process's plot (`Plot`: a district and one of its 16 slots, taken from the first vacant slot of its cgroup's districts and kept until the process leaves the sample), `district_origin` spirals the districts out in square shells without moving any, and a building is its height from CPU, footprint from memory, windows, rooftop lamp, GPU beacon and I/O pulse; it reports the tallest height in `Stage::headroom` for `Scene::fit`, and its row's `link_lift` of 1.5 raises the links over the rooftops |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
-| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods) |
+| `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (Orbit, Ripple and Flow as methods) |
 | `render/shared.rs` | Constants the CPU rasterizer and `shaders.wgsl` must agree on, declared once; `prelude` writes them into the WGSL source. `LIGHT`, the one world light direction every lit surface shares, is Rust only: shading is baked into colours before the backends see them |
 | `render/strokes.rs` | Wide strokes built only from `Item::Triangle`s: `Frame::ribbon` (a screen-facing band along a polyline, `Width` in world units or pixels, an optional `Dash` measured along the 3D arc length) and `Frame::tube` (a flat-shaded prism with parallel-transported `ring_frames`, lit by `shared::LIGHT` through `lit`; `tube_faces` is its pure world-space geometry); every piece is at most 32 px an edge, so a triangle's box is at most 64 x 64 px |
 | `render/field.rs` | The field primitive (`Field`, `Placement`, `Relief`, `Shading`, `Frame::field`, `Item::Field`): a grid of colours drawn in world space, flat or as lit relief, sampled bilinearly by the one formula both backends use (clamped uv in node units, `floor(bilerp + 0.5)` per channel, the owner of the nearest node as the pick), with `ShadedField` (the shaded colours and owners a frame keeps and recycles through `Buffers`, so an unchanged `(key, revision)` is not shaded again), the CPU span rasterizer `Frame::field_triangle`, and `StorageLayout`, which plans what the GPU storage buffer must rewrite. Grid simulations draw through it, never one triangle pair per cell; Ripple and Flow still do |
@@ -162,6 +163,7 @@ last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulati
 with a fixed-step clock fed from `stage.time`; the older views keep their own clamps. A view
 writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
+`stage.headroom` (how high content stands above the ground, for the fit of a view that gives no bounds),
 `stage.places`, `stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
 braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
 `stage.tour` (`TourTarget { id,
@@ -171,9 +173,9 @@ collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size
 time, limit, focus and whether the app is paused). Orbit, Ripple and Flow still report through
 `scene.stars`, `scene.mass` and `scene.hub_names`, which `main.rs` reads besides the outputs
 until they move. The row (`ViewInfo`) holds everything else that sets the view apart, and `Scene`,
-`App` and the headless warm-up read it instead of naming the view. Four of the eleven older views
-(City, Orbit, Ripple and Flow) are still built in (`Hooks::BuiltIn`): `Scene` keeps their state in
-typed fields and draws them in its own arms, as `Scene` methods. Cores, Cells, Strata, Globe, Reef,
+`App` and the headless warm-up read it instead of naming the view. Three of the eleven older views
+(Orbit, Ripple and Flow) are still built in (`Hooks::BuiltIn`): `Scene` keeps their state in typed
+fields and draws them in its own arms, as `Scene` methods. City, Cores, Cells, Strata, Globe, Reef,
 Coop and Matrix have moved onto `ViewModule`, and the rest are being moved, so write new views the
 module way and never add an arm.
 
@@ -332,7 +334,8 @@ match your own shell.
     `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
     demo samples, such as `Phase::Replay` at `--sample-ms` or `Phase::Play`, which also draws the frames between them, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `link_strokes` (off: the scene's links are beams; a new view turns it on,
-    so its links are hairlines that rasterize alike on the CPU and the GPU), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    so its links are hairlines that rasterize alike on the CPU and the GPU), `link_lift` (0: how
+    high the scene lifts its links above the drawn positions, 1.5 over City's rooftops), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
     wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
     shown), `sources` (none), `demo` (`DemoOptions::NONE`; a row names only the options it turns on, `DemoOptions { churn: true, ..DemoOptions::NONE }`, so a new option leaves the other rows alone) and `contract`

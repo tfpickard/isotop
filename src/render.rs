@@ -7,7 +7,7 @@ use crate::history::History;
 use crate::layout::{spin, spiral, vacant};
 use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
 use crate::model::{Identity, Process, Snapshot, bounded};
-use crate::palette::{DISTRICTS, kind_color, process_color, tint};
+use crate::palette::{kind_color, tint};
 use crate::platform::Shadow;
 use crate::simulation::{growth, hash, smoothing};
 use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
@@ -1197,6 +1197,10 @@ pub(crate) struct Stage<'a> {
     /// Lines for the tour's callout of a process, after its own figures and in the order pushed:
     /// what the view makes of the visit, such as a frame it cannot enter.
     pub callout: &'a mut Vec<(Identity, String)>,
+    /// How far above the ground plane the view's content rises, in world units, for the camera
+    /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
+    /// nothing rises.
+    pub headroom: &'a mut f32,
 }
 
 impl Stage<'_> {
@@ -1265,12 +1269,6 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
     Cow::Owned(cut)
 }
 
-#[derive(Clone, Copy)]
-struct Plot {
-    district: usize,
-    slot: usize,
-}
-
 /// A Keplerian ellipse with its focus on the parent body.
 #[derive(Clone, Copy)]
 struct Orbit {
@@ -1326,9 +1324,6 @@ struct Tree<'a> {
 }
 
 pub struct Scene {
-    plots: HashMap<Identity, Plot>,
-    groups: HashMap<String, Vec<usize>>,
-    occupancy: Vec<HashMap<usize, Identity>>,
     resources: HashMap<Identity, (f32, f32)>,
     systems: HashMap<Identity, ([f32; 2], f32)>,
     /// Point the orbit systems revolve about and the systems it was computed for, the motion
@@ -1349,8 +1344,8 @@ pub struct Scene {
     arrivals: HashMap<Identity, f32>,
     previous: HashMap<Identity, Point>,
     deaths: Vec<(Point, f32)>,
-    /// Height of the tallest building in the last city frame, so fitting leaves it headroom.
-    tallest: f32,
+    /// The last frame's `Stage::headroom`, so fitting leaves it room above the ground.
+    headroom: f32,
     /// Exits and births since the last frame, as disturbances for the ripple and flow media.
     splashes: Vec<Point>,
     newborn: Vec<Identity>,
@@ -1401,9 +1396,6 @@ impl Scene {
     /// A scene that draws the views of `rows`, building each module view's state.
     pub(crate) fn with_rows(rows: &'static [ViewInfo]) -> Self {
         Self {
-            plots: HashMap::new(),
-            groups: HashMap::new(),
-            occupancy: Vec::new(),
             resources: HashMap::new(),
             systems: HashMap::new(),
             galaxy: [0.0; 2],
@@ -1418,7 +1410,7 @@ impl Scene {
             arrivals: HashMap::new(),
             previous: HashMap::new(),
             deaths: Vec::new(),
-            tallest: 0.0,
+            headroom: 0.0,
             splashes: Vec::new(),
             newborn: Vec::new(),
             wave: None,
@@ -1547,50 +1539,6 @@ impl Scene {
         }
     }
 
-    fn city_positions(&mut self, processes: &[&Process], snapshot: &Snapshot) {
-        let alive: HashSet<_> = snapshot.processes.iter().map(|p| p.id).collect();
-        self.plots.retain(|id, plot| {
-            if alive.contains(id) {
-                true
-            } else {
-                self.occupancy[plot.district].remove(&plot.slot);
-                false
-            }
-        });
-        self.positions.clear();
-        for process in processes {
-            if !self.plots.contains_key(&process.id) {
-                let districts = self.groups.entry(process.group.clone()).or_default();
-                let mut vacant = None;
-                for &district in districts.iter() {
-                    if let Some(slot) = (0..16).find(|s| !self.occupancy[district].contains_key(s))
-                    {
-                        vacant = Some(Plot { district, slot });
-                        break;
-                    }
-                }
-                let plot = vacant.unwrap_or_else(|| {
-                    let district = self.occupancy.len();
-                    self.occupancy.push(HashMap::new());
-                    districts.push(district);
-                    Plot { district, slot: 0 }
-                });
-                self.occupancy[plot.district].insert(plot.slot, process.id);
-                self.plots.insert(process.id, plot);
-            }
-            let plot = self.plots[&process.id];
-            let base = district_origin(plot.district);
-            self.positions.insert(
-                process.id,
-                [
-                    base[0] + (plot.slot % 4) as f32 * 4.0 + 2.0,
-                    base[1] + (plot.slot / 4) as f32 * 4.0 + 2.0,
-                    0.0,
-                ],
-            );
-        }
-    }
-
     pub fn fit(&self, camera: &mut Camera, width: u32, height: u32) {
         if self.positions.is_empty() && self.bounds.is_empty() {
             return;
@@ -1623,8 +1571,8 @@ impl Scene {
             camera.center = probe.ground((min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5 + lift);
             return;
         }
-        // The vertical margin leaves headroom for the tallest building above the ground plane.
-        let headroom = 24.0_f32.max(self.tallest * camera.pitch.cos() * SCALE + 8.0);
+        // The vertical margin leaves room for the tallest thing above the ground plane.
+        let headroom = 24.0_f32.max(self.headroom * camera.pitch.cos() * SCALE + 8.0);
         camera.zoom = (width as f32 / (max[0] - min[0] + 12.0))
             .min(height as f32 / (max[1] - min[1] + headroom))
             * 0.8;
@@ -1689,9 +1637,11 @@ impl Scene {
         self.tour.clear();
         self.popup.clear();
         self.callout.clear();
-        // Only the city draws buildings, and it measures them again every frame it is shown.
-        self.tallest = 0.0;
-        let lift = self.draw_view(&mut frame, input, &processes, dt);
+        // A view that stands things on the ground reports their height again every frame it is
+        // shown.
+        self.headroom = 0.0;
+        self.draw_view(&mut frame, input, &processes, dt);
+        let lift = row.link_lift;
         self.splashes.clear();
         self.newborn.clear();
         match row.links {
@@ -1774,15 +1724,14 @@ impl Scene {
             .collect()
     }
 
-    /// Draws the shown view and returns how high its links rise: above the city's rooftops, on
-    /// the ground elsewhere.
+    /// Draws the shown view.
     fn draw_view(
         &mut self,
         frame: &mut Frame,
         input: &RenderInput,
         processes: &[&Process],
         dt: f32,
-    ) -> f32 {
+    ) {
         let RenderInput {
             snapshot,
             view,
@@ -1801,11 +1750,6 @@ impl Scene {
             Hooks::Module(_) => None,
         };
         match arm {
-            Some(BuiltIn::City) => {
-                self.city_positions(processes, snapshot);
-                self.draw_city(frame, processes, camera, selected, time);
-                return 1.5;
-            }
             Some(BuiltIn::Orbit) => {
                 let hubs = self.hubs(processes, snapshot, focus);
                 let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
@@ -1846,6 +1790,7 @@ impl Scene {
                     tour: &mut self.tour,
                     popup: &mut self.popup,
                     callout: &mut self.callout,
+                    headroom: &mut self.headroom,
                 };
                 let shown = match arm {
                     Some(_) => unreachable!(),
@@ -1857,7 +1802,6 @@ impl Scene {
                 self.collapsed = processes.len().saturating_sub(shown);
             }
         }
-        0.0
     }
 
     /// Marks where processes that left were last drawn and, where the row has the flash, draws
@@ -1983,185 +1927,6 @@ impl Scene {
                 }
             }
         }
-    }
-
-    #[expect(clippy::too_many_lines, reason = "split in #73 (A14)")]
-    fn draw_city(
-        &mut self,
-        frame: &mut Frame,
-        processes: &[&Process],
-        camera: &Camera,
-        selected: Option<Identity>,
-        time: f32,
-    ) {
-        let districts: HashSet<_> = processes
-            .iter()
-            .map(|p| self.plots[&p.id].district)
-            .collect();
-        for district in districts {
-            let [x, y] = district_origin(district);
-            frame.quad(
-                camera,
-                [
-                    [x - 1.0, y - 1.0, -0.12],
-                    [x + 17.0, y - 1.0, -0.12],
-                    [x + 17.0, y + 17.0, -0.12],
-                    [x - 1.0, y + 17.0, -0.12],
-                ],
-                [18, 29, 43],
-                NONE,
-            );
-            let color = tint(DISTRICTS[district % 8], 0.35);
-            for i in 0..=4 {
-                let offset = i as f32 * 4.0;
-                frame.line(
-                    camera,
-                    [x + offset, y, 0.0],
-                    [x + offset, y + 16.0, 0.0],
-                    [29, 43, 57],
-                );
-                frame.line(
-                    camera,
-                    [x, y + offset, 0.0],
-                    [x + 16.0, y + offset, 0.0],
-                    [29, 43, 57],
-                );
-            }
-            frame.line(
-                camera,
-                [x - 0.5, y - 0.5, 0.0],
-                [x + 16.5, y - 0.5, 0.0],
-                color,
-            );
-            frame.line(
-                camera,
-                [x - 0.5, y - 0.5, 0.0],
-                [x - 0.5, y + 16.5, 0.0],
-                color,
-            );
-        }
-        let mut tallest = 0.0_f32;
-        for (index, process) in processes.iter().enumerate() {
-            let p = self.positions[&process.id];
-            let plot = self.plots[&process.id];
-            let grow = self.growth(process.id, time);
-            let half = (0.42 + 1.05 * bounded(process.memory as f32 / 1048576.0, 220.0).sqrt())
-                * (0.35 + 0.65 * grow);
-            // Idle processes stay low blocks; one busy core is a ~23-unit tower and multi-core
-            // work climbs towards 45, against 4-unit plots.
-            let height = (1.0 + 44.0 * bounded(process.cpu, 100.0)) * grow.max(0.05);
-            tallest = tallest.max(height);
-            let shadow = height.min(14.0);
-            let color = process_color(process, plot.district);
-            let [x, y, _] = p;
-            frame.quad(
-                camera,
-                [
-                    [x - half, y - half, 0.01],
-                    [x + half + shadow * 0.5, y - half + shadow * 0.3, 0.01],
-                    [x + half + shadow * 0.5, y + half + shadow * 0.3, 0.01],
-                    [x - half, y + half, 0.01],
-                ],
-                [10, 18, 29],
-                NONE,
-            );
-            let corners = [
-                [x - half, y - half, 0.05],
-                [x + half, y - half, 0.05],
-                [x + half, y + half, 0.05],
-                [x - half, y + half, 0.05],
-            ];
-            let top = corners.map(|mut p| {
-                p[2] = height;
-                p
-            });
-            for side in 0..4 {
-                let next = (side + 1) % 4;
-                frame.quad(
-                    camera,
-                    [corners[side], corners[next], top[next], top[side]],
-                    tint(color, [0.40, 0.66, 0.55, 0.30][side]),
-                    index as u32,
-                );
-                if camera.zoom > 3.0 {
-                    let levels = (height / 0.85) as usize;
-                    for level in 0..levels {
-                        for column in 0..3 {
-                            let a = 0.15 + column as f32 * 0.26;
-                            let b = a + 0.12;
-                            let z = 0.35 + level as f32 * 0.85;
-                            if z + 0.25 >= height {
-                                continue;
-                            }
-                            let point = |t: f32, z: f32| {
-                                [
-                                    corners[side][0] + (corners[next][0] - corners[side][0]) * t,
-                                    corners[side][1] + (corners[next][1] - corners[side][1]) * t,
-                                    z,
-                                ]
-                            };
-                            let lit = !(process.id.pid as usize + level * 7 + column * 11)
-                                .is_multiple_of(5);
-                            let window = if lit {
-                                tint([241, 206, 136], 0.55 + 0.35 * bounded(process.cpu, 50.0))
-                            } else {
-                                [28, 40, 53]
-                            };
-                            let mut points = [
-                                point(a, z),
-                                point(b, z),
-                                point(b, z + 0.25),
-                                point(a, z + 0.25),
-                            ];
-                            // Offset windows outward so the depth buffer doesn't z-fight with the wall.
-                            let normal =
-                                [[0.0, -0.015], [0.015, 0.0], [0.0, 0.015], [-0.015, 0.0]][side];
-                            for p in &mut points {
-                                p[0] += normal[0];
-                                p[1] += normal[1];
-                            }
-                            frame.quad(camera, points, window, index as u32);
-                        }
-                    }
-                }
-            }
-            frame.quad(camera, top, tint(color, 0.95), index as u32);
-            if process.cpu > 1.0 {
-                let brightness = 0.65 + 0.25 * (time * 2.0 + process.id.pid as f32).sin();
-                frame.sphere(
-                    camera,
-                    [x, y, height + 0.22],
-                    0.12,
-                    tint([255, 196, 104], brightness),
-                    index as u32,
-                    false,
-                );
-            }
-            if process.gpu_memory.is_some() {
-                let beacon = [x - half * 0.5, y - half * 0.5, height + 0.3];
-                frame.glow(camera, beacon, (1.4 * camera.zoom).max(8.0), NVIDIA, 0.7);
-                frame.sphere(camera, beacon, 0.16, NVIDIA, index as u32, false);
-            }
-            if selected == Some(process.id) {
-                for side in 0..4 {
-                    let next = (side + 1) % 4;
-                    frame.line(camera, top[side], top[next], [255, 235, 171]);
-                    frame.line(camera, corners[side], top[side], [255, 235, 171]);
-                }
-            }
-            if process.io_rate.is_some_and(|v| v > 1024.0) {
-                let t = (time * 0.7 + process.id.pid as f32 * 0.13).fract();
-                frame.sphere(
-                    camera,
-                    [x + half + 0.2, y - half + t * half * 2.0, 0.15],
-                    0.12,
-                    [105, 228, 216],
-                    index as u32,
-                    false,
-                );
-            }
-        }
-        self.tallest = tallest;
     }
 
     /// One hub per parent that isotop can see but not read (a shadow) with readable leaves
@@ -3679,18 +3444,6 @@ fn measure(
     extent
 }
 
-fn district_origin(index: usize) -> [f32; 2] {
-    // Grow square shells without relocating any previously allocated district.
-    let shell = (index as f32).sqrt() as usize;
-    let offset = index - shell * shell;
-    let (x, y) = if offset <= shell {
-        (shell, offset)
-    } else {
-        (2 * shell - offset, shell)
-    };
-    [x as f32 * 23.0, y as f32 * 23.0]
-}
-
 /// The processes a frame draws, in PID order: the focused subtree, or every process, cut to
 /// `limit` with the selection kept.
 fn admitted<'a>(
@@ -4781,20 +4534,6 @@ mod tests {
         assert_eq!(series.len(), 4);
         assert!(series.iter().all(|reading| reading.is_some()));
         assert_eq!(scene.history.arrived(), 3.0);
-    }
-
-    #[test]
-    fn city_does_not_relocate_when_resources_or_population_change() {
-        let mut scene = Scene::new();
-        let mut snapshot = demo(0.0, 32);
-        render(&mut scene, &snapshot, view("city"), 0.0);
-        let id = snapshot.processes[10].id;
-        let position = scene.positions[&id];
-        snapshot.processes.remove(5);
-        snapshot.processes[9].cpu = 1600.0;
-        snapshot.processes[9].memory *= 100;
-        render(&mut scene, &snapshot, view("city"), 0.0);
-        assert_eq!(scene.positions[&id], position);
     }
 
     #[test]

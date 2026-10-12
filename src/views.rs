@@ -8,6 +8,8 @@
 //! `BuiltIn`. The others, and every new view, are module views: a type that implements
 //! `ViewModule`, which `Scene` builds from the row and calls through the trait.
 
+mod city;
+
 #[cfg(test)]
 use std::collections::HashMap;
 use std::fmt;
@@ -15,7 +17,7 @@ use std::fmt;
 #[cfg(test)]
 use crate::model::Identity;
 use crate::model::{DemoOptions, Process, Snapshot};
-use crate::platform::{self, Source, Sources};
+use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
     arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
@@ -94,6 +96,10 @@ pub struct ViewInfo {
     /// and the GPU rasterize alike, rather than as beams, whose one-pixel lines they do not.
     /// Default: off, the beams the built-in views were blessed with; a new view turns it on.
     pub link_strokes: bool,
+    /// How high, in world units, the scene lifts the ends of its links above the points the view
+    /// put in `Stage::positions`, so they clear the rooftops of a view that draws buildings.
+    /// Default: 0, links on the ground.
+    pub link_lift: f32,
     /// The generic exit flash: an expanding ring and glow where a process left. Default: on.
     pub flash: bool,
     /// The pressure haze tinting the sky. Default: on.
@@ -167,6 +173,7 @@ impl ViewInfo {
             warmup: &[],
             links: LinkRule::Quiet,
             link_strokes: false,
+            link_lift: 0.0,
             flash: true,
             haze: true,
             pitch: None,
@@ -303,7 +310,6 @@ pub enum Hooks {
 /// The arm of `Scene::render` that draws a built-in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuiltIn {
-    City,
     Orbit,
     Ripple,
     Flow,
@@ -460,16 +466,13 @@ pub fn availability() -> Vec<bool> {
 pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         links: LinkRule::All,
+        // Links rise above the rooftops.
+        link_lift: 1.5,
         ..ViewInfo::new(
             "city",
             "CITY",
             Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::City,
-                legend: city_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(city::City::default())),
         )
     },
     ViewInfo {
@@ -882,13 +885,6 @@ pub static REGISTRY: &[ViewInfo] = &[
         )
     },
 ];
-
-fn city_legend(_: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO",
-        platform::MEMORY_LABEL
-    )
-}
 
 fn orbit_legend(scene: &Scene, snapshot: &Snapshot) -> String {
     format!(
@@ -1631,7 +1627,8 @@ mod tests {
         assert_eq!(availability(), vec![true; REGISTRY.len()]);
     }
 
-    /// The first rows are the eleven views that predate the module contract; the digits pick them.
+    /// The first rows are the eleven views that predate the module contract, those not yet moved
+    /// onto it still built in; the digits pick them.
     const ELEVEN_BUILT_IN: usize = 11;
 
     /// The older views already moved onto the module contract, in registry order.
