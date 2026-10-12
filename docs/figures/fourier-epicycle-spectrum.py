@@ -27,7 +27,7 @@ def main():
     keep = [f for f, _ in epicycles(z, 12)]
     power = sum(abs(v) ** 2 for v in z) / n
     ranked = sorted(range(1, n), key=lambda k: (-spectrum[k], k))
-    svg = Svg(1080, 400, "Spectrum and truncation error of an epicycle chain",
+    svg = Svg(1080, 430, "Spectrum and truncation error of an epicycle chain",
               "Amplitude spectrum of a 60-sample window and the measured and Parseval truncation "
               "error against the number of epicycles kept.")
     heading(svg, "Which epicycles to keep: the spectrum and the cost of truncating it",
@@ -41,11 +41,10 @@ def main():
         left.svg.line(left.px(f), left.py(0), left.px(f), left.py(spectrum[k]), color, 2.4)
         left.svg.circle(left.px(f), left.py(spectrum[k]), 2.8, color)
     left.legend([("12 largest: the chain isotop draws", ORANGE, "dot"),
-                 ("the other 47, dropped", MUTED, "dot")], x=left.x + 12, y=left.y + 20,
+                 ("the other 47, dropped", MUTED, "dot")], x=left.x + 12, y=left.y + 44,
                 size=10.5)
-    left.label(5, spectrum[1 + 4] + 0.012, "k = +5 and -5: the CPU pulses", 10, "start", TEXT,
-               dx=6)
-    left.label(1, 0.205, "k = +/-1: the memory swing", 10, "start", TEXT, dx=12)
+    left.label(-30.5, 0.208, "tall stems: k = +/-1 (memory swing) and +/-5 (5.25 CPU pulses per window)",
+               10, "start", TEXT, dx=4)
 
     right = Axes(svg, 620, 90, 410, 260, (0, 59), (0, 1.0), "terms kept K",
                  "rms error  /  power captured", "Truncation",
@@ -67,7 +66,7 @@ def main():
                   ("measured rms error / rms of the signal", BLUE, "line"),
                   ("sqrt(sum of omitted |c|^2) / rms (Parseval)", YELLOW, "dot")],
                  x=right.x + 120, y=right.y + 150, size=10.5)
-    svg.text(24, 388, "The measured error equals Parseval's prediction to rounding at every K, "
+    svg.text(24, 418, "The measured error equals Parseval's prediction to rounding at every K, "
                       "because the DFT is an orthogonal change of basis (up to the 1/N).", 10.5,
              "start", MUTED)
     print(svg.save("fourier-epicycle-spectrum"))
