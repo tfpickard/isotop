@@ -49,7 +49,7 @@ for wavelength, dash in ((6, None), (8, "6 3"), (12, "2 2")):
         ys = [(ratio(symbol, wavelength, math.radians(t)) - 1) * 100 for t in angles]
         a.plot(angles, ys, color, 2.0, dash)
     a.label(91, (ratio(s9, wavelength, math.pi / 4) - 1) * 100, "%d cells" % wavelength, 11, "start", MUTED, dx=3, dy=4)
-a.label(45, -1.05, "5-point: slow along axes, fast along diagonals", 11, "middle", BLUE)
+a.label(45, 0.06, "5-point (blue): slow along axes, fast along diagonals", 11, "middle", BLUE)
 a.label(45, -3.75, "9-point: the same in every direction", 11, "middle", ORANGE)
 
 wavelengths = [3.5 * (60 / 3.5) ** (i / 120) for i in range(121)]
