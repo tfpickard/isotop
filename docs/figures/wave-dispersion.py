@@ -86,7 +86,7 @@ c.plot(ks, [omega(s5, NU, k, math.pi / 4) for k in ks], BLUE, 2.0, "6 3")
 c.plot(ks, [omega(s9, NU, k, math.pi / 4) for k in ks], ORANGE, 2.0, "2 2")
 c.legend([(n, col, d) for n, col, d, _, _ in curves], "br")
 c.label(0.355, 2.0, "pebbles", 11, "middle", AQUA)
-c.label(0.8, 1.45, "continuum", 11, "start", MUTED, dx=-14)
+c.label(1.72, 1.98, "continuum", 11, "end", MUTED)
 c.label(0.65, 2.95, "the lattice flattens toward", 11, "start", MUTED)
 c.label(0.65, 2.72, "the Nyquist limit k = pi", 11, "start", MUTED)
 

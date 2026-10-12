@@ -111,8 +111,8 @@ def main():
     svg.circle(X(lo), Y(0.5), 4, ORANGE)
     svg.text(x0, y1 + 78, f"orange dot: half the blended weight lies inside d = {lo:.3f}", 11, ORANGE)
     svg.text(X(0.02) + 4, Y(0.98) - 2, "w(d) = (1 - d)^2", 12, BLUE)
-    svg.text(x1 - 6, Y(0.90), "E(d), share of the total", 11.5, ORANGE, "end")
-    svg.text(x1 - 6, Y(0.62), "dashed: a linear cone, for comparison", 10.5, DIM, "end")
+    svg.text(x1 - 6, Y(0.70), "E(d): share of the total inside d", 11.5, ORANGE, "end")
+    svg.text(x1 - 6, Y(0.52), "dashed: a linear cone, for comparison", 10.5, DIM, "end")
     svg.text(x0 - 56, (y0 + y1) / 2, "weight, and cumulative share", 12, FG, "middle", rotate=-90)
 
     # ---------------- right: literal pixels ----------------

@@ -38,7 +38,7 @@ def main():
     print("u*=%.4f v*=%.4f" % (u, v))
     print("J =", jac)
     print("trace %.5f det %.6f" % (trace, det), "critical ratio", critical_ratio(jac))
-    svg = kit.Svg(900, 400, "Diffusion-driven instability of the Gray-Scott uniform state",
+    svg = kit.Svg(900, 416, "Diffusion-driven instability of the Gray-Scott uniform state",
                   "Growth rate against wavenumber for four diffusivity ratios, and Turing's "
                   "determinant condition.")
     svg.title_text("Turing instability at F = %g, k = %g (stable without diffusion)" % (FEED, KILL))
@@ -76,8 +76,8 @@ def main():
     bx.hline(0, color=kit.TEXT, width=1)
     bx.label(0.06, 0.0017, "h > 0 everywhere: no band", color=kit.MUTED, size=10)
     bx.label(0.5, -0.0002, "h < 0: unstable", color=kit.YELLOW, size=10, dy=-4)
-    svg.text(450, 380, "Du/Dv = 1 never goes unstable: the inhibitor must outrun the activator "
-             "(here the substrate u, the faster species).", size=11, anchor="middle", fill=kit.MUTED)
+    svg.text(450, 398, "Du/Dv = 1 never goes unstable: the substrate u must diffuse faster than the "
+             "autocatalyst v (critical ratio 1.54 here).", size=11, anchor="middle", fill=kit.MUTED)
     svg.save("reaction-diffusion-dispersion")
 
 

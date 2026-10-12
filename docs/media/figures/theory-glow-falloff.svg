@@ -34,8 +34,8 @@
 <circle cx="218.86" cy="220.00" r="4" fill="#f0883e" stroke="none" stroke-width="1.0"/>
 <text x="80.00" y="418.00" font-size="11" fill="#f0883e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">orange dot: half the blended weight lies inside d = 0.386</text>
 <text x="91.20" y="102.80" font-size="12" fill="#58a6ff" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">w(d) = (1 - d)^2</text>
-<text x="434.00" y="124.00" font-size="11.5" fill="#f0883e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">E(d), share of the total</text>
-<text x="434.00" y="191.20" font-size="10.5" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">dashed: a linear cone, for comparison</text>
+<text x="434.00" y="172.00" font-size="11.5" fill="#f0883e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">E(d): share of the total inside d</text>
+<text x="434.00" y="215.20" font-size="10.5" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">dashed: a linear cone, for comparison</text>
 <text x="24.00" y="220.00" font-size="12" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" transform="rotate(-90 24.00 220.00)" font-family="system-ui, sans-serif">weight, and cumulative share</text>
 <rect x="668.00" y="75.00" width="8.00" height="8.00" fill="#0e0e0e" fill-opacity="1.0" stroke="none" stroke-width="1.0" shape-rendering="crispEdges"/>
 <rect x="676.00" y="75.00" width="8.00" height="8.00" fill="#0e0e0e" fill-opacity="1.0" stroke="none" stroke-width="1.0" shape-rendering="crispEdges"/>
