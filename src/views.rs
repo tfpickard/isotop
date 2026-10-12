@@ -3,12 +3,15 @@
 //! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
 //! row instead of naming the view, so a new view is one module plus one row.
 //!
-//! Four of the eleven views that predate the registry (city, orbit, ripple and flow) are still
-//! built in: `Scene` keeps their state in typed fields and draws them in its own arms, picked by
-//! `BuiltIn`. The others, and every new view, are module views: a type that implements
-//! `ViewModule`, which `Scene` builds from the row and calls through the trait.
+//! One of the eleven views that predate the registry, ripple, is still built in: `Scene` keeps
+//! its state in typed fields and draws it in its own arm, picked by `BuiltIn`. The others, and
+//! every new view, are module views: a type that implements `ViewModule`, which `Scene` builds
+//! from the row and calls through the trait.
 
 mod city;
+mod flow;
+mod orbit;
+pub(crate) mod systems;
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -310,9 +313,7 @@ pub enum Hooks {
 /// The arm of `Scene::render` that draws a built-in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuiltIn {
-    Orbit,
     Ripple,
-    Flow,
 }
 
 /// Which socket links the scene draws over a view.
@@ -477,31 +478,11 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         links: LinkRule::All,
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#114",
-                    reason: "orbits and systems are sized by memory, so the galaxy is laid out again",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#114",
-                    reason: "an exit or a birth lays the systems and their shells out again",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
         ..ViewInfo::new(
             "orbit",
             "ORBIT",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Orbit,
-                legend: orbit_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(orbit::Orbits::default())),
         )
     },
     ViewInfo {
@@ -529,31 +510,11 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#115",
-                    reason: "wells are laid out like Orbit's systems, sized by memory",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#115",
-                    reason: "an exit or a birth lays the wells out again, as in Orbit",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
         ..ViewInfo::new(
             "flow",
             "FLOW",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Flow,
-                legend: flow_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(flow::Wells::default())),
         )
     },
     ViewInfo {
@@ -857,42 +818,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
 ];
 
-fn orbit_legend(scene: &Scene, snapshot: &Snapshot) -> String {
-    format!(
-        " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU{} | cyan arcs = sockets, pink = outside{}",
-        gpu_note(snapshot),
-        hub_note(scene)
-    )
-}
-
 fn ripple_legend(_: &Scene, _: &Snapshot) -> String {
     " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into()
-}
-
-fn flow_legend(scene: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}",
-        hub_note(scene)
-    )
-}
-
-/// The Orbit legend's GPU entry, left out where per-process GPU memory is not measured.
-fn gpu_note(snapshot: &Snapshot) -> &'static str {
-    if snapshot.missing.contains(Source::GpuMemory) {
-        ""
-    } else {
-        " | green = NVIDIA GPU"
-    }
-}
-
-/// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
-/// focused subtree or a platform that reads every process gets the legend it always had.
-fn hub_note(scene: &Scene) -> &'static str {
-    if scene.hub_names.is_empty() {
-        ""
-    } else {
-        " | hollow star = a parent isotop can't read (run with sudo)"
-    }
 }
 
 /// The registered view called `name`, for tests.
@@ -905,7 +832,7 @@ pub fn view(name: &str) -> View {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use crate::render::TourTarget;
+    use crate::render::{Title, TourTarget};
 
     /// A module view that seats the first half of the processes on a line and lets the rest
     /// collapse. Its legend counts what reached it through the trait. `m` toggles a mode that
@@ -1015,15 +942,26 @@ pub mod testing {
     /// The sparkline `Guide` adds below the popup of the process it tours, forty cells wide.
     pub const GUIDE_SPARKLINE: &str = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿";
 
+    /// The text `Guide` titles its system with.
+    pub const GUIDE_TITLE: &str = "guide system";
+
     /// A module view that seats every process on a line, asks the tour to visit the last one at
-    /// a point beside its seat and adds a line to its popup. Its legend lists the `dt` of each
-    /// frame it drew.
+    /// a point beside its seat, adds a line to its popup and titles the line as a system. Its
+    /// legend lists the `dt` of each frame it drew, and its state what the stage handed it.
     #[derive(Default)]
     pub struct Guide {
         steps: Vec<f32>,
+        /// The `Stage::frames` of each frame it drew.
+        pub frames: Vec<u64>,
+        /// How many `Stage::splashes` and `Stage::newborn` each frame it drew had.
+        pub disturbances: Vec<(usize, usize)>,
     }
 
     impl ViewModule for Guide {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -1031,6 +969,9 @@ pub mod testing {
             _snapshot: &Snapshot,
         ) -> usize {
             self.steps.push(stage.dt);
+            self.frames.push(stage.frames);
+            self.disturbances
+                .push((stage.splashes.len(), stage.newborn.len()));
             for (index, process) in processes.iter().enumerate() {
                 let position = [index as f32 * 4.0, 0.0, 0.0];
                 stage.positions.insert(process.id, position);
@@ -1044,6 +985,11 @@ pub mod testing {
                 );
             }
             if let Some((index, last)) = processes.iter().enumerate().next_back() {
+                stage.titles.push(Title {
+                    at: [index as f32 * 4.0, 0.0, 0.0],
+                    reach: 3.0,
+                    text: GUIDE_TITLE.into(),
+                });
                 stage.tour.push(TourTarget {
                     id: last.id,
                     position: [index as f32 * 4.0, 3.0, 0.0],
