@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" width="1000" height="640" font-family="system-ui, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 600" width="1000" height="600" font-family="system-ui, sans-serif">
 <title>Two parallel tubes under flux reinforcement</title>
 <desc>Conductivity against time for a short and a long tube between one source and one sink, for mu = 0.6, 1 and 1.5.</desc>
-<rect width="1000" height="640" fill="#0e1116"/>
+<rect width="1000" height="600" fill="#0e1116"/>
 <text x="24" y="28" font-size="16" text-anchor="start" fill="#c9d1d9" font-weight="600">Two parallel tubes, lengths 1 and 1.5, total flow 1: dD/dt = Q^mu - D</text>
 <text x="24" y="47" font-size="11" text-anchor="start" fill="#8b949e">The exponent decides whether the network keeps redundancy (mu &lt; 1), finds the shortest route (mu = 1), or commits early (mu &gt; 1).</text>
 <defs><clipPath id="clip1"><rect x="70" y="100" width="400" height="190"/></clipPath></defs>

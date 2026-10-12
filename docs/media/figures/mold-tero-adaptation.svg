@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 690" width="1100" height="690" font-family="system-ui, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 600" width="1100" height="600" font-family="system-ui, sans-serif">
 <title>Physarum flux-reinforcement model on a small mesh</title>
 <desc>Top: one fixed source-sink pair reduces a mesh to its shortest path. Bottom: a source-sink pair redrawn every iteration gives networks whose loop count falls as the exponent mu rises.</desc>
-<rect width="1100" height="690" fill="#0e1116"/>
+<rect width="1100" height="600" fill="#0e1116"/>
 <text x="24" y="28" font-size="16" text-anchor="start" fill="#c9d1d9" font-weight="600">Flux-reinforcing adaptation on a 9 x 6 jittered triangular mesh</text>
 <text x="24" y="47" font-size="11" text-anchor="start" fill="#8b949e">dD/dt = |Q|^mu - D, Kirchhoff pressures re-solved every step. Line width = conductivity D; pale dots are food nodes; tubes with D &lt; 0.02 are drawn as faint mesh.</text>
 <text x="24" y="80" font-size="12.5" text-anchor="start" fill="#e8743a" font-weight="600">One fixed source-sink pair, mu = 1.3</text>
