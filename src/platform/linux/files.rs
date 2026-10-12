@@ -46,7 +46,7 @@ enum Descriptor {
 /// Type, link count, inode and size of the file behind `link`, from the attributes the kernel
 /// already holds. AT_STATX_DONT_SYNC keeps network and FUSE filesystems from asking their server,
 /// so a hung mount cannot block the background thread here.
-fn attributes(link: &Path) -> Option<libc::statx> {
+pub(super) fn attributes(link: &Path) -> Option<libc::statx> {
     let path = CString::new(link.as_os_str().as_bytes()).ok()?;
     let mut status = MaybeUninit::<libc::statx>::uninit();
     let mask = libc::STATX_TYPE | libc::STATX_NLINK | libc::STATX_INO | libc::STATX_SIZE;
@@ -63,6 +63,11 @@ fn attributes(link: &Path) -> Option<libc::statx> {
     };
     // SAFETY: a return of 0 means the kernel wrote the whole structure.
     (result == 0).then(|| unsafe { status.assume_init() })
+}
+
+/// The device a file is on, from the major and minor numbers of `attributes`.
+pub(super) fn device(status: &libc::statx) -> u64 {
+    (u64::from(status.stx_dev_major) << 32) | u64::from(status.stx_dev_minor)
 }
 
 /// Classifies `/proc/<pid>/fd/<n>` by its link target and, for paths, by the attributes found
@@ -82,7 +87,7 @@ fn classify(link: &Path) -> Descriptor {
     if u32::from(status.stx_mode) & libc::S_IFMT != libc::S_IFREG {
         return Descriptor::Other;
     }
-    let device = (u64::from(status.stx_dev_major) << 32) | u64::from(status.stx_dev_minor);
+    let device = device(&status);
     // The suffix alone could be part of a real name; a link count of 0 confirms it.
     if target.ends_with(b" (deleted)") && status.stx_nlink == 0 {
         Descriptor::Deleted(DeletedFile {

@@ -36,6 +36,10 @@
 //!     pid the scan has not reached is absent;
 //!   - `locks() -> Option<Locks>`: file locks with their holders and waiters, None when they
 //!     cannot be read (the collector then reports `Source::FileLocks` missing);
+//!   - `PipeScan::new() -> PipeScan` and `PipeScan::sample(&mut self) -> Option<PipeSample>`:
+//!     the pipe and FIFO descriptors each process holds, read only while `Source::Pipes` is
+//!     demanded; bounded, so a pass may reach only some pids (`PipeSample::partial`); None when
+//!     the platform cannot read them (the collector then reports `Source::Pipes` missing);
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, GpuMemory>`: GPU
 //!     memory per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
 //!   - `oom_scores(pids: &[u32]) -> Option<HashMap<u32, Option<Oom>>>`: the out-of-memory ranking of
@@ -92,7 +96,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::journal::Line;
-use crate::model::{Blocker, Identity, IoBytes, Process, SyscallCounts};
+use crate::model::{Blocker, Identity, IoBytes, Process, Queue, SyscallCounts};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -199,11 +203,15 @@ pub enum Source {
     OomKills,
     /// `Process::thread_list`, each process's threads with their names, CPU and states.
     Threads,
+    /// `Snapshot::pipes`: the pipes and FIFOs that connect processes, with direction. A view
+    /// demands it; the unread bytes of Unix sockets (`Snapshot::unix_queues`) come with the
+    /// socket scan and are not behind it.
+    Pipes,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 31] = [
+    pub const ALL: [Source; 32] = [
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -235,6 +243,7 @@ impl Source {
         Source::IrqAffinity,
         Source::OomKills,
         Source::Threads,
+        Source::Pipes,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -271,6 +280,7 @@ impl Source {
             Source::IrqAffinity => "irq affinity",
             Source::OomKills => "oom kills",
             Source::Threads => "threads",
+            Source::Pipes => "pipes",
         }
     }
 
@@ -688,6 +698,11 @@ pub struct Network {
     pub remotes: Vec<Remote>,
     /// Loopback TCP sockets between two known processes, for per-link traffic.
     pub loopback: Vec<Loopback>,
+    /// What waits unread on the connected Unix sockets between two different processes, by
+    /// (reader pid, writer pid), summed over the sockets of the pair: the reader owns the socket
+    /// whose receive queue it is, the writer owns its peer. A pair is present once its queue was
+    /// read, empty or not.
+    pub unix_queues: HashMap<(u32, u32), Queue>,
 }
 
 /// One end of an established loopback TCP connection between two different processes.
@@ -759,6 +774,65 @@ pub struct Locks {
     /// Open file description locks: they belong to an open file, not a process, and report pid
     /// -1, so no process can be named as their holder.
     pub unattributed: u32,
+}
+
+/// How a process may use one end of a pipe or FIFO, from the open flags of its descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessMode {
+    Read,
+    Write,
+    /// A FIFO opened for reading and writing.
+    Both,
+}
+
+impl AccessMode {
+    pub fn reads(self) -> bool {
+        self != AccessMode::Write
+    }
+
+    pub fn writes(self) -> bool {
+        self != AccessMode::Read
+    }
+
+    /// What a process may do with a pipe through two descriptors of it.
+    pub fn union(self, other: AccessMode) -> AccessMode {
+        if self == other {
+            self
+        } else {
+            AccessMode::Both
+        }
+    }
+}
+
+/// What the descriptors of one pipe or FIFO have in common, whichever process holds them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PipeId {
+    /// An anonymous pipe: its inode on Linux, the lower of its handle and its peer's on macOS.
+    Anonymous(u64),
+    /// A named pipe, by the device and inode of its file.
+    Fifo { device: u64, inode: u64 },
+}
+
+/// One descriptor of a pipe or FIFO that a process holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PipeEnd {
+    pub id: PipeId,
+    pub access: AccessMode,
+    /// Bytes waiting in the pipe, where the platform tells (macOS, for anonymous pipes); None
+    /// where it does not (Linux exposes no count for a pipe another process holds, and no
+    /// platform counts a FIFO's).
+    pub buffered: Option<u64>,
+}
+
+/// What one `PipeScan::sample` pass read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PipeSample {
+    /// The pipe and FIFO descriptors of each process the pass reached, an empty list for a
+    /// process that holds none. A pid the pass did not reach, or could not read, is absent.
+    pub ends: HashMap<u32, Vec<PipeEnd>>,
+    /// Whether the pass stopped at its cap before reaching every pid, or read only part of one
+    /// process's descriptors. The next pass resumes after the last pid it reached.
+    pub partial: bool,
 }
 
 #[cfg(test)]

@@ -4,8 +4,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::model::{CoreKind, Kind, Oom, Policy};
-use crate::platform::{DeletedFile, Files, Network, Remote, Source, Sources};
+use crate::model::{CoreKind, Kind, Oom, Policy, Queue};
+use crate::platform::{
+    AccessMode, DeletedFile, Files, Network, PipeEnd, PipeId, Remote, Source, Sources,
+};
 
 /// Executables that run virtual machines or containers. A trailing `*` matches any suffix.
 const VIRTUALIZATION: [&str; 8] = [
@@ -454,27 +456,83 @@ pub struct UnixSocket {
     /// connected.
     pub pcb: u64,
     pub peer: u64,
+    /// What waits unread in its receive buffer (`unix_queue`); None for a listener.
+    pub queue: Option<Queue>,
+}
+
+/// `SOCK_DGRAM` (bsd/sys/socket.h): a datagram socket, whose receive buffer holds packets.
+const SOCK_DGRAM: i32 = 2;
+
+/// `SO_ACCEPTCONN` in `soi_options`: the socket is listening.
+const SO_ACCEPTCONN: i16 = 0x0002;
+
+/// What waits unread in a Unix socket's receive buffer, from `soi_type`, `soi_options` and
+/// `soi_rcv.sbi_cc`, the bytes in the buffer. For a stream socket they are the bytes to read, and
+/// for a datagram socket they are the packets queued, which count as "a datagram is waiting" and
+/// not as bytes, as on Linux, where the kernel gives the size of the first packet only. A
+/// listener's buffer holds no data, so it has no queue.
+pub fn unix_queue(kind: i32, options: i16, buffered: u32) -> Option<Queue> {
+    if options & SO_ACCEPTCONN != 0 {
+        return None;
+    }
+    Some(if kind == SOCK_DGRAM {
+        Queue {
+            unread: 0,
+            datagram_waiting: buffered > 0,
+        }
+    } else {
+        Queue {
+            unread: u64::from(buffered),
+            datagram_waiting: false,
+        }
+    })
+}
+
+/// Each socket's control block with the first socket listed for it: a socket shared by several
+/// processes counts for the first one.
+fn owned(sockets: &[UnixSocket]) -> HashMap<u64, &UnixSocket> {
+    let mut owners = HashMap::new();
+    for socket in sockets.iter().filter(|socket| socket.pcb != 0) {
+        owners.entry(socket.pcb).or_insert(socket);
+    }
+    owners
 }
 
 /// The pids at both ends of each connected Unix socket pair, once per pair. The pids may be
 /// equal. A socket shared by several processes counts for the first one listed.
 pub fn pair_unix(sockets: &[UnixSocket]) -> Vec<(u32, u32)> {
-    let mut owners: HashMap<u64, (u32, u64)> = HashMap::new();
-    for socket in sockets.iter().filter(|socket| socket.pcb != 0) {
-        owners
-            .entry(socket.pcb)
-            .or_insert((socket.pid, socket.peer));
-    }
+    let owners = owned(sockets);
     let mut pairs: Vec<(u64, (u32, u32))> = owners
         .iter()
-        .filter(|&(&pcb, &(_, peer))| peer != 0 && pcb < peer)
-        .filter_map(|(&pcb, &(pid, peer))| {
-            let &(other, back) = owners.get(&peer)?;
-            (back == pcb).then_some((pcb, (pid, other)))
+        .filter(|&(&pcb, socket)| socket.peer != 0 && pcb < socket.peer)
+        .filter_map(|(&pcb, socket)| {
+            let other = owners.get(&socket.peer)?;
+            (other.peer == pcb).then_some((pcb, (socket.pid, other.pid)))
         })
         .collect();
     pairs.sort_unstable();
     pairs.into_iter().map(|(_, pair)| pair).collect()
+}
+
+/// What waits unread between processes, by (reader pid, writer pid): the reader owns a socket,
+/// the writer its connected peer, and the sockets of one pair add up. A pair inside one process
+/// and a socket with no queue, or whose peer is not connected back or not readable, add nothing.
+pub fn unix_queues(sockets: &[UnixSocket]) -> HashMap<(u32, u32), Queue> {
+    let owners = owned(sockets);
+    let mut queues: HashMap<(u32, u32), Queue> = HashMap::new();
+    for (&pcb, socket) in &owners {
+        if let Some(queue) = socket.queue
+            && let Some(other) = owners.get(&socket.peer)
+            && other.peer == pcb
+            && socket.pid != other.pid
+        {
+            queues
+                .entry((socket.pid, other.pid))
+                .or_default()
+                .add(queue);
+        }
+    }
+    queues
 }
 
 /// TCP connections between two local sockets, once per connection with the pids at both ends
@@ -538,6 +596,7 @@ pub fn network(unix: &[UnixSocket], tcp: &[TcpSocket], own: &HashSet<IpAddr>) ->
         *network.outside.entry(remote.pid).or_default() += 1;
     }
     network.remotes = remotes;
+    network.unix_queues = unix_queues(unix);
     network
 }
 
@@ -694,9 +753,55 @@ pub fn thread_name(own: &str, process: &str) -> String {
     if own.is_empty() { process } else { own }.to_owned()
 }
 
+/// `FREAD` and `FWRITE` (bsd/sys/fcntl.h): the kernel's open flags, which `fi_openflags` holds.
+const FREAD: u32 = 0x0001;
+const FWRITE: u32 = 0x0002;
+
+/// The file type of a FIFO (bsd/sys/stat.h).
+const S_IFIFO: u16 = 0o010000;
+
+/// What a descriptor may do, from its `fi_openflags`: None when it may do neither.
+pub fn access(open_flags: u32) -> Option<AccessMode> {
+    match (open_flags & FREAD != 0, open_flags & FWRITE != 0) {
+        (true, true) => Some(AccessMode::Both),
+        (true, false) => Some(AccessMode::Read),
+        (false, true) => Some(AccessMode::Write),
+        (false, false) => None,
+    }
+}
+
+/// One descriptor of an anonymous pipe, from its `pipe_fdinfo`: the kernel addresses of its end
+/// of the pipe (`pipe_handle`) and of the other end (`pipe_peerhandle`), its open flags, and
+/// `pipe_stat.vst_size`, the bytes waiting, which either end reports (checked on macOS 27.2: a
+/// pipe holding 5 bytes says 5 at both). The two descriptors of a pipe swap handle and peer, so
+/// the lower of the two names the pipe for both.
+pub fn pipe_end(handle: u64, peer: u64, open_flags: u32, size: i64) -> Option<PipeEnd> {
+    Some(PipeEnd {
+        // A pipe whose other end was closed has no peer to share a name with.
+        id: PipeId::Anonymous(if peer == 0 { handle } else { handle.min(peer) }),
+        access: access(open_flags)?,
+        buffered: u64::try_from(size).ok(),
+    })
+}
+
+/// One descriptor of a named pipe, from the attributes of its vnode: None when the vnode is
+/// another kind of file. Named by device and inode; macOS counts nothing buffered in a FIFO.
+pub fn fifo_end(stat: VnodeStat, open_flags: u32) -> Option<PipeEnd> {
+    (stat.mode & S_IFMT == S_IFIFO).then_some(())?;
+    Some(PipeEnd {
+        id: PipeId::Fifo {
+            device: u64::from(stat.device),
+            inode: stat.inode,
+        },
+        access: access(open_flags)?,
+        buffered: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Identity, Pipe, pair_pipes};
 
     #[test]
     fn the_oldest_thread_leads_on_macos() {
@@ -1198,39 +1303,46 @@ mod tests {
                 pid: 10,
                 pcb: 0xa,
                 peer: 0xb,
+                queue: None,
             },
             UnixSocket {
                 pid: 20,
                 pcb: 0xb,
                 peer: 0xa,
+                queue: None,
             },
             // The same socket inherited by a child counts once.
             UnixSocket {
                 pid: 30,
                 pcb: 0xb,
                 peer: 0xa,
+                queue: None,
             },
             // A pair inside one process.
             UnixSocket {
                 pid: 40,
                 pcb: 0xc,
                 peer: 0xd,
+                queue: None,
             },
             UnixSocket {
                 pid: 40,
                 pcb: 0xd,
                 peer: 0xc,
+                queue: None,
             },
             // A listener and a socket whose peer belongs to an unreadable process.
             UnixSocket {
                 pid: 50,
                 pcb: 0xe,
                 peer: 0,
+                queue: None,
             },
             UnixSocket {
                 pid: 60,
                 pcb: 0xf,
                 peer: 0x99,
+                queue: None,
             },
         ];
         assert_eq!(pair_unix(&sockets), vec![(10, 20), (40, 40)]);
@@ -1245,22 +1357,26 @@ mod tests {
                 pid: 20,
                 pcb: 0xa,
                 peer: 0xb,
+                queue: None,
             },
             UnixSocket {
                 pid: 10,
                 pcb: 0xb,
                 peer: 0xa,
+                queue: None,
             },
             // A pair inside one process is no link.
             UnixSocket {
                 pid: 40,
                 pcb: 0xc,
                 peer: 0xd,
+                queue: None,
             },
             UnixSocket {
                 pid: 40,
                 pcb: 0xd,
                 peer: 0xc,
+                queue: None,
             },
         ];
         let tcp = [
@@ -1448,6 +1564,121 @@ mod tests {
             table([None], 0, false).open,
             0,
             "nothing read is no estimate"
+        );
+    }
+
+    fn queue(unread: u64, datagram_waiting: bool) -> Queue {
+        Queue {
+            unread,
+            datagram_waiting,
+        }
+    }
+
+    #[test]
+    fn unix_queues_are_bytes_for_streams_and_a_flag_for_datagrams() {
+        let stream = 1;
+        assert_eq!(unix_queue(stream, 0, 4096), Some(queue(4096, false)));
+        assert_eq!(
+            unix_queue(stream, 0, 0),
+            Some(queue(0, false)),
+            "idle, not unknown"
+        );
+        assert_eq!(unix_queue(SOCK_DGRAM, 0, 1500), Some(queue(0, true)));
+        assert_eq!(unix_queue(SOCK_DGRAM, 0, 0), Some(queue(0, false)));
+        assert_eq!(
+            unix_queue(stream, SO_ACCEPTCONN, 3),
+            None,
+            "a listener holds no data"
+        );
+    }
+
+    #[test]
+    fn unix_queues_run_from_the_writer_to_the_reader_and_add_up_per_pair() {
+        let socket = |pid, pcb, peer, queue| UnixSocket {
+            pid,
+            pcb,
+            peer,
+            queue,
+        };
+        let sockets = [
+            socket(10, 0xa, 0xb, Some(queue(100, false))),
+            socket(20, 0xb, 0xa, Some(queue(7, false))),
+            // A second pair between the same processes.
+            socket(10, 0xc, 0xd, Some(queue(0, true))),
+            socket(20, 0xd, 0xc, Some(queue(50, false))),
+            // Inside one process, a listener, and a peer nobody can read.
+            socket(30, 0xe, 0xf, Some(queue(9, false))),
+            socket(30, 0xf, 0xe, Some(queue(9, false))),
+            socket(40, 0x10, 0, None),
+            socket(50, 0x11, 0x99, Some(queue(5, false))),
+        ];
+        assert_eq!(
+            unix_queues(&sockets),
+            HashMap::from([((10, 20), queue(100, true)), ((20, 10), queue(57, false)),])
+        );
+        let network = network(&sockets, &[], &HashSet::new());
+        assert_eq!(network.unix_queues, unix_queues(&sockets));
+    }
+
+    #[test]
+    fn pipe_handles_pair_reader_and_writer() {
+        // pipe(2) makes two descriptors that swap handle and peer; the reader's end holds the
+        // bytes waiting.
+        let reading = pipe_end(0x2000, 0x1000, FREAD, 512).unwrap();
+        let writing = pipe_end(0x1000, 0x2000, FWRITE, 0).unwrap();
+        assert_eq!(reading.id, writing.id);
+        assert_eq!(reading.access, AccessMode::Read);
+        assert_eq!(writing.access, AccessMode::Write);
+        // Another pipe is another name, and a pipe whose peer closed still has one.
+        assert_ne!(pipe_end(0x4000, 0x3000, FREAD, 0).unwrap().id, reading.id);
+        assert_eq!(
+            pipe_end(0x5000, 0, FWRITE, 0).unwrap().id,
+            PipeId::Anonymous(0x5000)
+        );
+        assert_eq!(pipe_end(0x1, 0x2, 0, 0), None, "neither read nor write");
+        let (producer, consumer) = (
+            Identity { pid: 10, start: 1 },
+            Identity { pid: 20, start: 2 },
+        );
+        let (pipes, truncated) =
+            pair_pipes([(producer, &[writing][..]), (consumer, &[reading][..])]);
+        assert!(!truncated);
+        assert_eq!(
+            pipes,
+            [Pipe {
+                reader: consumer,
+                writer: producer,
+                two_way: false,
+                buffered: Some(512),
+                fifo: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_fifo_is_a_vnode_of_type_fifo_named_by_device_and_inode() {
+        let fifo = 0o010600;
+        let end = fifo_end(stat(fifo, 1, 77, 0), FREAD | FWRITE).unwrap();
+        assert_eq!(
+            (end.id, end.access, end.buffered),
+            (
+                PipeId::Fifo {
+                    device: 0x0100_0004,
+                    inode: 77
+                },
+                AccessMode::Both,
+                None
+            )
+        );
+        assert_eq!(
+            fifo_end(stat(0o100600, 1, 78, 5), FREAD),
+            None,
+            "a regular file"
+        );
+        assert_eq!(
+            fifo_end(stat(fifo, 1, 79, 0), 0),
+            None,
+            "opened for neither"
         );
     }
 }

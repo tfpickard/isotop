@@ -594,6 +594,13 @@ read appear. In orbit, ripple and city they are cyan arcs with travelling pulses
 (`c` cycles all / highlighted / off); TCP connections to other machines rise as
 pink beams. Links of the selected, hovered or toured process glow.
 
+Two more measurements ride on those links, for the views that draw them: the bytes waiting
+unread on each connected Unix socket (for a datagram socket only that a packet waits, since
+the kernel gives the size of the first packet and not a total), and the pipes and FIFOs between
+processes with their direction, from `/proc/<pid>/fd` and `fdinfo` (macOS: `proc_pidfdinfo`,
+which also counts the bytes waiting in a pipe). Linux gives no such count for a pipe another
+process holds. Only the pipes are read on demand; the existing views draw neither.
+
 The sky is tinted by pressure stall information from `/proc/pressure`: amber for
 CPU, crimson for memory, blue for I/O.
 
@@ -764,7 +771,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-46,539 lines of Rust (27,929 production, 18,610 test) in 49 files, 628 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+48,196 lines of Rust (28,626 production, 19,570 test) in 51 files, 651 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

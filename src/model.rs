@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,8 +10,8 @@ pub(crate) mod kernel;
 use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{
-    self, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation, Observed,
-    OpenEvents, RawProcess, Source, Sources, Taken,
+    self, AccessMode, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation,
+    Observed, OpenEvents, PipeEnd, PipeId, RawProcess, Source, Sources, Taken,
 };
 use crate::simulation::{Rng, hash, hash_identity, smoothing};
 use crate::threads::{self, Target, ThreadList, ThreadScan};
@@ -451,6 +451,50 @@ pub struct Remote {
     pub location: Location,
 }
 
+/// What waits unread on the connected Unix sockets from one process to another, as the receiving
+/// sockets hold it.
+///
+/// The kernel's receive-queue length (`UNIX_DIAG_RQLEN`, `unix_inq_len` in `net/unix/af_unix.c`)
+/// means two things. On a stream or seqpacket socket it is the bytes queued and not yet read. On
+/// a datagram socket it is only the size of the next packet, so it says that a datagram is
+/// waiting and not how much: `datagram_waiting`, never a byte count. macOS reports the receive
+/// buffer's byte count for both, and the datagram rule is applied to it alike. The send queue is
+/// allocated buffer, not payload, and is never read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Queue {
+    /// Bytes waiting on stream and seqpacket sockets; 0 for datagram sockets.
+    pub unread: u64,
+    /// Whether any datagram socket of the pair holds a packet nobody has read.
+    pub datagram_waiting: bool,
+}
+
+impl Queue {
+    /// Adds the queue of another socket of the same pair.
+    pub fn add(&mut self, other: Queue) {
+        self.unread = self.unread.saturating_add(other.unread);
+        self.datagram_waiting = self.datagram_waiting || other.datagram_waiting;
+    }
+}
+
+/// A pipe or FIFO connecting two processes, found by pairing the descriptors that name the same
+/// pipe (`pair_pipes`). Pipes are not in `Snapshot::links`, so the views that draw `links` do not
+/// draw them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pipe {
+    /// The process that may read it and the one that may write it, from the open flags of their
+    /// descriptors. For a pipe that carries data both ways (`two_way`), listed once, the
+    /// reader is the process with the lower `Identity`.
+    pub reader: Identity,
+    pub writer: Identity,
+    /// Both processes opened it for reading and writing: a FIFO opened `O_RDWR` at both ends.
+    pub two_way: bool,
+    /// Bytes waiting in the pipe, where the platform tells (macOS, for anonymous pipes); None
+    /// where it does not: Linux exposes no count for a pipe another process holds.
+    pub buffered: Option<u64>,
+    /// A named pipe (a FIFO file), not an anonymous one.
+    pub fifo: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub processes: Vec<Process>,
@@ -474,6 +518,23 @@ pub struct Snapshot {
     /// can have Unix and TCP sockets both. Empty when the platform does not tell the protocols
     /// apart.
     pub unix_links: HashSet<(Identity, Identity)>,
+    /// What waits unread on the connected Unix sockets between two processes, keyed (reader,
+    /// writer) and summed over the sockets of the pair: the reader owns the sockets whose receive
+    /// queues these are, the writer owns their peers, and a pair talking both ways has an entry in
+    /// each direction. A pair is present once its queues were read, with an empty `Queue` when
+    /// they held nothing (measured idle); a pair not measured is absent. Read with the socket
+    /// scan, so there is nothing to demand: empty only where the platform reports no queues
+    /// (a kernel without `UNIX_DIAG_RQLEN`).
+    pub unix_queues: HashMap<(Identity, Identity), Queue>,
+    /// The pipes and FIFOs that connect two different processes, one entry per pipe and per
+    /// (reader, writer), sorted. Empty unless `Source::Pipes` is in `sources`: it is read only
+    /// while a view demands it. A pipe one process holds both ends of, or whose other end is held
+    /// only by a process isotop may not read, is not listed (as with sockets).
+    pub pipes: Vec<Pipe>,
+    /// Whether `pipes` may be incomplete because the scan reads a bounded number of descriptors
+    /// per pass: processes it had not reached keep what an earlier pass read of them, and one it
+    /// never reached has no pipes listed yet. False when nothing was read.
+    pub pipes_partial: bool,
     /// TCP connections leaving the machine, per process.
     pub outside: HashMap<Identity, u32>,
     pub cpus: Vec<Cpu>,
@@ -772,6 +833,10 @@ struct Extras {
     oom: HashMap<u32, Option<Oom>>,
     /// The rollups kept for the processes chosen for them, None for an unreadable one.
     rollups: HashMap<u32, Option<Rollup>>,
+    /// The pipes between the processes this cycle named, paired by the cycle; empty unless
+    /// `Source::Pipes` was demanded.
+    pipes: Vec<Pipe>,
+    pipes_partial: bool,
 }
 
 /// The background thread, as the frame loop sees it: what it measured last and whether it is
@@ -910,6 +975,8 @@ fn background(
         let mut kernel = KernelScan::default();
         let mut thread_reader = platform::Threads::new();
         let mut thread_scan = ThreadScan::default();
+        let mut pipe_scan = platform::PipeScan::new();
+        let mut kept_pipes = KeptPipes::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -977,6 +1044,25 @@ fn background(
                 &targets,
                 &mut latency,
             );
+            let sample = reads.read(Source::Pipes, || {
+                timed(&mut latency, Source::Pipes, || pipe_scan.sample())
+            });
+            let (pipes, pipes_partial) = match sample {
+                Some(sample) => {
+                    let ends = kept_pipes.update(sample.ends, &identities);
+                    let held = ends
+                        .iter()
+                        .filter_map(|(pid, ends)| Some((*identities.get(pid)?, ends.as_slice())));
+                    let (pipes, truncated) = pair_pipes(held);
+                    (pipes, sample.partial || truncated)
+                }
+                // Not demanded or not readable: what was kept would be stale when it is wanted
+                // again.
+                None => {
+                    kept_pipes = KeptPipes::default();
+                    (Vec::new(), false)
+                }
+            };
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -996,6 +1082,8 @@ fn background(
                 finished: None,
                 oom: found.oom,
                 rollups: found.rollups,
+                pipes,
+                pipes_partial,
             }
         }
     })
@@ -1036,6 +1124,9 @@ impl<T> Default for Kept<T> {
 
 /// The open-file tables of the file scan.
 type KeptFiles = Kept<Option<platform::Files>>;
+
+/// The pipe and FIFO descriptors of each process, which the pipe scan reaches round-robin.
+type KeptPipes = Kept<Vec<PipeEnd>>;
 
 impl<T: Clone> Kept<T> {
     /// Takes the readings this cycle's scan took, against `identities` (the processes by pid
@@ -1120,6 +1211,20 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         .iter()
         .filter_map(|(a, b)| Some((id(a)?, id(b)?)))
         .collect();
+    snapshot.unix_queues = extras
+        .network
+        .unix_queues
+        .iter()
+        .filter_map(|(&(reader, writer), &queue)| Some(((id(&reader)?, id(&writer)?), queue)))
+        .collect();
+    // Paired when the cycle ran, so a process that has exited since takes its pipes with it.
+    snapshot.pipes = extras
+        .pipes
+        .iter()
+        .filter(|pipe| current.contains(&pipe.reader) && current.contains(&pipe.writer))
+        .copied()
+        .collect();
+    snapshot.pipes_partial = extras.pipes_partial;
     snapshot.units = extras.units.clone();
     snapshot.remotes = extras
         .remotes
@@ -1325,6 +1430,82 @@ impl MemoryReads {
         self.cursor = first;
         found
     }
+}
+
+/// The most readers, and the most writers, of one pipe that `pair_pipes` pairs: a pipe that
+/// hundreds of processes inherited would otherwise make a link for every reader and writer.
+const PIPE_FAN_OUT: usize = 64;
+
+/// The pipes and FIFOs that connect two different processes, from the descriptors each process
+/// holds: the descriptors that name the same pipe (`PipeId`) are paired, a reader (a process with
+/// a descriptor that may read it) to each writer (one that may write it). Two descriptors of one
+/// pipe in one process count as one with the access of both, and a process paired with itself
+/// is no link. Processes that may each read and write it make one `two_way` entry, with the lower
+/// `Identity` as reader.
+///
+/// Sorted by (reader, writer, pipe). The second value is whether a pipe had more than
+/// `PIPE_FAN_OUT` readers or writers, the lowest identities of which were paired.
+pub(crate) fn pair_pipes<'a>(
+    held: impl IntoIterator<Item = (Identity, &'a [PipeEnd])>,
+) -> (Vec<Pipe>, bool) {
+    // Per pipe, each holder with the access of all its descriptors and the most it saw buffered.
+    let mut holders: BTreeMap<PipeId, BTreeMap<Identity, (AccessMode, Option<u64>)>> =
+        BTreeMap::new();
+    for (holder, ends) in held {
+        for end in ends {
+            holders
+                .entry(end.id)
+                .or_default()
+                .entry(holder)
+                .and_modify(|(access, buffered)| {
+                    *access = access.union(end.access);
+                    *buffered = (*buffered).max(end.buffered);
+                })
+                .or_insert((end.access, end.buffered));
+        }
+    }
+    let mut pipes = Vec::new();
+    let mut truncated = false;
+    for (&id, holders) in &holders {
+        let ends = |wanted: fn(AccessMode) -> bool| {
+            holders
+                .iter()
+                .filter(|(_, (access, _))| wanted(*access))
+                .map(|(&holder, &(_, buffered))| (holder, buffered))
+                .collect::<Vec<_>>()
+        };
+        let (mut readers, mut writers) = (ends(AccessMode::reads), ends(AccessMode::writes));
+        truncated |= readers.len() > PIPE_FAN_OUT || writers.len() > PIPE_FAN_OUT;
+        readers.truncate(PIPE_FAN_OUT);
+        writers.truncate(PIPE_FAN_OUT);
+        for &(reader, buffered) in &readers {
+            for &(writer, other) in &writers {
+                if reader == writer {
+                    continue;
+                }
+                // The mirror of this pair, where the writer also reads and the reader also
+                // writes, is listed once, from its lower identity.
+                let two_way = readers.iter().any(|&(holder, _)| holder == writer)
+                    && writers.iter().any(|&(holder, _)| holder == reader);
+                if two_way && reader > writer {
+                    continue;
+                }
+                pipes.push(Pipe {
+                    reader,
+                    writer,
+                    two_way,
+                    buffered: if two_way {
+                        buffered.max(other)
+                    } else {
+                        buffered
+                    },
+                    fifo: matches!(id, PipeId::Fifo { .. }),
+                });
+            }
+        }
+    }
+    pipes.sort_by_key(|pipe| (pipe.reader, pipe.writer, pipe.fifo));
+    (pipes, truncated)
 }
 
 /// Where each of `sockets` is, in order, from the GeoIP database; None when no database can be
@@ -2338,6 +2519,17 @@ pub struct DemoOptions {
     /// does while the source is demanded. Off, `thread_list` is `Pending`, as in any view that
     /// demands no threads, and `sources` stays empty.
     pub threads: bool,
+    /// Synthesizes `Snapshot::unix_queues` and `Snapshot::pipes`, which `demo` leaves empty. The
+    /// Unix pairs of `unix_links` get a queue in the direction they were drawn (the reverse
+    /// direction measured idle), cycling through bytes pulsing between a few KiB and a few
+    /// hundred KiB, a pair with nothing queued, bytes up to a MiB and, for the pair numbered 3
+    /// (process 39), a datagram waiting. There are three shell pipelines of four, three and
+    /// five processes (the middle one reporting `buffered` bytes, as macOS does, the others
+    /// `None`, as Linux does) and one FIFO opened for reading and writing at both ends. The
+    /// pairs come from process indices alone, with no random stream, so every other field and
+    /// frame is as without it; at 16 processes some of these pairs collapse onto one process and
+    /// are dropped. `pipes_partial` stays false.
+    pub channels: bool,
 }
 
 impl DemoOptions {
@@ -2352,6 +2544,7 @@ impl DemoOptions {
         oom_and_memory_detail: false,
         kernel_counters: false,
         threads: false,
+        channels: false,
     };
 }
 
@@ -3239,6 +3432,11 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         .filter(|i| i % 3 == 0 && i % 4 == 3)
         .map(|i| (id(i), id(i * 7 + 16)))
         .collect();
+    let (unix_queues, pipes) = if options.channels {
+        demo_channels(time, count, id)
+    } else {
+        (HashMap::new(), Vec::new())
+    };
     let outside = (0..count)
         .filter(|i| i % 11 == 0)
         .map(|i| (id(i), 1 + (i % 3) as u32))
@@ -3379,6 +3577,9 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         links,
         link_traffic,
         unix_links,
+        unix_queues,
+        pipes,
+        pipes_partial: false,
         outside,
         cpus,
         units,
@@ -3504,6 +3705,70 @@ fn demo_rollup(id: Identity, rss: u64) -> Rollup {
         swap,
         swap_pss: part(swap, 0.5 + 0.5 * unit(second, 48)),
     }
+}
+
+/// The Unix queues and pipes `DemoOptions::channels` asks for, between the demo processes `id`
+/// names by index. Pure in `time`.
+fn demo_channels(
+    time: f64,
+    count: usize,
+    id: impl Fn(usize) -> Identity,
+) -> (HashMap<(Identity, Identity), Queue>, Vec<Pipe>) {
+    let mut queues = HashMap::new();
+    for i in (1..count).filter(|i| i % 3 == 0 && i % 4 == 3) {
+        let (writer, reader) = (id(i), id(i * 7 + 16));
+        if writer == reader {
+            continue;
+        }
+        let pulse = ((time * 0.8 + i as f64 * 0.9).sin() as f32) * 0.5 + 0.5;
+        let queue = match (i / 12) % 4 {
+            0 => Queue {
+                unread: (4096.0 + 200_000.0 * pulse * pulse) as u64,
+                datagram_waiting: false,
+            },
+            2 => Queue {
+                unread: (1_000_000.0 * pulse.powi(3)) as u64,
+                datagram_waiting: false,
+            },
+            3 if i / 12 == 3 => Queue {
+                unread: 0,
+                datagram_waiting: true,
+            },
+            _ => Queue::default(),
+        };
+        queues.insert((reader, writer), queue);
+        queues.insert((writer, reader), Queue::default());
+    }
+    let mut pipes = Vec::new();
+    for (chain, length) in [4_usize, 3, 5].into_iter().enumerate() {
+        let first = chain * 41 + 7;
+        for stage in 0..length - 1 {
+            let (writer, reader) = (id(first + stage), id(first + stage + 1));
+            if writer == reader {
+                continue;
+            }
+            let pulse = ((time * 1.3 + (first + stage) as f64).sin() as f32) * 0.5 + 0.5;
+            pipes.push(Pipe {
+                reader,
+                writer,
+                two_way: false,
+                buffered: (chain == 1).then_some((65536.0 * pulse * pulse) as u64),
+                fifo: false,
+            });
+        }
+    }
+    let (a, b) = (id(count / 2), id(count / 2 + 13));
+    if a != b {
+        pipes.push(Pipe {
+            reader: a.min(b),
+            writer: a.max(b),
+            two_way: true,
+            buffered: None,
+            fifo: true,
+        });
+    }
+    pipes.sort_by_key(|pipe| (pipe.reader, pipe.writer, pipe.fifo));
+    (queues, pipes)
 }
 
 /// isotop itself in the demo, the observer `DemoOptions::observer` asks for: outside the
@@ -4563,8 +4828,26 @@ mod tests {
                 links: HashMap::from([((7, 8), 1)]),
                 unix: HashSet::from([(7, 8)]),
                 outside: HashMap::from([(7, 2), (8, 1)]),
+                unix_queues: HashMap::from([
+                    (
+                        (7, 8),
+                        Queue {
+                            unread: 64,
+                            datagram_waiting: false,
+                        },
+                    ),
+                    ((8, 7), Queue::default()),
+                ]),
                 ..platform::Network::default()
             },
+            pipes: vec![Pipe {
+                reader: Identity { pid: 8, start: 8 },
+                writer: Identity { pid: 7, start: 70 },
+                two_way: false,
+                buffered: None,
+                fifo: false,
+            }],
+            pipes_partial: true,
             gpu: HashMap::from([(7, GpuMemory::Bytes(500)), (8, GpuMemory::Bytes(600))]),
             remotes: [7, 8]
                 .map(|pid| Remote {
@@ -4614,6 +4897,7 @@ mod tests {
         assert_eq!(survivor.blocked_on, None, "its lock's holder has exited");
         assert!(reused.links.is_empty() && reused.unix_links.is_empty());
         assert!(reused.link_traffic.is_empty());
+        assert!(reused.unix_queues.is_empty() && reused.pipes.is_empty());
         assert_eq!(
             reused.outside,
             HashMap::from([(survivor.id, 1)]),
@@ -4633,6 +4917,13 @@ mod tests {
         assert_eq!(same.links, [(scanned.id, other.id, 1)]);
         assert_eq!(same.link_traffic.len(), 1);
         assert_eq!(same.remotes.len(), 2);
+        assert_eq!(
+            same.unix_queues[&(scanned.id, other.id)].unread,
+            64,
+            "keyed by identity, reader first"
+        );
+        assert_eq!(same.unix_queues[&(other.id, scanned.id)], Queue::default());
+        assert_eq!((same.pipes.len(), same.pipes_partial), (1, true));
     }
 
     #[test]
@@ -4993,6 +5284,9 @@ mod tests {
             links,
             link_traffic,
             unix_links,
+            unix_queues: HashMap::new(),
+            pipes: Vec::new(),
+            pipes_partial: false,
             outside,
             cpus,
             units,
@@ -5039,6 +5333,9 @@ mod tests {
             links,
             link_traffic,
             unix_links,
+            unix_queues,
+            pipes,
+            pipes_partial,
             outside,
             cpus,
             units,
@@ -5061,11 +5358,13 @@ mod tests {
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
         let unix_links: BTreeSet<_> = unix_links.iter().collect();
+        let unix_queues: BTreeMap<_, _> = unix_queues.iter().collect();
         let outside: BTreeMap<_, _> = outside.iter().collect();
         let units: BTreeMap<_, _> = units.iter().collect();
         format!(
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {wall:?} {pressure:?}\n\
-             {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
+             {links:?}\n{link_traffic:?}\n{unix_links:?}\n{unix_queues:?}\n{pipes:?} {pipes_partial}\n\
+             {outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
              {interrupts:?}\n{softirqs:?} {oom_kills:?}"
@@ -5091,6 +5390,214 @@ mod tests {
         &snapshot.processes[count..]
     }
 
+    fn who(pid: u32) -> Identity {
+        Identity {
+            pid,
+            start: u64::from(pid),
+        }
+    }
+
+    fn end(id: PipeId, access: AccessMode) -> PipeEnd {
+        PipeEnd {
+            id,
+            access,
+            buffered: None,
+        }
+    }
+
+    #[test]
+    fn pipe_ends_pair_by_inode_across_processes() {
+        let (first, second, third) = (
+            PipeId::Anonymous(501),
+            PipeId::Anonymous(502),
+            PipeId::Anonymous(503),
+        );
+        // `producer | filter | consumer`, with the shell (4) holding no end and a reader of
+        // pipe 503 that nobody writes.
+        let producer = [end(first, AccessMode::Write)];
+        let filter = [end(first, AccessMode::Read), end(second, AccessMode::Write)];
+        let consumer = [end(second, AccessMode::Read), end(third, AccessMode::Read)];
+        // One process holding both ends of pipe 504 is no link, with two descriptors of it or
+        // with one, and a descriptor opened for neither does not exist.
+        let both_ends = [
+            end(PipeId::Anonymous(504), AccessMode::Read),
+            end(PipeId::Anonymous(504), AccessMode::Write),
+        ];
+        let (pipes, truncated) = pair_pipes([
+            (who(30), &consumer[..]),
+            (who(10), &producer[..]),
+            (who(20), &filter[..]),
+            (who(4), &[][..]),
+            (who(40), &both_ends[..]),
+        ]);
+        assert!(!truncated);
+        let pipe = |reader, writer| Pipe {
+            reader: who(reader),
+            writer: who(writer),
+            two_way: false,
+            buffered: None,
+            fifo: false,
+        };
+        assert_eq!(pipes, [pipe(20, 10), pipe(30, 20)]);
+        // The same descriptors in another order give the same list.
+        let (again, _) = pair_pipes([
+            (who(20), &filter[..]),
+            (who(10), &producer[..]),
+            (who(30), &consumer[..]),
+        ]);
+        assert_eq!(again, pipes);
+        // Several readers of one pipe each pair with its writer, and a forked child that holds
+        // the write end too is another writer, not a link to itself.
+        let reader = [end(first, AccessMode::Read)];
+        let writer = [end(first, AccessMode::Write)];
+        let (shared, _) = pair_pipes([
+            (who(1), &writer[..]),
+            (who(2), &reader[..]),
+            (who(3), &reader[..]),
+            (who(4), &writer[..]),
+        ]);
+        assert_eq!(shared, [pipe(2, 1), pipe(2, 4), pipe(3, 1), pipe(3, 4)]);
+    }
+
+    #[test]
+    fn a_fifo_opened_read_write_is_two_way() {
+        let fifo = PipeId::Fifo {
+            device: 0x0100_0004,
+            inode: 77,
+        };
+        let both = [end(fifo, AccessMode::Both)];
+        let (pipes, _) = pair_pipes([(who(9), &both[..]), (who(5), &both[..])]);
+        assert_eq!(
+            pipes,
+            [Pipe {
+                reader: who(5),
+                writer: who(9),
+                two_way: true,
+                buffered: None,
+                fifo: true,
+            }],
+            "listed once, the lower identity reading"
+        );
+        // One end opened only for writing makes the flow one way, whatever the other holds.
+        let writing = [end(fifo, AccessMode::Write)];
+        let (pipes, _) = pair_pipes([(who(9), &both[..]), (who(5), &writing[..])]);
+        assert_eq!(
+            pipes,
+            [Pipe {
+                reader: who(9),
+                writer: who(5),
+                two_way: false,
+                buffered: None,
+                fifo: true,
+            }]
+        );
+        // A named and an anonymous pipe with the same number are two pipes.
+        let anonymous = [end(PipeId::Anonymous(77), AccessMode::Write)];
+        let reading = [end(fifo, AccessMode::Read)];
+        assert!(
+            pair_pipes([(who(1), &anonymous[..]), (who(2), &reading[..])])
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn buffered_bytes_are_the_count_the_reader_saw() {
+        // Each process's descriptors are read at their own moment, so the two counts can differ;
+        // the reader's is the one a link to the reader shows.
+        let id = PipeId::Anonymous(9);
+        let reading = [PipeEnd {
+            id,
+            access: AccessMode::Read,
+            buffered: Some(512),
+        }];
+        let writing = [PipeEnd {
+            id,
+            access: AccessMode::Write,
+            buffered: Some(300),
+        }];
+        let (pipes, _) = pair_pipes([(who(1), &writing[..]), (who(2), &reading[..])]);
+        assert_eq!(pipes[0].buffered, Some(512));
+        assert_eq!(pipes[0].reader, who(2));
+    }
+
+    #[test]
+    fn a_pipe_shared_by_hundreds_of_processes_is_paired_to_a_fixed_fan_out() {
+        let id = PipeId::Anonymous(1);
+        let reading = [end(id, AccessMode::Read)];
+        let writing = [end(id, AccessMode::Write)];
+        let mut held = vec![(who(1), &writing[..])];
+        for pid in 2..2 + 2 * PIPE_FAN_OUT as u32 {
+            held.push((who(pid), &reading[..]));
+        }
+        let (pipes, truncated) = pair_pipes(held);
+        assert!(truncated);
+        assert_eq!(pipes.len(), PIPE_FAN_OUT, "the lowest identities");
+        assert_eq!(pipes.last().unwrap().reader, who(1 + PIPE_FAN_OUT as u32));
+    }
+
+    #[test]
+    fn a_pipe_to_a_child_process_is_found_in_both_directions() {
+        use std::process::{Command, Stdio};
+        // The child writes six bytes to a pipe nobody reads yet and then sleeps holding its end
+        // of that pipe and of the pipe from this process.
+        let mut child = Command::new("sh")
+            .args(["-c", "echo hello; exec sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sh starts");
+        let (parent, child_pid) = (std::process::id(), child.id());
+        let mut scan = platform::PipeScan::new();
+        let mut held: HashMap<u32, Vec<PipeEnd>> = HashMap::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let found = loop {
+            // A bounded pass may reach the two pids over several passes.
+            let sample = scan.sample().expect("the processes can be listed");
+            held.extend(sample.ends);
+            let ends = [parent, child_pid].map(|pid| held.get(&pid).cloned());
+            if let [Some(parent_ends), Some(child_ends)] = ends {
+                let (pipes, _) = pair_pipes([
+                    (who(parent), parent_ends.as_slice()),
+                    (who(child_pid), child_ends.as_slice()),
+                ]);
+                // macOS reports the bytes waiting: wait for the child's echo to have run.
+                if !cfg!(target_os = "macos") || pipes.iter().any(|p| p.buffered == Some(6)) {
+                    break pipes;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the pipes to the child were never found"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        // The parent writes the child's stdin and reads its stdout.
+        let to_child = found
+            .iter()
+            .find(|p| p.reader == who(child_pid))
+            .expect("stdin");
+        let from_child = found
+            .iter()
+            .find(|p| p.writer == who(child_pid))
+            .expect("stdout");
+        assert_eq!(to_child.writer, who(parent));
+        assert_eq!(from_child.reader, who(parent));
+        assert!(found.iter().all(|pipe| !pipe.two_way && !pipe.fifo));
+        // Linux exposes no count for a pipe another process holds.
+        assert_eq!(
+            from_child.buffered,
+            if cfg!(target_os = "macos") {
+                Some(6)
+            } else {
+                None
+            }
+        );
+    }
+
     #[test]
     fn default_options_reproduce_the_existing_demo() {
         for count in [16, 192, 1000] {
@@ -5108,6 +5615,109 @@ mod tests {
                 );
             }
         }
+    }
+
+    const CHANNELS: DemoOptions = DemoOptions {
+        channels: true,
+        ..DemoOptions::NONE
+    };
+
+    #[test]
+    fn demo_synthesizes_queues_and_pipes_without_changing_existing_fields() {
+        for time in [-5.0, 0.0, 12.0, 61.7] {
+            let plain = demo_with(time, 192, DemoOptions::NONE);
+            assert!(plain.unix_queues.is_empty() && plain.pipes.is_empty());
+            assert!(!plain.pipes_partial);
+            let with = demo_with(time, 192, CHANNELS);
+            // Every other field, and so every frame of every view, is as without the option.
+            let mut rest = with.clone();
+            rest.unix_queues.clear();
+            rest.pipes.clear();
+            assert_eq!(fingerprint(&rest), fingerprint(&plain), "at {time}");
+            assert_eq!(
+                fingerprint(&demo_with(time, 192, CHANNELS)),
+                fingerprint(&with),
+                "a pure function of time"
+            );
+        }
+        let snapshot = demo_with(12.0, 192, CHANNELS);
+        let queues = &snapshot.unix_queues;
+        assert!(queues.values().filter(|queue| queue.unread > 0).count() >= 3);
+        assert_eq!(
+            queues
+                .values()
+                .filter(|queue| queue.datagram_waiting)
+                .count(),
+            1,
+            "one datagram pair is waiting"
+        );
+        assert!(
+            queues
+                .values()
+                .all(|queue| !queue.datagram_waiting || queue.unread == 0),
+            "a datagram is a flag, not a byte count"
+        );
+        assert!(
+            queues.values().any(|queue| *queue == Queue::default()),
+            "measured idle"
+        );
+        assert!(
+            queues.keys().all(|&(reader, writer)| {
+                snapshot.unix_links.contains(&(writer, reader))
+                    || snapshot.unix_links.contains(&(reader, writer))
+            }),
+            "the queues are between processes joined by a Unix socket"
+        );
+        let known: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        let pipes = &snapshot.pipes;
+        assert!(
+            pipes
+                .iter()
+                .all(|p| known.contains(&p.reader) && known.contains(&p.writer))
+        );
+        let (named, anonymous): (Vec<&Pipe>, Vec<&Pipe>) = pipes.iter().partition(|p| p.fifo);
+        assert_eq!(
+            anonymous.len(),
+            3 + 2 + 4,
+            "three pipelines of four, three and five"
+        );
+        assert!(anonymous.iter().all(|p| !p.two_way));
+        assert!(anonymous.iter().any(|p| p.buffered.is_none()));
+        assert!(anonymous.iter().any(|p| p.buffered.is_some()));
+        assert_eq!(named.len(), 1);
+        assert!(named[0].two_way && named[0].reader < named[0].writer);
+        // What the demo lists is what `pair_pipes` makes of the descriptors that would give it.
+        let mut held: HashMap<Identity, Vec<PipeEnd>> = HashMap::new();
+        for (number, pipe) in pipes.iter().enumerate() {
+            let id = if pipe.fifo {
+                PipeId::Fifo {
+                    device: 1,
+                    inode: number as u64,
+                }
+            } else {
+                PipeId::Anonymous(number as u64)
+            };
+            let access = |access, buffered| PipeEnd {
+                id,
+                access,
+                buffered,
+            };
+            let (reading, writing) = if pipe.two_way {
+                (AccessMode::Both, AccessMode::Both)
+            } else {
+                (AccessMode::Read, AccessMode::Write)
+            };
+            held.entry(pipe.reader)
+                .or_default()
+                .push(access(reading, pipe.buffered));
+            held.entry(pipe.writer)
+                .or_default()
+                .push(access(writing, None));
+        }
+        let (paired, truncated) =
+            pair_pipes(held.iter().map(|(&who, ends)| (who, ends.as_slice())));
+        assert!(!truncated);
+        assert_eq!(&paired, pipes);
     }
 
     #[test]
@@ -5720,6 +6330,15 @@ mod tests {
             .contains(source)),
             "no kernel counter file was opened"
         );
+        assert!(
+            extras
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::Pipes)
+                && extras.pipes.is_empty()
+                && !extras.pipes_partial,
+            "no pipe scan ran"
+        );
     }
 
     /// Lists one thread per process, leader first, and remembers which pids it was asked about.
@@ -5885,6 +6504,36 @@ mod tests {
         assert_eq!(snapshot.processes[0].thread_list, listed);
         assert_eq!(snapshot.processes[1].thread_list, Measured::Pending);
         assert_eq!(snapshot.processes[2].thread_list, Measured::Pending);
+    }
+
+    #[test]
+    fn a_demanded_pipe_scan_runs_and_is_reported_active() {
+        let thread = background(
+            None,
+            Arc::new(Mutex::new(HashSet::new())),
+            Arc::new(Mutex::new(Demand::from(Sources::from(Source::Pipes)))),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .expect("the sampler thread starts");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while thread.extras().finished.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let extras = thread.extras();
+        assert!(extras.finished.is_some(), "the first cycle finished");
+        assert_eq!(extras.sources, Sources::from(Source::Pipes));
+        assert!(!extras.missing.contains(Source::Pipes));
+        assert!(
+            extras
+                .latency
+                .iter()
+                .any(|(source, _)| *source == Source::Pipes),
+            "the scan was timed"
+        );
+        // No process was named to the cycle, so none of what it read joins.
+        assert!(extras.pipes.is_empty());
     }
 
     #[test]

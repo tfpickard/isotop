@@ -25,7 +25,9 @@ use crate::model::{
     CoreKind, Cpu, GpuMemory, Identity, Interrupt, IoBytes, Kind, Measured, Oom, Process, Rollup,
     Softirq, Unit,
 };
-use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources, Taken};
+use crate::platform::{
+    Files, Locks, Network, PipeEnd, PipeSample, RawProcess, Shadow, Source, Sources, Taken,
+};
 use crate::threads::{Listing, RawThread, Target, ThreadReader};
 
 pub use events::{monotonic_ns, open_events};
@@ -973,6 +975,11 @@ impl Sockets {
                     pid,
                     pcb: socket.soi_pcb,
                     peer,
+                    queue: logic::unix_queue(
+                        socket.soi_type,
+                        socket.soi_options,
+                        socket.soi_rcv.sbi_cc,
+                    ),
                 });
             }
             _ => {}
@@ -1181,6 +1188,193 @@ fn vnode_descriptor(pid: c_int, fd: i32) -> Option<logic::Descriptor> {
     }))
 }
 
+/// How much one pipe pass may read. Listing a table is one `proc_pidinfo` call. Each pipe
+/// descriptor then costs one `proc_pidfdinfo` call, as does each vnode descriptor, which may be
+/// a FIFO and cannot be told from a file without the call; the vnode calls are the many cheap
+/// ones and are bounded apart, with the same numbers as the open-file scan.
+#[derive(Clone, Copy, Debug)]
+struct PipeBounds {
+    /// Pipe descriptors read per pass.
+    reads: usize,
+    /// Vnode descriptors examined per pass.
+    probes: usize,
+    /// Descriptors listed per process; the listing stops there.
+    listed: usize,
+    /// Descriptors listed per pass. A process is only scanned while a whole `listed` share
+    /// remains, so none is judged from a sliver of its table.
+    scan: usize,
+}
+
+const PIPE_BOUNDS: PipeBounds = PipeBounds {
+    reads: 4096,
+    probes: 65536,
+    listed: 16384,
+    scan: 65536,
+};
+
+/// The pipe and FIFO scan across processes, which resumes where the previous pass ran out of
+/// budget.
+pub struct PipeScan {
+    bounds: PipeBounds,
+    /// The last pid scanned, so the next pass starts after it.
+    after: u32,
+    /// Buffers reused by every pass.
+    pids: Vec<c_int>,
+    descriptors: Vec<libc::proc_fdinfo>,
+}
+
+/// What reading one descriptor's pipe record came to.
+enum PipeRead {
+    End(PipeEnd),
+    /// Not a pipe end any more, or one that could not be read: the descriptor closed or was
+    /// reused since the listing, or the kernel refused.
+    Absent,
+    /// The kernel's record is not the size of ours: the layouts differ, so nothing it says about
+    /// pipes can be trusted.
+    Mismatch,
+}
+
+impl PipeScan {
+    pub fn new() -> Self {
+        Self {
+            bounds: PIPE_BOUNDS,
+            after: 0,
+            pids: Vec::new(),
+            descriptors: Vec::new(),
+        }
+    }
+
+    /// The pipe and FIFO descriptors of the processes this pass reached, in pid order from where
+    /// the last pass stopped. None when the processes cannot be listed, or when the kernel's
+    /// pipe record differs from ours in size.
+    ///
+    /// The pass stops before a process whose descriptors would exceed what is left of a budget
+    /// and marks the result partial; the next pass starts with that process, which then gets the
+    /// whole budget even if it holds more than that: only its first descriptors are read, and the
+    /// pass is partial again. Every pass therefore reaches at least one new process.
+    pub fn sample(&mut self) -> Option<PipeSample> {
+        list_pids(&mut self.pids).ok()?;
+        let mut pids: Vec<u32> = self
+            .pids
+            .iter()
+            .filter_map(|&pid| u32::try_from(pid).ok())
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        let start = pids.partition_point(|&pid| pid <= self.after);
+        let (mut listing, mut reads, mut probes) =
+            (self.bounds.scan, self.bounds.reads, self.bounds.probes);
+        let mut sample = PipeSample::default();
+        let mut first = true;
+        for &pid in pids[start..].iter().chain(&pids[..start]) {
+            if listing < self.bounds.listed {
+                sample.partial = true;
+                break;
+            }
+            // Another user's process, or one that has exited: nothing to read, and no ends
+            // recorded, so an earlier reading of the pid is kept.
+            let Ok((listed, truncated)) =
+                list_descriptors(pid as c_int, &mut self.descriptors, self.bounds.listed)
+            else {
+                continue;
+            };
+            let table = &self.descriptors[..listed];
+            let count = |kind: i32| {
+                table
+                    .iter()
+                    .filter(|descriptor| descriptor.proc_fdtype == kind as u32)
+                    .count()
+            };
+            let (pipes, vnodes) = (
+                count(libc::PROX_FDTYPE_PIPE),
+                count(libc::PROX_FDTYPE_VNODE),
+            );
+            let fits = pipes <= reads && vnodes <= probes;
+            if !fits && !first {
+                sample.partial = true;
+                break;
+            }
+            sample.partial |= truncated || !fits;
+            let (mut pipe_budget, mut probe_budget) = (reads, probes);
+            let mut ends = Vec::new();
+            for descriptor in table {
+                let end = match descriptor.proc_fdtype as i32 {
+                    libc::PROX_FDTYPE_PIPE if pipe_budget > 0 => {
+                        pipe_budget -= 1;
+                        pipe_end(pid as c_int, descriptor.proc_fd)
+                    }
+                    libc::PROX_FDTYPE_VNODE if probe_budget > 0 => {
+                        probe_budget -= 1;
+                        fifo_end(pid as c_int, descriptor.proc_fd)
+                    }
+                    _ => PipeRead::Absent,
+                };
+                match end {
+                    PipeRead::End(end) => ends.push(end),
+                    PipeRead::Absent => {}
+                    PipeRead::Mismatch => return None,
+                }
+            }
+            (reads, probes) = (pipe_budget, probe_budget);
+            listing -= listed;
+            self.after = pid;
+            first = false;
+            sample.ends.insert(pid, ends);
+        }
+        Some(sample)
+    }
+}
+
+/// The pipe end that pipe descriptor `fd` of `pid` holds.
+fn pipe_end(pid: c_int, fd: i32) -> PipeRead {
+    let mut info = MaybeUninit::<ffi::pipe_fdinfo>::zeroed();
+    let size = size_of::<ffi::pipe_fdinfo>() as c_int;
+    // SAFETY: the buffer is valid for writes of `size` bytes.
+    let written = unsafe {
+        libc::proc_pidfdinfo(
+            pid,
+            fd,
+            ffi::PROC_PIDFDPIPEINFO,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written <= 0 {
+        return PipeRead::Absent;
+    }
+    if written != size {
+        return PipeRead::Mismatch;
+    }
+    // SAFETY: pipe_fdinfo holds only integers, so the bytes the kernel wrote are valid.
+    let info = unsafe { info.assume_init() };
+    logic::pipe_end(
+        info.pipeinfo.pipe_handle,
+        info.pipeinfo.pipe_peerhandle,
+        info.pfi.fi_openflags,
+        info.pipeinfo.pipe_stat.vst_size,
+    )
+    .map_or(PipeRead::Absent, PipeRead::End)
+}
+
+/// The FIFO end that vnode descriptor `fd` of `pid` holds, if its file is a FIFO.
+fn fifo_end(pid: c_int, fd: i32) -> PipeRead {
+    let Ok(info) = vnode_info(pid, fd) else {
+        return PipeRead::Absent;
+    };
+    let stat = info.pvi.vi_stat;
+    logic::fifo_end(
+        logic::VnodeStat {
+            device: stat.vst_dev,
+            mode: stat.vst_mode,
+            links: stat.vst_nlink,
+            inode: stat.vst_ino,
+            size: stat.vst_size,
+        },
+        info.pfi.fi_openflags,
+    )
+    .map_or(PipeRead::Absent, PipeRead::End)
+}
+
 /// An open vnode's `vnode_fdinfo`, only when the kernel wrote exactly the size of ours, which
 /// proves the layouts agree. The kernel stats the vnode the descriptor holds, so a file
 /// deleted while open is still found, with a link count of 0. macOS has no equivalent of
@@ -1361,10 +1555,12 @@ impl ThreadReader for Threads {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Queue;
+    use crate::platform::AccessMode;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1486,6 +1682,136 @@ mod tests {
         assert_eq!(sampler.per_cluster().is_empty(), !sampler.clocked());
     }
 
+    /// The path of a file of this test run in the temporary directory, removed first.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("isotop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn unix_queues_are_the_bytes_of_a_stream_and_the_flag_of_a_datagram() {
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(&[7; 3000]).unwrap();
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        sender.send(&[1; 100]).unwrap();
+        let path = scratch("queue.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let _waiting = UnixStream::connect(&path).unwrap();
+        let pid = std::process::id() as c_int;
+        let mut sockets = Sockets::default();
+        sockets.scan(pid, &mut Vec::new());
+        let queue = |fd: i32| {
+            let pcb = socket_info(pid, fd).unwrap().psi.soi_pcb;
+            sockets
+                .unix
+                .iter()
+                .find(|socket| socket.pcb == pcb)
+                .expect("the Unix socket was scanned")
+                .queue
+        };
+        let bytes = |unread| {
+            Some(Queue {
+                unread,
+                datagram_waiting: false,
+            })
+        };
+        assert_eq!(queue(reader.as_raw_fd()), bytes(3000));
+        assert_eq!(queue(writer.as_raw_fd()), bytes(0));
+        assert_eq!(
+            queue(receiver.as_raw_fd()),
+            Some(Queue {
+                unread: 0,
+                datagram_waiting: true
+            }),
+            "a waiting packet is a flag, not its size"
+        );
+        assert_eq!(queue(sender.as_raw_fd()), Some(Queue::default()));
+        assert_eq!(
+            queue(listener.as_raw_fd()),
+            None,
+            "a listener's buffer holds no data"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_pipe_descriptor_reports_its_direction_its_peer_and_the_bytes_waiting() {
+        let mut fds = [0 as c_int; 2];
+        // SAFETY: pipe writes two descriptors to the array, which has room for them.
+        let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(made, 0);
+        let pid = std::process::id() as c_int;
+        let [read, write] = fds;
+        // SAFETY: write is a descriptor of this process and the buffer is valid for 5 bytes.
+        let written = unsafe { libc::write(write, b"hello".as_ptr().cast(), 5) };
+        assert_eq!(written, 5);
+        let end = |fd| match pipe_end(pid, fd) {
+            PipeRead::End(end) => end,
+            PipeRead::Absent => panic!("descriptor {fd} is not a readable pipe end"),
+            PipeRead::Mismatch => panic!("pipe_fdinfo has the wrong size"),
+        };
+        let (reading, writing) = (end(read), end(write));
+        assert_eq!(reading.id, writing.id, "the ends swap handle and peer");
+        assert_eq!(reading.access, AccessMode::Read);
+        assert_eq!(writing.access, AccessMode::Write);
+        // Either end reports the bytes waiting in the pipe.
+        assert_eq!((reading.buffered, writing.buffered), (Some(5), Some(5)));
+        // SAFETY: both descriptors are open and owned by this test.
+        unsafe {
+            libc::close(read);
+            libc::close(write);
+        }
+    }
+
+    #[test]
+    fn a_fifo_this_process_holds_open_is_found_by_the_pipe_scan() {
+        use std::os::unix::fs::MetadataExt;
+        let path = scratch("queue.fifo");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path is a NUL-terminated string that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let fifo = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let regular = std::fs::File::create(scratch("queue.file")).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let (me, mut scan, mut found) = (std::process::id(), PipeScan::new(), None);
+        // A bounded pass may reach this process over several passes.
+        for _ in 0..50 {
+            found = scan
+                .sample()
+                .expect("the processes can be listed")
+                .ends
+                .remove(&me);
+            if found.is_some() {
+                break;
+            }
+        }
+        let ends = found.expect("the scan reached this process");
+        let named: Vec<_> = ends
+            .iter()
+            .filter(|end| matches!(end.id, crate::platform::PipeId::Fifo { .. }))
+            .collect();
+        assert_eq!(named.len(), 1, "the regular file is not a pipe: {ends:?}");
+        assert_eq!(
+            (named[0].id, named[0].access, named[0].buffered),
+            (
+                crate::platform::PipeId::Fifo {
+                    device: u64::from(metadata.dev() as u32),
+                    inode: metadata.ino()
+                },
+                AccessMode::Both,
+                None
+            )
+        );
+        drop((fifo, regular));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(scratch("queue.file"));
+    }
+
     #[test]
     fn socket_info_has_the_size_the_kernel_reports() {
         let (mut left, right) = UnixStream::pair().unwrap();
@@ -1517,6 +1843,17 @@ mod tests {
         };
         let (a, b) = (unix(left.as_raw_fd()), unix(right.as_raw_fd()));
         assert_eq!((a.peer, b.peer), (b.pcb, a.pcb));
+        // The byte written to `left` waits in `right`'s receive buffer.
+        assert_eq!(
+            (a.queue, b.queue),
+            (
+                Some(Queue::default()),
+                Some(Queue {
+                    unread: 1,
+                    datagram_waiting: false
+                })
+            )
+        );
         assert_eq!(logic::pair_unix(&[a, b]), vec![(me, me)]);
 
         let end = |local: SocketAddr, foreign: SocketAddr| {

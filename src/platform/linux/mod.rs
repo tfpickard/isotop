@@ -4,11 +4,13 @@
 
 mod counters;
 mod events;
+mod fdinfo;
 mod files;
 mod journal;
 mod memory;
 mod net;
 mod nvml;
+mod pipes;
 mod threads;
 
 use std::collections::{HashMap, HashSet};
@@ -28,6 +30,7 @@ pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};
 pub use memory::{MEMORY_DETAIL, oom_scores, rollup};
 pub use nvml::Nvml as Gpu;
+pub use pipes::PipeScan;
 pub use threads::Threads;
 
 /// What `Process::memory` measures here: the resident set size.

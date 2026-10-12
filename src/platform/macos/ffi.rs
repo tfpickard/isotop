@@ -628,6 +628,31 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+// struct pipe_fdinfo and its member, from the same header (checked against the SDK's
+// <sys/proc_info.h> with offsetof and sizeof). libc 0.2.190 has neither. `pipe_stat.vst_size` is
+// the bytes waiting in the pipe, `pipe_handle` and `pipe_peerhandle` the kernel addresses of the
+// descriptor's end of the pipe and of the other end, which the two descriptors of a pipe swap.
+
+/// `PROC_PIDFDPIPEINFO` flavor for `proc_pidfdinfo`.
+pub const PROC_PIDFDPIPEINFO: c_int = 6;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct pipe_info {
+    pub pipe_stat: vinfo_stat,
+    pub pipe_handle: u64,
+    pub pipe_peerhandle: u64,
+    pub pipe_status: c_int,
+    pub rfu_1: c_int,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct pipe_fdinfo {
+    pub pfi: proc_fileinfo,
+    pub pipeinfo: pipe_info,
+}
+
 macro_rules! assert_layout {
     ($t:ty, $size:expr, $align:expr) => {
         const _: () = assert!(size_of::<$t>() == $size);
@@ -739,6 +764,13 @@ assert_offset!(vnode_info, vi_fsid, 144);
 assert_offset!(vnode_fdinfo, pvi, 24);
 assert_offset!(vinfo_stat, vst_mode, 4);
 assert_offset!(vinfo_stat, vst_nlink, 6);
+assert_layout!(pipe_info, 160, 8);
+assert_layout!(pipe_fdinfo, 184, 8);
+assert_offset!(pipe_info, pipe_handle, 136);
+assert_offset!(pipe_info, pipe_peerhandle, 144);
+assert_offset!(pipe_info, pipe_status, 152);
+assert_offset!(pipe_info, rfu_1, 156);
+assert_offset!(pipe_fdinfo, pipeinfo, 24);
 const _: () = assert!(size_of::<libc::vinfo_stat>() == size_of::<vinfo_stat>());
 const _: () = assert!(size_of::<libc::vnode_info>() == size_of::<vnode_info>());
 
