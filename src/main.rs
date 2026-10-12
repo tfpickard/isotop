@@ -728,8 +728,8 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: the view's own targets (Ripple's clusters, and a
-    /// module view's `Stage::tour`, which leaves out what has no callout to show, such as the
+    /// Notable processes to visit while idle: the view's own targets (a module view's
+    /// `Stage::tour`, which leaves out what has no callout to show, such as the
     /// hub of an Orbit system), heaviest first, then the busiest and the largest.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
@@ -744,15 +744,9 @@ impl App {
         largest.sort_by_key(|p| Reverse(p.memory));
         let mut stars: Vec<(Identity, f32)> = self
             .scene
-            .stars
+            .tour
             .iter()
-            .map(|&(id, members, _)| (id, members as f32))
-            .chain(
-                self.scene
-                    .tour
-                    .iter()
-                    .map(|target| (target.id, target.weight)),
-            )
+            .map(|target| (target.id, target.weight))
             .collect();
         stars.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut targets = Vec::new();
@@ -1101,13 +1095,6 @@ impl App {
                         lines.push(format!("NVIDIA GPU memory {}", bytes(gpu)));
                     }
                 }
-                if let Some(&(total, count)) = self.scene.mass.get(&id) {
-                    lines.push(format!(
-                        "system {} {} across {count} processes",
-                        platform::MEMORY_LABEL,
-                        bytes(total)
-                    ));
-                }
                 lines.extend(
                     self.scene
                         .popup
@@ -1153,18 +1140,6 @@ impl App {
             false,
             32,
         )
-    }
-
-    /// The label of the Ripple cluster anchored by `id`, with `members` pebbles: its process's
-    /// name.
-    fn star_label(
-        lookup: &HashMap<Identity, &Process>,
-        id: Identity,
-        members: usize,
-    ) -> Option<String> {
-        lookup
-            .get(&id)
-            .map(|p| crate::views::systems::system_label(p, members))
     }
 
     /// The label of a system centred on `star` that reaches `reach` world units: just below its
@@ -1314,13 +1289,6 @@ impl App {
                 title.reach,
                 title.text.clone(),
             ));
-        }
-        for &(id, members, reach) in &self.scene.stars {
-            if let Some(text) = Self::star_label(&lookup, id, members)
-                && let Some(&star) = self.scene.positions.get(&id)
-            {
-                labels.extend(self.title_label(frame, layout, &mut board, star, reach, text));
-            }
         }
         let mut busy: Vec<&Process> = lookup
             .values()

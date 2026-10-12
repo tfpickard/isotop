@@ -3,14 +3,14 @@
 //! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
 //! row instead of naming the view, so a new view is one module plus one row.
 //!
-//! One of the eleven views that predate the registry, ripple, is still built in: `Scene` keeps
-//! its state in typed fields and draws it in its own arm, picked by `BuiltIn`. The others, and
-//! every new view, are module views: a type that implements `ViewModule`, which `Scene` builds
-//! from the row and calls through the trait.
+//! Every view is a module view: a type that implements `ViewModule`, which `Scene` builds from
+//! the row and calls through the trait. `Hooks::BuiltIn` and `BuiltIn` remain only until the
+//! built-in path is deleted: no row uses them and `Scene` has no arm to draw one.
 
 mod city;
 mod flow;
 mod orbit;
+mod ripple;
 pub(crate) mod systems;
 
 #[cfg(test)]
@@ -295,6 +295,10 @@ fn everywhere() -> bool {
 /// exactly one place: on the row for a built-in view, on the trait for a module view.
 pub enum Hooks {
     /// One of the views that predate the registry, drawn by its arm of `Scene::render`.
+    #[expect(
+        dead_code,
+        reason = "no row is built in; the built-in path is deleted next"
+    )]
     BuiltIn {
         arm: BuiltIn,
         /// The third status line while no process is inspected.
@@ -310,11 +314,10 @@ pub enum Hooks {
     Module(fn() -> Box<dyn ViewModule>),
 }
 
-/// The arm of `Scene::render` that draws a built-in view.
+/// The arm of `Scene::render` that draws a built-in view. No view is built in any more, so there
+/// is no arm and no value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuiltIn {
-    Ripple,
-}
+pub enum BuiltIn {}
 
 /// Which socket links the scene draws over a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -500,12 +503,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "ripple",
             "RIPPLE",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Ripple,
-                legend: ripple_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(ripple::Ripple::default())),
         )
     },
     ViewInfo {
@@ -817,10 +815,6 @@ pub static REGISTRY: &[ViewInfo] = &[
         )
     },
 ];
-
-fn ripple_legend(_: &Scene, _: &Snapshot) -> String {
-    " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into()
-}
 
 /// The registered view called `name`, for tests.
 #[cfg(test)]
