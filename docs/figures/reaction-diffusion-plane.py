@@ -16,8 +16,8 @@ import math
 import rdsim_w8 as rd
 import svgkit_w8 as kit
 
-F_MAX = 0.10
-K_MIN, K_MAX = 0.030, 0.070
+F_MAX = 0.08
+K_MIN, K_MAX = 0.040, 0.068
 COLUMNS, ROWS = 250, 200
 
 
@@ -35,11 +35,11 @@ def classify(feed, kill):
 
 
 def main():
-    svg = kit.Svg(820, 560, "The Gray-Scott (F, k) plane",
+    svg = kit.Svg(900, 560, "The Gray-Scott (F, k) plane",
                   "Regions of the feed and kill plane by the fate of the non-trivial uniform "
                   "state, the saddle-node and Hopf curves, and the six isotop anchors.")
     svg.title_text("Gray-Scott (F, k) plane: where the uniform state lives, and isotop's anchors")
-    x0, y0, width, height = 70, 52, 520, 416
+    x0, y0, width, height = 70, 52, 560, 416
     palette = {0: (22, 27, 34), 1: (92, 40, 52), 2: (28, 70, 58), 3: (230, 170, 40)}
     rows = []
     counts = {0: 0, 1: 0, 2: 0, 3: 0}
@@ -55,11 +55,11 @@ def main():
     svg.image(x0, y0, width, height, kit.png_bytes(COLUMNS, ROWS, rows), smooth=True)
     ax = kit.Axes(svg, x0, y0, width, height, (0.0, F_MAX), (K_MIN, K_MAX),
                   xlabel="feed rate F", ylabel="kill rate k",
-                  xticks=[0, 0.02, 0.04, 0.06, 0.08, 0.10], yticks=[0.03, 0.04, 0.05, 0.06, 0.07],
+                  xticks=[0, 0.02, 0.04, 0.06, 0.08], yticks=[0.04, 0.05, 0.06],
                   grid=False)
-    for value in (0, 0.02, 0.04, 0.06, 0.08, 0.10):
+    for value in (0, 0.02, 0.04, 0.06, 0.08):
         svg.text(ax.px(value), y0 + height + 16, "%g" % value, size=11, anchor="middle", fill=kit.MUTED)
-    for value in (0.03, 0.04, 0.05, 0.06, 0.07):
+    for value in (0.04, 0.05, 0.06):
         svg.text(x0 - 7, ax.py(value) + 4, "%g" % value, size=11, anchor="end", fill=kit.MUTED)
     # saddle-node curve k = sqrt(F)/2 - F
     feeds = [i * F_MAX / 400 for i in range(1, 401)]
@@ -72,8 +72,8 @@ def main():
     for c in range(0, 301):
         path.append(rd.feed_kill(c * 1.0))
     ax.line([p[0] for p in path], [p[1] for p in path], color=kit.AQUA, width=1.6, opacity=0.9)
-    labels = {"drifting spots": (6, 14), "solitons": (6, -8), "fingerprint": (8, -6),
-              "maze": (-8, 14), "holes": (7, 14), "turbulence": (6, 14)}
+    labels = {"drifting spots": (-8, -8), "solitons": (-8, -8), "fingerprint": (9, -7),
+              "maze": (-9, 14), "holes": (9, 15), "turbulence": (9, 5)}
     for cpu, feed, kill, name in rd.ANCHORS:
         ax.points([feed], [kill], color=kit.AQUA, r=4.5, stroke=kit.BACKGROUND)
         dx, dy = labels[name]
@@ -86,10 +86,10 @@ def main():
     lx = x0 + width + 24
     svg.text(lx, y0 + 12, "Fate of the uniform state", size=12, weight="600")
     entries = [
-        (palette[0], "only (u, v) = (1, 0)", "no non-trivial state: k above the saddle-node"),
-        (palette[1], "non-trivial state unstable", "tr J > 0: oscillates, no Turing band"),
+        (palette[0], "only (u, v) = (1, 0)", "k above the saddle-node curve"),
+        (palette[1], "non-trivial state unstable", "tr J > 0: oscillatory, not Turing"),
         (palette[2], "stable, stays stable", "stable with and without diffusion"),
-        (palette[3], "Turing-unstable", "stable without diffusion, unstable with it"),
+        (palette[3], "Turing-unstable", "stable alone, unstable with diffusion"),
     ]
     for n, (colour, title, note) in enumerate(entries):
         y = y0 + 34 + n * 50

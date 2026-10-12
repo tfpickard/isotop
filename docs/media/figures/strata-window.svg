@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 700" width="980" height="700" font-family="system-ui, sans-serif" role="img">
+<title>Strata's time axis</title>
+<desc>History coverage and ridge resolution against the sampling interval, and the smooth scroll between samples.</desc>
+<rect width="980" height="700" fill="#0e1116"/>
+<line x1="80" y1="60" x2="80" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="80" y1="280" x2="80" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="80" y="297" font-size="11" text-anchor="middle" fill="#8b949e">100</text>
+<line x1="151.63" y1="60" x2="151.63" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="151.63" y1="280" x2="151.63" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="151.63" y="297" font-size="11" text-anchor="middle" fill="#8b949e">250</text>
+<line x1="260" y1="60" x2="260" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="260" y1="280" x2="260" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="260" y="297" font-size="11" text-anchor="middle" fill="#8b949e">1000</text>
+<line x1="440" y1="60" x2="440" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="440" y1="280" x2="440" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="440" y="297" font-size="11" text-anchor="middle" fill="#8b949e">10000</text>
+<line x1="80" y1="280" x2="440" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="280" x2="80" y2="280" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="284" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="80" y1="217.14" x2="440" y2="217.14" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="217.14" x2="80" y2="217.14" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="221.14" font-size="11" text-anchor="end" fill="#8b949e">20</text>
+<line x1="80" y1="154.29" x2="440" y2="154.29" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="154.29" x2="80" y2="154.29" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="158.29" font-size="11" text-anchor="end" fill="#8b949e">40</text>
+<line x1="80" y1="91.43" x2="440" y2="91.43" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="91.43" x2="80" y2="91.43" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="95.43" font-size="11" text-anchor="end" fill="#8b949e">60</text>
+<rect x="80" y="60" width="360" height="220" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="260" y="316" font-size="12" text-anchor="middle" fill="#c9d1d9">--sample-ms (log scale)</text>
+<text x="36" y="170" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 36 170)">seconds of history in the ring</text>
+<text x="80" y="46" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">(a) the minute Strata can draw</text>
+<polygon points="80,280 80,204.57 151.63,91.43 151.63,280" fill="#f06054" opacity="0.14"/>
+<polyline points="80,204.57 84.5,200.1 89,195.37 93.5,190.35 98,185.04 102.5,179.41 107,173.45 111.5,167.14 116,160.45 120.5,153.37 125,145.87 129.5,137.92 134,129.5 138.5,120.58 143,111.14 147.5,101.13 152,91.43 156.5,91.43 161,91.43 165.5,91.43 170,91.43 174.5,91.43 179,91.43 183.5,91.43 188,91.43 192.5,91.43 197,91.43 201.5,91.43 206,91.43 210.5,91.43 215,91.43 219.5,91.43 224,91.43 228.5,91.43 233,91.43 237.5,91.43 242,91.43 246.5,91.43 251,91.43 255.5,91.43 260,91.43 264.5,91.43 269,91.43 273.5,91.43 278,91.43 282.5,91.43 287,91.43 291.5,91.43 296,91.43 300.5,91.43 305,91.43 309.5,91.43 314,91.43 318.5,91.43 323,91.43 327.5,91.43 332,91.43 336.5,91.43 341,91.43 345.5,91.43 350,91.43 354.5,91.43 359,91.43 363.5,91.43 368,91.43 372.5,91.43 377,91.43 381.5,91.43 386,91.43 390.5,91.43 395,91.43 399.5,91.43 404,91.43 408.5,91.43 413,91.43 417.5,91.43 422,91.43 426.5,91.43 431,91.43 435.5,91.43 440,91.43" fill="none" stroke="#ecb25c" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="80,91.43 440,91.43" fill="none" stroke="#8b949e" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 3"/>
+<text x="436" y="85.43" font-size="11" text-anchor="end" fill="#8b949e">WINDOW = 60 s</text>
+<line x1="151.63" y1="280" x2="151.63" y2="60" fill="none" stroke="#f06054" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
+<text x="157.63" y="236" font-size="11" text-anchor="start" fill="#f06054">250 ms: 240 samples</text>
+<text x="157.63" y="250" font-size="11" text-anchor="start" fill="#f06054">= 60 s exactly</text>
+<circle cx="80" cy="204.57" r="3.5" fill="#ecb25c" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="88" y="198.57" font-size="11" text-anchor="start" fill="#ecb25c">24 s at 100 ms</text>
+<line x1="560" y1="60" x2="560" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="560" y1="280" x2="560" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="560" y="297" font-size="11" text-anchor="middle" fill="#8b949e">100</text>
+<line x1="631.63" y1="60" x2="631.63" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="631.63" y1="280" x2="631.63" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="631.63" y="297" font-size="11" text-anchor="middle" fill="#8b949e">250</text>
+<line x1="740" y1="60" x2="740" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="740" y1="280" x2="740" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="740" y="297" font-size="11" text-anchor="middle" fill="#8b949e">1000</text>
+<line x1="920" y1="60" x2="920" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="920" y1="280" x2="920" y2="284" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="920" y="297" font-size="11" text-anchor="middle" fill="#8b949e">10000</text>
+<line x1="560" y1="280" x2="920" y2="280" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="280" x2="560" y2="280" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="284" font-size="11" text-anchor="end" fill="#8b949e">1</text>
+<line x1="560" y1="191.19" x2="920" y2="191.19" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="191.19" x2="560" y2="191.19" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="195.19" font-size="11" text-anchor="end" fill="#8b949e">10</text>
+<line x1="560" y1="102.37" x2="920" y2="102.37" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="102.37" x2="560" y2="102.37" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="106.37" font-size="11" text-anchor="end" fill="#8b949e">100</text>
+<line x1="560" y1="68.61" x2="920" y2="68.61" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="68.61" x2="560" y2="68.61" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="72.61" font-size="11" text-anchor="end" fill="#8b949e">240</text>
+<rect x="560" y="60" width="360" height="220" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="740" y="316" font-size="12" text-anchor="middle" fill="#c9d1d9">--sample-ms (log scale)</text>
+<text x="516" y="170" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 516 170)">points per ridge in its minute</text>
+<text x="560" y="46" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">(b) horizontal resolution of a ridge</text>
+<polyline points="560,68.61 564.5,68.61 569,68.61 573.5,68.61 578,68.61 582.5,68.61 587,68.61 591.5,68.61 596,68.61 600.5,68.61 605,68.61 609.5,68.61 614,68.61 618.5,68.61 623,68.61 627.5,68.61 632,68.63 636.5,70.84 641,73.05 645.5,75.26 650,77.47 654.5,79.68 659,81.88 663.5,84.09 668,86.3 672.5,88.5 677,90.71 681.5,92.91 686,95.11 690.5,97.31 695,99.51 699.5,101.71 704,103.91 708.5,106.11 713,108.3 717.5,110.5 722,112.69 726.5,114.88 731,117.07 735.5,119.25 740,121.44 744.5,123.62 749,125.8 753.5,127.98 758,130.16 762.5,132.33 767,134.5 771.5,136.67 776,138.83 780.5,141 785,143.15 789.5,145.31 794,147.46 798.5,149.61 803,151.75 807.5,153.89 812,156.02 816.5,158.15 821,160.27 825.5,162.39 830,164.5 834.5,166.61 839,168.71 843.5,170.8 848,172.89 852.5,174.97 857,177.04 861.5,179.1 866,181.15 870.5,183.2 875,185.23 879.5,187.26 884,189.27 888.5,191.27 893,193.27 897.5,195.25 902,197.21 906.5,199.17 911,201.11 915.5,203.03 920,204.94" fill="none" stroke="#48b7c7" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="746" y="115.44" font-size="11" text-anchor="start" fill="#48b7c7">61 points at 1 s</text>
+<circle cx="740" cy="121.44" r="3.5" fill="#48b7c7" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="916" y="196.94" font-size="11" text-anchor="end" fill="#48b7c7">7 points at 10 s</text>
+<text x="80" y="346" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">(c) x = (elapsed - now - scroll) * SPAN: the newest segment is a held value</text>
+<rect x="80" y="380" width="840" height="70" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<polygon points="117.33,450 117.33,437.27 210.67,421.36 304,430.91 397.33,405.45 490.67,389.55 584,411.82 677.33,427.73 770.67,418.18 864,399.09 864,399.09 864,450" fill="#48b7c7" opacity="0.25"/>
+<polyline points="117.33,437.27 210.67,421.36 304,430.91 397.33,405.45 490.67,389.55 584,411.82 677.33,427.73 770.67,418.18 864,399.09 864,399.09" fill="none" stroke="#48b7c7" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="117.33" cy="437.27" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="210.67" cy="421.36" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="304" cy="430.91" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="397.33" cy="405.45" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="490.67" cy="389.55" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="584" cy="411.82" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="677.33" cy="427.73" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="770.67" cy="418.18" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="864" cy="399.09" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="864" y1="380" x2="864" y2="450" fill="none" stroke="#ecb25c" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 3"/>
+<text x="868" y="392" font-size="11" text-anchor="start" fill="#ecb25c">now</text>
+<text x="86" y="394" font-size="11" text-anchor="start" fill="#8b949e">just after a sample (scroll = 0)</text>
+<rect x="80" y="480" width="840" height="70" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<polygon points="164,550 164,521.36 257.33,530.91 350.67,505.45 444,489.55 537.33,511.82 630.67,527.73 724,518.18 817.33,499.09 864,499.09 864,550" fill="#48b7c7" opacity="0.25"/>
+<polyline points="164,521.36 257.33,530.91 350.67,505.45 444,489.55 537.33,511.82 630.67,527.73 724,518.18 817.33,499.09 864,499.09" fill="none" stroke="#48b7c7" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="164" cy="521.36" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="257.33" cy="530.91" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="350.67" cy="505.45" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="444" cy="489.55" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="537.33" cy="511.82" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="630.67" cy="527.73" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="724" cy="518.18" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="817.33" cy="499.09" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="864" y1="480" x2="864" y2="550" fill="none" stroke="#ecb25c" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 3"/>
+<text x="868" y="492" font-size="11" text-anchor="start" fill="#ecb25c">now</text>
+<text x="86" y="494" font-size="11" text-anchor="start" fill="#8b949e">half an interval later (scroll = 0.5)</text>
+<rect x="80" y="580" width="840" height="70" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<polygon points="117.33,650 117.33,621.36 210.67,630.91 304,605.45 397.33,589.55 490.67,611.82 584,627.73 677.33,618.18 770.67,599.09 864,599.09 864,650" fill="#48b7c7" opacity="0.25"/>
+<polyline points="117.33,621.36 210.67,630.91 304,605.45 397.33,589.55 490.67,611.82 584,627.73 677.33,618.18 770.67,599.09 864,599.09" fill="none" stroke="#48b7c7" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="117.33" cy="621.36" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="210.67" cy="630.91" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="304" cy="605.45" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="397.33" cy="589.55" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="490.67" cy="611.82" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="584" cy="627.73" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="677.33" cy="618.18" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="770.67" cy="599.09" r="3.2" fill="#c9d1d9" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="864" y1="580" x2="864" y2="650" fill="none" stroke="#ecb25c" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 3"/>
+<text x="868" y="592" font-size="11" text-anchor="start" fill="#ecb25c">now</text>
+<text x="86" y="594" font-size="11" text-anchor="start" fill="#8b949e">just before the next (scroll = 1)</text>
+</svg>
