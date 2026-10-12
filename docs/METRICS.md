@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 58 | 57,324 | 1,282 | 3,280 |
+| Rust | 58 | 57,377 | 1,293 | 3,282 |
 | Python | 28 | 12,273 | 634 | 1,412 |
 | WebGPU Shader Language | 1 | 212 | 17 | 34 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 6 | 0 | 2,447 | 516 |
 | Plain Text | 7 | 0 | 302 | 0 |
-| **Total** | **104** | **69,875** | **4,683** | **5,253** |
+| **Total** | **104** | **69,928** | **4,694** | **5,255** |
 
 ## Rust by module
 
@@ -26,7 +26,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/model.rs` | 3,093 | 3,898 |
 | `src/coop.rs` | 2,706 | 1,363 |
 | `src/necropolis.rs` | 1,995 | 610 |
-| `src/main.rs` | 1,979 | 2,795 |
+| `src/main.rs` | 1,979 | 2,816 |
 | `src/cortex.rs` | 1,220 | 540 |
 | `src/platform/macos/mod.rs` | 1,197 | 609 |
 | `src/tesseract.rs` | 1,053 | 561 |
@@ -34,7 +34,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/murmuration.rs` | 925 | 782 |
 | `src/gpu.rs` | 852 | 145 |
 | `src/horizon/disk.rs` | 796 | 274 |
-| `src/views.rs` | 722 | 619 |
+| `src/views.rs` | 723 | 619 |
 | `src/simulation.rs` | 647 | 762 |
 | `src/platform/linux/mod.rs` | 609 | 370 |
 | `src/platform/macos/ffi.rs` | 594 | 12 |
@@ -49,8 +49,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/globe.rs` | 487 | 461 |
 | `src/terminal.rs` | 473 | 185 |
 | `src/cells.rs` | 457 | 339 |
+| `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
-| `src/horizon/orbits.rs` | 389 | 381 |
 | `src/platform/linux/net.rs` | 320 | 278 |
 | `src/matrix.rs` | 299 | 219 |
 | `src/blackbody.rs` | 292 | 146 |
@@ -80,7 +80,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **33,799** | **23,539** |
+| **Total** | **33,812** | **23,579** |
 
 ## Largest files
 
@@ -90,12 +90,12 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 |:--|--:|:--|
 | `src/model.rs` | 8,219 | over limit |
 | `src/render.rs` | 5,452 | over limit |
-| `src/main.rs` | 5,263 | over limit |
+| `src/main.rs` | 5,286 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
 | `src/platform/macos/mod.rs` | 2,223 | over limit |
 | `src/murmuration.rs` | 1,966 | over limit |
-| `src/cortex.rs` | 1,964 | over limit |
+| `src/cortex.rs` | 1,965 | over limit |
 | `src/tesseract.rs` | 1,849 | over limit |
 | `src/simulation.rs` | 1,746 | over limit |
 
@@ -118,7 +118,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 779 |
+| `#[test]` functions | 781 |
 | Views in the registry | 17 |
 | Views with a README mapping table | 7 of 17 |
 | Direct crate dependencies | 10 |

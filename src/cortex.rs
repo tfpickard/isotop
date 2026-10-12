@@ -540,8 +540,9 @@ impl Cortex {
                 let body = self.bodies[slot].take().expect("a slot holds its body");
                 self.network.remove(slot);
                 self.changes += 1;
-                // A process hidden by the limit or a focus is not dead: only a real exit leaves dust.
-                if !alive.contains(&id) && stage.focus.is_none() {
+                // A process hidden by the limit or a focus is still in the snapshot: only a real
+                // exit leaves dust, with or without a focus.
+                if !alive.contains(&id) {
                     self.dying.push(Dust {
                         at: body.at,
                         color: body.color,

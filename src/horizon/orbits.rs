@@ -41,6 +41,12 @@ const EASE_SECONDS: f32 = 1.5;
 const EASE_SPEED: f32 = 2.0;
 /// Two neighbours in the ranking swap only if their scores differ by at least this much.
 const SWAP_MARGIN: i32 = 5;
+/// How long the view may go without a new sample before what it remembers is stale, in seconds:
+/// longer than the slowest `--sample-ms` (10 s) with room to spare. The animation clock only runs
+/// while the view is shown, so a longer gap means it was away.
+const MAX_GAP: f32 = 30.0;
+/// The longest a sample interval counts for the claim window, in seconds: the slowest `--sample-ms`.
+const MAX_INTERVAL: f32 = 10.0;
 /// The most rises of the kill counter one sample may add, so a restart of the counter cannot
 /// flood the ghosts.
 const MOST_RISES: u64 = 8;
@@ -327,6 +333,19 @@ impl Orbits {
             .seen
             .is_none_or(|(elapsed, _)| sample.elapsed > elapsed)
         {
+            // After a stretch in another view every body that exited meanwhile would be a fresh
+            // ghost and the kill counter's whole change a fresh rise, so old exits would plunge as
+            // if they were current kills. Start afresh instead.
+            if self
+                .seen
+                .is_some_and(|(_, time)| sample.time - time > MAX_GAP)
+            {
+                self.bodies.clear();
+                self.ghosts.clear();
+                self.rises.clear();
+                self.counter = None;
+                self.seen = None;
+            }
             let before = self
                 .seen
                 .map_or(sample.time, |(_, time)| time.min(sample.time));
@@ -363,7 +382,7 @@ impl Orbits {
                 }
             }
             self.counter = sample.kills;
-            self.interval = (sample.time - before).max(0.0);
+            self.interval = (sample.time - before).clamp(0.0, MAX_INTERVAL);
             self.seen = Some((sample.elapsed, sample.time));
         }
         self.retarget(sample);
@@ -801,6 +820,30 @@ mod tests {
             );
             assert_eq!(orbits.ghosts()[0].fate, fate, "a rise {late} samples later");
         }
+    }
+
+    #[test]
+    fn a_return_from_another_view_makes_no_ghosts_of_what_exited_meanwhile() {
+        let mut orbits = Orbits::default();
+        take(&mut orbits, 10.0, &population(40), Some(5), None);
+        // Two minutes in another view: two processes exited and the counter rose twice.
+        take(&mut orbits, 130.0, &without(&[1, 2]), Some(7), None);
+        assert!(orbits.ghosts().is_empty(), "no ghost for an old exit");
+        assert!(!orbits.bodies().contains_key(&id(1)));
+        assert_eq!(
+            orbits.bodies().len(),
+            RANKED,
+            "the top ranks are shown at once"
+        );
+        // From then on exits and kills are read as usual, and the old rises are not left to be
+        // claimed by them.
+        take(&mut orbits, 131.0, &without(&[1, 2]), Some(7), None);
+        take(&mut orbits, 132.0, &without(&[1, 2, 3]), Some(7), None);
+        assert_eq!(orbits.ghosts()[0].fate, Fate::Fading, "no rise: it fades");
+        take(&mut orbits, 133.0, &without(&[1, 2, 3, 4]), Some(8), None);
+        let fates: Vec<Fate> = orbits.ghosts().iter().map(|ghost| ghost.fate).collect();
+        // A new rise takes the best-ranked of the two exits, which is the one before it.
+        assert_eq!(fates, [Fate::Plunging, Fate::Fading]);
     }
 
     #[test]
