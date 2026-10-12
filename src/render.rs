@@ -1168,6 +1168,7 @@ pub(crate) struct Stage<'a> {
     /// from the shown snapshot's `elapsed`.
     pub history: &'a History,
     births: &'a HashMap<Identity, f32>,
+    arrivals: &'a HashMap<Identity, f32>,
     /// CPU and memory as eased for every sampled process, drawn or not.
     resources: &'a HashMap<Identity, (f32, f32)>,
     /// Where each drawn process is, for picking anchors, labels and the tour.
@@ -1197,6 +1198,15 @@ pub(crate) struct Stage<'a> {
 impl Stage<'_> {
     pub fn growth(&self, id: Identity) -> f32 {
         growth(self.births, id, self.time)
+    }
+
+    /// Seconds since the scene first saw the process, or None for one that was there on the
+    /// scene's first frame (it did not start while anyone watched) and while `time` is before
+    /// that moment (a rewind). `growth` is an easing fraction that the app's intro also
+    /// animates for processes already running; this is the true age of one that arrived.
+    pub fn age(&self, id: Identity) -> Option<f32> {
+        let arrived = *self.arrivals.get(&id)?;
+        (self.time >= arrived).then_some(self.time - arrived)
     }
 
     /// A sampled process's CPU and memory as the scene eases them, whether it is drawn or not.
@@ -1331,6 +1341,8 @@ pub struct Scene {
     /// The step every `Stage` gets as `dt`.
     clock: FrameClock,
     births: HashMap<Identity, f32>,
+    /// When each process that arrived after the first frame was first seen: `Stage::age`.
+    arrivals: HashMap<Identity, f32>,
     previous: HashMap<Identity, Point>,
     deaths: Vec<(Point, f32)>,
     /// Height of the tallest building in the last city frame, so fitting leaves it headroom.
@@ -1406,6 +1418,7 @@ impl Scene {
             last_time: None,
             clock: FrameClock::default(),
             births: HashMap::new(),
+            arrivals: HashMap::new(),
             previous: HashMap::new(),
             deaths: Vec::new(),
             tallest: 0.0,
@@ -1719,6 +1732,7 @@ impl Scene {
         let alpha = smoothing(dt.max(0.0), 0.3);
         self.resources.retain(|id, _| alive.contains(id));
         self.births.retain(|id, _| alive.contains(id));
+        self.arrivals.retain(|id, _| alive.contains(id));
         let born = if self.started || self.intro {
             time
         } else {
@@ -1731,6 +1745,7 @@ impl Scene {
                 entry.insert(born);
                 if fresh {
                     self.newborn.push(p.id);
+                    self.arrivals.insert(p.id, time);
                 }
             }
         }
@@ -1825,6 +1840,7 @@ impl Scene {
                     dt,
                     history: &self.history,
                     births: &self.births,
+                    arrivals: &self.arrivals,
                     resources: &self.resources,
                     positions: &mut self.positions,
                     places: &mut self.places,
