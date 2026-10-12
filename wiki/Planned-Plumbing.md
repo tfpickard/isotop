@@ -145,5 +145,5 @@ Existing: `Process.syscall_io` (`SyscallIo { read_chars, write_chars, reads, wri
 * M. D. McIlroy, internal Bell Labs memorandum, 1964 (the "garden hose" passage); D. M. Ritchie, "The Evolution of the Unix Time-sharing System", *AT&T Bell Laboratories Technical Journal* 63 (1984), for the history of pipes.
 * Linux manual pages `pipe(7)`, `pipe(2)`, `fcntl(2)` (`F_SETPIPE_SZ`), `proc(5)` (`wchar`, `wchan`, `fdinfo`), `sock_diag(7)`, `unix(7)`.
 * J. D. C. Little, "A proof for the queuing formula $L = \lambda W$", *Operations Research* 9 (1961) 383-387.
-* E. Cesaro-style fluid models of queues are standard; for blocking in tandem queues see L. Kleinrock, *Queueing Systems, Volume 1: Theory* (Wiley, 1975).
+* L. Kleinrock, *Queueing Systems, Volume 1: Theory* (Wiley, 1975), for queues and blocking.
 * Issue [#49](https://github.com/tfpickard/isotop/issues/49) and its amendment comment; [#29](https://github.com/tfpickard/isotop/issues/29) (B2); `docs/briefs/views-2026-10.md` section 10; [docs/VIEW_CONVENTIONS.md](https://github.com/tfpickard/isotop/blob/main/docs/VIEW_CONVENTIONS.md). See also [Theory-Text-Safety](Theory-Text-Safety), [Theory-Picking](Theory-Picking), [Theory-Stable-Layout](Theory-Stable-Layout).
