@@ -81,10 +81,10 @@ def main():
         y=axes.top + 224,
     )
     figure.text(
-        72, 442, "At every sample instant the filter equals the continuous curve exactly, whatever dt is; dt only sets how often it is read.",
+        72, 442, "At a sample instant the dots sit on the continuous curve when the step lands on a sample, and just under it otherwise (3.7 points at the first dt = 1 s sample here).",
         size=11.5, color=MUTED,
     )
-    figure.text(72, 459, "The first raw reading after the step is partial (here 63% for the 0.37 s offset): the interval average also delays the edge by dt / 2 on average.", size=11.5, color=MUTED)
+    figure.text(72, 459, "The time constant is 1.5 s whatever dt is: dt only sets how often the filter is read. The interval average adds a mean delay of dt / 2 to the edge.", size=11.5, color=MUTED)
     out = os.path.join("docs", "media", "figures", "model-smoothing-step.svg")
     figure.save(out)
     print("wrote", out)

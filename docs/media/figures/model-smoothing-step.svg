@@ -101,6 +101,6 @@
 <text x="571" y="337" font-size="11.5" fill="#c9d1d9" text-anchor="start" font-weight="normal">displayed CPU, dt = 1 s (dots)</text>
 <line x1="542" y1="350" x2="564" y2="350" stroke="#7ee787" stroke-width="2.2"/>
 <text x="571" y="354" font-size="11.5" fill="#c9d1d9" text-anchor="start" font-weight="normal">displayed CPU, dt = 0.25 s (dots)</text>
-<text x="72" y="442" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">At every sample instant the filter equals the continuous curve exactly, whatever dt is; dt only sets how often it is read.</text>
-<text x="72" y="459" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">The first raw reading after the step is partial (here 63% for the 0.37 s offset): the interval average also delays the edge by dt / 2 on average.</text>
+<text x="72" y="442" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">At a sample instant the dots sit on the continuous curve when the step lands on a sample, and just under it otherwise (3.7 points at the first dt = 1 s sample here).</text>
+<text x="72" y="459" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">The time constant is 1.5 s whatever dt is: dt only sets how often the filter is read. The interval average adds a mean delay of dt / 2 to the edge.</text>
 </svg>
