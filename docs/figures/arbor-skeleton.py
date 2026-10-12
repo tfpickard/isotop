@@ -102,7 +102,7 @@ def main():
         entries.append((name, colour, None))
     a.legend(entries, corner="bl", size=10)
     # b: skeleton
-    cx, cy, scale = 480, 342, 11.5
+    cx, cy, scale = 490, 346, 9.0
     az, el = math.radians(28.0), math.radians(14.0)
 
     def project(p):
