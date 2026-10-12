@@ -1000,8 +1000,8 @@ mod tests {
         assert!(!view("horizon").info().flash);
         assert_eq!(
             REGISTRY.iter().filter(|row| !row.flash).count(),
-            3,
-            "ptolemy, necropolis, horizon"
+            4,
+            "ptolemy, necropolis, horizon, murmuration"
         );
     }
 

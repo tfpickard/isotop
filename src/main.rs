@@ -17,6 +17,7 @@ mod layout;
 mod matrix;
 mod medium;
 mod model;
+mod murmuration;
 mod necropolis;
 mod neurons;
 mod palette;
@@ -4226,7 +4227,7 @@ mod tests {
         type_text(&mut app, "eef");
         assert_eq!(
             picker_lines(&app, 31)[1].trim_end(),
-            "> *  9 reef       REEF"
+            "> *  9 reef        REEF"
         );
         assert_eq!(app.view, view("city"), "typing never switches");
     }
@@ -4495,7 +4496,7 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/16");
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/17");
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -4734,7 +4735,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("horizon"))
+                .any(|line| line.starts_with("> ") && line.contains("murmuration"))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -4749,7 +4750,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("horizon"))
+                .any(|line| line.starts_with("> ") && line.contains("murmuration"))
         );
     }
 

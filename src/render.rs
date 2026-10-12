@@ -312,7 +312,6 @@ pub enum Item {
     /// that any number of them can stack and the two rasterizers still agree to a level (a
     /// `Glow` truncates on the CPU, and stacked ones drift apart). Strength is clamped to
     /// [0, 1]. For content whose look is the density of many splats, such as a flock.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     Puff {
         center: [f32; 2],
         radius: f32,
@@ -335,7 +334,6 @@ pub enum Item {
     /// no colour and no depth, depth-tested at `depth` as a sphere is. `pick` names a process or
     /// a thing. Record it after the geometry it lies over: it writes no depth, so geometry
     /// recorded later covers it wherever that geometry passes the depth test.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     Pick {
         center: [f32; 2],
         radius: f32,

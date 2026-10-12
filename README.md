@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in sixteen views: a process
+A living picture of your machine inside the terminal, in seventeen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
@@ -29,7 +29,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -174,7 +174,7 @@ cache is stale.
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
-| Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. No view draws them yet |
+| Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
@@ -211,8 +211,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the sixteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex and the horizon are reached with Tab, Shift+Tab,
+the seventeen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon and murmuration are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
@@ -623,6 +623,34 @@ The OOM killer as a Schwarzschild black hole: a lensed accretion disk around a b
 **What cannot be measured.** The kernel keeps the count of kills, not their victims: a plunge is the best-ranked process that vanished within 2.5 s of a rise, which a different exit at the same moment can fool. With no counter at all every exit fades, and the legend says "no oom kills: exits not classified"; where only the cgroups count, it says "kills counted from cgroups". A process whose score cannot be read is left out and counted (`N unranked`). Rewinding with `[` shows the older sample's processes, not the older orbits.
 
 **Platform.** On Linux everything above. On macOS the ranking is by memory footprint, there is no unkillable band and no plunge: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it). Horizon has no keys of its own; `l` hides the labels.
+### Murmuration
+
+![Murmuration: a flock of starlings, one dark bird for each thread, over a twilight sky and a treeline](docs/media/murmuration.webp)
+
+Every thread is a starling in one flock over a roost at dusk, and every process is a sub-flock inside it.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Bird | One thread of a process (`Process::thread_list`, read while murmuration is shown) | One bird per thread, keyed by process and thread id. Above 8,000 threads in all, each process flies max(1, round(threads × 8000 / total)) of them, those with the lowest hash of tid, so the selection holds from sample to sample; the legend then says `1 bird per K threads` |
+| Flock | Process | A bird aligns with the weighted mean velocity of its seven nearest neighbours, those of its own process counting double, so each process holds together without balling up. A process whose threads are not read yet flies one bird for each of `Process::threads` |
+| Speed | The thread's CPU, percent of one core over the last background interval | 1 + 0.3 × clamp(CPU / 100, 0, 1) world units a step, so busy threads surge to the front. A thread with no CPU reading yet, or a process with no thread list, uses the process's CPU divided by its threads; the legend counts them: `speed from process mean for N` |
+| Darkness | The birds | Each bird is a soft splat of radius 0.85 of a world unit in pixels (1.2 to 6 px) with peak alpha 1 − exp(−1.1 w), w = 1; splats stack, so dense regions go black and thin ones grey. The nearest bird is picked |
+| Dark wave | The falcon | An agitated bird weighs w = 1 + 1.6 × its agitation, up to 2.6. A bird within 14 units of the falcon is fully agitated and flees; agitation passes to the neighbours as 0.93 of the largest among a bird's seven while it is above 0.35, fades by 0.86 a step and adds 0.12 of noise |
+| Falcon | Memory pressure, the 10 s stall average, at or above 10 %; or a rise in the OOM kill count (`oom_kill` in `/proc/vmstat`, else the sum of the cgroups' `oom_kills`) | A red chevron that dives through the flock at 2.6 units a step for 6.5 s, labelled `memory pressure` or `OOM`. Pressure releases one falcon at most every 8 s while it stays at or above 10 %; a kill releases one when none is flying |
+| Rising bird | A thread that appeared since the last sample | Climbs from the roost at the origin to 35 units, where it joins the flock |
+| Falling bird | A thread that exited | Falls to the roost over 1.5 s and is removed |
+| Sky tint | CPU, memory and I/O pressure | The pressure haze every view has, over the sky |
+| Lit birds | The process that is selected, under the pointer or visited by the tour | Its birds are drawn again in its kind colour, labelled `name  N threads`; the inspector adds the thread count and the three busiest thread names with their CPU |
+
+**Decorative:** the twilight sky, a gradient from deep blue (28, 34, 70) through violet (120, 92, 138) at 60 % of the height to orange (238, 150, 104) at the horizon; the treeline along the bottom of the frame, which is a silhouette and **carries no data**; the clumps the flock starts as and the noise of each bird's flight.
+
+**Flight.** The flock steps at a fixed 0.05 s (20 steps a second), whatever the frame rate, and holds still while paused. Each step a bird steers by 0.30 towards the weighted mean velocity of its 7 nearest neighbours (alignment), 0.02 towards the centroid of its 21 nearest (cohesion; with only 7, closed groups of eight split off as islands) and 0.4 times the sum of away / d² from those closer than 1.5 (separation); 0.0006 towards the whole flock's centroid (a pull on each process's own centroid of 0.0012 or more splits the flock into separate balls), 0.004 per unit beyond 80 units from the roost's axis, and 0.01 per unit outside the altitude band of 35 to 110; and it damps its vertical velocity by 0.10 (0.22 flattens the flock to a pancake), so it flies level and turns by banking, which flattens the flock into sheets that show as dark bands edge-on. Noise adds 0.02. Its speed is then set to the thread's. The camera is fitted to the roost cylinder (radius 90, height 110), not to the flock, and starts at the lowest tilt, about 20 degrees.
+
+**Caps.** 8,000 birds. Above it every process still flies at least one, so the flock can hold as many more birds as there are processes in view (`--limit`). The 21 nearest neighbours of each bird come from a spatial hash with 2-unit cells.
+
+**What cannot be measured.** Another user's threads are unreadable without privileges, so those birds fly at their process's mean speed and the legend counts them. If the threads cannot be read at all the legend says `no threads: speed from process mean`, and without an OOM kill count (an old kernel with no `oom_kill`, and no cgroup counting them) it says `no oom kills: falcon from memory pressure only`; until the first pass has read the threads (up to two seconds after the view opens) every bird flies at its process's mean speed. A view entered after a gap of more than two sample intervals releases nothing for the kills and pressure of the time it was away.
+
+On macOS the threads and their CPU are read as on Linux, but there is no count of OOM kills: the falcon comes from memory pressure only, where the kernel's level (warning reads 25, critical 75) stands in for the stall percentage. See [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
 
 ### Matrix
 
@@ -722,7 +750,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -815,7 +843,7 @@ Search, focus, links and the tour work on processes only.
 
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
 uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
-the media and creatures have settled, demo strata replays a minute of
+the media and creatures have settled, demo murmuration plays 15 seconds of its flight (300 steps) from its clumps as a live run would have drawn them, so at `--time 12` the demo's memory pressure has sent its falcon through the flock (a live headless run has no past to play and shows the clumps), demo strata replays a minute of
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
@@ -831,7 +859,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-55,206 lines of Rust (32,748 production, 22,458 test) in 57 files, 753 tests, 16 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+57,179 lines of Rust (33,747 production, 23,432 test) in 58 files, 774 tests, 17 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

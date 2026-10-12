@@ -175,6 +175,9 @@ Add a `### <Name>` section under `## Worlds`, modelled on `### Coop`:
 - Thick, dashed or tubular strokes use `Frame::ribbon` and `Frame::tube` (from [S3 (#24)](https://github.com/tfpickard/isotop/issues/24)). They emit only triangles and share the `LIGHT` constant with [P3 (#19)](https://github.com/tfpickard/isotop/issues/19) relief.
 - Grid simulations draw through the field item (from [P3 (#19)](https://github.com/tfpickard/isotop/issues/19)). One triangle pair per cell is not allowed.
 - Screen-space items keep their depth inside the scene's depth range, because the GPU normalizes depth per frame (`normalized` in `shaders.wgsl`).
+- Many soft splats whose density is the picture (a flock, a swarm) draw `Item::Puff`, not `Item::Glow`. A `Glow` blends with truncation on the CPU and rounds on the GPU, so stacked ones drift apart (at 960 px, 1800 dark glows over the twilight sky already put 0.22 % of the pixels more than two levels off, 8000 put 1.8 %); a `Puff` rounds on both and stays within one level at any density. It has a `Glow`'s fields and falloff, and its strength is clamped to [0, 1].
+- `Backdrop::Twilight` is a three-stop dusk sky (deep blue, violet at 60 % of the height, orange at the horizon); the pressure haze adds on top of it as on every backdrop.
+- A module view lights the processes the app highlights (selected, hovered, toured) through `Stage::highlight`.
 - If you change how anything is rasterized, change `render.rs` and `shaders.wgsl` together.
 
 ## CPU/GPU parity
@@ -211,6 +214,7 @@ Measured on an Apple GPU (Metal), `--demo --time 12 --width 960`:
 | reef | 0.0485 | 0.1524 | 123 | default |
 | matrix | 0.0335 | 0.0000 | 2 | default |
 | coop | 0.0149 | 0.0237 | 192 | default |
+| murmuration | 0.0000 | 0.0000 | 1 | default |
 
 Orbit, flow and strata exceed even the line-dominant limit. They are known parity debt of the older views, not a tolerance to copy; fixing them belongs to the rasterizer, not to a view PR.
 

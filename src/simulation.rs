@@ -341,19 +341,11 @@ impl SpatialHash {
 
 /// The sort key of an `(index, distance)` candidate: distance, then index, as one integer. The
 /// bits of a non-negative `f32` order like its value, and a NaN distance ranks after every number.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 fn rank(candidate: &(usize, f32)) -> u64 {
     u64::from(candidate.1.to_bits()) << 32 | candidate.0 as u64
 }
 
 /// Orders candidates by distance, then index.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 fn closer(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
     rank(a).cmp(&rank(b))
 }
@@ -371,10 +363,6 @@ fn closer(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
 /// shells suffice. Coordinates must be finite; a grid holding non-finite points, or points
 /// whose cell coordinates leave `+-2^30`, answers every query by scanning all points.
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 pub struct SpatialHash3 {
     inverse_cell: f32,
     points: Vec<[f32; 3]>,
@@ -392,10 +380,6 @@ pub struct SpatialHash3 {
 /// The integer coordinates of one grid cell. Its own hash (below) is cheaper than the default
 /// SipHash, which cost a k-nearest query about as much as the distances it computes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 struct Cell([i32; 3]);
 
 impl std::hash::Hash for Cell {
@@ -410,10 +394,6 @@ impl std::hash::Hash for Cell {
 
 /// Hashes the one `u64` a [`Cell`] writes: one multiply, then the high half folded onto the low.
 #[derive(Default)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 struct CellHasher(u64);
 
 impl std::hash::Hasher for CellHasher {
@@ -437,16 +417,8 @@ impl std::hash::Hasher for CellHasher {
 
 /// Cell coordinates beyond this magnitude may be saturated casts, so their cell geometry is
 /// unreliable.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 const CELL_LIMIT: i32 = 1 << 30;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 impl SpatialHash3 {
     /// Creates an empty grid whose cells are `cell` wide. Non-positive sizes fall back to 1.
     pub fn new(cell: f32) -> Self {
@@ -534,6 +506,10 @@ impl SpatialHash3 {
     /// Clears `out`, then fills it with the indices of every stored point whose distance to
     /// `point` is strictly less than `radius`, in ascending index order. A query point that is
     /// itself stored is included at distance zero.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no caller until a view that needs a radius query")
+    )]
     pub fn neighbours(&self, point: [f32; 3], radius: f32, out: &mut Vec<usize>) {
         out.clear();
         if self.points.is_empty() || radius.is_nan() || radius <= 0.0 {

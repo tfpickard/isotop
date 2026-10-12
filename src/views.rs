@@ -12,8 +12,8 @@ use std::fmt;
 
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
-use crate::render::{Backdrop, Camera, Card, ISOMETRIC, Point, Scene, Stage, Thing};
-use crate::{cells, cores, cortex, globe, horizon, necropolis, ptolemy, tesseract};
+use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
+use crate::{cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -857,6 +857,35 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::Module(|| Box::new(horizon::Horizon::default())),
         )
     },
+    ViewInfo {
+        // Sockets join processes, and the flocks fly clear of one another.
+        links: LinkRule::DrawnByView,
+        // Threads that exit fall to the roost instead.
+        flash: false,
+        // The camera looks across the sky at the flock.
+        pitch: Some(LOWEST_PITCH),
+        sources: Sources::of(&[Source::Threads, Source::OomKills]),
+        // Fifteen seconds of flight, a step at a time, as a live run would have drawn them: the
+        // flock settles from its clumps, and the demo's samples set off its falcon.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 15,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            threads: true,
+            kernel_counters: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new(
+            "murmuration",
+            "MURMURATION",
+            Backdrop::Twilight,
+            Hooks::Module(|| Box::new(murmuration::Murmuration::default())),
+        )
+    },
 ];
 
 fn city_legend(_: &Scene, _: &Snapshot) -> String {
@@ -1659,7 +1688,14 @@ mod tests {
         );
         assert_eq!(
             with(|hooks| matches!(hooks, Hooks::Module(_))),
-            ["ptolemy", "tesseract", "necropolis", "cortex", "horizon"]
+            [
+                "ptolemy",
+                "tesseract",
+                "necropolis",
+                "cortex",
+                "horizon",
+                "murmuration"
+            ]
         );
     }
 }
