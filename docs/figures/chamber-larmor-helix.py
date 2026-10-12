@@ -61,48 +61,48 @@ def main():
         svg.circle(centre[0], centre[1], radius, stroke=colour, width=2.0, stroke_opacity=0.9)
         svg.circle(centre[0], centre[1], 2.2, fill=P.MUTED)
         # Arrow head on the circle: clockwise for positive charge, anticlockwise for negative.
-        angle = -0.6
+        angle = -math.pi / 2
         px, py = centre[0] + radius * math.cos(angle), centre[1] + radius * math.sin(angle)
         # tangent direction in screen coordinates (y down); clockwise on screen = +angle
         sign = 1.0 if charge > 0 else -1.0
         tx, ty = -math.sin(angle) * sign, math.cos(angle) * sign
         nx, ny = -ty, tx
-        head = [(px + tx * 7, py + ty * 7), (px - tx * 3 + nx * 5, py - ty * 3 + ny * 5),
-                (px - tx * 3 - nx * 5, py - ty * 3 - ny * 5)]
+        head = [(px + tx * 9, py + ty * 9), (px - tx * 4 + nx * 6, py - ty * 4 + ny * 6),
+                (px - tx * 4 - nx * 6, py - ty * 4 - ny * 6)]
         svg.polyline(head, stroke=colour, fill=colour, close=True, width=1.0)
         svg.text(centre[0], centre[1] + radius + 15, "%+d, p = %.1f" % (charge, momentum),
                  size=10.5, anchor="middle", fill=colour)
-    svg.text(cx0 + 12, cy0 + h - 12, "radius is proportional to p; sense is set by the sign of q",
+    svg.text(cx0 + 12, cy0 + h - 12, "clockwise: q > 0 (blue); anticlockwise: q < 0 (orange)",
              size=10.5, fill=P.MUTED)
 
     # Helix in oblique projection.
     hx0 = 890
     svg.rect(hx0, top, 290, h, stroke=P.AXIS, width=1.0)
     svg.text(hx0, top - 9, "With p_z: a helix (oblique view)", size=13, weight="600")
-    radius, pitch, turns = 42.0, 42.0, 3.4
+    radius, pitch, turns = 48.0, 50.0, 3.4
+    squash = 0.38
+    centre_x, base_y = hx0 + 145, top + h - 70
     points = []
-    steps = 360
+    steps = 400
     for k in range(steps + 1):
         phi = turns * 2 * math.pi * k / steps
-        x = radius * math.cos(-phi)
-        y = radius * math.sin(-phi)
+        x = radius * math.cos(phi)
+        y = radius * math.sin(phi)
         z = pitch * phi / (2 * math.pi)
-        sx = hx0 + 70 + x + 0.55 * z * 0.5
-        sy = top + h - 60 - (0.55 * z * 0.87) + y * 0.45
-        points.append((sx, sy))
+        points.append((centre_x + x, base_y - z + y * squash))
     svg.polyline(points, stroke=P.AQUA, width=2.0)
-    # Projection of the helix on the transverse plane (the circle) and the axis.
-    ground = []
-    for k in range(121):
-        phi = 2 * math.pi * k / 120
-        ground.append((hx0 + 70 + radius * math.cos(phi), top + h - 60 + radius * math.sin(phi) * 0.45))
+    ground = [(centre_x + radius * math.cos(2 * math.pi * k / 120),
+               base_y + radius * math.sin(2 * math.pi * k / 120) * squash) for k in range(121)]
     svg.polyline(ground, stroke=P.MUTED, width=1.0, dash="3 3")
-    svg.line(hx0 + 70, top + h - 60, hx0 + 70 + 0.55 * pitch * turns * 0.5,
-             top + h - 60 - 0.55 * pitch * turns * 0.87, stroke=P.MUTED, width=1.0, dash="3 3")
+    svg.line(centre_x, base_y, centre_x, base_y - pitch * turns - 10, stroke=P.MUTED, width=1.0,
+             dash="3 3")
+    svg.text(centre_x + 8, base_y - pitch * turns - 14, "z, along B", size=10.5, fill=P.MUTED)
+    svg.line(centre_x + radius + 18, base_y, centre_x + radius + 18, base_y - pitch,
+             stroke=P.YELLOW, width=1.5)
+    svg.text(centre_x + radius + 24, base_y - pitch / 2 + 4, "one pitch", size=10.5, fill=P.YELLOW)
     svg.text(hx0 + 14, top + h - 14, "pitch = 2 pi r tan(lambda), tan(lambda) = p_z / p_T",
              size=10.5, fill=P.MUTED)
-    svg.text(hx0 + 150, top + 28, "p_z > 0: rises", size=10.5, fill=P.AQUA)
-    svg.save("docs/media/figures/chamber-larmor-helix.svg")
+        svg.save("docs/media/figures/chamber-larmor-helix.svg")
 
 
 if __name__ == "__main__":

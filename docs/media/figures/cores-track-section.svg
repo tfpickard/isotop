@@ -2,7 +2,7 @@
 <title>The Cores track in plan and section</title>
 <desc>Concentric lanes, performance cores inside and efficiency cores outside, banked so that outer lanes stand higher.</desc>
 <rect width="980" height="560" fill="#0e1116"/>
-<text x="30" y="34" font-size="14" text-anchor="start" fill="#c9d1d9" font-weight="600">Plan: one lane per CPU, seen from above</text>
+<text x="30" y="34" font-size="14" text-anchor="start" fill="#c9d1d9" font-weight="600">Plan: one lane per CPU</text>
 <circle cx="245" cy="270" r="48.67" fill="#0c121c" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="245" cy="270" r="55.8" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
 <circle cx="245" cy="270" r="65.1" fill="none" stroke="#ecb25c" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
@@ -22,15 +22,15 @@
 <circle cx="245" cy="270" r="202.74" fill="none" stroke="#48b7c7" stroke-width="7.63" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
 <circle cx="245" cy="270" r="207.39" fill="none" stroke="#4b5563" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
 <line x1="293.67" y1="270" x2="452.39" y2="270" fill="none" stroke="#e6ecf0" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
-<polyline points="259.23,187.52 253.7,186.75 248.13,186.36 242.56,186.34 236.99,186.68 231.46,187.4 225.98,188.49 220.6,189.94 215.32,191.74 210.17,193.89 205.18,196.38 200.36,199.2 195.74,202.33" fill="none" stroke="#b288e8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
-<circle cx="195.74" cy="202.33" r="6" fill="#b288e8" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="199.74" y="190.33" font-size="11" text-anchor="middle" fill="#b288e8">marble</text>
-<circle cx="401.14" cy="275.58" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="400.98" cy="278.99" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="400.75" cy="282.39" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="259.23,352.48 253.7,353.25 248.13,353.64 242.56,353.66 236.99,353.32 231.46,352.6 225.98,351.51 220.6,350.06 215.32,348.26 210.17,346.11 205.18,343.62 200.36,340.8 195.74,337.67" fill="none" stroke="#b288e8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>
+<circle cx="195.74" cy="337.67" r="6" fill="#b288e8" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="199.74" y="325.67" font-size="11" text-anchor="middle" fill="#b288e8">marble</text>
+<circle cx="401.14" cy="264.42" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="400.98" cy="261.01" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="400.75" cy="257.61" r="3.6" fill="#f06054" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
 <text x="245" y="274" font-size="11" text-anchor="middle" fill="#8b949e">infield</text>
 <text x="245" y="503.39" font-size="11" text-anchor="middle" fill="#8b949e">P lanes r = 9 to 19.5, E lanes r = 22.2 to 32.7, wall at r = 33.45</text>
-<text x="245" y="521.39" font-size="11" text-anchor="middle" fill="#8b949e">white line = start line; red beads = queue behind it; angle grows counter-clockwise</text>
+<text x="245" y="521.39" font-size="11" text-anchor="middle" fill="#8b949e">white line = start line; red beads = queue behind it; angle grows clockwise on screen</text>
 <line x1="672.68" y1="90" x2="672.68" y2="340" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
 <line x1="672.68" y1="340" x2="672.68" y2="344" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
 <text x="672.68" y="357" font-size="11" text-anchor="middle" fill="#8b949e">10</text>

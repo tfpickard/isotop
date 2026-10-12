@@ -38,13 +38,14 @@ def main():
                 "so that outer lanes stand higher.")
     colour = {"P": S.GOLD, "E": S.TEAL}
 
-    # Plan view, seen from above with x to the right and y up.
+    # Plan view as the default camera draws it: the angle grows clockwise on screen, because the
+    # scene's x, y, z axes read left-handed through Camera::view.
     cx, cy, scale = 245, 270, 6.2
 
     def at(angle, radius):
-        return (cx + radius * scale * math.cos(angle), cy - radius * scale * math.sin(angle))
+        return (cx + radius * scale * math.cos(angle), cy + radius * scale * math.sin(angle))
 
-    svg.text(30, 34, "Plan: one lane per CPU, seen from above", 14, weight="600")
+    svg.text(30, 34, "Plan: one lane per CPU", 14, weight="600")
     svg.circle(cx, cy, (INNER - LANE * 0.5 - 0.4) * scale, "#0c121c", S.AXIS, 1)
     for index, kind, radius in found:
         svg.circle(cx, cy, radius * scale, "none", colour[kind], LANE * scale * 0.82, opacity=0.55)
@@ -70,7 +71,7 @@ def main():
              "P lanes r = 9 to 19.5, E lanes r = 22.2 to 32.7, wall at r = %.2f" % outer,
              11, "middle", S.MUTED)
     svg.text(cx, cy + outer * scale + 44,
-             "white line = start line; red beads = queue behind it; angle grows counter-clockwise",
+             "white line = start line; red beads = queue behind it; angle grows clockwise on screen",
              11, "middle", S.MUTED)
 
     # Section.
