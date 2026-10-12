@@ -24,7 +24,7 @@ jobs:
     # Warm runs take about 2 minutes; this leaves room for a cold cache and more renders.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Both runner images ship rustup. With no arguments, `rustup toolchain install` installs
       # what rust-toolchain.toml pins, so a new stable release cannot change CI unannounced.
       - run: rustup toolchain install
@@ -168,7 +168,7 @@ jobs:
       # release's .sha256 asset. Update both together.
       CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # cargo-deny is a tool, not a dependency, so install the prebuilt release binary.
       - name: Install cargo-deny
         run: |
