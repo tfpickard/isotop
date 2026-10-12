@@ -22,7 +22,7 @@ SERIES = 60
 def main():
     figure = Figure(
         800,
-        500,
+        510,
         "History window against sampling interval",
         "Seconds covered by 60 and by 240 samples as --sample-ms varies, with the documented minute marked.",
     )
@@ -52,8 +52,8 @@ def main():
         [(BLUE, "240 samples: the most the ring holds (CAPACITY)", None), (ORANGE, "60 samples: Ptolemy's History::recent(until, SERIES)", None)],
         x=axes.left + 330, y=axes.top + 262,
     )
-    figure.text(72, 436, "Below 250 ms the ring holds under 60 s, so Strata's window is cut short (#127). Away from 1000 ms Ptolemy's 60 samples stop being a minute (#126).", size=11.5, color=MUTED)
-    figure.text(72, 453, "Counting samples is a unit error: a window is a duration, and `History::window` already selects by `Sample::elapsed`.", size=11.5, color=MUTED)
+    figure.text(72, 462, "Below 250 ms the ring holds under 60 s, so Strata's minute is cut short (#127).", size=11.5, color=MUTED)
+    figure.text(72, 479, "Away from 1000 ms, Ptolemy's 60 samples stop being a minute (#126). A window is a duration, not a count.", size=11.5, color=MUTED)
     out = os.path.join("docs", "media", "figures", "history-window-vs-sample-ms.svg")
     figure.save(out)
     print("wrote", out)

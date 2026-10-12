@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500" font-family="system-ui, sans-serif" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 510" width="800" height="510" font-family="system-ui, sans-serif" role="img">
 <title>History window against sampling interval</title>
 <desc>Seconds covered by 60 and by 240 samples as --sample-ms varies, with the documented minute marked.</desc>
 <rect width="100%" height="100%" fill="#0e1116"/>
@@ -59,6 +59,6 @@
 <text x="431" y="324" font-size="11.5" fill="#c9d1d9" text-anchor="start" font-weight="normal">240 samples: the most the ring holds (CAPACITY)</text>
 <line x1="402" y1="337" x2="424" y2="337" stroke="#f0883e" stroke-width="2.2"/>
 <text x="431" y="341" font-size="11.5" fill="#c9d1d9" text-anchor="start" font-weight="normal">60 samples: Ptolemy's History::recent(until, SERIES)</text>
-<text x="72" y="436" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">Below 250 ms the ring holds under 60 s, so Strata's window is cut short (#127). Away from 1000 ms Ptolemy's 60 samples stop being a minute (#126).</text>
-<text x="72" y="453" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">Counting samples is a unit error: a window is a duration, and `History::window` already selects by `Sample::elapsed`.</text>
+<text x="72" y="462" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">Below 250 ms the ring holds under 60 s, so Strata's minute is cut short (#127).</text>
+<text x="72" y="479" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">Away from 1000 ms, Ptolemy's 60 samples stop being a minute (#126). A window is a duration, not a count.</text>
 </svg>

@@ -90,8 +90,8 @@ def cube(svg, ox, oy, unit, pitch, label, sub):
     svg.polygon(face_x, fill=BLUE, stroke=FG, width=1.2, opacity=0.55)
     svg.polygon(face_y, fill=TEAL, stroke=FG, width=1.2, opacity=0.40)
     svg.polygon(top, fill=YELLOW, stroke=FG, width=1.2, opacity=0.55)
-    svg.text(ox, oy + unit * 1.55 + 34, label, 13, FG, "middle", weight="600")
-    svg.text(ox, oy + unit * 1.55 + 51, sub, 11, DIM, "middle")
+    svg.text(ox, oy + unit * 1.55 + 34, label, 12, FG, "middle", weight="600")
+    svg.text(ox, oy + unit * 1.55 + 50, sub, 11, DIM, "middle")
 
 
 def main():
@@ -105,9 +105,9 @@ def main():
     unit = 62
     cy = 190
     for ox, pitch, label, sub in [
-        (95, LOWEST_PITCH, "pitch 0.35 rad (20.1 deg)", "LOWEST_PITCH"),
-        (255, ISOMETRIC, "pitch 0.6155 rad (35.3 deg)", "ISOMETRIC, the default"),
-        (415, math.pi / 2, "pitch pi/2 (90 deg)", "top-down, key t"),
+        (95, LOWEST_PITCH, "20.1 deg", "LOWEST_PITCH 0.35 rad"),
+        (255, ISOMETRIC, "35.3 deg", "ISOMETRIC 0.6155 rad, default"),
+        (415, math.pi / 2, "90 deg", "top-down (key t), pi/2"),
     ]:
         cube(svg, ox, cy, unit, pitch, label, sub)
     svg.text(24, 400, "faces drawn: top (+z), +x and +y, the three with a positive dot product against", 11.5, DIM)
@@ -147,13 +147,17 @@ def main():
     for pitch, name in [(LOWEST_PITCH, "LOWEST_PITCH"), (ISOMETRIC, "ISOMETRIC")]:
         x = X(pitch)
         svg.line(x, py0, x, py1, DIM, 1, dash="3 3")
-        svg.text(x + 3, py0 + 12, name, 10.5, DIM)
+        if name == "LOWEST_PITCH":
+            svg.text(x - 4, py1 - 8, name, 10.5, DIM, "end")
+        else:
+            svg.text(x + 4, py1 - 8, name, 10.5, DIM)
     svg.circle(X(ISOMETRIC), Y(SCALE * math.cos(ISOMETRIC)), 4, FG)
     svg.text(px1 - 4, Y(SCALE) - 6, "across axis: SCALE = 1.2247, constant", 11, GREEN, "end")
-    svg.text(px0 + 8, Y(SCALE * math.cos(0.12)) + 16, "world z: SCALE cos(pitch)", 11, BLUE)
-    svg.text(px1 - 4, Y(SCALE * math.sin(1.2)) + 20, "ground depth: SCALE sin(pitch)", 11, ORANGE, "end")
-    svg.text(px0, py1 + 64, "At ISOMETRIC the z curve reads 1.000 and the depth curve 0.707, and the world x and y", 11, DIM)
-    svg.text(px0, py1 + 80, "axes (45 deg to the depth axis) come out at 1.000 too: SCALE = sqrt(3/2) undoes the 2/3.", 11, DIM)
+    svg.text(px0 + 8, Y(SCALE) + 34, "world z: SCALE cos(pitch)", 11, BLUE)
+    svg.text(px1 - 4, Y(SCALE * math.sin(1.0)) + 26, "ground depth: SCALE sin(pitch)", 11, ORANGE, "end")
+    svg.text(px0, py1 + 64, "At ISOMETRIC the z curve reads 1.000 and the depth curve 0.707;", 11, DIM)
+    svg.text(px0, py1 + 80, "the world x and y axes lie 45 deg to the depth axis and also", 11, DIM)
+    svg.text(px0, py1 + 96, "come out at 1.000: SCALE = sqrt(3/2) undoes the foreshortening.", 11, DIM)
     svg.text(24, 458, "source: src/render.rs (Camera::view, SCALE, ISOMETRIC, LOWEST_PITCH)", 10.5, DIM, style="italic")
 
     out = pathlib.Path("docs/media/figures/theory-isometric-axes.svg")
