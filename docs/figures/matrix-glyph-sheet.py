@@ -64,10 +64,10 @@ def main():
                      "middle", "#0e1116" if on else "#6e7681")
     svg.text(bx + WIDTH * big + 14, by + 18, "column 0 at the left,", 11, "start", MUTED)
     svg.text(bx + WIDTH * big + 14, by + 34, "row 0 at the top", 11, "start", MUTED)
-    svg.text(bx + WIDTH * big + 14, by + 66, "rows 0-1 and 12-13", 11, "start", MUTED)
-    svg.text(bx + WIDTH * big + 14, by + 82, "hold ascenders and", 11, "start", MUTED)
-    svg.text(bx + WIDTH * big + 14, by + 98, "descenders: the font", 11, "start", MUTED)
-    svg.text(bx + WIDTH * big + 14, by + 114, "includes the spacing", 11, "start", MUTED)
+    notes = ["capitals: rows 2 to 11", "lowercase x-height: rows 5 to 11", "descenders (g j p q y): rows 12, 13",
+             "row 0 is never inked", "(brackets and | reach rows 1 to 13)"]
+    for k, note in enumerate(notes):
+        svg.text(bx + WIDTH * big + 14, by + 66 + 16 * k, note, 11, "start", MUTED)
     print(svg.save("matrix-glyph-sheet"))
     used = bin(max(glyphs)).count("1")
     print("highest set bit", max(g.bit_length() for g in glyphs) - 1, "ink pixels in 'g':", bin(letter).count("1"))

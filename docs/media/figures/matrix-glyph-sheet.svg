@@ -1962,8 +1962,9 @@
 <text x="840" y="359.2" font-size="7.2" text-anchor="middle" fill="#6e7681">97</text>
 <text x="864" y="104" font-size="11" text-anchor="start" fill="#8b949e">column 0 at the left,</text>
 <text x="864" y="120" font-size="11" text-anchor="start" fill="#8b949e">row 0 at the top</text>
-<text x="864" y="152" font-size="11" text-anchor="start" fill="#8b949e">rows 0-1 and 12-13</text>
-<text x="864" y="168" font-size="11" text-anchor="start" fill="#8b949e">hold ascenders and</text>
-<text x="864" y="184" font-size="11" text-anchor="start" fill="#8b949e">descenders: the font</text>
-<text x="864" y="200" font-size="11" text-anchor="start" fill="#8b949e">includes the spacing</text>
+<text x="864" y="152" font-size="11" text-anchor="start" fill="#8b949e">capitals: rows 2 to 11</text>
+<text x="864" y="168" font-size="11" text-anchor="start" fill="#8b949e">lowercase x-height: rows 5 to 11</text>
+<text x="864" y="184" font-size="11" text-anchor="start" fill="#8b949e">descenders (g j p q y): rows 12, 13</text>
+<text x="864" y="200" font-size="11" text-anchor="start" fill="#8b949e">row 0 is never inked</text>
+<text x="864" y="216" font-size="11" text-anchor="start" fill="#8b949e">(brackets and | reach rows 1 to 13)</text>
 </svg>

@@ -94,8 +94,8 @@ def main():
                   ylabel="y (cm)", title="K0_S (0.4 GeV/c) to pi+ pi-",
                   xticks=[0, 40, 80, 120], yticks=[-60, -30, 0, 30, 60])
     plus, minus = daughters(M_K0, M_PI, 400.0, math.radians(80.0))
-    track_p, radius_p = helix((0.0, 0.0), plus, +1, 1.5, 120.0)
-    track_n, radius_n = helix((0.0, 0.0), minus, -1, 1.5, 120.0)
+    track_p, radius_p = helix((0.0, 0.0), plus, +1, 1.5, 95.0)
+    track_n, radius_n = helix((0.0, 0.0), minus, -1, 1.5, 95.0)
     axes.plot([p[0] for p in track_p], [p[1] for p in track_p], stroke=P.BLUE, width=2.0)
     axes.plot([p[0] for p in track_n], [p[1] for p in track_n], stroke=P.ORANGE, width=2.0)
     axes.plot([-20, 0.0], [0.0, 0.0], stroke=P.MUTED, width=1.5, dash="5 4")
