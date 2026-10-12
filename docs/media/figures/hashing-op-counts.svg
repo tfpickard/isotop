@@ -139,5 +139,5 @@
 <text x="96" y="442" font-size="11" fill="#c9d1d9" text-anchor="start" font-family="system-ui, sans-serif">distance tests per query</text>
 <line x1="280" y1="438" x2="310" y2="438" stroke="#d95926" stroke-width="2" stroke-dasharray="7 4"/>
 <text x="316" y="442" font-size="11" fill="#c9d1d9" text-anchor="start" font-family="system-ui, sans-serif">cell lookups per query</text>
-<text x="500" y="442" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">counts of SpatialHash / SpatialHash3 on seeded points; 3· per point, not wall time</text>
+<text x="500" y="442" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">counts of SpatialHash / SpatialHash3 on seeded points; operation counts, not wall time</text>
 </svg>
