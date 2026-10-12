@@ -13,7 +13,7 @@ use std::fmt;
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, Point, Scene, Stage, Thing};
-use crate::{cells, cores, cortex, globe, necropolis, ptolemy, tesseract};
+use crate::{cells, cores, cortex, globe, horizon, necropolis, ptolemy, tesseract};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -828,6 +828,35 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::Module(|| Box::new(cortex::Cortex::default())),
         )
     },
+    ViewInfo {
+        // No sockets: the lensed images are not where processes talk. A process that vanishes
+        // fades where it stood or plunges into the hole, by the view's own `Orbits`, so the
+        // scene's expanding ring would say it twice (this is `own_exits` of the issue).
+        links: LinkRule::DrawnByView,
+        flash: false,
+        // Scores and the kill counter are read only while the view is shown.
+        sources: Sources::of(&[Source::Oom, Source::OomKills]),
+        // The view takes in each sample to see who vanished; replayed as a live run takes them.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 8,
+                before_start: false,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            oom_and_memory_detail: true,
+            kernel_counters: true,
+            oom_cycle: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new(
+            "horizon",
+            "HORIZON",
+            Backdrop::Void,
+            Hooks::Module(|| Box::new(horizon::Horizon::default())),
+        )
+    },
 ];
 
 fn city_legend(_: &Scene, _: &Snapshot) -> String {
@@ -1630,7 +1659,7 @@ mod tests {
         );
         assert_eq!(
             with(|hooks| matches!(hooks, Hooks::Module(_))),
-            ["ptolemy", "tesseract", "necropolis", "cortex"]
+            ["ptolemy", "tesseract", "necropolis", "cortex", "horizon"]
         );
     }
 }

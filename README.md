@@ -1,12 +1,13 @@
 # isotop
 
-A living picture of your machine inside the terminal, in fifteen views: a process
+A living picture of your machine inside the terminal, in sixteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
 cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
 macOS) as Matrix rain, a minute of process worldlines in a tesseract whose fourth
-axis is time, and a moonlit cemetery of the processes that exited. Written in
+axis is time, a moonlit cemetery of the processes that exited, and a black hole whose orbits rank the
+processes the OOM killer will take next. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -28,7 +29,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -177,6 +178,7 @@ cache is stale.
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
+| OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -209,8 +211,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the fifteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis and the cortex are reached with Tab, Shift+Tab,
+the sixteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex and the horizon are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
@@ -595,6 +597,32 @@ Every process is an Izhikevich neuron in a layered slice of cortex, with a raste
 **What cannot be measured.** Pipes carry no rate, so they weigh 1. The links come from the sockets and pipes the scans found: a pipe the scan has not reached yet has no axon, and the demo's links are synthesized.
 
 **macOS.** The view runs, but loopback links have no byte counters, so every synapse weighs the sockets of its link, min(0.25 ln(1 + sockets), 2), and the legend adds "no socket traffic: weight = socket count"; see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+### Horizon
+
+![Horizon: a lensed accretion disk bent over and under a black shadow with a thin photon ring, processes riding orbits ranked by oom_score, the next victim on the innermost stable circular orbit](docs/media/horizon.webp)
+
+The OOM killer as a Schwarzschild black hole: a lensed accretion disk around a black shadow, processes on circular orbits ranked by how soon the kernel would kill them, and a plunge that freezes short of the horizon when it does.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Orbit radius | `oom_score` (`/proc/<pid>/oom_score`), as a rank | Rank among processes that are not kernel threads, not zombies and not `oom_score_adj` -1000, highest score first, ties by identity; two neighbours swap only if their scores differ by 5 or more. Rank r (1 is the next victim) of the top 28 rides at 6 + 17.5 ((r - 1) / 27)^0.8 M, so the next victim is on the ISCO at 6 M; the rest are counted, not drawn, except the selected process, at the same formula up to 25 M. A change of rank eases the radius with a time constant of 1.5 s, at most 2 M per second, and the azimuth stays continuous |
+| Unkillable band | `oom_score_adj` -1000 | At most 12 processes at 25.7 to 27.3 M (radius by identity), starting a golden angle apart, labelled `unkillable`; dashed guide at 26.5 M |
+| Speed | The orbit radius | Omega = sqrt(M / r^3) in coordinate time, **identical to Kepler's**: 10 M of time per second of the animation clock, so the ISCO's period of 92 M is 9.2 s |
+| Body size and colour | Memory (RSS; the physical footprint on macOS), process kind | Sphere of radius clamp(0.12 cbrt(MiB), 0.18, 0.9) M, in the kind's colour; its secondary image (60% as bright, 0.6 as big) picks the same process |
+| Disk brightness | Memory pressure (some, 10 s average) | gain = 0.45 + 0.9 p / 100, followed with a time constant of 0.6 s: I = gain F g^4 tex bb(T), shown as 255 srgb(1 - exp(-0.36 I^1.3)) per channel |
+| Disk colour | The orbit and the observer | Page-Thorne flux F of the thin disk from 6 M to 30 M, g = 1 / (1 + z) with 1 + z = (1 - 3/r)^(-1/2) (1 + sqrt(1/r^3) sin i x) for the image at screen x (gravitational and Doppler), T = 7200 K (F^(1/4) g)^1.55 coloured by the blackbody table: the approaching side (left) is brighter and bluer |
+| Inclination i | Camera pitch | Piecewise linear: 86 degrees at the lowest pitch, 80 degrees at the default, 0 at top-down; PgUp, PgDn, `e` and `Q` tilt it; camera rotation turns the disk's azimuth; zoom sets pixels per M |
+| Kill | The kernel's OOM kill count: `oom_kill` in `/proc/vmstat`, else the sum of the cgroups' `memory.events` | A body that vanishes stays a ghost for 2.5 s. If the counter rose within 2.5 s of it, before or after, the best-ranked ghost plunges: it eases to the ISCO in 0.8 s, then follows the geodesic of a body that leaves it with 0.95 of the ISCO's angular momentum and a small inward kick, as a radial streak whose brightness 1.5 (1 - 2/r) falls (the light, its square root, by e every 4 M, 0.4 s), turning red, and freezes at r > 2.0006 M, never reaching the horizon. Every other exit fades where it stood over 1.2 s. The legend says which counter it used and how many kills it has seen |
+| Next victim | The top of the ranking | A red ring on its sphere, the first label and the first stop of the tour |
+| Inspector | `oom_score`, `oom_score_adj`, rank, radius | `oom_score N \| oom_score_adj N`, `rank R of K`, `orbit r = X.XX M \| period P M (S s)` |
+
+**Decorative:** the disk's turbulence (value noise in the frame that goes round with the disk, streaks long in azimuth), the glare (up to 24 glows along the inner edge, where the disk is brightest), the 1500 background stars on a shell 40 M behind the hole and their glows (a fixed seed, coloured by temperature), the dashed guides at the ISCO and the band, the photon ring, the next victim's red ring and the haze behind the sky. **The photon ring is drawn, not traced:** a ring 0.1 M wide (at least 1.5 px) at 5.27 M, outside the shadow of radius 3 sqrt(3) M = 5.196 M, tinted by the Doppler shift of matter at 7 M; no ray is cast for it. **The texture, the glare and the stars carry no data.**
+
+**Lensing.** Units are G = c = M = 1, so one world unit is one M. Every vertex of the scene is carried to its image on the screen and ordinary triangles are drawn between the images, so the CPU and the GPU draw the same frame and picking works. A table of photon rays traced back from an observer at infinity (fourth-order Runge-Kutta on d2u/dphi2 = 3u^2 - u with u = 1/r, a step of 0.002 rad, 1800 impact parameters) gives, for 360 log-spaced radii from 2.0005 to 150 M and 721 sweep angles, the screen distance of the primary image (the ray that sweeps the angle) and of the secondary image (the ray that sweeps 2 pi minus it, round the other side of the hole, never inside the shadow). The table is built on the first frame, in a fifth of a second. The disk is cut into cells of about 4 px, at most 120,000 triangles in both images (the secondary has half the density), lensed again only when the inclination or the scale changes, and recoloured every frame. The flux is the Page-Thorne integral in closed form, which falls quadratically to zero at the ISCO.
+
+**What cannot be measured.** The kernel keeps the count of kills, not their victims: a plunge is the best-ranked process that vanished within 2.5 s of a rise, which a different exit at the same moment can fool. With no counter at all every exit fades, and the legend says "no oom kills: exits not classified"; where only the cgroups count, it says "kills counted from cgroups". A process whose score cannot be read is left out and counted (`N unranked`). Rewinding with `[` shows the older sample's processes, not the older orbits.
+
+**Platform.** On Linux everything above. On macOS the ranking is by memory footprint, there is no unkillable band and no plunge: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it). Horizon has no keys of its own; `l` hides the labels.
 
 ### Matrix
 
@@ -694,7 +722,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -791,7 +819,7 @@ the media and creatures have settled, demo strata replays a minute of
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -803,7 +831,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-51,226 lines of Rust (30,528 production, 20,698 test) in 53 files, 690 tests, 15 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+55,206 lines of Rust (32,748 production, 22,458 test) in 57 files, 753 tests, 16 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

@@ -11,6 +11,7 @@ mod gpu;
 #[cfg(test)]
 mod harness;
 mod history;
+mod horizon;
 mod journal;
 mod layout;
 mod matrix;
@@ -4494,7 +4495,7 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/15");
+        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/16");
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -4733,7 +4734,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("cortex"))
+                .any(|line| line.starts_with("> ") && line.contains("horizon"))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -4748,7 +4749,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("cortex"))
+                .any(|line| line.starts_with("> ") && line.contains("horizon"))
         );
     }
 

@@ -283,10 +283,6 @@ pub const TABLE: [[f32; 3]; 256] = [
 
 /// Linear sRGB of a blackbody at `kelvin`, clamped to 1000 K to 40000 K and interpolated linearly
 /// in `ln T` between neighbouring entries. The brightest channel is 1.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 pub fn linear(kelvin: f32) -> [f32; 3] {
     let last = TABLE.len() - 1;
     let span = (MAXIMUM_KELVIN / MINIMUM_KELVIN).ln();
@@ -304,10 +300,6 @@ pub fn linear(kelvin: f32) -> [f32; 3] {
 
 /// The sRGB-encoded colour of a blackbody at `kelvin`, scaled in linear light by `brightness`
 /// (clamped to 0 to 1). Frames hold encoded bytes, so this is what a view draws with.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 pub fn color(kelvin: f32, brightness: f32) -> Color {
     let brightness = if brightness.is_nan() {
         0.0
