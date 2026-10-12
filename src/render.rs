@@ -13,10 +13,22 @@ use crate::simulation::{growth, hash, smoothing};
 use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
 use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
 
+pub mod field;
 pub mod shared;
+pub(crate) mod strokes;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "first used by a view that draws a field")
+)]
+pub use field::{Field, Placement, Relief, Shading};
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "first used by a view that draws a field")
+)]
+pub use shared::LIGHT;
 pub use shared::NONE;
 /// The pick-buffer bit that marks an index into `Frame::things` rather than `Frame::identities`.
 /// Process indices stay below it, and a thing index below `THING - 1`, so neither meets `NONE`.
@@ -340,6 +352,18 @@ pub enum Item {
         depth: f32,
         pick: u32,
     },
+    /// Depth-tested triangle whose colour and pick are sampled from field `field` (an index into
+    /// `Frame::fields`) at `uv`, in node units, interpolated linearly across the triangle. It
+    /// writes depth, the sampled colour and the owner of the nearest node (see `field`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first recorded by a view that draws a field")
+    )]
+    Field {
+        points: [Point; 3],
+        uv: [[f32; 2]; 3],
+        field: u32,
+    },
 }
 
 /// A finished frame's allocations, handed to the next frame so steady-state rendering does not
@@ -350,6 +374,9 @@ pub struct Buffers {
     pixels: Vec<u8>,
     depth: Vec<f32>,
     picks: Vec<u32>,
+    /// The fields the last frame drew, kept with their shaded colours so a field that has not
+    /// changed is not shaded again.
+    fields: Vec<field::ShadedField>,
 }
 
 pub struct Frame {
@@ -363,6 +390,11 @@ pub struct Frame {
     pub identities: Vec<Identity>,
     /// The things this frame's thing picks index, in `thing_pick` order.
     pub things: Vec<Thing>,
+    /// The fields this frame draws, in the order `Frame::field` recorded them: what an
+    /// `Item::Field` indexes.
+    pub fields: Vec<field::ShadedField>,
+    /// The previous frame's fields, which `Frame::field` takes back when one is unchanged.
+    earlier_fields: Vec<field::ShadedField>,
     /// Pixel position of the selected process, if it was drawn.
     pub anchor: Option<[f32; 2]>,
 }
@@ -374,6 +406,7 @@ impl Frame {
             pixels,
             depth,
             picks,
+            fields,
         } = buffers;
         items.clear();
         let mut frame = Self {
@@ -386,6 +419,8 @@ impl Frame {
             picks,
             identities: Vec::new(),
             things: Vec::new(),
+            fields: Vec::new(),
+            earlier_fields: fields,
             anchor: None,
         };
         if sky.backdrop == Backdrop::Space {
@@ -411,6 +446,7 @@ impl Frame {
             pixels: self.pixels,
             depth: self.depth,
             picks: self.picks,
+            fields: self.fields,
         }
     }
 
@@ -425,6 +461,7 @@ impl Frame {
         self.picks.resize(n, NONE);
         self.paint_sky();
         let items = std::mem::take(&mut self.items);
+        let fields = std::mem::take(&mut self.fields);
         for item in &items {
             match *item {
                 Item::Triangle([a, b, c], color, pick) => self.triangle(a, b, c, color, pick),
@@ -465,9 +502,13 @@ impl Frame {
                     depth,
                     pick,
                 } => self.splat(center, radius, depth, pick),
+                Item::Field { points, uv, field } => {
+                    self.field_triangle(points, uv, &fields[field as usize]);
+                }
             }
         }
         self.items = items;
+        self.fields = fields;
     }
 
     fn glyph(&mut self, origin: [f32; 2], scale: u32, bits: u128, color: Color) {
@@ -1053,6 +1094,10 @@ impl<'a> RenderInput<'a> {
     }
 }
 
+/// How many arrivals of processes absent from the shown sample the scene remembers, oldest
+/// forgotten first.
+const ARRIVALS_KEPT: usize = 4096;
+
 /// The longest step `Stage::dt` reports, in seconds. A longer gap (a stall, a slow frame) counts
 /// as this much, so a simulation never leaps.
 pub(crate) const MAX_DT: f32 = 0.5;
@@ -1127,6 +1172,7 @@ pub(crate) struct Stage<'a> {
     /// from the shown snapshot's `elapsed`.
     pub history: &'a History,
     births: &'a HashMap<Identity, f32>,
+    arrivals: &'a HashMap<Identity, f32>,
     /// CPU and memory as eased for every sampled process, drawn or not.
     resources: &'a HashMap<Identity, (f32, f32)>,
     /// Where each drawn process is, for picking anchors, labels and the tour.
@@ -1156,6 +1202,15 @@ pub(crate) struct Stage<'a> {
 impl Stage<'_> {
     pub fn growth(&self, id: Identity) -> f32 {
         growth(self.births, id, self.time)
+    }
+
+    /// Seconds since the scene first saw the process, or None for one that was there on the
+    /// scene's first frame (it did not start while anyone watched) and while `time` is before
+    /// that moment (a rewind). `growth` is an easing fraction that the app's intro also
+    /// animates for processes already running; this is the true age of one that arrived.
+    pub fn age(&self, id: Identity) -> Option<f32> {
+        let arrived = *self.arrivals.get(&id)?;
+        (self.time >= arrived).then_some(self.time - arrived)
     }
 
     /// A sampled process's CPU and memory as the scene eases them, whether it is drawn or not.
@@ -1290,6 +1345,8 @@ pub struct Scene {
     /// The step every `Stage` gets as `dt`.
     clock: FrameClock,
     births: HashMap<Identity, f32>,
+    /// When each process that arrived after the first frame was first seen: `Stage::age`.
+    arrivals: HashMap<Identity, f32>,
     previous: HashMap<Identity, Point>,
     deaths: Vec<(Point, f32)>,
     /// Height of the tallest building in the last city frame, so fitting leaves it headroom.
@@ -1365,6 +1422,7 @@ impl Scene {
             last_time: None,
             clock: FrameClock::default(),
             births: HashMap::new(),
+            arrivals: HashMap::new(),
             previous: HashMap::new(),
             deaths: Vec::new(),
             tallest: 0.0,
@@ -1667,6 +1725,30 @@ impl Scene {
         frame
     }
 
+    /// Forgets the arrivals of processes that are gone, except the latest `ARRIVALS_KEPT`: a
+    /// rewind to before a process started also finds it absent, and jumping forward again must
+    /// give it back the age it had, not a new one.
+    fn keep_arrivals(&mut self, alive: &HashSet<Identity>) {
+        let absent =
+            self.arrivals.len() - self.arrivals.keys().filter(|id| alive.contains(id)).count();
+        let Some(excess) = absent
+            .checked_sub(ARRIVALS_KEPT)
+            .filter(|&excess| excess > 0)
+        else {
+            return;
+        };
+        let mut gone: Vec<(f32, Identity)> = self
+            .arrivals
+            .iter()
+            .filter(|(id, _)| !alive.contains(id))
+            .map(|(&id, &arrived)| (arrived, id))
+            .collect();
+        gone.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (_, id) in gone.into_iter().take(excess) {
+            self.arrivals.remove(&id);
+        }
+    }
+
     /// Takes in the frame's sample: notes births, and returns its processes with CPU and memory
     /// eased towards the sampled values.
     fn ease(&mut self, snapshot: &Snapshot, alive: &HashSet<Identity>, time: f32) -> Vec<Process> {
@@ -1678,6 +1760,7 @@ impl Scene {
         let alpha = smoothing(dt.max(0.0), 0.3);
         self.resources.retain(|id, _| alive.contains(id));
         self.births.retain(|id, _| alive.contains(id));
+        self.keep_arrivals(alive);
         let born = if self.started || self.intro {
             time
         } else {
@@ -1690,6 +1773,7 @@ impl Scene {
                 entry.insert(born);
                 if fresh {
                     self.newborn.push(p.id);
+                    self.arrivals.entry(p.id).or_insert(time);
                 }
             }
         }
@@ -1784,6 +1868,7 @@ impl Scene {
                     dt,
                     history: &self.history,
                     births: &self.births,
+                    arrivals: &self.arrivals,
                     resources: &self.resources,
                     positions: &mut self.positions,
                     places: &mut self.places,

@@ -13,7 +13,9 @@ use std::fmt;
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
 use crate::platform::{self, Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
-use crate::{cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract};
+use crate::{
+    arbor, cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract,
+};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -891,6 +893,40 @@ pub static REGISTRY: &[ViewInfo] = &[
             Hooks::Module(|| Box::new(murmuration::Murmuration::default())),
         )
     },
+    ViewInfo {
+        // Sockets join the tips of the processes that hold them, as hairlines.
+        link_strokes: true,
+        // A thread that exits drops its leaf, and a process that exits all of its leaves.
+        flash: false,
+        // The tree stands at its own point of the camera; a tour or a search centres the point
+        // itself, since a twig is far above the ground under it.
+        face: Some(|_, goal| (goal.rotation, goal.pitch)),
+        // The camera looks across the canopy more than down on it.
+        pitch: Some(0.48),
+        sources: Sources::of(&[Source::Threads]),
+        // Eight seconds of wind, blossoms and falling leaves, a frame at a time, as a live run
+        // would have drawn them.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 8,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            threads: true,
+            thread_churn: true,
+            unreadable_parent: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new(
+            "arbor",
+            "ARBOR",
+            Backdrop::Dusk,
+            Hooks::Module(|| Box::new(arbor::Arbor::default())),
+        )
+    },
 ];
 
 fn city_legend(_: &Scene, _: &Snapshot) -> String {
@@ -1195,9 +1231,15 @@ pub mod testing {
     #[derive(Default)]
     pub struct Witness {
         seen: String,
+        /// The `Stage::age` of every process of the last frame, by pid.
+        pub ages: HashMap<u32, Option<f32>>,
     }
 
     impl ViewModule for Witness {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -1210,6 +1252,10 @@ pub mod testing {
                 stage.focus.map(|id| id.pid),
                 stage.limit
             );
+            self.ages = processes
+                .iter()
+                .map(|process| (process.id.pid, stage.age(process.id)))
+                .collect();
             for (index, process) in processes.iter().enumerate() {
                 let position = [index as f32 * 4.0, 0.0, 0.0];
                 stage.positions.insert(process.id, position);
@@ -1663,6 +1709,74 @@ mod tests {
 
     /// The first rows are the eleven views that predate the module contract; the digits pick them.
     const ELEVEN_BUILT_IN: usize = 11;
+
+    #[test]
+    fn a_process_that_arrives_after_the_first_frame_has_an_age_and_the_first_ones_have_none() {
+        use crate::model::testing::process;
+        use crate::render::{Camera, RenderInput};
+        let rows = testing::WITNESSED;
+        let at_start = Snapshot {
+            processes: vec![process(10, 1), process(11, 1)],
+            ..Snapshot::default()
+        };
+        let mut later = at_start.clone();
+        later.processes.push(process(12, 1));
+        let mut scene = Scene::with_rows(rows);
+        let camera = Camera::default();
+        let mut ages = |snapshot: &Snapshot, time: f32| {
+            let input = RenderInput::small(snapshot, View::at(0), &camera, time);
+            scene.render(&input);
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .ages
+                .clone()
+        };
+        let first = ages(&at_start, 5.0);
+        assert_eq!(first[&10], None, "present on the first frame: never new");
+        let second = ages(&later, 6.0);
+        assert_eq!(second[&10], None);
+        assert_eq!(second[&12], Some(0.0), "first seen this frame");
+        let third = ages(&later, 8.5);
+        assert_eq!(third[&12], Some(2.5));
+        assert_eq!(third[&11], None);
+        let rewound = ages(&later, 5.0);
+        assert_eq!(rewound[&12], None, "before it arrived");
+    }
+
+    #[test]
+    fn an_arrival_survives_a_rewind_to_before_the_birth_so_forward_navigation_restores_its_age() {
+        use crate::model::testing::process;
+        use crate::render::{Camera, RenderInput};
+        let at_start = Snapshot {
+            processes: vec![process(10, 1)],
+            ..Snapshot::default()
+        };
+        let mut later = at_start.clone();
+        later.processes.push(process(12, 1));
+        let mut scene = Scene::with_rows(testing::WITNESSED);
+        let camera = Camera::default();
+        let mut age_of_twelve = |snapshot: &Snapshot, time: f32| {
+            let input = RenderInput::small(snapshot, View::at(0), &camera, time);
+            scene.render(&input);
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .ages
+                .get(&12)
+                .copied()
+                .flatten()
+        };
+        assert_eq!(age_of_twelve(&at_start, 5.0), None);
+        assert_eq!(age_of_twelve(&later, 6.0), Some(0.0));
+        // Rewound to a sample from before it started, then forward again.
+        assert_eq!(age_of_twelve(&at_start, 5.5), None);
+        assert_eq!(
+            age_of_twelve(&later, 8.5),
+            Some(2.5),
+            "the process keeps the age it had, not a fresh one"
+        );
+    }
 
     #[test]
     fn only_coop_records_and_only_matrix_replaces_the_inspector() {

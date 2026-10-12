@@ -100,7 +100,18 @@ shared! {
     F32 GLYPH_WIDTH: f32 = glyphs::WIDTH as f32;
     F32 GLYPH_HEIGHT: f32 = glyphs::HEIGHT as f32;
     U32 GLYPH_COLUMNS: u32 = glyphs::WIDTH;
+
+    /// Words of header before a field's node colours in the GPU storage buffer: columns, rows,
+    /// whether an owner grid follows the colours, and one word of padding. The colours come next,
+    /// one packed RGBA word per node, then the owners, one word per node.
+    U32 FIELD_HEADER_WORDS: u32 = 4;
 }
+
+/// The one light every lit surface drawn on the CPU shares (tubes, and the relief of a field): a
+/// unit vector in world space, z up, pointing from the surface towards the light, the normalized
+/// `[-0.4, -0.5, 0.75]`. It is shaded in Rust, so the shader never sees it and it is not in
+/// `CONSTANTS`; a surface is `0.35 + 0.65 * max(normal . LIGHT, 0)` bright.
+pub const LIGHT: [f32; 3] = [-0.405_616_1, -0.507_020_1, 0.760_530_2];
 
 /// The WGSL declarations of every shared constant, placed before `shaders.wgsl`.
 pub fn prelude() -> String {
