@@ -1168,8 +1168,8 @@ pub(crate) struct Stage<'a> {
     pub time: f32,
     /// Frames the scene has rendered, this one included, whichever view was shown. A view that
     /// must tell a frame that follows its own last frame from one after a gap (another view was
-    /// shown in between) compares it with the number it last drew at: the galaxy of Orbit and
-    /// Flow turns only across consecutive frames.
+    /// shown in between) compares it with the number it last drew at: the galaxy of Orbit
+    /// turns only across consecutive frames (Flow's is held still).
     pub frames: u64,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
     /// first frame, while paused, and when `time` went back (a rewind or a headless replay);

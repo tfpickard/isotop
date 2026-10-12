@@ -597,7 +597,7 @@ pub(super) fn hubs(
 }
 
 /// The roots of the systems the Orbit and Flow layouts would make with every sampled process
-/// drawn and nothing focused, hubs included, by the rules of `Scene::layout` and `Scene::hubs`.
+/// drawn and nothing focused, hubs included, by the rules of `layout` and `hubs`.
 fn whole_roots(snapshot: &Snapshot) -> HashSet<Identity> {
     let processes = &snapshot.processes;
     let by_pid: HashMap<u32, usize> = processes

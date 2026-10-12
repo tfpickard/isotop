@@ -144,8 +144,10 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 - `model` and `platform` import each other: the platform builds `model` types and `model` calls the
   `Sampler`. `journal` and `platform/*/journal.rs` do the same,
   and `model` imports `journal::Delivery` for `Snapshot.journal`.
-- `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
-  `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
+- `render` imports no module view's state or drawing, only the registry (`views`: `REGISTRY`,
+  `ViewInfo`, `ViewModule`), the `Orbit` ellipse that `Frame::trace` strokes (`views::systems`),
+  `globe::drift` for the camera's turn of the earth and the `glyphs` bitmap font; each view imports
+  `render` for `Frame`, `Stage` and `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
   `Scene`, `Stage` and `Backdrop`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
 - The test-only `harness` imports `main` for `App`, `Options`, `demo_snapshot` and `warm_up`, so
@@ -187,8 +189,8 @@ time, limit, focus and whether the app is paused). The row (`ViewInfo`) holds
 everything else that sets the view apart, and `Scene`, `App` and the headless warm-up read it
 instead of naming the view. There is one way to write a view: a module behind
 `ViewModule`, built by its row's `build`. `Scene` holds only frame-wide state and has no
-per-view field, branch or arm (`scene_has_no_view_specific_fields` fails on a field named or
-typed after a view), so a view's own state goes in its module, never on `Scene`. `Scene` builds every
+per-view field, branch or arm (`scene_has_no_view_specific_fields` does not compile until a new
+field is listed in it, and a field needs a doc comment saying why it is frame-wide), so a view's own state goes in its module, never on `Scene`. `Scene` builds every
 module when it is created and feeds each one `record` on every sample, so a view that is
 not shown still has its history when it opens.
 

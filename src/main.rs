@@ -401,7 +401,7 @@ struct App {
     renderer: String,
     /// When the demand last contained `Source::Journal`; None while it has not.
     journal_demanded: Option<Instant>,
-    /// What `deliver_journal` has attached to samples so far, which numbers the next lines.
+    /// What `feed` has attached to samples so far, which numbers the next lines.
     journal_totals: journal::Totals,
     /// Whether each of the scene's views runs on this platform, in row order.
     available: Vec<bool>,

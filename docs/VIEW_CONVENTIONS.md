@@ -23,7 +23,7 @@ Work items are referred to by ID: P1 to P5 (prerequisites), S1 to S6 (shared pre
 
 ## Adding a view
 
-A view is one module plus one registry row, and there is no other way to write one. Do not add a `Scene` field, an arm to `Scene::render`, or a branch to `App::text`, the headless warm-ups or `App::command`: `Scene` holds only frame-wide state and reaches the view through `ViewModule`, and `scene_has_no_view_specific_fields` fails on a field named or typed after a view. `AGENTS.md` ("The view contract" and "A new view is one module plus one registry row") says the same.
+A view is one module plus one registry row, and there is no other way to write one. Do not add a `Scene` field, an arm to `Scene::render`, or a branch to `App::text`, the headless warm-ups or `App::command`: `Scene` holds only frame-wide state and reaches the view through `ViewModule`, and `scene_has_no_view_specific_fields` does not compile until a new field is listed in it, and a field needs a doc comment saying why it is frame-wide. `AGENTS.md` ("The view contract" and "A new view is one module plus one registry row") says the same.
 
 1. Create `src/<name>.rs` with a `#[derive(Default)]` state struct. Keep pure simulation state free of drawing, either in that file or in a pure helper module, as `medium.rs` does. Add a row for each new module to the file table in `AGENTS.md`.
 2. Add one registry row (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)). Set only the fields you need; the defaults are those of a plain view. The row carries:
