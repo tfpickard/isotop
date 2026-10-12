@@ -8,13 +8,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 43 | 41,799 | 859 | 2,342 |
-| Python | 28 | 12,179 | 619 | 1,398 |
-| WebGPU Shader Language | 1 | 198 | 13 | 32 |
+| Rust | 58 | 57,377 | 1,293 | 3,282 |
+| Python | 28 | 12,273 | 634 | 1,412 |
+| WebGPU Shader Language | 1 | 212 | 17 | 34 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,328 | 492 |
-| Plain Text | 1 | 0 | 15 | 0 |
-| **Total** | **83** | **54,242** | **3,835** | **4,275** |
+| Markdown | 6 | 0 | 2,447 | 516 |
+| Plain Text | 7 | 0 | 302 | 0 |
+| **Total** | **104** | **69,928** | **4,694** | **5,255** |
 
 ## Rust by module
 
@@ -22,50 +22,65 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/render.rs` | 3,282 | 1,298 |
+| `src/render.rs` | 3,348 | 1,496 |
+| `src/model.rs` | 3,093 | 3,898 |
 | `src/coop.rs` | 2,706 | 1,363 |
-| `src/model.rs` | 2,422 | 2,742 |
-| `src/necropolis.rs` | 1,995 | 609 |
-| `src/main.rs` | 1,815 | 2,398 |
-| `src/tesseract.rs` | 1,053 | 562 |
+| `src/necropolis.rs` | 1,995 | 610 |
+| `src/main.rs` | 1,979 | 2,816 |
+| `src/cortex.rs` | 1,220 | 540 |
+| `src/platform/macos/mod.rs` | 1,197 | 609 |
+| `src/tesseract.rs` | 1,053 | 561 |
 | `src/ptolemy.rs` | 983 | 421 |
-| `src/platform/macos/mod.rs` | 919 | 365 |
-| `src/gpu.rs` | 834 | 82 |
-| `src/simulation.rs` | 672 | 752 |
-| `src/views.rs` | 652 | 541 |
+| `src/murmuration.rs` | 925 | 782 |
+| `src/gpu.rs` | 852 | 145 |
+| `src/horizon/disk.rs` | 796 | 274 |
+| `src/views.rs` | 723 | 619 |
+| `src/simulation.rs` | 647 | 762 |
+| `src/platform/linux/mod.rs` | 609 | 370 |
+| `src/platform/macos/ffi.rs` | 594 | 12 |
+| `src/platform/macos/logic.rs` | 587 | 807 |
 | `src/platform/linux/events.rs` | 581 | 317 |
-| `src/platform/linux/mod.rs` | 576 | 370 |
+| `src/neurons.rs` | 569 | 333 |
+| `src/horizon.rs` | 565 | 630 |
 | `src/reef.rs` | 550 | 94 |
-| `src/platform/macos/ffi.rs` | 540 | 12 |
+| `src/platform/mod.rs` | 500 | 106 |
+| `src/model/kernel.rs` | 492 | 474 |
 | `src/cores.rs` | 488 | 243 |
 | `src/globe.rs` | 487 | 461 |
-| `src/platform/macos/logic.rs` | 466 | 607 |
+| `src/terminal.rs` | 473 | 185 |
 | `src/cells.rs` | 457 | 339 |
-| `src/platform/mod.rs` | 425 | 94 |
-| `src/terminal.rs` | 425 | 79 |
+| `src/horizon/orbits.rs` | 401 | 400 |
+| `src/horizon/lens.rs` | 395 | 344 |
+| `src/platform/linux/net.rs` | 320 | 278 |
 | `src/matrix.rs` | 299 | 219 |
+| `src/blackbody.rs` | 292 | 146 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
 | `src/places.rs` | 270 | 0 |
-| `src/platform/linux/net.rs` | 270 | 71 |
+| `src/threads.rs` | 252 | 256 |
 | `src/medium.rs` | 240 | 66 |
 | `src/geo.rs` | 229 | 134 |
 | `src/strata.rs` | 205 | 47 |
-| `src/platform/linux/files.rs` | 198 | 187 |
+| `src/platform/linux/files.rs` | 201 | 187 |
 | `src/picker.rs` | 195 | 44 |
 | `src/journal.rs` | 185 | 18 |
+| `src/platform/linux/counters.rs` | 170 | 279 |
 | `src/history.rs` | 150 | 157 |
 | `src/stellar.rs` | 149 | 161 |
+| `src/platform/linux/pipes.rs` | 130 | 111 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
 | `src/glyphs.rs` | 107 | 0 |
 | `src/platform/macos/events.rs` | 107 | 60 |
 | `src/layout.rs` | 105 | 76 |
 | `src/platform/linux/journal.rs` | 101 | 53 |
+| `src/platform/linux/threads.rs` | 101 | 100 |
+| `src/platform/linux/memory.rs` | 86 | 121 |
 | `src/palette.rs` | 75 | 58 |
-| `src/render/shared.rs` | 68 | 47 |
+| `src/render/shared.rs` | 73 | 47 |
 | `src/geometry.rs` | 50 | 15 |
+| `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 571 |
-| **Total** | **25,753** | **16,057** |
+| **Total** | **33,812** | **23,579** |
 
 ## Largest files
 
@@ -73,16 +88,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 6,046 | over limit |
-| `src/render.rs` | 5,150 | over limit |
-| `src/main.rs` | 4,631 | over limit |
+| `src/model.rs` | 8,219 | over limit |
+| `src/render.rs` | 5,452 | over limit |
+| `src/main.rs` | 5,286 | over limit |
 | `src/coop.rs` | 4,468 | over limit |
-| `src/necropolis.rs` | 2,905 | over limit |
-| `src/tesseract.rs` | 1,850 | over limit |
-| `src/simulation.rs` | 1,757 | over limit |
-| `src/ptolemy.rs` | 1,589 | over limit |
-| `src/platform/macos/mod.rs` | 1,584 | over limit |
-| `src/views.rs` | 1,510 | over limit |
+| `src/necropolis.rs` | 2,906 | over limit |
+| `src/platform/macos/mod.rs` | 2,223 | over limit |
+| `src/murmuration.rs` | 1,966 | over limit |
+| `src/cortex.rs` | 1,965 | over limit |
+| `src/tesseract.rs` | 1,849 | over limit |
+| `src/simulation.rs` | 1,746 | over limit |
 
 ## Debt counters
 
@@ -90,11 +105,11 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 
 | Counter | Count |
 |:--|--:|
-| `#[expect(clippy::too_many_lines` | 15 |
-| `#[expect(clippy::too_many_arguments` | 7 |
-| `unsafe` blocks | 98 |
-| `unwrap_or(0` sites | 26 |
-| `unwrap_or(0.0` sites | 15 |
+| `#[expect(clippy::too_many_lines` | 16 |
+| `#[expect(clippy::too_many_arguments` | 8 |
+| `unsafe` blocks | 115 |
+| `unwrap_or(0` sites | 30 |
+| `unwrap_or(0.0` sites | 16 |
 | `known_unstable` harness entries | 9 |
 
 ## Health counters
@@ -103,10 +118,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 545 |
-| Views in the registry | 14 |
-| Views with a README mapping table | 4 of 14 |
+| `#[test]` functions | 781 |
+| Views in the registry | 17 |
+| Views with a README mapping table | 7 of 17 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`.

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use bytemuck::{Pod, Zeroable};
 
 use crate::render::shared::{self, LINE_DEPTH_BIAS, NONE};
-use crate::render::{Color, Frame, Item};
+use crate::render::{Backdrop, Color, Frame, Item};
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const PICK: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -205,6 +205,7 @@ pub struct Gpu {
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     sky: wgpu::RenderPipeline,
+    twilight: wgpu::RenderPipeline,
     pipelines: [(Pass, wgpu::RenderPipeline); 8],
     targets: Option<Targets>,
     streams: [Stream; 5],
@@ -439,6 +440,12 @@ impl Gpu {
             ),
         ];
         let sky = make(("sky_vertex", "sky_fragment"), &[], TriangleList, backdrop);
+        let twilight = make(
+            ("sky_vertex", "twilight_fragment"),
+            &[],
+            TriangleList,
+            backdrop,
+        );
         if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
             return Err(error);
         }
@@ -449,6 +456,7 @@ impl Gpu {
             globals,
             bind_group,
             sky,
+            twilight,
             pipelines,
             targets: None,
             streams: Default::default(),
@@ -525,7 +533,7 @@ impl Gpu {
         for item in &frame.items {
             let (pass, start) = match *item {
                 Item::Sphere { .. } => (Pass::Balls, balls.len()),
-                Item::Glow { .. } => (Pass::Glows, glows.len()),
+                Item::Glow { .. } | Item::Puff { .. } => (Pass::Glows, glows.len()),
                 Item::Glyph { .. } => (Pass::Glyphs, glyphs.len()),
                 Item::Triangle(..) => (Pass::Triangles, vertices.len()),
                 Item::Line(..) => (Pass::Lines, vertices.len()),
@@ -591,7 +599,14 @@ impl Gpu {
                         selected: selected as u32,
                     });
                 }
+                // The blend unit rounds, which is what a `Puff` does on the CPU; a `Glow` truncates.
                 Item::Glow {
+                    center,
+                    radius,
+                    color,
+                    strength,
+                }
+                | Item::Puff {
                     center,
                     radius,
                     color,
@@ -713,7 +728,11 @@ impl Gpu {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.sky);
+            pass.set_pipeline(if frame.sky.backdrop == Backdrop::Twilight {
+                &self.twilight
+            } else {
+                &self.sky
+            });
             pass.draw(0..3, 0..1);
             for (kind, range) in batches {
                 let pipeline = &self
@@ -946,6 +965,74 @@ mod tests {
             },
         ];
         frame
+    }
+
+    /// A dense clump of `count` dark puffs (or glows) over the twilight sky, as a flock draws.
+    fn clump(count: usize, spread: [f32; 2], radius: f32, puffs: bool) -> Frame {
+        let sky = Sky {
+            backdrop: Backdrop::Twilight,
+            haze: [0.0; 3],
+            time: 0.0,
+        };
+        let mut frame = Frame::new(960, 540, sky, Buffers::default());
+        let mut random = crate::simulation::Rng::new(7);
+        let strength = 1.0 - (-1.1_f32).exp();
+        for _ in 0..count {
+            let center = [
+                480.0 + random.normal() * spread[0],
+                250.0 + random.normal() * spread[1],
+            ];
+            let color = [12, 10, 16];
+            frame.items.push(if puffs {
+                Item::Puff {
+                    center,
+                    radius,
+                    color,
+                    strength,
+                }
+            } else {
+                Item::Glow {
+                    center,
+                    radius,
+                    color,
+                    strength,
+                }
+            });
+        }
+        frame
+    }
+
+    /// The share of pixels with a channel more than two levels apart, and the largest difference.
+    fn disagreement(a: &Frame, b: &Frame) -> (f64, u8) {
+        let mut over = 0;
+        let mut largest = 0;
+        for (x, y) in a.pixels.chunks(3).zip(b.pixels.chunks(3)) {
+            let gaps = [0, 1, 2].map(|k| x[k].abs_diff(y[k]));
+            over += usize::from(gaps.iter().any(|&gap| gap > 2));
+            largest = largest.max(gaps.into_iter().max().unwrap_or(0));
+        }
+        (over as f64 / (a.pixels.len() / 3) as f64 * 100.0, largest)
+    }
+
+    #[test]
+    #[ignore = "needs a hardware GPU; run with --ignored on one"]
+    fn stacked_puffs_match_the_gpu_to_a_level_however_densely_they_stack() {
+        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower).expect("a hardware GPU");
+        for (count, spread, radius) in [
+            (1800, [50.0, 35.0], 2.25),
+            (8000, [80.0, 50.0], 2.25),
+            (8000, [80.0, 50.0], 4.0),
+        ] {
+            let mut cpu = clump(count, spread, radius, true);
+            cpu.rasterize();
+            let mut hardware = clump(count, spread, radius, true);
+            gpu.render(&mut hardware, None).expect("the GPU renders");
+            let (share, largest) = disagreement(&cpu, &hardware);
+            assert!(
+                share == 0.0 && largest <= 1,
+                "{count} puffs of radius {radius}: {share} % of pixels over 2 levels, largest {largest}"
+            );
+        }
     }
 
     #[test]

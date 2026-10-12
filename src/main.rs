@@ -1,6 +1,8 @@
+mod blackbody;
 mod cells;
 mod coop;
 mod cores;
+mod cortex;
 mod geo;
 mod geometry;
 mod globe;
@@ -9,12 +11,15 @@ mod gpu;
 #[cfg(test)]
 mod harness;
 mod history;
+mod horizon;
 mod journal;
 mod layout;
 mod matrix;
 mod medium;
 mod model;
+mod murmuration;
 mod necropolis;
+mod neurons;
 mod palette;
 mod picker;
 mod places;
@@ -28,10 +33,11 @@ mod stellar;
 mod strata;
 mod terminal;
 mod tesseract;
+mod threads;
 mod views;
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::io::{self, Write};
@@ -52,6 +58,7 @@ use render::{
     Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target,
     Thing, label_name,
 };
+use simulation::Rng;
 use terminal::{Label, Popup, Terminal, Tone};
 use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
 
@@ -321,10 +328,30 @@ impl Board {
     }
 }
 
+/// The process the camera is visiting, by the tour or by hand.
 struct Tour {
-    index: usize,
     target: Identity,
     since: Instant,
+    /// Whether the tour steps on by itself; a visit made by hand with no tour running holds still.
+    running: bool,
+}
+
+/// Which process of the cycle a visit goes to, from the cursor.
+#[derive(Clone, Copy)]
+enum Step {
+    /// The one the cursor is on, or the first before any visit.
+    Stay,
+    /// The one after it.
+    Next,
+    /// Any other one.
+    Random,
+}
+
+/// Where the last visit stood in the cycle. It follows the process, not the index, and outlives
+/// the visit, so the next Space, `g` and the idle tour all carry on from it.
+struct Cursor {
+    index: usize,
+    id: Identity,
 }
 
 struct App {
@@ -363,6 +390,11 @@ struct App {
     animation: f32,
     last_input: Instant,
     tour: Option<Tour>,
+    cursor: Option<Cursor>,
+    /// Draws the position of a random visit.
+    rng: Rng,
+    /// The terminal reports Shift+Space apart from Space (the Kitty keyboard protocol is on).
+    keyboard: bool,
     gpu: Option<gpu::Gpu>,
     /// Which rasterizer drew the last frame, for the status strip.
     renderer: String,
@@ -413,6 +445,9 @@ impl App {
             animation: 0.0,
             last_input: Instant::now(),
             tour: None,
+            cursor: None,
+            rng: Rng::new(clock_seed()),
+            keyboard: false,
             gpu: None,
             renderer: "cpu".into(),
             journal_demanded: None,
@@ -583,6 +618,25 @@ impl App {
     }
 
     fn render(&mut self, width: u32, height: u32, limit: usize) -> Frame {
+        let mut frame = self.draw(width, height, limit);
+        let failure = match self.gpu.as_mut() {
+            Some(gpu) => gpu.render(&mut frame, self.hover.map(|h| h.frame)).err(),
+            None => {
+                frame.rasterize();
+                None
+            }
+        };
+        if let Some(error) = failure {
+            self.gpu = None;
+            self.renderer = format!("cpu (GPU failed: {error})");
+            frame.rasterize();
+        }
+        frame
+    }
+
+    /// Records the frame's display list, which `render` then rasterizes: everything that moves a
+    /// view's state, without the pixels.
+    fn draw(&mut self, width: u32, height: u32, limit: usize) -> Frame {
         let index = if self.paused {
             self.history_index
         } else {
@@ -624,18 +678,6 @@ impl App {
             }
         }
         self.rendered = self.camera.clone();
-        let failure = match self.gpu.as_mut() {
-            Some(gpu) => gpu.render(&mut frame, self.hover.map(|h| h.frame)).err(),
-            None => {
-                frame.rasterize();
-                None
-            }
-        };
-        if let Some(error) = failure {
-            self.gpu = None;
-            self.renderer = format!("cpu (GPU failed: {error})");
-            frame.rasterize();
-        }
         frame
     }
 
@@ -726,25 +768,67 @@ impl App {
         targets
     }
 
+    /// The processes Space steps through and the tour walks: `tour_targets`, then every other
+    /// visible process by ascending identity, so each appears once.
+    fn visit_cycle(&self) -> Vec<Identity> {
+        let mut cycle = self.tour_targets();
+        let listed: HashSet<Identity> = cycle.iter().copied().collect();
+        let mut rest: Vec<Identity> = self
+            .snapshot()
+            .processes
+            .iter()
+            .map(|p| p.id)
+            .filter(|id| self.scene.positions.contains_key(id) && !listed.contains(id))
+            .collect();
+        rest.sort_unstable();
+        cycle.extend(rest);
+        cycle
+    }
+
+    /// Where the cursor stands in `cycle`, which is not empty: at the process it was left on, or
+    /// at its old index, clamped, once that process is gone. None before the first visit.
+    fn cursor_position(&self, cycle: &[Identity]) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        Some(
+            cycle
+                .iter()
+                .position(|id| *id == cursor.id)
+                .unwrap_or_else(|| cursor.index.min(cycle.len() - 1)),
+        )
+    }
+
     fn update_tour(&mut self, after: Option<Duration>) {
         if !self.row().tour {
             self.tour = None;
             return;
         }
         let now = Instant::now();
-        let due = match &self.tour {
-            // A globe held by hand stays where it was put until r or g.
-            None => {
-                after.is_some_and(|after| now.duration_since(self.last_input) >= after)
-                    && !(self.row().turn.is_some() && self.goal.globe_held)
-            }
-            Some(tour) => {
-                now.duration_since(tour.since) >= TOUR_STEP
-                    || self.tour_point(tour.target).is_none()
-            }
+        let idle = || {
+            after.is_some_and(|after| now.duration_since(self.last_input) >= after)
+                // A globe held by hand stays where it was put until r or g.
+                && !(self.row().turn.is_some() && self.goal.globe_held)
         };
-        if due {
-            self.visit(self.tour.as_ref().map_or(0, |tour| tour.index + 1));
+        match &self.tour {
+            Some(tour) if tour.running => {
+                if now.duration_since(tour.since) >= TOUR_STEP
+                    || self.tour_point(tour.target).is_none()
+                {
+                    self.visit(Step::Next, true);
+                }
+            }
+            // A visit by hand stays on its process until input ends it or the idle tour takes over.
+            Some(tour) => {
+                if self.tour_point(tour.target).is_none() {
+                    self.tour = None;
+                } else if idle() {
+                    self.visit(Step::Stay, true);
+                }
+            }
+            None => {
+                if idle() {
+                    self.visit(Step::Stay, true);
+                }
+            }
         }
         if let Some(tour) = &self.tour
             && let Some(p) = self.tour_point(tour.target)
@@ -789,19 +873,40 @@ impl App {
         self.goal.look_at(point);
     }
 
-    fn visit(&mut self, index: usize) {
+    /// Visits the process `step` names in the cycle, as a tour step does: nothing selected, the
+    /// camera zoomed in and facing it, and its callout shown. A `running` visit goes on by itself
+    /// every `TOUR_STEP` from here; otherwise it holds still. Does nothing when no process can
+    /// be visited.
+    fn visit(&mut self, step: Step, running: bool) {
         self.release_globe();
-        let targets = self.tour_targets();
-        self.tour = (!targets.is_empty()).then(|| Tour {
-            index,
-            target: targets[index % targets.len()],
-            since: Instant::now(),
-        });
-        if self.tour.is_some() {
-            self.selected = None;
-            self.thing = None;
-            self.goal.zoom = self.fit_zoom * 2.2;
+        let cycle = self.visit_cycle();
+        if cycle.is_empty() {
+            self.tour = None;
+            return;
         }
+        let count = cycle.len();
+        let index = match (step, self.cursor_position(&cycle)) {
+            (Step::Stay, Some(index)) => index,
+            (Step::Next, Some(index)) => (index + 1) % count,
+            // Another position, uniform among the others when there are any.
+            (Step::Random, Some(index)) if count > 1 => {
+                (index + 1 + self.rng.below(count - 1)) % count
+            }
+            (Step::Random, _) => self.rng.below(count),
+            (Step::Stay | Step::Next, None) => 0,
+        };
+        self.cursor = Some(Cursor {
+            index,
+            id: cycle[index],
+        });
+        self.tour = Some(Tour {
+            target: cycle[index],
+            since: Instant::now(),
+            running,
+        });
+        self.selected = None;
+        self.thing = None;
+        self.goal.zoom = self.fit_zoom * 2.2;
     }
 
     fn text(&self, render_ms: f32, transport: &str, fps: u32, limit: usize) -> Vec<String> {
@@ -814,8 +919,8 @@ impl App {
             });
         let mode = match (self.paused, &self.tour) {
             (true, _) => "PAUSED",
-            (false, Some(_)) => "TOUR",
-            (false, None) => "LIVE",
+            (false, Some(Tour { running: true, .. })) => "TOUR",
+            (false, _) => "LIVE",
         };
         let mut lines = vec![format!(
             " ISOTOP / {} / {mode}   {} processes{}{} | {visible} visible | {collapsed} collapsed | {:.1}/{} CPU cores | RAM {} / {}",
@@ -879,14 +984,15 @@ impl App {
                 "" => String::new(),
                 keys => format!(" {keys} |"),
             };
-            lines.push(format!("{keys} Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | f focus | l labels | c links"));
+            let random = if self.keyboard { "Shift-Space" } else { "*" };
+            lines.push(format!("{keys} Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | Space next process | {random} random | f focus | l labels | c links"));
         } else {
             let scroll = if self.row().turn.is_some() {
                 "scroll turn/tilt | drag pan"
             } else {
                 "scroll pan"
             };
-            lines.push(format!(" Tab next view | v views | g tour | {scroll} | Ctrl-scroll zoom | click inspect | / search | c links | Space pause | h hide panel | ? help | q quit"));
+            lines.push(format!(" Tab next view | v views | g tour | Space visit | {scroll} | Ctrl-scroll zoom | click inspect | / search | c links | P pause | h hide panel | ? help | q quit"));
         }
         let links = match self.scene.links {
             Links::All => "",
@@ -957,6 +1063,8 @@ impl App {
         }
         let id = self.inspected()?;
         let snapshot = self.snapshot();
+        // The lines `Stage::sparklines` supplied, which the terminal cleans as braille.
+        let mut braille = Vec::new();
         let lines = match snapshot.processes.iter().find(|p| p.id == id) {
             Some(p) => {
                 let mut lines = vec![
@@ -1017,6 +1125,10 @@ impl App {
                     ));
                 }
                 lines.extend(self.scene.notes.get(&id).into_iter().flatten().cloned());
+                for line in self.scene.sparklines.get(&id).into_iter().flatten() {
+                    braille.push(lines.len());
+                    lines.push(line.clone());
+                }
                 lines.extend([
                     p.group.clone(),
                     p.command.clone(),
@@ -1030,8 +1142,9 @@ impl App {
                 "Esc close".into(),
             ],
         };
-        place_panel(
+        place_lines(
             lines,
+            braille,
             frame.anchor.map(|a| layout.cell_of(a)),
             layout,
             false,
@@ -1221,6 +1334,15 @@ impl App {
     }
 
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
+        // With every key reported as an escape code (see `terminal::KEYBOARD_FLAGS`), the press of
+        // a modifier or a lock arrives as a key of its own, just before the key it modifies. It
+        // is not a command, and must not end a tour or reset the idle timer.
+        if matches!(
+            code,
+            KeyCode::Modifier(_) | KeyCode::CapsLock | KeyCode::NumLock | KeyCode::ScrollLock
+        ) {
+            return false;
+        }
         let before = self.goal.clone();
         let quit = self.command(code, modifiers, step);
         self.follow(&before);
@@ -1237,7 +1359,7 @@ impl App {
     }
 
     fn command(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
-        let touring = self.tour.is_some();
+        let touring = self.tour.as_ref().is_some_and(|tour| tour.running);
         self.touch();
         if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
             return true;
@@ -1310,7 +1432,17 @@ impl App {
                     self.switch(View::at(index));
                 }
             }
-            KeyCode::Char('g') if !touring && self.row().tour => self.visit(0),
+            KeyCode::Char('g') if !touring && self.row().tour => self.visit(Step::Stay, true),
+            KeyCode::Char(' ') if self.row().tour => {
+                let step = if modifiers.contains(KeyModifiers::SHIFT) {
+                    Step::Random
+                } else {
+                    Step::Next
+                };
+                self.visit(step, touring);
+            }
+            // Shift+Space where the terminal cannot tell it from Space.
+            KeyCode::Char('*') if self.row().tour => self.visit(Step::Random, touring),
             KeyCode::Char('c') => self.scene.links.cycle(),
             KeyCode::Home => self.fit = true,
             KeyCode::Char('r') => {
@@ -1347,7 +1479,7 @@ impl App {
                     self.fit = true;
                 }
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char('P') => {
                 self.paused = !self.paused;
                 self.history_index = self.history.len() - 1;
             }
@@ -1490,8 +1622,32 @@ fn place_panel(
     above: bool,
     min_width: usize,
 ) -> Option<Popup> {
+    place_lines(lines, Vec::new(), anchor, layout, above, min_width)
+}
+
+/// `place_panel` for lines of which those at the indices in `braille` are sparklines: one cell
+/// per character, where the others are measured in bytes.
+fn place_lines(
+    lines: Vec<String>,
+    braille: Vec<usize>,
+    anchor: Option<(u16, u16)>,
+    layout: &Layout,
+    above: bool,
+    min_width: usize,
+) -> Option<Popup> {
     let (columns, rows) = (layout.columns, layout.rows);
-    let longest = lines.iter().map(String::len).max().unwrap_or(0);
+    let longest = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if braille.contains(&index) {
+                line.chars().count()
+            } else {
+                line.len()
+            }
+        })
+        .max()
+        .unwrap_or(0);
     let width = (longest + 4).clamp(min_width, 64).min(columns as usize) as u16;
     let height = lines.len() as u16 + 2;
     if height > rows {
@@ -1518,6 +1674,7 @@ fn place_panel(
         row,
         width,
         lines,
+        braille,
     })
 }
 
@@ -1569,6 +1726,29 @@ fn sampler_text(snapshot: &Snapshot) -> String {
 }
 
 /// What a key press offers the shown view's key hook, if anything.
+/// The key as legacy terminals would have typed it. Reporting every key as an escape code sends
+/// a letter typed with Caps Lock on as the lowercase key with a lock state, where the legacy
+/// encoding sent the capital.
+fn typed(key: &event::KeyEvent) -> (KeyCode, KeyModifiers) {
+    match key.code {
+        KeyCode::Char(letter)
+            if letter.is_ascii_lowercase()
+                && key.state.contains(event::KeyEventState::CAPS_LOCK)
+                && !key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            (KeyCode::Char(letter.to_ascii_uppercase()), key.modifiers)
+        }
+        code => (code, key.modifiers),
+    }
+}
+
+/// A seed for the random visit that differs from run to run.
+fn clock_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as u64)
+}
+
 fn view_key(code: KeyCode) -> Option<ViewKey> {
     match code {
         KeyCode::Char(character) if LOCAL_KEYS.contains(character) => {
@@ -1749,6 +1929,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     }
     let mut terminal = Terminal::enter(options.force_graphics, options.direct)?;
     app.scene.intro = true;
+    app.keyboard = terminal.keyboard;
     let mut layout = Layout::measure(options.width, app.panel_shown())?;
     let tour_after = (options.tour > 0).then(|| Duration::from_secs(options.tour as u64));
     let origin = Instant::now();
@@ -1834,7 +2015,8 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
             match event::read()? {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     let shown = app.panel_shown();
-                    quit = app.key(key.code, key.modifiers, layout.width as f32 * 0.04);
+                    let (code, modifiers) = typed(&key);
+                    quit = app.key(code, modifiers, layout.width as f32 * 0.04);
                     if app.panel_shown() != shown {
                         layout = Layout::measure(options.width, app.panel_shown())?;
                         terminal.clear()?;
@@ -1889,7 +2071,7 @@ fn demo_snapshot(row: &ViewInfo, previous: f64, time: f64, count: usize) -> Snap
         snapshot.life = model::demo_events(previous, time, count, row.demo);
         // A view that demands the events is told where they come from, as a live run tells it.
         if row.sources.contains(Source::LifeEvents) {
-            snapshot.sources = model::demo_life_sources(row.demo);
+            snapshot.sources = snapshot.sources.union(model::demo_life_sources(row.demo));
         }
     }
     snapshot
@@ -1989,6 +2171,29 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
                         app.scene.record(&snapshot, at as f32);
                     }
                 }
+            }
+            Phase::Play { seconds, step } => {
+                let interval = options.sample_seconds();
+                let samples = (f64::from(seconds) / interval).round() as u32;
+                let frames = (interval / f64::from(step)).round().max(1.0) as u32;
+                for back in (1..=samples).rev() {
+                    let at = options.time - f64::from(back) * interval;
+                    if at < 0.0 {
+                        continue;
+                    }
+                    app.history = VecDeque::from([demo_snapshot(row, at - interval, at, count)]);
+                    for index in 0..frames {
+                        app.animation = (at + f64::from(index) * f64::from(step)) as f32;
+                        let frame = app.draw(width, height, limit);
+                        app.scene.spare = frame.release();
+                    }
+                }
+                app.history = VecDeque::from([demo_snapshot(
+                    row,
+                    options.time - interval,
+                    options.time,
+                    count,
+                )]);
             }
             Phase::Settle { frames, step, lead } => {
                 for index in 0..frames {
@@ -2213,7 +2418,7 @@ mod tests {
                     "{view:?} visits {target:?}"
                 );
             }
-            app.visit(0);
+            app.visit(Step::Stay, true);
             let mut frame = app.render(1600, 900, 512);
             frame.rasterize();
             let (_, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
@@ -2234,12 +2439,339 @@ mod tests {
         let tour = app.tour.as_mut().unwrap();
         tour.since = tour.since.checked_sub(TOUR_STEP).unwrap();
         app.update_tour(None);
-        assert_eq!(app.tour.as_ref().unwrap().index, 1, "steps without --tour");
+        assert_eq!(
+            app.cursor.as_ref().unwrap().index,
+            1,
+            "steps without --tour"
+        );
         press(&mut app, 'g');
         assert!(app.tour.is_none(), "g again ends it");
         press(&mut app, 'g');
         press(&mut app, '+');
         assert!(app.tour.is_none(), "any other key ends it");
+    }
+
+    /// A city of demo processes with a fixed random seed, drawn once so the cycle is known.
+    fn visiting_app() -> App {
+        let mut app = App::new(view("city"), model::demo(1.0, 40), all_available());
+        app.rng = Rng::new(7);
+        app.render(320, 180, 512);
+        app
+    }
+
+    fn cursor_index(app: &App) -> usize {
+        app.cursor.as_ref().expect("a visit was made").index
+    }
+
+    fn visited(app: &App) -> Identity {
+        app.tour.as_ref().expect("a visit is shown").target
+    }
+
+    fn press_with(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        app.key(code, modifiers, 10.0);
+    }
+
+    fn age_the_step(app: &mut App) {
+        let tour = app.tour.as_mut().expect("a visit is shown");
+        tour.since = tour.since.checked_sub(TOUR_STEP).unwrap();
+    }
+
+    #[test]
+    fn the_cycle_lists_tour_targets_first_then_every_other_visible_process_once() {
+        let app = visiting_app();
+        let targets = app.tour_targets();
+        let cycle = app.visit_cycle();
+        assert_eq!(cycle[..targets.len()], targets[..]);
+        let rest = &cycle[targets.len()..];
+        assert!(rest.windows(2).all(|pair| pair[0] < pair[1]), "ascending");
+        let mut drawn: Vec<Identity> = app
+            .snapshot()
+            .processes
+            .iter()
+            .map(|p| p.id)
+            .filter(|id| app.scene.positions.contains_key(id))
+            .collect();
+        drawn.sort_unstable();
+        let mut sorted = cycle.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, drawn, "every visible process, once");
+        assert!(cycle.len() > targets.len());
+    }
+
+    #[test]
+    fn space_advances_the_tour_without_stopping_it() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(cursor_index(&app), 0);
+        press(&mut app, KeyCode::Char(' '));
+        let cycle = app.visit_cycle();
+        assert_eq!(cursor_index(&app), 1);
+        assert_eq!(visited(&app), cycle[1]);
+        assert!(app.tour.as_ref().unwrap().running, "the tour goes on");
+        assert!(app.text(0.0, "test", 20, 512)[0].contains("/ TOUR"));
+        age_the_step(&mut app);
+        app.update_tour(None);
+        assert_eq!(cursor_index(&app), 2, "the next automatic step follows");
+    }
+
+    #[test]
+    fn a_visit_centres_a_flock_that_flies_above_the_ground() {
+        let row = view("murmuration").info();
+        let snapshot = demo_snapshot(row, 11.0, 12.0, 64);
+        let mut app = App::new(view("murmuration"), snapshot, all_available());
+        app.rng = Rng::new(7);
+        let frame = app.render(640, 360, 512);
+        press(&mut app, KeyCode::Char('g'));
+        app.update_tour(None);
+        let flock = app
+            .tour_point(visited(&app))
+            .expect("the flock has a centroid");
+        assert!(flock[2] > 5.0, "it flies above the ground: {flock:?}");
+        // The point itself, not the ground below it, is where the camera looks.
+        let goal = &app.goal;
+        let middle = frame.project(goal, [goal.center[0], goal.center[1], 0.0]);
+        let seen = frame.project(goal, flock);
+        assert!(
+            (seen[0] - middle[0]).abs() < 1.0 && (seen[1] - middle[1]).abs() < 1.0,
+            "the flock is at {seen:?}, the middle of the screen at {middle:?}"
+        );
+    }
+
+    #[test]
+    fn the_press_of_a_modifier_key_does_not_end_the_tour_before_shift_space_arrives() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char('g'));
+        // A terminal that reports every key sends Shift on its own first.
+        for modifier in [
+            KeyCode::Modifier(event::ModifierKeyCode::LeftShift),
+            KeyCode::CapsLock,
+        ] {
+            assert!(!press(&mut app, modifier));
+            assert!(app.tour.as_ref().unwrap().running, "{modifier:?}");
+        }
+        assert!(!app.key(KeyCode::Char(' '), KeyModifiers::SHIFT, 1.0));
+        assert!(
+            app.tour.as_ref().unwrap().running,
+            "the tour resumes from the jump"
+        );
+    }
+
+    #[test]
+    fn space_restarts_the_tour_step_timer() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char('g'));
+        let tour = app.tour.as_mut().unwrap();
+        tour.since = tour.since.checked_sub(TOUR_STEP / 2).unwrap();
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.tour.as_ref().unwrap().since.elapsed() < TOUR_STEP / 4);
+        app.update_tour(None);
+        assert_eq!(cursor_index(&app), 1, "no step is due yet");
+    }
+
+    #[test]
+    fn shift_space_jumps_to_a_random_other_position_and_the_tour_resumes_from_it() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char('g'));
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char(' '));
+        }
+        let count = app.visit_cycle().len();
+        let mut jumps = std::collections::BTreeSet::new();
+        for _ in 0..20 {
+            let before = cursor_index(&app);
+            press_with(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
+            let after = cursor_index(&app);
+            assert_ne!(after, before, "never the current position");
+            assert!(app.tour.as_ref().unwrap().running);
+            jumps.insert(after);
+            age_the_step(&mut app);
+            app.update_tour(None);
+            assert_eq!(cursor_index(&app), (after + 1) % count);
+        }
+        assert!(jumps.len() > 5, "the jumps vary: {jumps:?}");
+    }
+
+    #[test]
+    fn space_after_a_random_jump_visits_the_next_position() {
+        let mut app = visiting_app();
+        let count = app.visit_cycle().len();
+        for key in [KeyCode::Char('*'), KeyCode::Char(' ')] {
+            press_with(&mut app, KeyCode::Char('*'), KeyModifiers::NONE);
+            let jumped = cursor_index(&app);
+            press(&mut app, key);
+            if key == KeyCode::Char(' ') {
+                assert_eq!(cursor_index(&app), (jumped + 1) % count);
+                assert_eq!(visited(&app), app.visit_cycle()[(jumped + 1) % count]);
+            }
+        }
+    }
+
+    #[test]
+    fn space_without_a_tour_visits_without_starting_one() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char(' '));
+        let first = visited(&app);
+        assert_eq!(cursor_index(&app), 0);
+        assert!(!app.tour.as_ref().unwrap().running);
+        assert!(app.text(0.0, "test", 20, 512)[0].contains("/ LIVE"));
+        assert!(app.selected.is_none());
+        assert_eq!(app.goal.zoom, app.fit_zoom * 2.2);
+        age_the_step(&mut app);
+        app.update_tour(None);
+        assert_eq!(visited(&app), first, "a visit by hand holds still");
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(cursor_index(&app), 1);
+        press_with(&mut app, KeyCode::Char(' '), KeyModifiers::SHIFT);
+        assert!(!app.tour.as_ref().unwrap().running);
+        // Another key ends the visit but not the cursor, and `g` carries on from it.
+        let at = cursor_index(&app);
+        let id = visited(&app);
+        press(&mut app, KeyCode::Char('+'));
+        assert!(app.tour.is_none());
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!((cursor_index(&app), visited(&app)), (at, id));
+        assert!(app.tour.as_ref().unwrap().running);
+    }
+
+    #[test]
+    fn the_idle_tour_starts_from_the_cursor() {
+        let mut app = visiting_app();
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char(' '));
+        }
+        let id = visited(&app);
+        app.update_tour(Some(Duration::ZERO));
+        assert!(app.tour.as_ref().unwrap().running);
+        assert_eq!((cursor_index(&app), visited(&app)), (2, id));
+    }
+
+    #[test]
+    fn the_cursor_follows_the_visited_process_when_the_cycle_changes() {
+        let mut app = visiting_app();
+        let targets = app.tour_targets().len();
+        for _ in 0..targets + 3 {
+            press(&mut app, KeyCode::Char(' '));
+        }
+        let id = visited(&app);
+        assert_eq!(cursor_index(&app), targets + 2);
+        // A process ahead of it that is no target exits, so it moves up one place.
+        let ahead = app.visit_cycle()[targets];
+        app.history[0].processes.retain(|p| p.id != ahead);
+        app.render(320, 180, 512);
+        let cycle = app.visit_cycle();
+        let at = cycle.iter().position(|&other| other == id).unwrap();
+        assert_eq!(at, targets + 1, "the visited process changed places");
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(visited(&app), cycle[at + 1]);
+        // The visited process itself exits: the stored index, clamped, stands in for it.
+        let gone = visited(&app);
+        let index = cursor_index(&app);
+        app.history[0].processes.retain(|p| p.id != gone);
+        app.render(320, 180, 512);
+        let cycle = app.visit_cycle();
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(visited(&app), cycle[(index + 1) % cycle.len()]);
+    }
+
+    #[test]
+    fn space_does_nothing_with_no_visitable_process() {
+        let mut app = visiting_app();
+        app.history[0].processes.clear();
+        app.render(320, 180, 512);
+        assert!(app.visit_cycle().is_empty());
+        for (code, modifiers) in [
+            (KeyCode::Char(' '), KeyModifiers::NONE),
+            (KeyCode::Char(' '), KeyModifiers::SHIFT),
+            (KeyCode::Char('*'), KeyModifiers::NONE),
+        ] {
+            press_with(&mut app, code, modifiers);
+            assert!(app.tour.is_none() && app.cursor.is_none());
+        }
+    }
+
+    #[test]
+    fn space_does_nothing_in_a_view_that_opts_out_of_the_tour() {
+        let mut app = App::new(view("necropolis"), model::demo(1.0, 40), all_available());
+        app.render(320, 180, 512);
+        assert!(!app.row().tour);
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('*'));
+        assert!(app.tour.is_none() && app.cursor.is_none());
+    }
+
+    #[test]
+    fn p_pauses_and_space_no_longer_does() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char(' '));
+        assert!(!app.paused);
+        press_with(&mut app, KeyCode::Char('P'), KeyModifiers::SHIFT);
+        assert!(app.paused);
+        assert!(app.text(0.0, "test", 20, 512)[0].contains("/ PAUSED"));
+        press(&mut app, KeyCode::Char('P'));
+        assert!(!app.paused);
+        press(&mut app, KeyCode::Char('p'));
+        assert!(!app.paused, "lowercase p belongs to the views");
+    }
+
+    #[test]
+    fn space_still_toggles_the_playlist_inside_the_picker_and_types_in_search() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char('v'));
+        let before = playlist_names(&app).len();
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(playlist_names(&app).len(), before - 1);
+        assert!(app.tour.is_none() && app.cursor.is_none());
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char('*'));
+        assert_eq!(app.search.as_deref(), Some("a *"));
+        assert!(app.tour.is_none() && app.cursor.is_none());
+    }
+
+    #[test]
+    fn the_help_names_the_random_visit_key_the_terminal_can_send() {
+        let mut app = visiting_app();
+        app.show_help = true;
+        let help = |app: &App| app.text(0.0, "test", 20, 512)[3].clone();
+        assert!(
+            help(&app).contains("Space next process | * random"),
+            "{}",
+            help(&app)
+        );
+        app.keyboard = true;
+        assert!(
+            help(&app).contains("| Shift-Space random"),
+            "{}",
+            help(&app)
+        );
+    }
+
+    #[test]
+    fn caps_lock_letters_arrive_as_capitals() {
+        use event::{KeyEvent, KeyEventKind, KeyEventState};
+        let key = |code, modifiers, state| {
+            KeyEvent::new_with_kind_and_state(code, modifiers, KeyEventKind::Press, state)
+        };
+        let caps = KeyEventState::CAPS_LOCK;
+        let plain = KeyModifiers::NONE;
+        assert_eq!(
+            typed(&key(KeyCode::Char('p'), plain, caps)).0,
+            KeyCode::Char('P')
+        );
+        assert_eq!(
+            typed(&key(KeyCode::Char('p'), plain, KeyEventState::NONE)).0,
+            KeyCode::Char('p')
+        );
+        assert_eq!(
+            typed(&key(KeyCode::Char('P'), KeyModifiers::SHIFT, caps)).0,
+            KeyCode::Char('P')
+        );
+        assert_eq!(
+            typed(&key(KeyCode::Char('1'), plain, caps)).0,
+            KeyCode::Char('1')
+        );
     }
 
     #[test]
@@ -2369,7 +2901,7 @@ mod tests {
     }
 
     /// The macOS gaps, as the collector reports them on a Mac without cluster clocks.
-    const MACOS: [Source; 9] = [
+    const MACOS: &[Source] = &[
         Source::CpuPressure,
         Source::IoPressure,
         Source::LastCpu,
@@ -2379,6 +2911,7 @@ mod tests {
         Source::SocketTraffic,
         Source::FileLocks,
         Source::GpuMemory,
+        Source::MemoryDetail,
     ];
 
     /// The status text of `view` over the demo workload with the given gaps, after one frame so
@@ -2442,7 +2975,7 @@ mod tests {
             "{}",
             full[4]
         );
-        let mac = lines_with(view("city"), &MACOS, 0);
+        let mac = lines_with(view("city"), MACOS, 0);
         assert!(
             mac[4].contains(&format!("pressure cpu n/a mem {memory} io n/a")),
             "{}",
@@ -2540,7 +3073,7 @@ mod tests {
             "{}",
             one[0]
         );
-        let many = lines_with(view("city"), &MACOS, 37);
+        let many = lines_with(view("city"), MACOS, 37);
         assert!(
             many[0].contains(" processes (+37 unreadable: run with sudo) | "),
             "{}",
@@ -2551,7 +3084,7 @@ mod tests {
 
     #[test]
     fn unreadable_notice_survives_an_80_column_terminal() {
-        let first = &lines_with(view("city"), &MACOS, 212)[0];
+        let first = &lines_with(view("city"), MACOS, 212)[0];
         let visible: String = first.chars().take(80).collect();
         assert!(
             visible.contains("(+212 unreadable: run with sudo)"),
@@ -2561,14 +3094,14 @@ mod tests {
 
     #[test]
     fn legends_name_what_the_platform_cannot_measure() {
-        let cores = lines_with(view("cores"), &MACOS, 0)[2].clone();
+        let cores = lines_with(view("cores"), MACOS, 0)[2].clone();
         assert!(
             cores.contains("lanes = load; macOS reports no last CPU per process, so no marbles"),
             "{cores}"
         );
         assert!(cores.contains("no clock readings"), "{cores}");
         assert!(!cores.contains("marble ="), "{cores}");
-        let cells = lines_with(view("cells"), &MACOS, 0)[2].clone();
+        let cells = lines_with(view("cells"), MACOS, 0)[2].clone();
         assert!(
             cells.contains(&format!(
                 "{}, so no limits, quotas or pressure",
@@ -2576,17 +3109,17 @@ mod tests {
             )),
             "{cells}"
         );
-        let orbit = lines_with(view("orbit"), &MACOS, 0)[2].clone();
+        let orbit = lines_with(view("orbit"), MACOS, 0)[2].clone();
         assert!(
             orbit.contains("glow + trail = CPU | cyan arcs") && !orbit.contains("NVIDIA"),
             "{orbit}"
         );
-        let globe = lines_with(view("globe"), &MACOS, 0)[2].clone();
+        let globe = lines_with(view("globe"), MACOS, 0)[2].clone();
         assert!(
             globe.contains("no per-connection rates or RTT on macOS"),
             "{globe}"
         );
-        let coop = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        let coop = lines_with(view("coop"), MACOS, 0)[2].clone();
         assert!(
             coop.contains("no last CPU: running chickens share one trough"),
             "{coop}"
@@ -2596,7 +3129,7 @@ mod tests {
 
     #[test]
     fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
-        let mac = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        let mac = lines_with(view("coop"), MACOS, 0)[2].clone();
         assert!(
             mac.contains(&format!("flock = {} | ", platform::GROUP_LABEL)),
             "{mac}"
@@ -2620,7 +3153,7 @@ mod tests {
 
     #[test]
     fn coop_legend_on_macos_counts_open_files_but_has_no_brooding() {
-        let mac = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        let mac = lines_with(view("coop"), MACOS, 0)[2].clone();
         assert!(
             mac.contains("eggs = open files (log2), cracked = deleted but open | chicks = threads"),
             "{mac}"
@@ -2689,8 +3222,7 @@ mod tests {
         let asked = DemoOptions {
             churn: true,
             exact_cpu_time: true,
-            observer: false,
-            mortality: false,
+            ..DemoOptions::NONE
         };
         let mut app = App::new(plain, model::demo(1.0, 16), vec![true; rows.len()]);
         app.scene = Scene::with_rows(rows);
@@ -3188,6 +3720,92 @@ mod tests {
     }
 
     #[test]
+    fn sparklines_from_the_stage_reach_the_inspector_cleaned_as_braille() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        app.selected = Some(last);
+        let frame = app.render(320, 180, 512);
+        let popup = app
+            .popup(&frame, &layout)
+            .expect("the selection has a popup");
+        let at = popup
+            .lines
+            .iter()
+            .position(|line| line == views::testing::GUIDE_SPARKLINE)
+            .expect("the sparkline is in the popup");
+        assert_eq!(popup.braille, [at]);
+        assert!(
+            popup.width >= 44,
+            "forty cells and the border fit: {}",
+            popup.width
+        );
+        let mut output = Vec::new();
+        crate::terminal::draw_popup(&mut output, &popup).expect("drawn");
+        let text = String::from_utf8(output).expect("text");
+        assert!(
+            text.contains(views::testing::GUIDE_SPARKLINE),
+            "braille survives in a sparkline line"
+        );
+        // The same braille in an ordinary line is cleaned away.
+        let mut plain = popup;
+        plain.braille.clear();
+        let mut output = Vec::new();
+        crate::terminal::draw_popup(&mut output, &plain).expect("drawn");
+        let text = String::from_utf8(output).expect("text");
+        assert!(!text.contains('⣿'));
+    }
+
+    #[test]
+    fn the_cortex_inspector_lists_the_neuron_and_draws_its_trace_in_braille() {
+        let mut app = App::new(view("cortex"), model::demo(12.0, 64), all_available());
+        let layout = Layout {
+            columns: 120,
+            rows: 40,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        app.selected = Some(app.snapshot().processes[3].id);
+        for step in 0..40 {
+            app.animation = 1.0 + step as f32 * 0.1;
+            app.render(320, 180, 512);
+        }
+        let frame = app.render(320, 180, 512);
+        let popup = app
+            .popup(&frame, &layout)
+            .expect("the selection has a popup");
+        assert!(
+            popup.lines.iter().any(|line| line.contains(" a b c d = ")),
+            "{:?}",
+            popup.lines
+        );
+        assert_eq!(popup.braille.len(), 2, "two lines of trace");
+        for &index in &popup.braille {
+            let line = &popup.lines[index];
+            assert_eq!(line.chars().count(), 40);
+            assert!(
+                line.chars()
+                    .all(|c| c == ' ' || ('\u{2800}'..='\u{28ff}').contains(&c))
+            );
+        }
+        assert!(popup.width >= 44, "forty cells fit: {}", popup.width);
+        let legend = app.scene.legend(app.view, app.snapshot());
+        assert!(legend.starts_with(" chi "), "{legend}");
+        let mut frame = frame;
+        let (labels, _) = app.overlay(&mut frame, &layout, 4.0);
+        let words: Vec<&str> = labels.iter().map(|label| label.text.as_str()).collect();
+        for layer in ["II/III", "IV", "V", "VI"] {
+            assert!(words.contains(&layer), "{layer} is labelled: {words:?}");
+        }
+    }
+
+    #[test]
     fn module_views_learn_the_tour_target_focus_and_limit_and_add_callout_lines() {
         let rows = views::testing::WITNESSED;
         let snapshot = model::demo(12.0, 16);
@@ -3280,6 +3898,39 @@ mod tests {
             counted(0),
             "only headless runs warm up"
         );
+    }
+
+    #[test]
+    fn a_play_draws_frames_between_demo_samples_without_rasterizing_them() {
+        let frames = |arguments: &[&str]| {
+            let rows = views::testing::PLAYING;
+            let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+            app.scene = Scene::with_rows(rows);
+            let mut all = vec!["--time", "12", "--processes", "16"];
+            all.extend_from_slice(arguments);
+            warm_up(&mut app, &options(&all), None);
+            app.scene.legend(app.view, app.snapshot())
+        };
+        // The first frame is drawn twice, the second time with the camera fitted to it.
+        assert_eq!(
+            frames(&["--demo", "--output", "x.png"]),
+            " player: 8.0@8.0 8.0@8.0 8.5@8.0 9.0@9.0 9.5@9.0 10.0@10.0 10.5@10.0 11.0@11.0 11.5@11.0"
+        );
+        assert_eq!(
+            frames(&["--demo", "--benchmark", "3", "--sample-ms", "500"]),
+            " player: 8.0@8.0 8.0@8.0 8.5@8.5 9.0@9.0 9.5@9.5 10.0@10.0 10.5@10.5 11.0@11.0 11.5@11.5"
+        );
+        assert_eq!(
+            frames(&["--output", "x.png"]),
+            " player: ",
+            "not in a live run"
+        );
+        let rows = views::testing::PLAYING;
+        let mut app = App::new(View::at(0), model::demo(12.0, 16), vec![true; rows.len()]);
+        app.scene = Scene::with_rows(rows);
+        let frame = app.draw(160, 90, 512);
+        assert!(frame.pixels.is_empty(), "a drawn frame is not rasterized");
+        assert!(!frame.items.is_empty());
     }
 
     #[test]
@@ -3627,7 +4278,7 @@ mod tests {
         type_text(&mut app, "eef");
         assert_eq!(
             picker_lines(&app, 31)[1].trim_end(),
-            "> *  9 reef       REEF"
+            "> *  9 reef        REEF"
         );
         assert_eq!(app.view, view("city"), "typing never switches");
     }
@@ -3896,7 +4547,10 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/14");
+        assert_eq!(
+            picker_lines(&plain, 31)[0],
+            format!("View: q_  0/{}", REGISTRY.len())
+        );
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -4127,6 +4781,7 @@ mod tests {
     fn the_picker_scrolls_to_keep_the_highlight_visible() {
         let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
         press(&mut app, KeyCode::Char('v'));
+        let last = REGISTRY.last().expect("the registry has rows").name;
         for _ in 0..REGISTRY.len() - 1 {
             press(&mut app, KeyCode::Down);
         }
@@ -4135,7 +4790,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
+                .any(|line| line.starts_with("> ") && line.contains(last))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -4150,7 +4805,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("necropolis"))
+                .any(|line| line.starts_with("> ") && line.contains(last))
         );
     }
 

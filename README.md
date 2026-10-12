@@ -1,12 +1,13 @@
 # isotop
 
-A living picture of your machine inside the terminal, in fourteen views: a process
+A living picture of your machine inside the terminal, in seventeen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
 cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
 macOS) as Matrix rain, a minute of process worldlines in a tesseract whose fourth
-axis is time, and a moonlit cemetery of the processes that exited. Written in
+axis is time, a moonlit cemetery of the processes that exited, and a black hole whose orbits rank the
+processes the OOM killer will take next. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -28,7 +29,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -166,14 +167,18 @@ cache is stale.
 | CPU clock | There is no clock per core. Each cluster's average clock is the cycles its cores ran divided by the CPU time they ran them in, summed over every process isotop can read between two samples, and every lane of that kind shows it, so a cluster's chevrons move together and the legend says "cluster clock". A cluster with less than 0.05 s of CPU time in the interval has no reading, and its chevrons pause. Virtual machines count no cycles; there the legend says "no clock readings" and the chevrons stay still. Without sudo the clocks come from your own processes only |
 | Run queue | There is no run queue per CPU, so no red marbles at the start line. Each process's waiting threads come instead from its runnable time, which counts running as well, minus its CPU time: red beads trail its marble, one per thread waiting on average, with a faint red glow when any wait. The kernel brings runnable time up to date only when a thread is switched onto a core or blocks, so isotop counts only growth beyond the highest value it has seen; waiting can show a sample late. A process first seen while a thread had run for a long time without a switch can show that run as waiting once, so each reading is held to the process's thread count. After exec, whose new task keeps only one thread's counters, waiting starts over |
 | cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group, and no fox comes for an OOM kill; its legend says so |
-| Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy |
+| Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy. In the cortex a synapse weighs the sockets of its link instead of the traffic, min(0.25 ln(1 + sockets), 2), and the legend says "no socket traffic: weight = socket count" |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
+| Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
+| Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
+| OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -206,8 +211,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the fourteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract and the necropolis are reached with Tab, Shift+Tab,
+the seventeen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon and murmuration are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow share one layout, so a process sits in the same place in each. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
@@ -561,6 +566,92 @@ Exited processes as headstones in a cemetery at night, one row per minute of dea
 
 On macOS only sample diffing and kqueue see deaths: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
 
+### Cortex
+
+![Cortex: a dark slice of cortex in layers, somas flashing as they fire, dendrites branching from each, axons arcing between linked processes with spikes travelling along them, and a raster of the last ten seconds along the bottom](docs/media/cortex.webp)
+
+Every process is an Izhikevich neuron in a layered slice of cortex, with a raster plot of the last ten seconds of spikes along the bottom.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Soma | A process | One shaded sphere per process, radius 0.45 + 0.35 min(sqrt(GiB of memory), 2) world units (footprint on macOS); it grows in with the scene's birth easing |
+| Layer | Process kind | Session II/III, containers IV, system V, kernel VI, each a flat band of the slice; the shares of the height are I 0.10 (empty), II/III 0.25, IV 0.18, V 0.25, VI 0.20 and white matter 0.07, over their sum 1.05 |
+| Place in the layer | Process identity | A seat in the layer for the life of the process (`layout::Seats`), at the seat's point of the R2 sequence, (frac(0.7549 (s + 1)), frac(0.5698 (s + 1))), in the band, plus a seeded jitter. A layer with more seats than its band holds at 2.2 by 2.2 units a neuron widens the whole slice by a factor of 1.25 (repeatedly, if need be), and the slice never narrows |
+| Firing pattern | Process kind | Kernel fast spiking (a, b, c, d = 0.1, 0.2, -65, 2), system regular spiking (0.02, 0.2, -65, 8), session chattering (0.02, 0.2, -50, 2), containers intrinsically bursting (0.02, 0.2, -55, 4) |
+| Input current I | CPU (smoothed) | Piecewise linear in CPU / 100 over 0, 0.005, 0.05, 1, 3 to 0, 0.62 rh, 0.98 rh, I40, I40 + 2 (I40 - 0.98 rh), flat beyond 3 cores. rh is the smallest current that fires 1 Hz and I40 the one that fires 40 Hz, measured for each pattern without noise at first use. While I > 0 the neuron gets noise of standard deviation 1.2 per step: idle is silent, about 5% fires occasionally, one core fires near 40 Hz |
+| Dendrites | Thread count | One primary dendrite per thread, 1 to 12, each forking twice; a dendrite's direction is fixed by its index, so a new thread never moves the old ones |
+| Axon | Socket links and pipes | An arc below the two somas for each linked pair. Socket links carry spikes both ways, a pipe or FIFO only from its writer to its reader (both ways when both ends are open for reading and writing) |
+| Synaptic weight | Loopback TCP rate (`Snapshot::link_traffic`) | min(0.25 ln(1 + bytes per second / 1000), 2). A link whose rate is not measured (a Unix socket, a pair not seen twice yet) weighs min(0.25 ln(1 + sockets), 2); a pipe weighs 1, since neither platform measures its throughput. Synaptic current decays with a time constant of 5 ms |
+| Conduction delay | Axon length | Its length in world units over 125 units a second, which crosses the unwidened slice in 0.8 s, so it does not change with zoom |
+| Pulse | A spike in flight | The events of the queue the network will deliver, drawn where they are along their axon; at most 3000 are drawn, every n-th above that |
+| Flash | A spike | A brightening and a halo that decay with a time constant of 60 ms; a soma also brightens with its rate over the last second, up to 40 Hz |
+| Chi (legend) | Membrane potentials of the talking neurons | Golomb's synchrony: the square root of the variance over time of the mean potential over the mean of each neuron's variance over time, from averages with a time constant of 2 s, over the neurons with a link and at least 5% CPU. The inspector gives it for the selected neuron's connected component too |
+| Raster | Spikes of the last 10 s | A row for each neuron that fired, by layer and then seat, a dot in the pixel column of each spike (about 5 ms at 1920 wide); above half the plot height in pixels the rows merge into bins, and a brighter cell means more spikes of the bin fell in it |
+| Inspector | The selected neuron | Its pattern and a, b, c, d, I and rate over 2 s, its layer and the threads drawn of its total, the synapses in with their least and greatest delay, its component's chi, and two lines of braille: the membrane potential over the last 320 ms, -80 to +30 mV, 40 cells |
+| Exit | A process that is gone | The soma shrinks over 1.2 s and leaves 12 specks, besides the generic exit flash |
+
+**Decorative:** the apical trunk (the long dendrite from every soma but the kernel's up to the molecular layer, with its tuft and side branches), the stain (the colour, dimming and depth shading of dendrites and axons), the dust of an exit, the shapes of branches (their bends, lengths and forks, drawn from the identity), the sag of an axon, the fibres of the white matter and the purples of the bands.
+
+**Simulation.** Izhikevich 2003, `v' = 0.04 v^2 + 5 v + 140 - u + I` and `u' = a (b v - u)`, in steps H of 0.5 ms; a neuron that reaches 30 mV fires, `v` goes to c and d is added to u. A frame catches up at most 100 ms of steps and drops a longer gap, so pausing freezes the neurons, and every frame rate takes the same steps and fires the same spikes. At most 262,144 spikes are in flight. Above 400 processes, or when a soma is smaller than 3 px, only the primary dendrites are drawn.
+
+**What cannot be measured.** Pipes carry no rate, so they weigh 1. The links come from the sockets and pipes the scans found: a pipe the scan has not reached yet has no axon, and the demo's links are synthesized.
+
+**macOS.** The view runs, but loopback links have no byte counters, so every synapse weighs the sockets of its link, min(0.25 ln(1 + sockets), 2), and the legend adds "no socket traffic: weight = socket count"; see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+### Horizon
+
+![Horizon: a lensed accretion disk bent over and under a black shadow with a thin photon ring, processes riding orbits ranked by oom_score, the next victim on the innermost stable circular orbit](docs/media/horizon.webp)
+
+The OOM killer as a Schwarzschild black hole: a lensed accretion disk around a black shadow, processes on circular orbits ranked by how soon the kernel would kill them, and a plunge that freezes short of the horizon when it does.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Orbit radius | `oom_score` (`/proc/<pid>/oom_score`), as a rank | Rank among processes that are not kernel threads, not zombies and not `oom_score_adj` -1000, highest score first, ties by identity; two neighbours swap only if their scores differ by 5 or more. Rank r (1 is the next victim) of the top 28 rides at 6 + 17.5 ((r - 1) / 27)^0.8 M, so the next victim is on the ISCO at 6 M; the rest are counted, not drawn, except the selected process, at the same formula up to 25 M. A change of rank eases the radius with a time constant of 1.5 s, at most 2 M per second, and the azimuth stays continuous |
+| Unkillable band | `oom_score_adj` -1000 | At most 12 processes at 25.7 to 27.3 M (radius by identity), starting a golden angle apart, labelled `unkillable`; dashed guide at 26.5 M |
+| Speed | The orbit radius | Omega = sqrt(M / r^3) in coordinate time, **identical to Kepler's**: 10 M of time per second of the animation clock, so the ISCO's period of 92 M is 9.2 s |
+| Body size and colour | Memory (RSS; the physical footprint on macOS), process kind | Sphere of radius clamp(0.12 cbrt(MiB), 0.18, 0.9) M, in the kind's colour; its secondary image (60% as bright, 0.6 as big) picks the same process |
+| Disk brightness | Memory pressure (some, 10 s average) | gain = 0.45 + 0.9 p / 100, followed with a time constant of 0.6 s: I = gain F g^4 tex bb(T), shown as 255 srgb(1 - exp(-0.36 I^1.3)) per channel |
+| Disk colour | The orbit and the observer | Page-Thorne flux F of the thin disk from 6 M to 30 M, g = 1 / (1 + z) with 1 + z = (1 - 3/r)^(-1/2) (1 + sqrt(1/r^3) sin i x) for the image at screen x (gravitational and Doppler), T = 7200 K (F^(1/4) g)^1.55 coloured by the blackbody table: the approaching side (left) is brighter and bluer |
+| Inclination i | Camera pitch | Piecewise linear: 86 degrees at the lowest pitch, 80 degrees at the default, 0 at top-down; PgUp, PgDn, `e` and `Q` tilt it; camera rotation turns the disk's azimuth; zoom sets pixels per M |
+| Kill | The kernel's OOM kill count: `oom_kill` in `/proc/vmstat`, else the sum of the cgroups' `memory.events` | A body that vanishes is held for 2.5 s plus the time the counter takes to arrive (the background thread's 2 s and a sample interval). If the counter rose within that of it, before or after, the best-ranked ghost plunges, from the sample that showed the rise if that is later than the exit: it eases to the ISCO in 0.8 s, then follows the geodesic of a body that leaves it with 0.95 of the ISCO's angular momentum and a small inward kick, as a radial streak whose brightness 1.5 (1 - 2/r) falls by e every 4 M of a distant observer's time (0.4 s) once it is near the horizon, turning red, and freezes at r > 2.0006 M, never reaching the horizon; the track is played on that observer's clock, so the plunge takes about 6 s. Every other exit fades where it stood over 1.2 s. The legend says which counter it used and how many kills it has seen |
+| Next victim | The top of the ranking | A red ring on its sphere, the first label and the first stop of the tour |
+| Inspector | `oom_score`, `oom_score_adj`, rank, radius | `oom_score N \| oom_score_adj N`, `rank R of K`, `orbit r = X.XX M \| period P M (S s)` |
+
+**Decorative:** the disk's turbulence (value noise in the frame that goes round with the disk, streaks long in azimuth), the glare (up to 24 glows along the inner edge, where the disk is brightest), the 1500 background stars on a shell 40 M behind the hole and their glows (a fixed seed, coloured by temperature), the dashed guides at the ISCO and the band, the photon ring, the next victim's red ring and the haze behind the sky. **The photon ring is drawn, not traced:** a ring 0.1 M wide (at least 1.5 px) at 5.27 M, outside the shadow of radius 3 sqrt(3) M = 5.196 M, tinted by the Doppler shift of matter at 7 M; no ray is cast for it. **The texture, the glare and the stars carry no data.**
+
+**Lensing.** Units are G = c = M = 1, so one world unit is one M. Every vertex of the scene is carried to its image on the screen and ordinary triangles are drawn between the images, so the CPU and the GPU draw the same frame and picking works. A table of photon rays traced back from an observer at infinity (fourth-order Runge-Kutta on d2u/dphi2 = 3u^2 - u with u = 1/r, a step of 0.002 rad, 1800 impact parameters) gives, for 360 log-spaced radii from 2.0005 to 150 M and 721 sweep angles, the screen distance of the primary image (the ray that sweeps the angle) and of the secondary image (the ray that sweeps 2 pi minus it, round the other side of the hole, never inside the shadow). The table is built on the first frame, in a fifth of a second. The disk is cut into cells of about 4 px, at most 120,000 triangles in both images (the secondary has half the density), lensed again only when the inclination or the scale changes, and recoloured every frame. The flux is the Page-Thorne integral in closed form, which falls quadratically to zero at the ISCO.
+
+**What cannot be measured.** The kernel keeps the count of kills, not their victims: a plunge is the best-ranked process that vanished within the window of a rise, which a different exit at the same moment can fool. With no counter at all every exit fades, and the legend says "no oom kills: exits not classified"; where only the cgroups count, it says "kills counted from cgroups". A process whose score cannot be read is left out and counted (`N unranked`). Rewinding with `[` shows the older sample's processes, not the older orbits.
+
+**Platform.** On Linux everything above. On macOS the ranking is by memory footprint, there is no unkillable band and no plunge: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it). Horizon has no keys of its own; `l` hides the labels.
+### Murmuration
+
+![Murmuration: a flock of starlings, one dark bird for each thread, over a twilight sky and a treeline](docs/media/murmuration.webp)
+
+Every thread is a starling in one flock over a roost at dusk, and every process is a sub-flock inside it.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Bird | One thread of a process (`Process::thread_list`, read while murmuration is shown) | One bird per thread, keyed by process and thread id. Above 8,000 threads in all, each process flies max(1, round(threads × 8000 / total)) of them, those with the lowest hash of tid, so the selection holds from sample to sample; the legend then says `1 bird per K threads` |
+| Flock | Process | A bird aligns with the weighted mean velocity of its seven nearest neighbours, those of its own process counting double, so each process holds together without balling up. A process whose threads are not read yet flies one bird for each of `Process::threads` |
+| Speed | The thread's CPU, percent of one core over the last background interval | 1 + 0.3 × clamp(CPU / 100, 0, 1) world units a step, so busy threads surge to the front. A thread with no CPU reading yet, or a process with no thread list, uses the process's CPU divided by its threads; the legend counts them: `speed from process mean for N` |
+| Darkness | The birds | Each bird is a soft splat of radius 0.85 of a world unit in pixels (1.2 to 6 px) with peak alpha 1 − exp(−1.1 w), w = 1; splats stack, so dense regions go black and thin ones grey. The nearest bird is picked |
+| Dark wave | The falcon | An agitated bird weighs w = 1 + 1.6 × its agitation, up to 2.6. A bird within 14 units of the falcon is fully agitated and flees; agitation passes to the neighbours as 0.93 of the largest among a bird's seven while it is above 0.35, fades by 0.86 a step and adds 0.12 of noise |
+| Falcon | Memory pressure, the 10 s stall average, at or above 10 %; or a rise in the OOM kill count (`oom_kill` in `/proc/vmstat`, else the sum of the cgroups' `oom_kills`) | A red chevron that dives through the flock at 2.6 units a step for 6.5 s, labelled `memory pressure` or `OOM`. Pressure releases one falcon at most every 8 s while it stays at or above 10 %; a kill releases one when none is flying |
+| Rising bird | A thread that appeared since the last sample | Climbs from the roost at the origin to 35 units, where it joins the flock |
+| Falling bird | A thread that exited | Falls to the roost over 1.5 s and is removed |
+| Sky tint | CPU, memory and I/O pressure | The pressure haze every view has, over the sky |
+| Lit birds | The process that is selected, under the pointer or visited by the tour | Its birds are drawn again in its kind colour, labelled `name  N threads`; the inspector adds the thread count and the three busiest thread names with their CPU |
+
+**Decorative:** the twilight sky, a gradient from deep blue (28, 34, 70) through violet (120, 92, 138) at 60 % of the height to orange (238, 150, 104) at the horizon; the treeline along the bottom of the frame, which is a silhouette and **carries no data**; the clumps the flock starts as and the noise of each bird's flight.
+
+**Flight.** The flock steps at a fixed 0.05 s (20 steps a second), whatever the frame rate, and holds still while paused. Each step a bird steers by 0.30 towards the weighted mean velocity of its 7 nearest neighbours (alignment), 0.02 towards the centroid of its 21 nearest (cohesion; with only 7, closed groups of eight split off as islands) and 0.4 times the sum of away / d² from those closer than 1.5 (separation); 0.0006 towards the whole flock's centroid (a pull on each process's own centroid of 0.0012 or more splits the flock into separate balls), 0.004 per unit beyond 80 units from the roost's axis, and 0.01 per unit outside the altitude band of 35 to 110; and it damps its vertical velocity by 0.10 (0.22 flattens the flock to a pancake), so it flies level and turns by banking, which flattens the flock into sheets that show as dark bands edge-on. Noise adds 0.02. Its speed is then set to the thread's. The camera is fitted to the roost cylinder (radius 90, height 110), not to the flock, and starts at the lowest tilt, about 20 degrees.
+
+**Caps.** 8,000 birds. Above it every process still flies at least one, so the flock can hold as many more birds as there are processes in view (`--limit`). The 21 nearest neighbours of each bird come from a spatial hash with 2-unit cells.
+
+**What cannot be measured.** Another user's threads are unreadable without privileges, so those birds fly at their process's mean speed and the legend counts them. If the threads cannot be read at all the legend says `no threads: speed from process mean`, and without an OOM kill count (an old kernel with no `oom_kill`, and no cgroup counting them) it says `no oom kills: falcon from memory pressure only`; until the first pass has read the threads (up to two seconds after the view opens) every bird flies at its process's mean speed. A view entered after a gap of more than two sample intervals releases nothing for the kills and pressure of the time it was away.
+
+On macOS the threads and their CPU are read as on Linux, but there is no count of OOM kills: the falcon comes from memory pressure only, where the kernel's level (warning reads 25, critical 75) stands in for the stall percentage. See [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -590,6 +681,13 @@ processes through `/proc/<pid>/fd`. Only processes whose descriptors isotop may
 read appear. In orbit, ripple and city they are cyan arcs with travelling pulses
 (`c` cycles all / highlighted / off); TCP connections to other machines rise as
 pink beams. Links of the selected, hovered or toured process glow.
+
+Two more measurements ride on those links, for the views that draw them: the bytes waiting
+unread on each connected Unix socket (for a datagram socket only that a packet waits, since
+the kernel gives the size of the first packet and not a total), and the pipes and FIFOs between
+processes with their direction, from `/proc/<pid>/fd` and `fdinfo` (macOS: `proc_pidfdinfo`,
+which also counts the bytes waiting in a pipe). Linux gives no such count for a pipe another
+process holds. Only the pipes are read on demand; the existing views draw neither.
 
 The sky is tinted by pressure stall information from `/proc/pressure`: amber for
 CPU, crimson for memory, blue for I/O.
@@ -641,17 +739,18 @@ always have a blank column between them; one that would touch another is left
 out. Hovering a body or building shows its full name and a short description of
 what it is. After 20 seconds without input
 (`--tour`, `0` disables), a guided tour eases the camera between notable
-processes: system stars, the busiest, and the largest. Each gets a callout with
-a pointer. On the globe, the tour and search also turn the camera so the process
+processes: system stars, the busiest, and the largest, then every other visible
+process. Each gets a callout with a pointer. On the globe, the tour and search also turn the camera so the process
 faces you, because the world's spin carries home to the far side for half of
 every turn. `g` starts the tour at any time, even with the idle tour disabled.
-Any key or mouse movement ends the tour.
+Any key or mouse movement ends the tour, except Space, Shift+Space and `*` (and the press of a modifier or lock key on its own), which
+visit the next or a random process in the tour's own order and let it go on from there.
 
 ## Controls
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -672,14 +771,16 @@ Any key or mouse movement ends the tour.
 | Left drag | Pan (on the globe too) |
 | `l` | Toggle labels |
 | `h` | Hide or show the status panel, giving the scene the whole terminal |
-| `g` | Start the guided tour now; `g` again (or any input) ends it; on the globe it also lets a turned earth spin again |
+| `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
+| Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
+| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names. To tell Shift + Space apart isotop asks such a terminal to report every key as an escape code, so a character composed with AltGr, Option or a dead key reaches the search box as its base key (known limitation) |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
 | Tab while searching / `n` afterward | Next match |
 | Enter | Accept search |
 | `f` | Focus selected process and descendants |
 | Esc | Leave search, close the popup, or clear subtree focus |
-| Space | Pause / resume |
+| `P` (Shift + p) | Pause / resume |
 | `[` / `]` | Previous / next retained snapshot |
 | `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
 | `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
@@ -742,11 +843,11 @@ Search, focus, links and the tour work on processes only.
 
 `--time` fixes the synthetic workload time for repeatable screenshots. PNG output
 uses a 16:9 viewport; ripple, flow, cores, reef and coop simulate four seconds first so
-the media and creatures have settled, demo strata replays a minute of
+the media and creatures have settled, demo murmuration plays 15 seconds of its flight (300 steps) from its clumps as a live run would have drawn them, so at `--time 12` the demo's memory pressure has sent its falcon through the flock (a live headless run has no past to play and shows the clumps), demo strata replays a minute of
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -758,7 +859,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-41,810 lines of Rust (25,753 production, 16,057 test) in 43 files, 545 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+57,391 lines of Rust (33,812 production, 23,579 test) in 58 files, 781 tests, 17 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

@@ -53,6 +53,8 @@ pub enum Backdrop {
     Space = shared::BACKDROP_SPACE as isize,
     Sea = shared::BACKDROP_SEA as isize,
     Void = shared::BACKDROP_VOID as isize,
+    /// A dusk sky in three stops, from deep blue through violet to an orange horizon.
+    Twilight = shared::BACKDROP_TWILIGHT as isize,
 }
 
 /// Which socket links to draw.
@@ -121,7 +123,7 @@ impl Camera {
     }
 
     /// Ground-plane offset that appears at a screen offset of (dx, dy) frame pixels.
-    fn ground(&self, dx: f32, dy: f32) -> [f32; 2] {
+    pub(crate) fn ground(&self, dx: f32, dy: f32) -> [f32; 2] {
         let across = dx / (SCALE * self.zoom);
         let along = dy / (SCALE * self.zoom * self.pitch.sin());
         let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
@@ -224,6 +226,22 @@ impl Sky {
                 std::array::from_fn(|i| shared::SEA_BASE[i] - y * shared::SEA_SLOPE[i])
             }
             Backdrop::Void => [0.0; 3],
+            Backdrop::Twilight => {
+                let (from, to, along) = if y < shared::TWILIGHT_KNEE {
+                    (
+                        shared::TWILIGHT_TOP,
+                        shared::TWILIGHT_MIDDLE,
+                        y / shared::TWILIGHT_KNEE,
+                    )
+                } else {
+                    (
+                        shared::TWILIGHT_MIDDLE,
+                        shared::TWILIGHT_HORIZON,
+                        (y - shared::TWILIGHT_KNEE) / (1.0 - shared::TWILIGHT_KNEE),
+                    )
+                };
+                std::array::from_fn(|i| from[i] + (to[i] - from[i]) * along)
+            }
         }
     }
 
@@ -290,6 +308,16 @@ pub enum Item {
         color: Color,
         strength: f32,
     },
+    /// A soft halo like `Glow`, blended with round-to-nearest, as the GPU's blend unit does, so
+    /// that any number of them can stack and the two rasterizers still agree to a level (a
+    /// `Glow` truncates on the CPU, and stacked ones drift apart). Strength is clamped to
+    /// [0, 1]. For content whose look is the density of many splats, such as a flock.
+    Puff {
+        center: [f32; 2],
+        radius: f32,
+        color: Color,
+        strength: f32,
+    },
     /// Translucent one-pixel line blended without depth or picking.
     Beam([f32; 2], [f32; 2], Color, f32),
     /// Background point behind everything.
@@ -306,7 +334,6 @@ pub enum Item {
     /// no colour and no depth, depth-tested at `depth` as a sphere is. `pick` names a process or
     /// a thing. Record it after the geometry it lies over: it writes no depth, so geometry
     /// recorded later covers it wherever that geometry passes the depth test.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     Pick {
         center: [f32; 2],
         radius: f32,
@@ -416,6 +443,12 @@ impl Frame {
                     color,
                     strength,
                 } => self.halo(center, radius, color, strength),
+                Item::Puff {
+                    center,
+                    radius,
+                    color,
+                    strength,
+                } => self.puff(center, radius, color, strength.clamp(0.0, 1.0)),
                 Item::Beam(a, b, color, weight) => self.ray(a, b, color, weight),
                 Item::Star([x, y], color) => {
                     self.pixel(x as i32, y as i32, BACKGROUND, color, NONE)
@@ -605,6 +638,17 @@ impl Frame {
         }
     }
 
+    /// `blend` rounded to the nearest level, as the GPU's blend unit rounds.
+    fn blend_rounded(&mut self, x: i32, y: i32, color: Color, weight: f32) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let i = (y as usize * self.width as usize + x as usize) * 3;
+        for (channel, &target) in self.pixels[i..i + 3].iter_mut().zip(&color) {
+            *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight + 0.5) as u8;
+        }
+    }
+
     fn pixel(&mut self, x: i32, y: i32, depth: f32, color: Color, pick: u32) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
@@ -711,6 +755,23 @@ impl Frame {
     }
 
     fn halo(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
+        self.disc(p, radius, color, strength, Self::blend);
+    }
+
+    fn puff(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
+        self.disc(p, radius, color, strength, Self::blend_rounded);
+    }
+
+    /// Blends `color` over the pixels within `radius` of `p` with weight `strength` times the
+    /// square of one minus the distance in radii, by `blend`.
+    fn disc(
+        &mut self,
+        p: [f32; 2],
+        radius: f32,
+        color: Color,
+        strength: f32,
+        blend: fn(&mut Self, i32, i32, Color, f32),
+    ) {
         let x0 = (p[0] - radius).floor() as i32;
         let x1 = (p[0] + radius).ceil() as i32;
         let y0 = (p[1] - radius).floor() as i32;
@@ -719,7 +780,7 @@ impl Frame {
             for x in x0..=x1 {
                 let d = (x as f32 + 0.5 - p[0]).hypot(y as f32 + 0.5 - p[1]) / radius;
                 if d < 1.0 {
-                    self.blend(x, y, color, strength * (1.0 - d) * (1.0 - d));
+                    blend(self, x, y, color, strength * (1.0 - d) * (1.0 - d));
                 }
             }
         }
@@ -819,6 +880,12 @@ impl Frame {
     ) {
         let a = self.project(camera, a);
         let b = self.project(camera, b);
+        self.hairline_between(a, b, color, width);
+    }
+
+    /// `hairline` between two points already in frame space (x, y, depth), for a view that draws
+    /// in screen space, such as a lensed image, and sets the depth of its layers itself.
+    pub(crate) fn hairline_between(&mut self, a: Point, b: Point, color: Color, width: f32) {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let length = dx.hypot(dy);
         if !(1e-3..=12000.0).contains(&length) {
@@ -1039,6 +1106,11 @@ pub(crate) struct Stage<'a> {
     /// The root of the focused subtree, if one is focused: the process slice holds only that
     /// subtree, so a view leaves out what it draws besides the processes (exited ones).
     pub focus: Option<Identity>,
+    /// Which links the `c` key shows. A view whose row says `LinkRule::DrawnByView` draws its
+    /// own links and follows it: all of them, only those of the `highlight`, or none.
+    pub links: Links,
+    /// The processes whose links stand out: the selected, the hovered and the toured.
+    pub highlight: &'a [Identity],
     /// `--limit`, the most processes a frame draws. The slice is already cut to it; a view that
     /// draws more than the slice (exited processes) keeps within it.
     pub limit: usize,
@@ -1065,6 +1137,11 @@ pub(crate) struct Stage<'a> {
     pub bounds: &'a mut Vec<Point>,
     /// Extra lines for a process's inspector popup, after its sockets.
     pub notes: &'a mut HashMap<Identity, Vec<String>>,
+    /// Braille sparkline lines for a process's inspector popup, right after its notes. Only
+    /// generated Braille Patterns (U+2800 to U+28FF) and spaces: the terminal draws them through
+    /// `terminal::clean_sparkline`, which turns everything else into `?`, so text from the system
+    /// never belongs here.
+    pub sparklines: &'a mut HashMap<Identity, Vec<String>>,
     /// Processes the tour should visit; a hub is passed over, since it has no callout.
     pub tour: &'a mut Vec<TourTarget>,
     /// Lines for a process's inspector popup, right after its own figures and in the order
@@ -1241,6 +1318,8 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     bounds: Vec<Point>,
     pub notes: HashMap<Identity, Vec<String>>,
+    /// The last frame's `Stage::sparklines`.
+    pub sparklines: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::tour`, `Stage::popup` and `Stage::callout`.
     pub tour: Vec<TourTarget>,
     pub popup: Vec<(Identity, String)>,
@@ -1306,6 +1385,7 @@ impl Scene {
             places: Vec::new(),
             bounds: Vec::new(),
             notes: HashMap::new(),
+            sparklines: HashMap::new(),
             tour: Vec::new(),
             popup: Vec::new(),
             callout: Vec::new(),
@@ -1372,6 +1452,13 @@ impl Scene {
         self.modules[view.index()]
             .as_mut()
             .is_some_and(|module| module.key(key))
+    }
+
+    /// The state of the module view `view` draws, if it is a `T` and lets its tests see it
+    /// (`ViewModule::state`).
+    #[cfg(test)]
+    pub fn module<T: 'static>(&self, view: View) -> Option<&T> {
+        self.modules[view.index()].as_ref()?.state()?.downcast_ref()
     }
 
     /// Where the view harness looks for `view`'s processes after a frame: the row's anchors for
@@ -1559,6 +1646,7 @@ impl Scene {
         self.places.clear();
         self.bounds.clear();
         self.notes.clear();
+        self.sparklines.clear();
         self.tour.clear();
         self.popup.clear();
         self.callout.clear();
@@ -1689,6 +1777,8 @@ impl Scene {
                     thing,
                     toured,
                     focus,
+                    links: self.links,
+                    highlight: &self.highlight,
                     limit,
                     time,
                     dt,
@@ -1699,6 +1789,7 @@ impl Scene {
                     places: &mut self.places,
                     bounds: &mut self.bounds,
                     notes: &mut self.notes,
+                    sparklines: &mut self.sparklines,
                     tour: &mut self.tour,
                     popup: &mut self.popup,
                     callout: &mut self.callout,
@@ -4004,6 +4095,137 @@ mod tests {
         );
     }
 
+    fn sky_of(backdrop: Backdrop) -> Sky {
+        Sky {
+            backdrop,
+            haze: [0.0; 3],
+            time: 0.0,
+        }
+    }
+
+    #[test]
+    fn twilight_does_not_change_existing_backdrops() {
+        let discriminants = [
+            Backdrop::Dusk,
+            Backdrop::Space,
+            Backdrop::Sea,
+            Backdrop::Void,
+            Backdrop::Twilight,
+        ]
+        .map(|backdrop| backdrop as u32);
+        assert_eq!(discriminants, [0, 1, 2, 3, 4], "new backdrops come last");
+        for y in [0.0_f32, 0.25, 0.5, 0.9, 0.999] {
+            assert_eq!(
+                sky_of(Backdrop::Dusk).base(y),
+                [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0]
+            );
+            assert_eq!(sky_of(Backdrop::Space).base(y), [5.0, 8.0, 18.0]);
+            assert_eq!(
+                sky_of(Backdrop::Sea).base(y),
+                [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0]
+            );
+            assert_eq!(sky_of(Backdrop::Void).base(y), [0.0; 3]);
+        }
+        // The rows a rasterized frame paints are the same formulas, truncated to bytes. Space is
+        // left out: its stars are drawn over it.
+        for (backdrop, first, last) in [
+            (Backdrop::Dusk, [8, 13, 25], [13, 19, 32]),
+            (Backdrop::Sea, [24, 72, 96], [6, 22, 38]),
+            (Backdrop::Void, [0; 3], [0; 3]),
+        ] {
+            let mut frame = Frame::new(4, 100, sky_of(backdrop), Buffers::default());
+            frame.rasterize();
+            let row = |y: usize| frame.pixels[y * 12..y * 12 + 3].to_vec();
+            assert_eq!(row(0), first, "{backdrop:?} top");
+            assert_eq!(row(99), last, "{backdrop:?} bottom");
+        }
+    }
+
+    #[test]
+    fn twilight_runs_three_stops_down_the_frame() {
+        let mut frame = Frame::new(4, 100, sky_of(Backdrop::Twilight), Buffers::default());
+        frame.rasterize();
+        let row = |y: usize| -> [u8; 3] { frame.pixels[y * 12..y * 12 + 3].try_into().unwrap() };
+        assert_eq!(row(0), [28, 34, 70], "the top stop");
+        assert_eq!(
+            row(60),
+            [120, 92, 138],
+            "the middle stop, 60% of the way down"
+        );
+        let bottom = row(99);
+        assert!(
+            bottom[0] > 230 && (148..=150).contains(&bottom[1]) && (104..=108).contains(&bottom[2]),
+            "just short of the horizon stop at the last row: {bottom:?}"
+        );
+        for y in 1..100 {
+            let (above, here) = (row(y - 1), row(y));
+            assert!(
+                here[0] >= above[0],
+                "red only rises down the frame at row {y}"
+            );
+            if y <= 60 {
+                assert!(here[2] >= above[2], "blue rises towards the middle stop");
+            } else {
+                assert!(here[2] <= above[2], "blue falls towards the horizon stop");
+            }
+        }
+        // The pressure haze adds on top of the gradient, as it does on every backdrop.
+        let mut hazy = sky_of(Backdrop::Twilight);
+        hazy.haze = [60.0, 0.0, 0.0];
+        let mut tinted = Frame::new(4, 100, hazy, Buffers::default());
+        tinted.rasterize();
+        assert!(
+            tinted
+                .pixels
+                .iter()
+                .step_by(3)
+                .map(|&r| u64::from(r))
+                .sum::<u64>()
+                > frame
+                    .pixels
+                    .iter()
+                    .step_by(3)
+                    .map(|&r| u64::from(r))
+                    .sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn stacked_puffs_round_to_the_nearest_level_where_glows_truncate() {
+        // Over black, a centred half-strength disc of 255 blends to 127.5, then 191.5, then 223.5.
+        let mut puffs = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        let mut glows = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        puffs.pixels = vec![0; 48];
+        glows.pixels = vec![0; 48];
+        let (mut rounded, mut truncated) = ([0u8; 3], [0u8; 3]);
+        for k in 0..3 {
+            puffs.puff([1.5, 1.5], 2.0, [255; 3], 0.5);
+            glows.halo([1.5, 1.5], 2.0, [255; 3], 0.5);
+            rounded[k] = puffs.pixels[(4 + 1) * 3];
+            truncated[k] = glows.pixels[(4 + 1) * 3];
+        }
+        assert_eq!(
+            rounded,
+            [128, 192, 224],
+            "a puff rounds to the nearest level"
+        );
+        assert_eq!(
+            truncated,
+            [127, 191, 223],
+            "a glow truncates, as it always has"
+        );
+        // A strength above one is a full blend, never an overshoot.
+        let mut frame = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        frame.items = vec![Item::Puff {
+            center: [1.5, 1.5],
+            radius: 2.0,
+            color: [90; 3],
+            strength: 3.0,
+        }];
+        frame.rasterize();
+        assert_eq!(frame.pixels[(4 + 1) * 3], 90);
+    }
+
     #[test]
     fn pressure_tints_the_sky() {
         let mut snapshot = demo(1.0, 16);
@@ -4329,6 +4551,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_modules_tests_can_read_its_state_by_type() {
+        let snapshot = demo(12.0, 16);
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::ROWS);
+        let (probe, quiet) = (View::at(0), View::at(1));
+        scene.render(&RenderInput::small(&snapshot, probe, &camera, 1.0));
+        assert!(scene.module::<testing::Probe>(probe).is_some());
+        assert!(
+            scene.module::<testing::Quiet>(probe).is_none(),
+            "the wrong type"
+        );
+        assert!(
+            scene.module::<testing::Probe>(quiet).is_none(),
+            "a view that shows nothing of itself"
+        );
+    }
+
+    #[test]
+    fn a_view_that_draws_its_own_links_learns_the_link_mode_and_the_highlighted() {
+        let snapshot = demo(12.0, 16);
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::LINKER);
+        let view = View::at(0);
+        let legend = |scene: &mut Scene, links: Links, highlight: Vec<Identity>| {
+            scene.links = links;
+            scene.highlight = highlight;
+            scene.render(&RenderInput::small(&snapshot, view, &camera, 1.0));
+            scene.legend(view, &snapshot)
+        };
+        assert_eq!(
+            legend(&mut scene, Links::All, Vec::new()),
+            " linker: links All | highlight []"
+        );
+        let pids: Vec<u32> = snapshot
+            .processes
+            .iter()
+            .take(2)
+            .map(|p| p.id.pid)
+            .collect();
+        let hot = snapshot.processes.iter().take(2).map(|p| p.id).collect();
+        assert_eq!(
+            legend(&mut scene, Links::Focused, hot),
+            format!(" linker: links Focused | highlight {pids:?}")
+        );
+        assert_eq!(
+            legend(&mut scene, Links::Off, Vec::new()),
+            " linker: links Off | highlight []"
+        );
+    }
+
     /// A scene over `testing::GUIDED`, and a function that draws its `view` at `time`, paused or
     /// not.
     fn guided() -> (Scene, impl Fn(&mut Scene, View, f32, bool)) {
@@ -4629,6 +4902,35 @@ mod tests {
         frame.pixel(5, 5, 2.0, [30, 20, 10], 0);
         assert_eq!(frame.pick_near(5.5, 5.5, 0.5), Some(b));
         assert_eq!(frame.pick_near(20.5, 5.5, 0.5), None);
+    }
+
+    #[test]
+    fn a_screen_space_hairline_draws_the_same_ribbon_as_a_world_one() {
+        let camera = Camera::default();
+        let (a, b) = ([0.0, 0.0, 0.0], [4.0, 1.0, 0.0]);
+        let mut world = blank(100, 100);
+        world.hairline(&camera, a, b, [200, 100, 50], 2.0);
+        let mut screen = blank(100, 100);
+        let (a, b) = (screen.project(&camera, a), screen.project(&camera, b));
+        screen.hairline_between(a, b, [200, 100, 50], 2.0);
+        assert!(!world.items.is_empty());
+        assert_eq!(format!("{:?}", world.items), format!("{:?}", screen.items));
+    }
+
+    #[test]
+    fn the_ground_offset_of_a_screen_offset_projects_back_to_it() {
+        let camera = Camera {
+            rotation: 0.7,
+            pitch: 0.9,
+            zoom: 3.0,
+            ..Camera::default()
+        };
+        let frame = blank(200, 120);
+        let origin = frame.project(&camera, [camera.center[0], camera.center[1], 0.0]);
+        let [x, y] = camera.ground(40.0, -25.0);
+        let back = frame.project(&camera, [camera.center[0] + x, camera.center[1] + y, 0.0]);
+        assert!((back[0] - origin[0] - 40.0).abs() < 1e-3);
+        assert!((back[1] - origin[1] + 25.0).abs() < 1e-3);
     }
 
     /// A sphere item with `pick` at pixel (x, y), at depth 0.

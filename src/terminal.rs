@@ -4,6 +4,9 @@ use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::{cursor, execute, terminal};
 use flate2::{Compression, write::ZlibEncoder};
 
@@ -16,6 +19,9 @@ pub struct Terminal {
     pub pixel_mouse: bool,
     /// Frames travel through POSIX shared memory instead of compressed inline data.
     pub shared_memory: bool,
+    /// The Kitty keyboard protocol is on (`KEYBOARD_FLAGS` pushed), so Shift+Space arrives apart
+    /// from Space. Restoring the terminal pops it.
+    pub keyboard: bool,
     serial: u64,
     /// Recently written shared-memory names; the terminal unlinks each after reading it, and
     /// anything it never read is removed once it is old enough or when isotop exits.
@@ -27,6 +33,9 @@ pub struct Popup {
     pub row: u16,
     pub width: u16,
     pub lines: Vec<String>,
+    /// The indices of the lines that are generated sparklines (`Stage::sparklines`), which are
+    /// cleaned by `clean_sparkline` instead of `clean_text`.
+    pub braille: Vec<usize>,
 }
 
 impl Popup {
@@ -67,6 +76,7 @@ impl Terminal {
             image: 100,
             pixel_mouse: false,
             shared_memory: false,
+            keyboard: false,
             serial: 0,
             pending: VecDeque::new(),
         };
@@ -89,6 +99,11 @@ impl Terminal {
             guard.pixel_mouse = true;
         }
         guard.shared_memory = support.shared_memory && !direct;
+        if support.keyboard {
+            // Set before the push is written, so a restore that follows a failed write still pops.
+            guard.keyboard = true;
+            execute!(io::stdout(), PushKeyboardEnhancementFlags(KEYBOARD_FLAGS))?;
+        }
         Ok(guard)
     }
 
@@ -200,16 +215,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.active {
-            let _ = write!(
-                io::stdout(),
-                "\x1b[?2026l\x1b[?1016l\x1b_Ga=d,d=A,q=2\x1b\\"
-            );
-            let _ = execute!(
-                io::stdout(),
-                crossterm::event::DisableMouseCapture,
-                cursor::Show,
-                terminal::LeaveAlternateScreen
-            );
+            let _ = restore_screen(&mut io::stdout(), self.keyboard);
             let _ = terminal::disable_raw_mode();
             let _ = io::stdout().flush();
             for name in self.pending.drain(..) {
@@ -218,6 +224,42 @@ impl Drop for Terminal {
             self.active = false;
         }
     }
+}
+
+/// The keyboard flags pushed when the terminal answers the Kitty keyboard query. Shift+Space is
+/// text, which the protocol sends as plain text, apart from Space or not at all, unless every
+/// key is reported as an escape code (`REPORT_ALL_KEYS_AS_ESCAPE_CODES`). That in turn sends
+/// Shift+q as `q` with Shift held, so `REPORT_ALTERNATE_KEYS` supplies the shifted key (`Q`, `?`,
+/// `*`) that crossterm substitutes.
+const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        .union(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS)
+        .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
+
+/// Writes everything that undoes `Terminal::enter` except raw mode. The keyboard flags go first:
+/// the main and the alternate screen keep separate stacks of them, and the push was made on the
+/// alternate screen.
+///
+/// Every step is tried whatever became of the ones before it, so that one failed write cannot
+/// leave the cursor hidden or the terminal on the alternate screen; the first error is returned.
+fn restore_screen(out: &mut impl Write, keyboard: bool) -> io::Result<()> {
+    let mut first = Ok(());
+    let mut note = |step: io::Result<()>| {
+        if first.is_ok() {
+            first = step;
+        }
+    };
+    if keyboard {
+        note(execute!(out, PopKeyboardEnhancementFlags));
+    }
+    note(write!(out, "\x1b[?2026l\x1b[?1016l\x1b_Ga=d,d=A,q=2\x1b\\"));
+    note(execute!(
+        out,
+        crossterm::event::DisableMouseCapture,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    ));
+    first
 }
 
 /// macOS limits a shared-memory name, leading slash included, to `PSHMNAMLEN` bytes; longer
@@ -296,12 +338,14 @@ fn unlink_shared(name: &str) {
 }
 
 struct Support {
+    /// The terminal answered the Kitty keyboard protocol query.
+    keyboard: bool,
     graphics: bool,
     pixels: bool,
     shared_memory: bool,
 }
 
-/// Asks for Kitty graphics (inline and via shared memory) and SGR-Pixels mouse support, then
+/// Asks for Kitty graphics (inline and via shared memory), the Kitty keyboard protocol and SGR-Pixels mouse support, then
 /// waits for the primary device attributes reply. Every terminal answers DA1 and answers in
 /// order, so its arrival means any capability reply has already come; tmux and plain terminals
 /// fail fast instead of timing out.
@@ -318,7 +362,7 @@ fn probe() -> io::Result<Support> {
             base64::engine::general_purpose::STANDARD.encode(&name)
         )?;
     }
-    write!(out, "\x1b[?1016$p\x1b[c")?;
+    write!(out, "\x1b[?u\x1b[?1016$p\x1b[c")?;
     out.flush()?;
     drop(out);
     let deadline = Instant::now() + Duration::from_millis(1500);
@@ -342,9 +386,19 @@ fn probe() -> io::Result<Support> {
     let text = String::from_utf8_lossy(&response);
     unlink_shared(&name);
     Ok(Support {
+        keyboard: keyboard_reply(&text),
         graphics: text.contains("i=31;OK"),
         pixels: text.contains("\x1b[?1016;1$y") || text.contains("\x1b[?1016;2$y"),
         shared_memory: text.contains("i=32;OK"),
+    })
+}
+
+/// Whether `text` holds the reply to the keyboard query, `CSI ? flags u`; the device attributes
+/// reply, `CSI ? ... c`, and mode reports, `CSI ? ... $ y`, do not match.
+fn keyboard_reply(text: &str) -> bool {
+    text.split("\x1b[?").skip(1).any(|rest| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && rest[digits..].starts_with('u')
     })
 }
 
@@ -471,11 +525,15 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
         } else {
             "\x1b[38;2;206;220;236m"
         };
+        let text = if popup.braille.contains(&index) {
+            clean_sparkline(line, inner)
+        } else {
+            clean_text(line, inner)
+        };
         write!(
             output,
-            "\x1b[{};{column}H{border}│ {style}{:<inner$}{border} │",
+            "\x1b[{};{column}H{border}│ {style}{text:<inner$}{border} │",
             popup.row + 2 + index as u16,
-            clean_text(line, inner)
         )?;
     }
     write!(
@@ -483,6 +541,23 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
         "\x1b[{};{column}H{border}╰{rule}╯\x1b[0m",
         popup.row + 2 + popup.lines.len() as u16
     )
+}
+
+/// A sparkline line for the terminal: the Braille Patterns block (U+2800 to U+28FF) and the space
+/// pass, and every other character becomes `?`, so a sparkline can carry nothing but the dots a
+/// view generated. It is a separate function because `clean_text` stays ASCII-only for process
+/// text, and only `Stage::sparklines` reaches it.
+pub fn clean_sparkline(text: &str, width: usize) -> String {
+    text.chars()
+        .map(|c| {
+            if ('\u{2800}'..='\u{28ff}').contains(&c) || c == ' ' {
+                c
+            } else {
+                '?'
+            }
+        })
+        .take(width)
+        .collect()
 }
 
 pub fn clean_text(text: &str, width: usize) -> String {
@@ -504,9 +579,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sparkline_sanitizer_passes_braille_but_not_controls_or_other_text() {
+        assert_eq!(clean_sparkline("⣀⣤⣶⣿ ⠁", 80), "⣀⣤⣶⣿ ⠁");
+        assert_eq!(clean_sparkline("\u{2800}\u{28ff}", 80), "\u{2800}\u{28ff}");
+        assert_eq!(clean_sparkline("⣿\x1b[2J\n⣿", 80), "⣿?????⣿");
+        assert_eq!(clean_sparkline("a\u{27ff}\u{2900}\u{202e}", 80), "????");
+        assert_eq!(
+            clean_sparkline("⣿⣿⣿⣿", 2),
+            "⣿⣿",
+            "cut to the width in cells"
+        );
+    }
+
+    #[test]
+    fn process_names_still_lose_braille_in_clean_text() {
+        assert_eq!(clean_text("⣿⣤name", 80), "??name");
+        assert_eq!(clean_text("\u{2800}", 80), "?");
+    }
+
+    #[test]
     fn process_text_cannot_inject_terminal_controls() {
         assert_eq!(clean_text("bad\x1b[2J\nname", 80), "bad?[2J?name");
         assert_eq!(clean_text("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn a_thread_name_with_control_bytes_is_cleaned_for_display() {
+        let thread = crate::threads::Thread {
+            tid: 7,
+            start: 1,
+            name: "w\x1b[2J\x07\n\u{202e}x".into(),
+            cpu: None,
+            state: 'S',
+            leader: false,
+        };
+        assert!(thread.name.contains('\x1b'), "the name is stored raw");
+        let label = Label {
+            column: 0,
+            row: 0,
+            text: format!("thread {}", thread.name),
+            tone: Tone::Tag,
+        };
+        let mut output = Vec::new();
+        draw_label(&mut output, &label, 80).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.ends_with("thread w?[2J???x\x1b[0m"), "{text:?}");
+        assert_eq!(
+            text.matches('\x1b').count(),
+            3,
+            "only the cursor move, the style and the reset"
+        );
     }
 
     #[test]
@@ -516,6 +638,75 @@ mod tests {
             b"\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?62;22;52c"
         ));
         assert!(primary_attributes(b"\x1b[?1;2c"));
+    }
+
+    #[test]
+    fn the_keyboard_query_reply_is_told_from_the_other_replies() {
+        assert!(keyboard_reply("\x1b[?0u\x1b[?62;22c"));
+        assert!(keyboard_reply(
+            "\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?15u\x1b[?1;2c"
+        ));
+        assert!(!keyboard_reply(
+            "\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?62;22c"
+        ));
+        assert!(!keyboard_reply("\x1b[?u"));
+    }
+
+    #[test]
+    fn keyboard_enhancement_is_popped_on_restore() {
+        let mut out = Vec::new();
+        restore_screen(&mut out, true).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let pop = text.find("\x1b[<1u").expect("the flags are popped");
+        let leave = text
+            .find("\x1b[?1049l")
+            .expect("the alternate screen is left");
+        assert!(pop < leave, "the stack to pop is the alternate screen's");
+        let mut push = Vec::new();
+        execute!(&mut push, PushKeyboardEnhancementFlags(KEYBOARD_FLAGS)).unwrap();
+        assert_eq!(push, b"\x1b[>13u", "disambiguate, alternate keys, all keys");
+        let mut out = Vec::new();
+        restore_screen(&mut out, false).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains("\x1b[<"));
+    }
+
+    /// A writer whose first write fails and whose later ones land in `written`.
+    struct FailsOnce {
+        failed: bool,
+        written: Vec<u8>,
+    }
+
+    impl Write for FailsOnce {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if !self.failed {
+                self.failed = true;
+                return Err(io::Error::other("the first write fails"));
+            }
+            self.written.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_write_does_not_leave_the_alternate_screen_in_place() {
+        let mut out = FailsOnce {
+            failed: false,
+            written: Vec::new(),
+        };
+        assert!(
+            restore_screen(&mut out, true).is_err(),
+            "the error is reported"
+        );
+        let text = String::from_utf8(out.written).unwrap();
+        assert!(
+            text.contains("\x1b[?1049l"),
+            "but the screen is left: {text:?}"
+        );
+        assert!(text.contains("\x1b[?25h"), "and the cursor shown");
     }
 
     #[test]

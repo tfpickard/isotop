@@ -289,6 +289,29 @@ const _: () = assert!(size_of::<libc::proc_bsdinfo>() == 136);
 const _: () = assert!(size_of::<proc_bsdinfowithuniqid>() == 192);
 const _: () = assert!(align_of::<proc_bsdinfowithuniqid>() == 8);
 
+// proc_pidinfo flavors for the threads of a process, from xnu bsd/sys/proc_info.h.
+// PROC_PIDTHREADID64INFO is in the SDK header; PROC_PIDLISTTHREADIDS (flavor 28) is not, so its
+// value comes from xnu and was checked on macOS: it lists the unique 64-bit ids that
+// pthread_threadid_np returns, where PROC_PIDLISTTHREADS (6) lists pthread handles.
+
+/// `PROC_PIDLISTTHREADIDS`: the unique 64-bit ids of a process's threads, 8 bytes each, which
+/// are never reused within a boot. xnu fills at most the buffer and says nothing when it cuts
+/// the list short.
+pub const PROC_PIDLISTTHREADIDS: c_int = 28;
+
+/// `PROC_PIDTHREADID64INFO`: the `proc_threadinfo` of the thread whose unique id is the argument.
+/// Its times (`pth_user_time`, `pth_system_time`) are in nanoseconds, unlike the Mach absolute
+/// time of `proc_taskinfo`.
+pub const PROC_PIDTHREADID64INFO: c_int = 15;
+
+// libc declares `struct proc_threadinfo`: two u64 times, eight int32 and the 64-byte name, which
+// the header sizes at 112 (`PROC_PIDTHREADID64INFO_SIZE`).
+const _: () = assert!(size_of::<libc::proc_threadinfo>() == 112);
+const _: () = assert!(align_of::<libc::proc_threadinfo>() == 8);
+const _: () = assert!(offset_of!(libc::proc_threadinfo, pth_system_time) == 8);
+const _: () = assert!(offset_of!(libc::proc_threadinfo, pth_run_state) == 24);
+const _: () = assert!(offset_of!(libc::proc_threadinfo, pth_name) == 48);
+
 // struct socket_fdinfo and its members, from xnu bsd/sys/proc_info.h. The text of these structs
 // is identical from xnu-7195 (macOS 11) to main. Every field is a fixed-width scalar and nothing
 // is packed, so repr(C) reproduces the C layout; the assertions below pin it.
@@ -574,6 +597,62 @@ pub struct vnode_fdinfo {
     pub pvi: vnode_info,
 }
 
+// The jetsam priority list, from xnu bsd/sys/kern_memorystatus.h, which the public SDK does not
+// ship. Only root may ask (`memorystatus_control` answers EPERM to anyone else).
+
+/// `MEMORYSTATUS_CMD_GET_PRIORITY_LIST`: the buffer receives one `memorystatus_priority_entry`
+/// per process; with a null buffer the call returns the bytes the list needs.
+pub const MEMORYSTATUS_CMD_GET_PRIORITY_LIST: u32 = 1;
+
+/// `memorystatus_priority_entry_t`: a process, its jetsam priority band (0 is killed first, and
+/// larger bands later), the memory limit in MB and the `P_MEMSTAT_*` state flags.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct memorystatus_priority_entry {
+    pub pid: libc::pid_t,
+    pub priority: i32,
+    pub user_data: u64,
+    pub limit: i32,
+    pub state: u32,
+}
+
+unsafe extern "C" {
+    /// The `memorystatus_control` system call of libSystem: returns -1 with errno set on
+    /// failure, otherwise a command-specific count (for the priority list, bytes).
+    pub fn memorystatus_control(
+        command: u32,
+        pid: i32,
+        flags: u32,
+        buffer: *mut c_void,
+        buffer_size: usize,
+    ) -> c_int;
+}
+
+// struct pipe_fdinfo and its member, from the same header (checked against the SDK's
+// <sys/proc_info.h> with offsetof and sizeof). libc 0.2.190 has neither. `pipe_stat.vst_size` is
+// the bytes waiting in the pipe, `pipe_handle` and `pipe_peerhandle` the kernel addresses of the
+// descriptor's end of the pipe and of the other end, which the two descriptors of a pipe swap.
+
+/// `PROC_PIDFDPIPEINFO` flavor for `proc_pidfdinfo`.
+pub const PROC_PIDFDPIPEINFO: c_int = 6;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct pipe_info {
+    pub pipe_stat: vinfo_stat,
+    pub pipe_handle: u64,
+    pub pipe_peerhandle: u64,
+    pub pipe_status: c_int,
+    pub rfu_1: c_int,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct pipe_fdinfo {
+    pub pfi: proc_fileinfo,
+    pub pipeinfo: pipe_info,
+}
+
 macro_rules! assert_layout {
     ($t:ty, $size:expr, $align:expr) => {
         const _: () = assert!(size_of::<$t>() == $size);
@@ -586,6 +665,12 @@ macro_rules! assert_offset {
         const _: () = assert!(offset_of!($t, $field) == $offset);
     };
 }
+
+assert_layout!(memorystatus_priority_entry, 24, 8);
+assert_offset!(memorystatus_priority_entry, priority, 4);
+assert_offset!(memorystatus_priority_entry, user_data, 8);
+assert_offset!(memorystatus_priority_entry, limit, 16);
+assert_offset!(memorystatus_priority_entry, state, 20);
 
 assert_layout!(proc_fileinfo, 24, 8);
 assert_layout!(vinfo_stat, 136, 8);
@@ -679,6 +764,13 @@ assert_offset!(vnode_info, vi_fsid, 144);
 assert_offset!(vnode_fdinfo, pvi, 24);
 assert_offset!(vinfo_stat, vst_mode, 4);
 assert_offset!(vinfo_stat, vst_nlink, 6);
+assert_layout!(pipe_info, 160, 8);
+assert_layout!(pipe_fdinfo, 184, 8);
+assert_offset!(pipe_info, pipe_handle, 136);
+assert_offset!(pipe_info, pipe_peerhandle, 144);
+assert_offset!(pipe_info, pipe_status, 152);
+assert_offset!(pipe_info, rfu_1, 156);
+assert_offset!(pipe_fdinfo, pipeinfo, 24);
 const _: () = assert!(size_of::<libc::vinfo_stat>() == size_of::<vinfo_stat>());
 const _: () = assert!(size_of::<libc::vnode_info>() == size_of::<vnode_info>());
 
