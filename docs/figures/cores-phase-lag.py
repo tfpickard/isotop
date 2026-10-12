@@ -72,7 +72,7 @@ def main():
     peak = max(lag)
     where = times[lag.index(peak)]
 
-    svg = S.Svg(900, 640, "Phase lag of a marble",
+    svg = S.Svg(900, 660, "Phase lag of a marble",
                 "Raw, smoothed and eased CPU use for a step workload, and the difference between "
                 "the cumulative CPU time and the marble's angle.")
     left, width = 80, 780
@@ -100,9 +100,9 @@ def main():
     svg.line(bot.px(0), bot.py(0), bot.px(END), bot.py(0), S.AXIS, 1)
     svg.text(bot.px(where) + 8, bot.py(peak) - 6,
              "peak %.2f s = %.3f lap (at t = %.1f s)" % (peak, peak / LAP, where), 11, fill=S.VIOLET)
-    svg.text(left, 594, "One lap is 10 CPU-seconds, so 1 CPU-second of lag is 0.1 lap. The lag follows "
+    svg.text(left, 618, "One lap is 10 CPU-seconds, so 1 CPU-second of lag is 0.1 lap. The lag follows "
              "the current CPU level and returns to zero when the process idles;", 11, fill=S.MUTED)
-    svg.text(left, 612, "it never accumulates, because the filters conserve area. The marble is "
+    svg.text(left, 636, "it never accumulates, because the filters conserve area. The marble is "
              "re-seated at 2 pi cpu_time / LAP whenever it is created again.", 11, fill=S.MUTED)
     print(svg.save("cores-phase-lag"))
     print("peak lag", round(peak, 3), "at", round(where, 2), "final lag", round(lag[-1], 4))
