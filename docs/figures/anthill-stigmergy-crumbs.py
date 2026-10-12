@@ -90,9 +90,9 @@ def main():
             choices = bridge(trips[0], trips[1], seed)
             curve = fraction_a(choices)
             wins += 1 if curve[-1] > 0.5 else 0
-            axes.plot(xs, curve, stroke=P.BLUE if seed % 2 == 0 else P.AQUA, width=1.0,
+            axes.plot(xs[25:], curve[25:], stroke=P.BLUE if seed % 2 == 0 else P.AQUA, width=1.0,
                       opacity=0.75)
-        axes.label(595, 0.06, "%d of 30 colonies end on A" % wins, size=11, anchor="end")
+        svg.text(left0 + panel * 520 + w, top0 - 9, "%d of 30 end mostly on A" % wins, size=11, anchor="end", fill=P.MUTED)
         print("panel", panel, "colonies ending mostly on A:", wins)
 
     axes = P.Axes(svg, left0, 440, w, 230, (1e3, 1e6), (1, 1000), xlog=True, ylog=True,
