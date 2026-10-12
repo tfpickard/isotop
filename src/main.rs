@@ -1181,6 +1181,34 @@ impl App {
         Some(format!("{} (unreadable) ({members})", label_name(name)))
     }
 
+    /// The label of a system centred on `star` that reaches `reach` world units: just below its
+    /// outer edge for a small system, at the star for a large one (an edge more than six rows
+    /// below it), when the screen has room for it.
+    fn title_label(
+        &self,
+        frame: &Frame,
+        layout: &Layout,
+        board: &mut Board,
+        star: Point,
+        reach: f32,
+        text: String,
+    ) -> Option<Label> {
+        let at = frame.locate(&self.camera, star)?;
+        let width = text.chars().count() as u16;
+        let edge = frame
+            .locate(&self.camera, self.camera.front(star, reach))
+            .filter(|edge| edge[1] - at[1] < layout.cell_size()[1] * 6.0)
+            .unwrap_or(at);
+        let (column, row) = layout.cell_of([at[0], edge[1]]);
+        let column = column.saturating_sub(width / 2);
+        (row + 1 < layout.rows && board.claim(column, row + 1, width, 1)).then_some(Label {
+            column,
+            row: row + 1,
+            text,
+            tone: Tone::Bright,
+        })
+    }
+
     /// Text drawn over the scene, highest priority first: the inspector popup, the tour
     /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
     fn overlay(&self, frame: &mut Frame, layout: &Layout, radius: f32) -> (Vec<Label>, Vec<Popup>) {
@@ -1291,27 +1319,21 @@ impl App {
                 }
             }
         }
+        for title in &self.scene.titles {
+            labels.extend(self.title_label(
+                frame,
+                layout,
+                &mut board,
+                title.at,
+                title.reach,
+                title.text.clone(),
+            ));
+        }
         for &(id, members, reach) in &self.scene.stars {
             if let Some(text) = self.star_label(&lookup, id, members)
-                && let Some(at) = self.screen(frame, id)
+                && let Some(&star) = self.scene.positions.get(&id)
             {
-                let width = text.chars().count() as u16;
-                // Small systems are labelled just below their outer edge, large ones at the star.
-                let star = self.scene.positions[&id];
-                let edge = frame
-                    .locate(&self.camera, self.camera.front(star, reach))
-                    .filter(|edge| edge[1] - at[1] < layout.cell_size()[1] * 6.0)
-                    .unwrap_or(at);
-                let (column, row) = layout.cell_of([at[0], edge[1]]);
-                let column = column.saturating_sub(width / 2);
-                if row + 1 < layout.rows && board.claim(column, row + 1, width, 1) {
-                    labels.push(Label {
-                        column,
-                        row: row + 1,
-                        text,
-                        tone: Tone::Bright,
-                    });
-                }
+                labels.extend(self.title_label(frame, layout, &mut board, star, reach, text));
             }
         }
         let mut busy: Vec<&Process> = lookup
@@ -3760,6 +3782,35 @@ mod tests {
             Some(&last),
             "a view that gives no targets leaves the busiest first"
         );
+    }
+
+    #[test]
+    fn titles_from_the_stage_label_the_system_under_its_outer_edge() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 512);
+        frame.rasterize();
+        let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+        let titles: Vec<&Label> = labels
+            .iter()
+            .filter(|label| label.text == views::testing::GUIDE_TITLE)
+            .collect();
+        assert_eq!(titles.len(), 1, "{:?}", app.scene.titles);
+        assert!(matches!(titles[0].tone, Tone::Bright));
+        let seat = frame
+            .locate(&app.camera, app.scene.positions[&last])
+            .expect("the seat is on screen");
+        let (_, row) = layout.cell_of(seat);
+        assert!(titles[0].row > row, "just below the star's own row");
+        app.labels = false;
+        let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+        assert!(labels.is_empty(), "labels off hides titles too");
     }
 
     #[test]

@@ -934,7 +934,7 @@ pub fn view(name: &str) -> View {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use crate::render::TourTarget;
+    use crate::render::{Title, TourTarget};
 
     /// A module view that seats the first half of the processes on a line and lets the rest
     /// collapse. Its legend counts what reached it through the trait. `m` toggles a mode that
@@ -1044,15 +1044,26 @@ pub mod testing {
     /// The sparkline `Guide` adds below the popup of the process it tours, forty cells wide.
     pub const GUIDE_SPARKLINE: &str = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿";
 
+    /// The text `Guide` titles its system with.
+    pub const GUIDE_TITLE: &str = "guide system";
+
     /// A module view that seats every process on a line, asks the tour to visit the last one at
-    /// a point beside its seat and adds a line to its popup. Its legend lists the `dt` of each
-    /// frame it drew.
+    /// a point beside its seat, adds a line to its popup and titles the line as a system. Its
+    /// legend lists the `dt` of each frame it drew, and its state what the stage handed it.
     #[derive(Default)]
     pub struct Guide {
         steps: Vec<f32>,
+        /// The `Stage::frames` of each frame it drew.
+        pub frames: Vec<u64>,
+        /// How many `Stage::splashes` and `Stage::newborn` each frame it drew had.
+        pub disturbances: Vec<(usize, usize)>,
     }
 
     impl ViewModule for Guide {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -1060,6 +1071,9 @@ pub mod testing {
             _snapshot: &Snapshot,
         ) -> usize {
             self.steps.push(stage.dt);
+            self.frames.push(stage.frames);
+            self.disturbances
+                .push((stage.splashes.len(), stage.newborn.len()));
             for (index, process) in processes.iter().enumerate() {
                 let position = [index as f32 * 4.0, 0.0, 0.0];
                 stage.positions.insert(process.id, position);
@@ -1073,6 +1087,11 @@ pub mod testing {
                 );
             }
             if let Some((index, last)) = processes.iter().enumerate().next_back() {
+                stage.titles.push(Title {
+                    at: [index as f32 * 4.0, 0.0, 0.0],
+                    reach: 3.0,
+                    text: GUIDE_TITLE.into(),
+                });
                 stage.tour.push(TourTarget {
                     id: last.id,
                     position: [index as f32 * 4.0, 3.0, 0.0],

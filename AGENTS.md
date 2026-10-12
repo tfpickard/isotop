@@ -153,7 +153,9 @@ reads only `Stage`, the process slice and `&Snapshot`, and talks back only throu
 outputs. `Stage` carries in the frame, camera, selection (and `thing`, the selected or hovered
 thing), the process the tour visits (`toured`), the focused subtree's root, `--limit`, the `c`
 link mode and the processes whose links stand out (`links`, `highlight`, for a row whose links
-rule is `DrawnByView`), time, `dt`, births and growth, and `history`, the shared per-process CPU and memory
+rule is `DrawnByView`), time, the `frames` the scene has rendered (a view that must tell the next
+frame from one after a gap), `dt`, births and growth, the `splashes` where processes left and the
+`newborn` that arrived (the disturbances of a medium), and `history`, the shared per-process CPU and memory
 history (`history.rs`), which `Scene` fills on every sample whichever view is shown and a view
 reads from the shown snapshot's `elapsed` (`History::window`, `History::series`); what the
 platform could not measure is `snapshot.missing`, which `Stage` does not
@@ -164,7 +166,8 @@ with a fixed-step clock fed from `stage.time`; the older views keep their own cl
 writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
 `stage.headroom` (how high content stands above the ground, for the fit of a view that gives no bounds),
-`stage.places`, `stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
+`stage.places`, `stage.titles` (the names of systems, labelled under their outer edges),
+`stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
 braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
 `stage.tour` (`TourTarget { id,
 position, weight }`, which the tour visits heaviest first) `stage.popup` (popup lines right

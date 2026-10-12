@@ -1136,6 +1136,19 @@ pub struct TourTarget {
     pub weight: f32,
 }
 
+/// The name of a system a view draws, which the app labels in bright text just under the system's
+/// outer edge (or at `at` when that edge is far below it): a `Title` for each system worth a
+/// label, in the order the labels are offered a place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Title {
+    /// The system's centre, which the label is placed from.
+    pub at: Point,
+    /// How far the system reaches from `at` in world units.
+    pub reach: f32,
+    /// The label, already cut to fit (`label_name`).
+    pub text: String,
+}
+
 /// What a view draws with, and its only way to talk back to the app. A view reads only `Stage`,
 /// the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the
 /// platform could not measure is `snapshot.missing`; `Stage` does not copy it.
@@ -1160,6 +1173,18 @@ pub(crate) struct Stage<'a> {
     /// draws more than the slice (exited processes) keeps within it.
     pub limit: usize,
     pub time: f32,
+    /// Frames the scene has rendered, this one included, whichever view was shown. A view that
+    /// must tell a frame that follows its own last frame from one after a gap (another view was
+    /// shown in between) compares it with the number it last drew at: the galaxy of Orbit and
+    /// Flow turns only across consecutive frames.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "first read by the Orbit and Flow module views (A15)"
+        )
+    )]
+    pub frames: u64,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
     /// first frame, while paused, and when `time` went back (a rewind or a headless replay);
     /// otherwise the time since the last frame that moved forward, at most `MAX_DT`. The scene
@@ -1175,6 +1200,19 @@ pub(crate) struct Stage<'a> {
     arrivals: &'a HashMap<Identity, f32>,
     /// CPU and memory as eased for every sampled process, drawn or not.
     resources: &'a HashMap<Identity, (f32, f32)>,
+    /// Where processes that left were last drawn, as the scene found out about them in its
+    /// previous frame: the ground for a splash.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first read by the Flow module view (A15)")
+    )]
+    pub splashes: &'a [Point],
+    /// The processes that appeared in this frame's sample after the scene's first frame.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first read by the Flow module view (A15)")
+    )]
+    pub newborn: &'a [Identity],
     /// Where each drawn process is, for picking anchors, labels and the tour.
     pub positions: &'a mut HashMap<Identity, Point>,
     /// World-anchored text labels.
@@ -1197,6 +1235,16 @@ pub(crate) struct Stage<'a> {
     /// Lines for the tour's callout of a process, after its own figures and in the order pushed:
     /// what the view makes of the visit, such as a frame it cannot enter.
     pub callout: &'a mut Vec<(Identity, String)>,
+    /// The names of the systems the view draws, labelled under their outer edges after
+    /// `places`, in the order pushed.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "first written by the Orbit and Flow module views (A15)"
+        )
+    )]
+    pub titles: &'a mut Vec<Title>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
     /// nothing rises.
@@ -1368,6 +1416,8 @@ pub struct Scene {
     /// Names of the hubs drawn this frame: stand-ins for parents isotop cannot read (`hubs`).
     pub hub_names: HashMap<Identity, String>,
     pub places: Vec<(Point, String)>,
+    /// The last frame's `Stage::titles`.
+    pub titles: Vec<Title>,
     bounds: Vec<Point>,
     pub notes: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::sparklines`.
@@ -1426,6 +1476,7 @@ impl Scene {
             mass: HashMap::new(),
             hub_names: HashMap::new(),
             places: Vec::new(),
+            titles: Vec::new(),
             bounds: Vec::new(),
             notes: HashMap::new(),
             sparklines: HashMap::new(),
@@ -1631,6 +1682,7 @@ impl Scene {
         self.mass.clear();
         self.hub_names.clear();
         self.places.clear();
+        self.titles.clear();
         self.bounds.clear();
         self.notes.clear();
         self.sparklines.clear();
@@ -1777,11 +1829,14 @@ impl Scene {
                     highlight: &self.highlight,
                     limit,
                     time,
+                    frames: self.frames,
                     dt,
                     history: &self.history,
                     births: &self.births,
                     arrivals: &self.arrivals,
                     resources: &self.resources,
+                    splashes: &self.splashes,
+                    newborn: &self.newborn,
                     positions: &mut self.positions,
                     places: &mut self.places,
                     bounds: &mut self.bounds,
@@ -1790,6 +1845,7 @@ impl Scene {
                     tour: &mut self.tour,
                     popup: &mut self.popup,
                     callout: &mut self.callout,
+                    titles: &mut self.titles,
                     headroom: &mut self.headroom,
                 };
                 let shown = match arm {
@@ -4431,6 +4487,43 @@ mod tests {
         assert_eq!(
             scene.legend(guide, &Snapshot::default()),
             " guide: dt [0.00 0.10 0.00 0.00 0.10 0.00 0.25]"
+        );
+    }
+
+    #[test]
+    fn the_stage_counts_frames_and_hands_over_the_splashes_and_the_newborn() {
+        let (mut scene, draw) = guided();
+        let (guide, probe) = (View::at(0), View::at(1));
+        draw(&mut scene, guide, 10.0, false);
+        draw(&mut scene, probe, 10.1, false);
+        draw(&mut scene, guide, 10.2, false);
+        let sample = demo(10.0, 8);
+        let mut fewer = sample.clone();
+        let gone = fewer.processes.remove(3);
+        let render = |scene: &mut Scene, snapshot: &Snapshot, time: f32| {
+            scene.render(&RenderInput::small(
+                snapshot,
+                guide,
+                &Camera::default(),
+                time,
+            ));
+        };
+        render(&mut scene, &fewer, 10.3);
+        // The exit is noticed after the frame it left, so the next frame has its splash.
+        render(&mut scene, &fewer, 10.4);
+        let mut more = fewer.clone();
+        let mut arrival = more.processes[0].clone();
+        arrival.id.pid += 10_000;
+        more.processes.push(arrival);
+        render(&mut scene, &more, 10.5);
+        let seen = scene
+            .module::<testing::Guide>(guide)
+            .expect("the guide's state");
+        assert_eq!(seen.frames, [1, 3, 4, 5, 6], "the probe's frame is counted");
+        assert_eq!(
+            seen.disturbances,
+            [(0, 0), (0, 0), (0, 0), (1, 0), (0, 1)],
+            "{gone:?} splashed once and one process arrived"
         );
     }
 
