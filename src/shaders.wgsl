@@ -7,7 +7,8 @@ struct Globals {
     depth: vec2<f32>,
     // Pressure haze in 0-255 units, and animation time in w.
     haze: vec4<f32>,
-    // x: the backdrop, 0 dusk gradient, 1 flat space, 2 sea gradient, 3 black.
+    // x: the backdrop, 0 dusk gradient, 1 flat space, 2 sea gradient, 3 black. The twilight gradient (4)
+    // has an entry point of its own.
     sky: vec4<f32>,
 };
 
@@ -56,6 +57,25 @@ fn sky_fragment(@builtin(position) position: vec4<f32>) -> Targets {
     }
     let density = profile(x, 0.0) * profile(y, 1.9);
     let color = min(base + globals.haze.xyz * density, vec3<f32>(255.0));
+    return Targets(vec4<f32>(floor(color) / 255.0, 1.0), NONE);
+}
+
+// Three stops down the frame, written as Sky::base writes them so both round alike.
+fn twilight(y: f32) -> vec3<f32> {
+    if y < TWILIGHT_KNEE {
+        return TWILIGHT_TOP + (TWILIGHT_MIDDLE - TWILIGHT_TOP) * (y / TWILIGHT_KNEE);
+    }
+    return TWILIGHT_MIDDLE + (TWILIGHT_HORIZON - TWILIGHT_MIDDLE) * ((y - TWILIGHT_KNEE) / (1.0 - TWILIGHT_KNEE));
+}
+
+// The twilight sky is its own entry point, so the shader of every other backdrop is the one it
+// always was.
+@fragment
+fn twilight_fragment(@builtin(position) position: vec4<f32>) -> Targets {
+    let x = floor(position.x) / globals.size.x;
+    let y = floor(position.y) / globals.size.y;
+    let density = profile(x, 0.0) * profile(y, 1.9);
+    let color = min(twilight(y) + globals.haze.xyz * density, vec3<f32>(255.0));
     return Targets(vec4<f32>(floor(color) / 255.0, 1.0), NONE);
 }
 

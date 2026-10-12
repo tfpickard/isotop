@@ -53,6 +53,7 @@ shared! {
     U32 BACKDROP_SPACE: u32 = 1;
     U32 BACKDROP_SEA: u32 = 2;
     U32 BACKDROP_VOID: u32 = 3;
+    U32 BACKDROP_TWILIGHT: u32 = 4;
 
     /// Sky colours in 0-255 units. Dusk and sea run a gradient: base plus (dusk) or minus (sea)
     /// slope times the screen height fraction.
@@ -61,6 +62,14 @@ shared! {
     Vec3 DUSK_SLOPE: [f32; 3] = [6.0, 7.0, 8.0];
     Vec3 SEA_BASE: [f32; 3] = [24.0, 72.0, 96.0];
     Vec3 SEA_SLOPE: [f32; 3] = [18.0, 50.0, 58.0];
+
+    /// Twilight runs three stops down the frame, in 0-255 units: the top colour at the top row,
+    /// the middle colour `TWILIGHT_KNEE` of the way down, and the horizon colour at the bottom,
+    /// each stop linear to the next.
+    Vec3 TWILIGHT_TOP: [f32; 3] = [28.0, 34.0, 70.0];
+    Vec3 TWILIGHT_MIDDLE: [f32; 3] = [120.0, 92.0, 138.0];
+    Vec3 TWILIGHT_HORIZON: [f32; 3] = [238.0, 150.0, 104.0];
+    F32 TWILIGHT_KNEE: f32 = 0.6;
 
     /// Haze density along one axis is 0.5 + 0.5 * sin(t * A + time * A_DRIFT + phase) *
     /// cos(t * B - time * B_DRIFT + phase * B_PHASE).

@@ -53,6 +53,8 @@ pub enum Backdrop {
     Space = shared::BACKDROP_SPACE as isize,
     Sea = shared::BACKDROP_SEA as isize,
     Void = shared::BACKDROP_VOID as isize,
+    /// A dusk sky in three stops, from deep blue through violet to an orange horizon.
+    Twilight = shared::BACKDROP_TWILIGHT as isize,
 }
 
 /// Which socket links to draw.
@@ -224,6 +226,22 @@ impl Sky {
                 std::array::from_fn(|i| shared::SEA_BASE[i] - y * shared::SEA_SLOPE[i])
             }
             Backdrop::Void => [0.0; 3],
+            Backdrop::Twilight => {
+                let (from, to, along) = if y < shared::TWILIGHT_KNEE {
+                    (
+                        shared::TWILIGHT_TOP,
+                        shared::TWILIGHT_MIDDLE,
+                        y / shared::TWILIGHT_KNEE,
+                    )
+                } else {
+                    (
+                        shared::TWILIGHT_MIDDLE,
+                        shared::TWILIGHT_HORIZON,
+                        (y - shared::TWILIGHT_KNEE) / (1.0 - shared::TWILIGHT_KNEE),
+                    )
+                };
+                std::array::from_fn(|i| from[i] + (to[i] - from[i]) * along)
+            }
         }
     }
 
@@ -4031,6 +4049,101 @@ mod tests {
         assert!(
             beams == 0 && strokes > 0,
             "{beams} beams, {strokes} strokes"
+        );
+    }
+
+    fn sky_of(backdrop: Backdrop) -> Sky {
+        Sky {
+            backdrop,
+            haze: [0.0; 3],
+            time: 0.0,
+        }
+    }
+
+    #[test]
+    fn twilight_does_not_change_existing_backdrops() {
+        let discriminants = [
+            Backdrop::Dusk,
+            Backdrop::Space,
+            Backdrop::Sea,
+            Backdrop::Void,
+            Backdrop::Twilight,
+        ]
+        .map(|backdrop| backdrop as u32);
+        assert_eq!(discriminants, [0, 1, 2, 3, 4], "new backdrops come last");
+        for y in [0.0_f32, 0.25, 0.5, 0.9, 0.999] {
+            assert_eq!(
+                sky_of(Backdrop::Dusk).base(y),
+                [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0]
+            );
+            assert_eq!(sky_of(Backdrop::Space).base(y), [5.0, 8.0, 18.0]);
+            assert_eq!(
+                sky_of(Backdrop::Sea).base(y),
+                [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0]
+            );
+            assert_eq!(sky_of(Backdrop::Void).base(y), [0.0; 3]);
+        }
+        // The rows a rasterized frame paints are the same formulas, truncated to bytes. Space is
+        // left out: its stars are drawn over it.
+        for (backdrop, first, last) in [
+            (Backdrop::Dusk, [8, 13, 25], [13, 19, 32]),
+            (Backdrop::Sea, [24, 72, 96], [6, 22, 38]),
+            (Backdrop::Void, [0; 3], [0; 3]),
+        ] {
+            let mut frame = Frame::new(4, 100, sky_of(backdrop), Buffers::default());
+            frame.rasterize();
+            let row = |y: usize| frame.pixels[y * 12..y * 12 + 3].to_vec();
+            assert_eq!(row(0), first, "{backdrop:?} top");
+            assert_eq!(row(99), last, "{backdrop:?} bottom");
+        }
+    }
+
+    #[test]
+    fn twilight_runs_three_stops_down_the_frame() {
+        let mut frame = Frame::new(4, 100, sky_of(Backdrop::Twilight), Buffers::default());
+        frame.rasterize();
+        let row = |y: usize| -> [u8; 3] { frame.pixels[y * 12..y * 12 + 3].try_into().unwrap() };
+        assert_eq!(row(0), [28, 34, 70], "the top stop");
+        assert_eq!(
+            row(60),
+            [120, 92, 138],
+            "the middle stop, 60% of the way down"
+        );
+        let bottom = row(99);
+        assert!(
+            bottom[0] > 230 && (148..=150).contains(&bottom[1]) && (104..=108).contains(&bottom[2]),
+            "just short of the horizon stop at the last row: {bottom:?}"
+        );
+        for y in 1..100 {
+            let (above, here) = (row(y - 1), row(y));
+            assert!(
+                here[0] >= above[0],
+                "red only rises down the frame at row {y}"
+            );
+            if y <= 60 {
+                assert!(here[2] >= above[2], "blue rises towards the middle stop");
+            } else {
+                assert!(here[2] <= above[2], "blue falls towards the horizon stop");
+            }
+        }
+        // The pressure haze adds on top of the gradient, as it does on every backdrop.
+        let mut hazy = sky_of(Backdrop::Twilight);
+        hazy.haze = [60.0, 0.0, 0.0];
+        let mut tinted = Frame::new(4, 100, hazy, Buffers::default());
+        tinted.rasterize();
+        assert!(
+            tinted
+                .pixels
+                .iter()
+                .step_by(3)
+                .map(|&r| u64::from(r))
+                .sum::<u64>()
+                > frame
+                    .pixels
+                    .iter()
+                    .step_by(3)
+                    .map(|&r| u64::from(r))
+                    .sum::<u64>()
         );
     }
 

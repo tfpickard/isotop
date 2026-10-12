@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use bytemuck::{Pod, Zeroable};
 
 use crate::render::shared::{self, LINE_DEPTH_BIAS, NONE};
-use crate::render::{Color, Frame, Item};
+use crate::render::{Backdrop, Color, Frame, Item};
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const PICK: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -205,6 +205,7 @@ pub struct Gpu {
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     sky: wgpu::RenderPipeline,
+    twilight: wgpu::RenderPipeline,
     pipelines: [(Pass, wgpu::RenderPipeline); 8],
     targets: Option<Targets>,
     streams: [Stream; 5],
@@ -439,6 +440,12 @@ impl Gpu {
             ),
         ];
         let sky = make(("sky_vertex", "sky_fragment"), &[], TriangleList, backdrop);
+        let twilight = make(
+            ("sky_vertex", "twilight_fragment"),
+            &[],
+            TriangleList,
+            backdrop,
+        );
         if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
             return Err(error);
         }
@@ -449,6 +456,7 @@ impl Gpu {
             globals,
             bind_group,
             sky,
+            twilight,
             pipelines,
             targets: None,
             streams: Default::default(),
@@ -713,7 +721,11 @@ impl Gpu {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(&self.sky);
+            pass.set_pipeline(if frame.sky.backdrop == Backdrop::Twilight {
+                &self.twilight
+            } else {
+                &self.sky
+            });
             pass.draw(0..3, 0..1);
             for (kind, range) in batches {
                 let pipeline = &self
