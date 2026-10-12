@@ -102,7 +102,7 @@ def main():
     svg.text(centre_x + radius + 24, base_y - pitch / 2 + 4, "one pitch", size=10.5, fill=P.YELLOW)
     svg.text(hx0 + 14, top + h - 14, "pitch = 2 pi r tan(lambda), tan(lambda) = p_z / p_T",
              size=10.5, fill=P.MUTED)
-        svg.save("docs/media/figures/chamber-larmor-helix.svg")
+    svg.save("docs/media/figures/chamber-larmor-helix.svg")
 
 
 if __name__ == "__main__":

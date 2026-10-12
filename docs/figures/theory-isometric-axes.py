@@ -152,8 +152,8 @@ def main():
     svg.text(px1 - 4, Y(SCALE) - 6, "across axis: SCALE = 1.2247, constant", 11, GREEN, "end")
     svg.text(px0 + 8, Y(SCALE * math.cos(0.12)) + 16, "world z: SCALE cos(pitch)", 11, BLUE)
     svg.text(px1 - 4, Y(SCALE * math.sin(1.2)) + 20, "ground depth: SCALE sin(pitch)", 11, ORANGE, "end")
-    svg.text(px0, py1 + 64, "At ISOMETRIC both curves cross 1.000 (z) and 0.707 (depth): the three world axes", 11, DIM)
-    svg.text(px0, py1 + 80, "are equally foreshortened, which the factor SCALE = sqrt(3/2) restores to length 1.", 11, DIM)
+    svg.text(px0, py1 + 64, "At ISOMETRIC the z curve reads 1.000 and the depth curve 0.707, and the world x and y", 11, DIM)
+    svg.text(px0, py1 + 80, "axes (45 deg to the depth axis) come out at 1.000 too: SCALE = sqrt(3/2) undoes the 2/3.", 11, DIM)
     svg.text(24, 458, "source: src/render.rs (Camera::view, SCALE, ISOMETRIC, LOWEST_PITCH)", 10.5, DIM, style="italic")
 
     out = pathlib.Path("docs/media/figures/theory-isometric-axes.svg")

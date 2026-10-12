@@ -45,7 +45,7 @@ def monte_carlo(ratio, trials=40000, seed=11):
 def main():
     figure = Figure(
         760,
-        470,
+        500,
         "Fraction of processes a sampler sees",
         "Fraction of processes observed by interval sampling against the ratio of their mean lifetime to the sampling interval.",
     )
@@ -69,8 +69,8 @@ def main():
         [(ORANGE, "every process lives exactly L", "6 4"), (BLUE, "exponential lifetimes, mean L", None), (GREEN, "simulation, 40 000 processes per dot", None)],
         x=axes.left + 380, y=axes.top + 240,
     )
-    figure.text(72, 430, "Shell commands, compiler children and short-lived helpers live far below one second: a once-a-second sampler sees about as many of them as", size=11.5, color=MUTED)
-    figure.text(72, 447, "the ratio of their life to a second. Fork, exec and exit events (the proc connector, kqueue) see all of them. That is why isotop has `Life`.", size=11.5, color=MUTED)
+    figure.text(72, 462, "A process that lives a tenth of a second is alive at a once-a-second sampling instant 10% of the time.", size=11.5, color=MUTED)
+    figure.text(72, 479, "The Linux proc connector reports every fork and exit regardless; sampling alone can only infer a process, or miss it.", size=11.5, color=MUTED)
     out = os.path.join("docs", "media", "figures", "life-survival-sampling.svg")
     figure.save(out)
     print("wrote", out)
