@@ -194,14 +194,16 @@ def isotop(args):
     run([BINARY, "--demo", "--renderer", "cpu"] + [str(arg) for arg in args])
 
 
-def encode_still(source, target, budget, qualities, extra=()):
-    """Writes `source` as WebP at the highest quality that fits `budget`."""
+def encode_still(source, target, budget, qualities):
+    """Writes `source` as WebP at the highest quality that fits `budget`.
+
+    ffmpeg's libwebp does the encoding: this ImageMagick ignores `-quality` for WebP below 100
+    (which means lossless), so it could not trade quality for size.
+    """
     for quality in qualities:
-        run(
-            CONVERT
-            + [str(source), *extra, "-define", "webp:method=6", "-quality", str(quality),
-               str(target)]
-        )
+        run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(source), "-c:v", "libwebp",
+             "-lossless", "0", "-quality", str(quality), "-compression_level", "6",
+             str(target)])
         if target.stat().st_size <= budget:
             return quality
     sys.exit(f"{target.name}: {target.stat().st_size} bytes exceeds {budget} at the lowest quality")

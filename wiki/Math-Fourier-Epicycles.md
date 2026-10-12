@@ -19,24 +19,24 @@ Figure script: `docs/figures/fourier-epicycle-reconstruction.py`.*
 
 ### 1.1 Phasors
 
-Identify the plane with the complex numbers, so a point is `z = x + iy`. The function `t -> a e^{i(\omega t + \varphi)}`
-is a point moving on a circle of radius `|a| = a`, with angular velocity `\omega` (counter-clockwise when `\omega > 0`) and
-phase `\varphi` at `t = 0`. Add a second such term and the sum is a point on a circle whose centre itself moves on
+Identify the plane with the complex numbers, so a point is `z = x + iy`. The function $t -> a e^{i(\omega t + \varphi)}$
+is a point moving on a circle of radius `|a| = a`, with angular velocity $\omega$ (counter-clockwise when $\omega > 0$) and
+phase $\varphi$ at `t = 0`. Add a second such term and the sum is a point on a circle whose centre itself moves on
 a circle: an *epicycle*. A chain of `K` terms is
 
 $$
 z(t) = \sum_{j=1}^{K} c_j\, e^{2\pi i k_j t / T}, \qquad c_j \in \mathbb{C},\; k_j \in \mathbb{Z}.
 $$
 
-The modulus `|c_j|` is the radius of the `j`-th circle, `\arg c_j` is where its radius starts, and `k_j` is how many turns
+The modulus `|c_j|` is the radius of the `j`-th circle, $\arg c_j$ is where its radius starts, and `k_j` is how many turns
 it makes per period `T`, clockwise when `k_j < 0`. Every term has an integer number of turns per period, so the whole
 chain returns to where it started after `T`: it draws a *closed* curve and replays it forever.
 
 ### 1.2 Which circles? The Fourier coefficients
 
-Let `z(t)` be any `T`-periodic complex signal (piecewise smooth, say). The exponentials `e_k(t) = e^{2\pi i k t/T}` are
-orthonormal for the inner product `\langle f, g\rangle = \frac1T\int_0^T f\bar g\,dt`, because for integer `m \ne 0`
-the integral of `e^{2\pi i m t/T}` over a period is zero. Expanding `z = \sum_k c_k e_k` and taking the inner product with
+Let `z(t)` be any `T`-periodic complex signal (piecewise smooth, say). The exponentials $e_k(t) = e^{2\pi i k t/T}$ are
+orthonormal for the inner product $\langle f, g\rangle = \frac1T\int_0^T f\bar g\,dt$, because for integer $m \ne 0$
+the integral of $e^{2\pi i m t/T}$ over a period is zero. Expanding $z = \sum_k c_k e_k$ and taking the inner product with
 `e_l` isolates one coefficient:
 
 $$
@@ -45,7 +45,7 @@ $$
 
 That is Fourier's series (Fourier, 1822, for the heat equation; the complex exponential form is a later
 convenience). The *plane curve* `t -> z(t)` and the *pair of real signals* `x(t), y(t)` are the same object: a
-real signal `x(t)` alone gives `c_{-k} = \overline{c_k}`, two counter-rotating circles whose imaginary parts cancel and whose
+real signal `x(t)` alone gives $c_{-k} = \overline{c_k}$, two counter-rotating circles whose imaginary parts cancel and whose
 sum is a point oscillating on a line (a harmonic oscillator is a degenerate ellipse made of two epicycles). A genuinely
 complex signal breaks that symmetry; the amplitude of `c_k` against `c_{-k}` is the eccentricity and the handedness of
 the ellipse that frequency traces.
@@ -59,10 +59,10 @@ X_k = \sum_{n=0}^{N-1} z_n\, e^{-2\pi i k n/N}, \qquad
 z_n = \frac1N \sum_{k=0}^{N-1} X_k\, e^{2\pi i k n/N}.
 $$
 
-The inverse holds because `\sum_{n} e^{2\pi i (k-l) n/N} = N\delta_{kl}` (a geometric series). Comparing with 1.2: the epicycle
+The inverse holds because $\sum_{n} e^{2\pi i (k-l) n/N} = N\delta_{kl}$ (a geometric series). Comparing with 1.2: the epicycle
 coefficient is `c_k = X_k / N`. Two facts matter.
 
-* **Aliasing and folding.** `e^{2\pi i k n/N}` and `e^{2\pi i (k-N) n/N}` agree at every integer `n`, so `k` and `k - N` are the same
+* **Aliasing and folding.** $e^{2\pi i k n/N}$ and $e^{2\pi i (k-N) n/N}$ agree at every integer `n`, so `k` and `k - N` are the same
   term *on the samples*. They differ between samples. The smoothest curve through the samples uses the frequency of
   smaller magnitude, so a coefficient at index `k` is assigned the signed frequency `k` if `k < N/2` and `k - N`
   otherwise. This is the fold in `epicycles()` of `src/ptolemy.rs`. For `N = 60` the frequencies run from `-30` to
@@ -76,7 +76,7 @@ discontinuity between the last sample and the first is a real feature of the mod
 
 ### 1.4 Parseval, and which `K` terms are best
 
-The transform is `\sqrt N` times a unitary matrix, so energy is conserved:
+The transform is $\sqrt N$ times a unitary matrix, so energy is conserved:
 
 $$
 \frac1N\sum_{n} |z_n|^2 = \sum_{k} |c_k|^2 \qquad\text{(Parseval).}
@@ -90,7 +90,7 @@ $$
 $$
 
 with no cross terms because the basis is orthonormal. For a given `K` the error is smallest when `S` holds the `K`
-largest `|c_k|`: the error is the total minus `\sum_{S}|c_k|^2`, and a sum of `K` terms is maximised by the `K` largest.
+largest `|c_k|`: the error is the total minus $\sum_{S}|c_k|^2$, and a sum of `K` terms is maximised by the `K` largest.
 Greedy selection by amplitude is therefore *optimal*, not a heuristic, among all `K`-term sums of these exponentials.
 That is why `epicycles()` sorts by `|X_k|` (ties by index) and truncates.
 
@@ -100,16 +100,16 @@ That is why `epicycles()` sorts by `|X_k|` (ties by index) and truncates.
 error at the sixty samples (blue) lies exactly on Parseval's prediction (yellow dots). Twelve terms hold 93.3 % of
 the signal's power and leave an rms error of 0.258 of the signal's rms. Script: `docs/figures/fourier-epicycle-spectrum.py`.*
 
-In that window the spectrum is not a pair of lines. The demo's CPU wave has a period of `2\pi/0.55 = 11.4` s, so a
+In that window the spectrum is not a pair of lines. The demo's CPU wave has a period of $2\pi/0.55 = 11.4$ s, so a
 60 s window holds 5.25 cycles. A non-integer number of cycles in a rectangular window spreads each line into
-the Dirichlet kernel's main lobe and side lobes (spectral leakage), which is why the stems at `\pm 5` are surrounded by
-smaller ones and why twelve terms still miss 7 % of the power. The sharp `\sin^4` pulses add harmonics at about
+the Dirichlet kernel's main lobe and side lobes (spectral leakage), which is why the stems at $\pm 5$ are surrounded by
+smaller ones and why twelve terms still miss 7 % of the power. The sharp $\sin^4$ pulses add harmonics at about
 `10.5`, `15.8`, ... turns per window.
 
 ### 1.5 Gibbs ringing
 
 Where a periodic signal jumps by `J`, the partial sums of its Fourier series overshoot on each side by about
-`(\mathrm{Si}(\pi)/\pi - \tfrac12) J \approx 0.0895\,J` however many terms are kept: the Wilbraham-Gibbs phenomenon. The
+$(\mathrm{Si}(\pi)/\pi - \tfrac12) J \approx 0.0895\,J$ however many terms are kept: the Wilbraham-Gibbs phenomenon. The
 overshoot narrows as `K` grows but does not shrink. A process whose memory climbs steadily through the whole minute
 (a leak, a warming cache) has exactly such a jump, at the wrap from the last sample back to the first. The chain
 that replays it rings on both sides of the wrap.
@@ -135,37 +135,37 @@ $$
 X_k' = e^{2\pi i k/N}\,\bigl(X_k - z_0 + z_N\bigr).
 $$
 
-The factor `e^{2\pi i k/N}` is just the rotation of the whole picture by one sample step: replaying the window one step
+The factor $e^{2\pi i k/N}$ is just the rotation of the whole picture by one sample step: replaying the window one step
 later. If each coefficient is *turned back* by the phase of the window's first absolute sample number `s`,
 
 $$
 c_k^{(s)} = \frac{X_k}{N}\, e^{-2\pi i k s / N},
 $$
 
-then `c_k^{(s+1)} = c_k^{(s)} + (z_N - z_0) e^{-2\pi i k s/N}/N`: a slide changes each coefficient by at most `2\max|z|/N`,
+then $c_k^{(s+1)} = c_k^{(s)} + (z_N - z_0) e^{-2\pi i k s/N}/N$: a slide changes each coefficient by at most $2\max|z|/N$,
 about `1/30` of the swing. The chain therefore *evolves* from sample to sample instead of being rebuilt, and the tip
-can be evaluated at an absolute time `t` (`e^{2\pi i k t/N}` with `t` counted in samples) so that it replays the window
+can be evaluated at an absolute time `t` ($e^{2\pi i k t/N}$ with `t` counted in samples) so that it replays the window
 in step with the clock. This is the "turned back by its phase at `oldest`" in the doc comment of `epicycles()`, and
 the reason the test `dft_reconstruction_equals_the_samples_at_integer_times` also checks that sliding a periodic window
 by one sample leaves the coefficients alone.
 
 ### 1.7 Retrograde motion
 
-Put Earth at the origin and a planet at `p(t) = R e^{i\omega_d t} + r e^{i\omega_e t}`: a deferent of radius `R`
-and an epicycle of radius `r`. Its apparent *longitude* is `\lambda = \arg p`, and
+Put Earth at the origin and a planet at $p(t) = R e^{i\omega_d t} + r e^{i\omega_e t}$: a deferent of radius `R`
+and an epicycle of radius `r`. Its apparent *longitude* is $\lambda = \arg p$, and
 
 $$
 \frac{d\lambda}{dt} = \frac{\operatorname{Im}\bigl(\bar p\, p'\bigr)}{|p|^2}.
 $$
 
-Retrograde motion is `d\lambda/dt < 0`. Compute `\bar p\, p'` for the two-circle path: with `\alpha = \omega_d t`,
-`\beta = \omega_e t`,
+Retrograde motion is $d\lambda/dt < 0$. Compute $\bar p\, p'$ for the two-circle path: with $\alpha = \omega_d t$,
+$\beta = \omega_e t$,
 
 $$
 \operatorname{Im}(\bar p p') = R^2\omega_d + r^2\omega_e + R r(\omega_d + \omega_e)\cos(\beta - \alpha).
 $$
 
-Its minimum over the relative phase is `R^2\omega_d + r^2\omega_e - Rr(\omega_d + \omega_e) = (R - r)(R\omega_d - r\omega_e)`. For an
+Its minimum over the relative phase is $R^2\omega_d + r^2\omega_e - Rr(\omega_d + \omega_e) = (R - r)(R\omega_d - r\omega_e)$. For an
 epicycle smaller than the deferent, `r < R`, that is negative exactly when
 
 $$
@@ -174,13 +174,13 @@ $$
 
 **retrograde motion exists if and only if the epicycle's tip speed exceeds the deferent's speed.** Equality is the
 borderline, a stationary point where the planet halts against the stars (Ptolemy attributes the theorem on
-stationary points to Apollonius). The same test, on the *whole* chain, `\operatorname{Im}(\bar p\,p') < 0`, is the function `retrograde()`
+stationary points to Apollonius). The same test, on the *whole* chain, $\operatorname{Im}(\bar p\,p') < 0$, is the function `retrograde()`
 in `src/ptolemy.rs`; it needs no assumption about the number of terms.
 
 ![Retrograde loops: four ratios of epicycle tip speed to deferent speed](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/fourier-epicycle-retrograde.svg)
 
-*Left to right: ratio `r\omega_e/R\omega_d` of 0.5 (no retrograde), 1 (cusps), 1.5 (loops) and a Mars-like pair: epicycle-to-deferent
-ratio 39.5/60 (the Almagest value as it is usually tabulated; unverified here) and `\omega_e/\omega_d = 686.98/365.24`,
+*Left to right: ratio $r\omega_e/R\omega_d$ of 0.5 (no retrograde), 1 (cusps), 1.5 (loops) and a Mars-like pair: epicycle-to-deferent
+ratio 39.5/60 (the Almagest value as it is usually tabulated; unverified here) and $\omega_e/\omega_d = 686.98/365.24$,
 the sidereal period of Mars over the year, because in Ptolemy's model of a superior planet the epicycle's radius to the planet stays parallel to the direction of the mean Sun. The
 pure circles-only model spends 9.1 % of the time in retrograde, 71 days of the 780-day synodic cycle; the real
 sky gives roughly two to two and a half months. Script: `docs/figures/fourier-epicycle-retrograde.py`.*
@@ -190,9 +190,9 @@ sky gives roughly two to two and a half months. Script: `docs/figures/fourier-ep
 * **Apollonius of Perga** (about 262-190 BCE) is the usual source for the geometry of deferent and epicycle and for the
   theorem that the epicycle model and the eccentric model give the same motion of the Sun.
 * **Hipparchus** (about 190-120 BCE) used eccentric and epicyclic models for the Sun and Moon.
-* **Ptolemy** (about 100-170 CE) wrote the *Almagest* about 150 CE. For the five planets he put the observer off the
+* **Ptolemy** (about 100-170 CE) wrote the *Almagest* about 150 CE. For the planets he put the observer off the
   deferent's centre (*eccentric*) and made the epicycle centre move *uniformly as seen from a third point*, the
-  **equant**, placed on the other side of the deferent's centre from the observer at the same distance (the bisected eccentricity).
+  **equant**, placed on the other side of the deferent's centre from the observer at the same distance (the bisected eccentricity; Mercury needed a further device).
   The equant is an innovation of the planetary theory and was criticised for centuries because the motion is not uniform about the circle's own centre.
 * **Copernicus** (1543) moved the Sun to the middle and still used small epicycles to repair the orbits. **Kepler**
   (1609) replaced the whole apparatus with ellipses and the equal-area law.
@@ -242,20 +242,20 @@ Kepler's third law, `T = 1200 s (r / r_Saturn)^{1.5}`, and the speeds are far be
 | Jupiter | 26.8 | 16.7 min | 0.168 u/s | 1.60 |
 | Saturn | 30.2 | 20.0 min | 0.158 u/s | 1.51 |
 
-(Computed from `RADII`, `SKY = 40`, `OUTER_PERIOD = 1200`; an epicycle of radius `\rho` and frequency `k` has tip speed
-`2\pi k\rho/60`.) A `k = 5` term, the demo's CPU pulse, outruns every deferent once it is about 0.3 units wide, so in practice *every* planet is
+(Computed from `RADII`, `SKY = 40`, `OUTER_PERIOD = 1200`; an epicycle of radius $\rho$ and frequency `k` has tip speed
+$2\pi k\rho/60$.) A `k = 5` term, the demo's CPU pulse, outruns a deferent once it is 0.3 units wide (Saturn's sphere) to 0.5 units wide (the Moon's), so in practice *every* planet is
 in retrograde for a large share of the time, unlike the real sky where retrograde loops are rare events of a few
 weeks. The red trails of [View Ptolemy](View-Ptolemy) are the common case, not the exception.
 
 ## 4. Reading the picture
 
 * **Measured.** The coefficients, the radii and the handedness of the epicycles are the best `K`-term description of the last
-  60 samples, to the rms error of 1.4. The tip, evaluated at the sample times, is the process's own `(cpu, memory)` to that accuracy.
+  60 samples, to the rms error Parseval gives (section 1.4; for the demo process of the figures, 0.107 against a signal rms of 0.415 at K = 12). The tip, evaluated at the sample times, is the process's own `(cpu, memory)` to that accuracy.
 * **Derived.** Which terms are drawn (the twelve largest), the single global gain, and which stretch of the trail is red are computed, not measured.
 * **Decorative.** The deferent's period (Kepler's law applied to a made-up radius) and the sphere names are decoration; the planet's position on its deferent is
   a hash of the identity plus uniform motion and carries no information.
-* **Handedness is information.** The real axis is CPU and the imaginary axis is memory. A term `c e^{+i\omega t}` has
-  `x = |c|\cos(\omega t + \varphi)`, `y = |c|\sin(\omega t + \varphi)`: the memory *lags* the CPU by a quarter period when the epicycle turns
+* **Handedness is information.** The real axis is CPU and the imaginary axis is memory. A term $c e^{+i\omega t}$ has
+  $x = |c|\cos(\omega t + \varphi)$, $y = |c|\sin(\omega t + \varphi)$: the memory *lags* the CPU by a quarter period when the epicycle turns
   counter-clockwise, and *leads* it when it turns clockwise. A flat ellipse is CPU and memory in phase, or one of them
   not varying.
 * **Invisible.** Anything faster than the sample interval (Nyquist, 0.5 cycles per sample), anything slower than the
