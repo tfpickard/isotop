@@ -86,7 +86,7 @@ The $k^4$ term is a function of $\lvert\mathbf{k}\rvert$ only: the stencil is $\
 
 ![Direction dependence of the lattice phase speed](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/wave-anisotropy.svg)
 
-The measured spread between axis and diagonal falls as $k^{2.0}$ for five points and $k^{4.0}$ for nine. At the shortest pebble wavelength (11 cells) the five-point stencil would differ by 0.57% between axis and diagonal; the nine-point stencil by 0.007%.
+The measured spread between axis and diagonal falls as $k^{2.0}$ for five points and $k^{4.0}$ for nine. At the shortest pebble wavelength (11 cells) the five-point stencil would differ by 0.65% between axis and diagonal (at Courant number 0.5); the nine-point stencil by 0.007%.
 
 ### The cost of the lattice: numerical dispersion
 
@@ -149,7 +149,7 @@ I confirmed this by computing the spectral radius of $M$ over a $60\times60$ lat
 
 Damping lowers the limit: at the sponge's maximum $\gamma = 6.35$ and $\Delta t = 0.0357$ s, $\gamma\Delta t = 0.227$ and the bound becomes $a\Delta t^2 \le 3.55$, $\nu \le 0.815$.
 
-**What isotop does.** `Wave::advance(time, force)` clamps the elapsed time to $[0, 0.25]$ s and takes `steps = ceil(elapsed * WAVE_SPEED / 0.5)` equal substeps, so $\Delta t \le 0.5/c$: **the Courant number never exceeds 0.5**. At the default `--fps 10` (elapsed 0.1 s) that is three substeps of 0.0333 s, $\nu = 0.467$; at 30 fps one step, $\nu = 0.467$ again. The margin to the damped limit is a factor 1.6 and to the undamped limit 1.7. The explicit damping term needs $\gamma\Delta t < 2$: worst case 0.227. Float32 arithmetic does not matter at this margin.
+**What isotop does.** `Wave::advance(time, force)` clamps the elapsed time to $[0, 0.25]$ s and takes `steps = ceil(elapsed * WAVE_SPEED / 0.5)` equal substeps, so $\Delta t \le 0.5/c$: **the Courant number never exceeds 0.5**. At the default `--fps 10` (elapsed 0.1 s) that is three substeps of 0.0333 s, $\nu = 0.467$; at 30 fps one step, $\nu = 0.467$ again. The margin to the damped limit is a factor 1.6 and to the undamped limit 1.7. The explicit damping term needs $\gamma\Delta t < 2$: worst case 0.227. The medium is `f32`; the margin is wide enough that rounding is not a stability concern (the unit test runs it for 30 s without growth).
 
 ## Boundaries
 
@@ -179,7 +179,7 @@ I measured the reflection coefficient with the exact scheme at normal incidence 
 
 ![Sponge profile and measured reflection](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/wave-sponge-reflection.svg)
 
-At the short-wavelength end the reflection is the geometric-optics estimate 0.19; at long wavelengths the damping changes too quickly relative to the wavelength and the layer reflects like a partial mirror, up to 46% in amplitude at the lowest pebble pitch. Oblique waves see the layer more edge-on and reflect more. The border therefore *absorbs*, but is not an absorbing boundary condition in the strict sense, and the background $\gamma = 0.35$ does a good deal of the work: it alone reduces a ripple by $e^{-0.175\,t}$, a factor 0.15 over a 10.7 s crossing.
+At the short-wavelength end the reflection is the geometric-optics estimate 0.19; at long wavelengths the damping changes too quickly relative to the wavelength and the layer reflects like a partial mirror, up to 46% in amplitude at the lowest pebble pitch. Oblique waves should reflect more, since the component of the wavelength across the layer is longer (expected, not measured). The border therefore *absorbs*, but is not an absorbing boundary condition in the strict sense, and the background $\gamma = 0.35$ does a good deal of the work: it alone reduces a ripple by $e^{-0.175\,t}$, a factor 0.15 over a 10.7 s crossing.
 
 ### Where the layout sits
 
@@ -218,9 +218,9 @@ The steady response of the continuum equation to a point force of frequency $\om
 
 * **Wavelength and speed are real, the metric is not.** In grid units everything above is exact for the scheme. World-space speed is $14\times$ the cell size, and the cell size changes with the layout (150 cells always span the layout plus margin), so the pond crosses in 10.7 s whatever the machine looks like. Compare wavelengths in cells, never in the world units the camera uses.
 * **A ripple's reach is set by the damping, not by the process.** Amplitude falls by $e^{-1}$ in 79 cells at the pebble frequencies (before geometric spreading), independent of CPU. A louder process is a larger amplitude, not a longer range, until the amplitude falls under what the shading can show.
-* **Short waves arrive late.** A feature at the shortest pitch lags by about 3% over the crossing. At the display's resolution (about one pixel per cell at 1600 px) this is below what the eye can judge, but it is the reason a cluster's interference pattern drifts slowly if you step through it.
-* **The edge is dim on purpose, and it reflects some.** A viewer who sees a faint standing pattern parallel to the border at low pitches is seeing the 20% to 46% reflection of the sponge.
-* **Interference is exact superposition.** The medium is linear, so any pattern is the sum of the single-source patterns; the marbled look of a busy pond is the sum of 130 or so Hankel waves of different pitch (in the demo at `--time 12`, 132 of 192 processes exceed the 0.3% threshold), not a nonlinear effect.
+* **Short waves arrive late.** A packet at the shortest pitch lags by about 3% over the crossing, a quarter wavelength. It matters for the phase relationship between distant sources and is invisible in the shading otherwise.
+* **The edge reflects some.** At low pitches the sponge sends back 20% to 46% of the amplitude at normal incidence, so a faint standing pattern near the border is expected, not a bug.
+* **Interference is exact superposition.** The medium is linear, so any pattern is the sum of the single-source patterns; the marbled look of a busy pond is the sum of 130 or so Hankel waves of different pitch (in the demo at `--time 12`, about 130 of 192 processes exceed the 0.3% threshold), not a nonlinear effect.
 
 ## Where in the code
 
@@ -231,7 +231,7 @@ The steady response of the continuum equation to a point force of frequency $\om
 ## Variations and open questions
 
 * **A perfectly matched layer.** Replace the sponge by a split-field PML (Berenger) of the same 10 cells: the reflection should fall below 1% at all pitches and angles. The cost is auxiliary fields on the border ring only.
-* **A fourth-order stencil.** The $k^4/12$ error of the nine-point Laplacian can be cancelled by the compact (Mehrstellen) correction on the right-hand side; with $\nu=0.5$ the phase error at 11 cells would drop from 1% to about 0.2%. Does anyone see it?
+* **A fourth-order stencil.** The $k^4/12$ error of the nine-point Laplacian can be cancelled by the compact (Mehrstellen) correction on the right-hand side; that removes the $-k^2/24$ spatial error and leaves the time-stepping term $+\nu^2k^2/24$, so at 11 cells the phase error would go from $-0.98\%$ to $+0.33\%$ (arithmetic, not an experiment). Would anyone see it?
 * **Real water.** Swap the $c^2k^2 + \kappa$ dispersion for capillary-gravity waves by adding a $\nabla^4$ term (a bending stiffness): short waves then run *faster*, the opposite of the lattice's lag, and the two could be tuned to cancel at one pitch.
 * **Anisotropy on purpose.** A sheet with $c_x \ne c_y$ would make the pond an anisotropic medium; the pebbles' rings become ellipses, and the stencil weights would have to follow.
 * **Measure the wake.** The 2D Green's function predicts a positive tail behind a drip; compare the lattice response at a probe with $1/\sqrt{c^2t^2-r^2}$, with and without $\kappa$, to see $\kappa$ turn the tail into ringing at $\omega_c$.
