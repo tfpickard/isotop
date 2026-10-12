@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img">
+<title>Frame loop cadences</title>
+<desc>Frames every 100 ms, samples every 1000 ms, the background sampler every 2000 ms, and the order of work inside one frame up to its deadline.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#c9d1d9"/></marker></defs>
+<rect width="960" height="560" fill="#0e1116"/>
+<text x="24.00" y="30.00" font-size="17" fill="#c9d1d9" text-anchor="start" font-weight="600" font-style="normal" font-family="system-ui, sans-serif">isotop frame loop: three clocks and one deadline</text>
+<text x="24.00" y="50.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">defaults: --fps 10, --sample-ms 1000, BACKGROUND_PERIOD 2 s</text>
+<rect x="250.00" y="90.00" width="670.00" height="36.00" rx="0" fill="#161b22" fill-opacity="1.0" stroke="#30363d" stroke-width="1.0"/>
+<text x="240.00" y="106.00" font-size="12" fill="#c9d1d9" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">frame thread: frames</text>
+<text x="240.00" y="120.00" font-size="10.5" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">1 / --fps</text>
+<rect x="250.00" y="134.00" width="670.00" height="36.00" rx="0" fill="#161b22" fill-opacity="1.0" stroke="#30363d" stroke-width="1.0"/>
+<text x="240.00" y="150.00" font-size="12" fill="#c9d1d9" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">frame thread: Collector::sample</text>
+<text x="240.00" y="164.00" font-size="10.5" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">--sample-ms</text>
+<rect x="250.00" y="178.00" width="670.00" height="36.00" rx="0" fill="#161b22" fill-opacity="1.0" stroke="#30363d" stroke-width="1.0"/>
+<text x="240.00" y="194.00" font-size="12" fill="#c9d1d9" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">isotop-sampler thread</text>
+<text x="240.00" y="208.00" font-size="10.5" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">BACKGROUND_PERIOD</text>
+<rect x="250.00" y="222.00" width="670.00" height="36.00" rx="0" fill="#161b22" fill-opacity="1.0" stroke="#30363d" stroke-width="1.0"/>
+<text x="240.00" y="238.00" font-size="12" fill="#c9d1d9" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">isotop-events thread</text>
+<text x="240.00" y="252.00" font-size="10.5" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">while LifeEvents demanded</text>
+<line x1="250.00" y1="84.00" x2="250.00" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="250.00" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">0 s</text>
+<line x1="333.75" y1="84.00" x2="333.75" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="333.75" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">0.5 s</text>
+<line x1="417.50" y1="84.00" x2="417.50" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="417.50" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">1 s</text>
+<line x1="501.25" y1="84.00" x2="501.25" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="501.25" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">1.5 s</text>
+<line x1="585.00" y1="84.00" x2="585.00" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="585.00" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">2 s</text>
+<line x1="668.75" y1="84.00" x2="668.75" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="668.75" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">2.5 s</text>
+<line x1="752.50" y1="84.00" x2="752.50" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="752.50" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">3 s</text>
+<line x1="836.25" y1="84.00" x2="836.25" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="836.25" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">3.5 s</text>
+<line x1="920.00" y1="84.00" x2="920.00" y2="268.00" stroke="#30363d" stroke-width="1" stroke-opacity="1.0" stroke-dasharray="2 4"/>
+<text x="920.00" y="284.00" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">4 s</text>
+<line x1="250.00" y1="96.00" x2="250.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="266.75" y1="96.00" x2="266.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="283.50" y1="96.00" x2="283.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="300.25" y1="96.00" x2="300.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="317.00" y1="96.00" x2="317.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="333.75" y1="96.00" x2="333.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="350.50" y1="96.00" x2="350.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="367.25" y1="96.00" x2="367.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="384.00" y1="96.00" x2="384.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="400.75" y1="96.00" x2="400.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="417.50" y1="96.00" x2="417.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="434.25" y1="96.00" x2="434.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="451.00" y1="96.00" x2="451.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="467.75" y1="96.00" x2="467.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="484.50" y1="96.00" x2="484.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="501.25" y1="96.00" x2="501.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="518.00" y1="96.00" x2="518.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="534.75" y1="96.00" x2="534.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="551.50" y1="96.00" x2="551.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="568.25" y1="96.00" x2="568.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="585.00" y1="96.00" x2="585.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="601.75" y1="96.00" x2="601.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="618.50" y1="96.00" x2="618.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="635.25" y1="96.00" x2="635.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="652.00" y1="96.00" x2="652.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="668.75" y1="96.00" x2="668.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="685.50" y1="96.00" x2="685.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="702.25" y1="96.00" x2="702.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="719.00" y1="96.00" x2="719.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="735.75" y1="96.00" x2="735.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="752.50" y1="96.00" x2="752.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="769.25" y1="96.00" x2="769.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="786.00" y1="96.00" x2="786.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="802.75" y1="96.00" x2="802.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="819.50" y1="96.00" x2="819.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="836.25" y1="96.00" x2="836.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="853.00" y1="96.00" x2="853.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="869.75" y1="96.00" x2="869.75" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="886.50" y1="96.00" x2="886.50" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="903.25" y1="96.00" x2="903.25" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<line x1="920.00" y1="96.00" x2="920.00" y2="120.00" stroke="#58a6ff" stroke-width="1.5" stroke-opacity="1.0"/>
+<rect x="246.00" y="140.00" width="8.00" height="24.00" rx="0" fill="#f0883e" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<rect x="413.50" y="140.00" width="8.00" height="24.00" rx="0" fill="#f0883e" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<rect x="581.00" y="140.00" width="8.00" height="24.00" rx="0" fill="#f0883e" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<rect x="748.50" y="140.00" width="8.00" height="24.00" rx="0" fill="#f0883e" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<rect x="916.00" y="140.00" width="8.00" height="24.00" rx="0" fill="#f0883e" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<text x="425.50" y="151.00" font-size="10.5" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">record into the history ring</text>
+<rect x="246.00" y="184.00" width="8.00" height="24.00" rx="0" fill="#3fb950" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<rect x="581.00" y="184.00" width="8.00" height="24.00" rx="0" fill="#3fb950" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<rect x="916.00" y="184.00" width="8.00" height="24.00" rx="0" fill="#3fb950" fill-opacity="1.0" stroke="none" stroke-width="1.0"/>
+<text x="260.00" y="195.00" font-size="10.5" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">sockets, files, locks, cgroups, NVML</text>
+<rect x="251.00" y="232.00" width="668.00" height="16.00" rx="0" fill="#bc8cff" fill-opacity="0.35" stroke="#bc8cff" stroke-width="1.0"/>
+<text x="260.00" y="244.00" font-size="10.5" fill="#c9d1d9" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">blocks on the kernel; fills a bounded LifeQueue that each sample drains</text>
+<text x="24.00" y="322.00" font-size="14" fill="#c9d1d9" text-anchor="start" font-weight="600" font-style="normal" font-family="system-ui, sans-serif">inside one frame (schematic widths; the loop is sequential)</text>
+<rect x="40.00" y="340.00" width="79.20" height="62.00" rx="0" fill="#f0883e" fill-opacity="0.3" stroke="#f0883e" stroke-width="1.0"/>
+<text x="79.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">animate,</text>
+<text x="79.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">sample</text>
+<text x="79.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">if due</text>
+<rect x="119.20" y="340.00" width="52.80" height="62.00" rx="0" fill="#39c5cf" fill-opacity="0.3" stroke="#39c5cf" stroke-width="1.0"/>
+<text x="145.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">camera.</text>
+<text x="145.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">approach,</text>
+<text x="145.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">tour</text>
+<rect x="172.00" y="340.00" width="193.60" height="62.00" rx="0" fill="#58a6ff" fill-opacity="0.3" stroke="#58a6ff" stroke-width="1.0"/>
+<text x="268.80" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Scene::</text>
+<text x="268.80" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">render</text>
+<text x="268.80" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">(record)</text>
+<rect x="365.60" y="340.00" width="220.00" height="62.00" rx="0" fill="#f85149" fill-opacity="0.3" stroke="#f85149" stroke-width="1.0"/>
+<text x="475.60" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">rasterize:</text>
+<text x="475.60" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">CPU or GPU</text>
+<text x="475.60" y="388.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">+ readback</text>
+<rect x="585.60" y="340.00" width="61.60" height="62.00" rx="0" fill="#d29922" fill-opacity="0.3" stroke="#d29922" stroke-width="1.0"/>
+<text x="616.40" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">hover,</text>
+<text x="616.40" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">overlay</text>
+<rect x="647.20" y="340.00" width="114.40" height="62.00" rx="0" fill="#bc8cff" fill-opacity="0.3" stroke="#bc8cff" stroke-width="1.0"/>
+<text x="704.40" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Terminal::</text>
+<text x="704.40" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">present</text>
+<rect x="761.60" y="340.00" width="158.40" height="62.00" rx="0" fill="#30363d" fill-opacity="0.9" stroke="#8b949e" stroke-width="1.0"/>
+<text x="840.80" y="360.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">event::poll until the deadline</text>
+<text x="840.80" y="374.00" font-size="11" fill="#c9d1d9" text-anchor="middle" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">(no wait if already late)</text>
+<line x1="40.00" y1="420.00" x2="920.00" y2="420.00" stroke="#8b949e" stroke-width="1" stroke-opacity="1.0"/>
+<text x="40.00" y="438.00" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">frame_start</text>
+<text x="920.00" y="438.00" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">deadline = frame_start + 1 / fps</text>
+<line x1="920.00" y1="334.00" x2="920.00" y2="426.00" stroke="#c9d1d9" stroke-width="1.5" stroke-opacity="1.0" stroke-dasharray="4 3"/>
+<text x="24.00" y="470.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Every stage is on the one frame thread; only the slow sources and the event thread run beside it.</text>
+<text x="24.00" y="488.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">At 10 fps the budget is 100 ms. A frame that overruns skips the wait and starts the next at once;</text>
+<text x="24.00" y="506.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">the animation clock still advances by real time, and Stage::dt caps one step at MAX_DT = 0.5 s.</text>
+<text x="24.00" y="535.00" font-size="10.5" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="italic" font-family="system-ui, sans-serif">sources: src/main.rs (run, App::render, Options), src/model.rs (BACKGROUND_PERIOD), src/render.rs (MAX_DT)</text>
+</svg>
