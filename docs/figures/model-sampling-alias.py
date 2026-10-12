@@ -44,7 +44,7 @@ def folded(f):
 def main():
     figure = Figure(
         900,
-        560,
+        600,
         "Aliasing of a periodic load",
         "A 1.1 hertz load seen once per second appears as a 0.1 hertz wobble of a few percent.",
     )
@@ -102,10 +102,10 @@ def main():
 
     measured = max(outs[10:]) - min(outs[10:])
     figure.text(
-        72, 510, f"Displayed wobble after settling: {measured:.1f} points peak to peak, period {1 / folded(F):.0f} s, in antiphase with the load (sinc(1.1) < 0).",
+        72, 556, f"Displayed wobble after settling: {measured:.1f} points peak to peak with a period of {1 / folded(F):.0f} s, from a load that swings 80 points peak to peak.",
         size=11.5, color=MUTED,
     )
-    figure.text(72, 528, "Nothing in the number says it is not a slow, real fluctuation: a counter delta cannot tell a 0.1 Hz load from a 1.1 Hz one.", size=11.5, color=MUTED)
+    figure.text(72, 574, "Nothing in the number says it is not a slow, real fluctuation: a counter delta cannot tell a 0.1 Hz load from a 1.1 Hz one.", size=11.5, color=MUTED)
     out = os.path.join("docs", "media", "figures", "model-sampling-alias.svg")
     figure.save(out)
     print("wrote", out, f"(wobble {measured:.2f} points peak to peak)")
