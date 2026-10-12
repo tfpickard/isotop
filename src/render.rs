@@ -1197,6 +1197,11 @@ pub(crate) struct Stage<'a> {
     /// Lines for the tour's callout of a process, after its own figures and in the order pushed:
     /// what the view makes of the visit, such as a frame it cannot enter.
     pub callout: &'a mut Vec<(Identity, String)>,
+    /// How far above the ground plane the view's content rises, in world units, for the camera
+    /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
+    /// nothing rises.
+    #[expect(dead_code, reason = "first written by the City module view (A14)")]
+    pub headroom: &'a mut f32,
 }
 
 impl Stage<'_> {
@@ -1349,8 +1354,8 @@ pub struct Scene {
     arrivals: HashMap<Identity, f32>,
     previous: HashMap<Identity, Point>,
     deaths: Vec<(Point, f32)>,
-    /// Height of the tallest building in the last city frame, so fitting leaves it headroom.
-    tallest: f32,
+    /// The last frame's `Stage::headroom`, so fitting leaves it room above the ground.
+    headroom: f32,
     /// Exits and births since the last frame, as disturbances for the ripple and flow media.
     splashes: Vec<Point>,
     newborn: Vec<Identity>,
@@ -1425,7 +1430,7 @@ impl Scene {
             arrivals: HashMap::new(),
             previous: HashMap::new(),
             deaths: Vec::new(),
-            tallest: 0.0,
+            headroom: 0.0,
             splashes: Vec::new(),
             newborn: Vec::new(),
             wave: None,
@@ -1642,8 +1647,8 @@ impl Scene {
             camera.center = probe.ground((min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5 + lift);
             return;
         }
-        // The vertical margin leaves headroom for the tallest building above the ground plane.
-        let headroom = 24.0_f32.max(self.tallest * camera.pitch.cos() * SCALE + 8.0);
+        // The vertical margin leaves room for the tallest thing above the ground plane.
+        let headroom = 24.0_f32.max(self.headroom * camera.pitch.cos() * SCALE + 8.0);
         camera.zoom = (width as f32 / (max[0] - min[0] + 12.0))
             .min(height as f32 / (max[1] - min[1] + headroom))
             * 0.8;
@@ -1708,9 +1713,11 @@ impl Scene {
         self.tour.clear();
         self.popup.clear();
         self.callout.clear();
-        // Only the city draws buildings, and it measures them again every frame it is shown.
-        self.tallest = 0.0;
-        let lift = self.draw_view(&mut frame, input, &processes, dt);
+        // A view that stands things on the ground reports their height again every frame it is
+        // shown.
+        self.headroom = 0.0;
+        self.draw_view(&mut frame, input, &processes, dt);
+        let lift = row.link_lift;
         self.splashes.clear();
         self.newborn.clear();
         match row.links {
@@ -1793,15 +1800,14 @@ impl Scene {
             .collect()
     }
 
-    /// Draws the shown view and returns how high its links rise: above the city's rooftops, on
-    /// the ground elsewhere.
+    /// Draws the shown view.
     fn draw_view(
         &mut self,
         frame: &mut Frame,
         input: &RenderInput,
         processes: &[&Process],
         dt: f32,
-    ) -> f32 {
+    ) {
         let RenderInput {
             snapshot,
             view,
@@ -1823,7 +1829,6 @@ impl Scene {
             Some(BuiltIn::City) => {
                 self.city_positions(processes, snapshot);
                 self.draw_city(frame, processes, camera, selected, time);
-                return 1.5;
             }
             Some(BuiltIn::Orbit) => {
                 let hubs = self.hubs(processes, snapshot, focus);
@@ -1878,6 +1883,7 @@ impl Scene {
                     tour: &mut self.tour,
                     popup: &mut self.popup,
                     callout: &mut self.callout,
+                    headroom: &mut self.headroom,
                 };
                 let shown = match arm {
                     Some(BuiltIn::Cores) => self.cores.draw(&mut stage, processes, snapshot),
@@ -1895,7 +1901,6 @@ impl Scene {
                 self.collapsed = processes.len().saturating_sub(shown);
             }
         }
-        0.0
     }
 
     /// Marks where processes that left were last drawn and, where the row has the flash, draws
@@ -2199,7 +2204,7 @@ impl Scene {
                 );
             }
         }
-        self.tallest = tallest;
+        self.headroom = tallest;
     }
 
     /// One hub per parent that isotop can see but not read (a shadow) with readable leaves

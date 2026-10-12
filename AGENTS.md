@@ -158,6 +158,7 @@ last frame that moved forward, at most `render::MAX_DT` (0.5 s). Step a simulati
 with a fixed-step clock fed from `stage.time`; the older views keep their own clamps. A view
 writes back `stage.positions` (picking anchors, labels, the tour and the exit flash all read it),
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
+`stage.headroom` (how high content stands above the ground, for the fit of a view that gives no bounds),
 `stage.places`, `stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
 braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
 `stage.tour` (`TourTarget { id,
@@ -327,7 +328,8 @@ match your own shell.
     `warmup` (none; a new view's phases run under `When::Headless`, and a phase that replays
     demo samples, such as `Phase::Replay` at `--sample-ms` or `Phase::Play`, which also draws the frames between them, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `link_strokes` (off: the scene's links are beams; a new view turns it on,
-    so its links are hairlines that rasterize alike on the CPU and the GPU), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    so its links are hairlines that rasterize alike on the CPU and the GPU), `link_lift` (0: how
+    high the scene lifts its links above the drawn positions, 1.5 over City's rooftops), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
     wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
     shown), `sources` (none), `demo` (`DemoOptions::NONE`; a row names only the options it turns on, `DemoOptions { churn: true, ..DemoOptions::NONE }`, so a new option leaves the other rows alone) and `contract`

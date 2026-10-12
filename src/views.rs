@@ -89,6 +89,10 @@ pub struct ViewInfo {
     /// and the GPU rasterize alike, rather than as beams, whose one-pixel lines they do not.
     /// Default: off, the beams the built-in views were blessed with; a new view turns it on.
     pub link_strokes: bool,
+    /// How high, in world units, the scene lifts the ends of its links above the points the view
+    /// put in `Stage::positions`, so they clear the rooftops of a view that draws buildings.
+    /// Default: 0, links on the ground.
+    pub link_lift: f32,
     /// The generic exit flash: an expanding ring and glow where a process left. Default: on.
     pub flash: bool,
     /// The pressure haze tinting the sky. Default: on.
@@ -162,6 +166,7 @@ impl ViewInfo {
             warmup: &[],
             links: LinkRule::Quiet,
             link_strokes: false,
+            link_lift: 0.0,
             flash: true,
             haze: true,
             pitch: None,
@@ -470,6 +475,8 @@ pub fn availability() -> Vec<bool> {
 pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         links: LinkRule::All,
+        // Links rise above the rooftops.
+        link_lift: 1.5,
         ..ViewInfo::new(
             "city",
             "CITY",
