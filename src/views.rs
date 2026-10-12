@@ -7,11 +7,13 @@
 //! fields and draws them in its own arms, picked by `BuiltIn`. A new view is a module view: a type
 //! that implements `ViewModule`, which `Scene` builds from the row and calls through the trait.
 
+mod city;
+
 use std::collections::HashMap;
 use std::fmt;
 
 use crate::model::{DemoOptions, Identity, Process, Snapshot};
-use crate::platform::{self, Source, Sources};
+use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
     arbor, cells, cores, cortex, globe, horizon, murmuration, necropolis, ptolemy, tesseract,
@@ -311,7 +313,6 @@ pub enum Hooks {
 /// The arm of `Scene::render` that draws a built-in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuiltIn {
-    City,
     Orbit,
     Ripple,
     Flow,
@@ -481,12 +482,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "city",
             "CITY",
             Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::City,
-                legend: city_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(city::City::default())),
         )
     },
     ViewInfo {
@@ -935,13 +931,6 @@ pub static REGISTRY: &[ViewInfo] = &[
         )
     },
 ];
-
-fn city_legend(_: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO",
-        platform::MEMORY_LABEL
-    )
-}
 
 fn orbit_legend(scene: &Scene, snapshot: &Snapshot) -> String {
     format!(
@@ -1714,7 +1703,8 @@ mod tests {
         assert_eq!(availability(), vec![true; REGISTRY.len()]);
     }
 
-    /// The first rows are the eleven views that predate the module contract; the digits pick them.
+    /// The first rows are the eleven views that predate the module contract, those not yet moved
+    /// onto it still built in; the digits pick them.
     const ELEVEN_BUILT_IN: usize = 11;
 
     #[test]
@@ -1815,13 +1805,12 @@ mod tests {
             )),
             ["matrix"]
         );
-        assert_eq!(
-            with(|hooks| matches!(hooks, Hooks::Module(_))),
+        let modules = with(|hooks| matches!(hooks, Hooks::Module(_)));
+        assert!(
             REGISTRY[ELEVEN_BUILT_IN..]
                 .iter()
-                .map(|row| row.name)
-                .collect::<Vec<_>>(),
-            "every row after the eleven built-in views is a module"
+                .all(|row| modules.contains(&row.name)),
+            "every row after the eleven views that predate the contract is a module"
         );
     }
 }
