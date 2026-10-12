@@ -81,7 +81,7 @@ standing in each other's radial shadow.
 If $\alpha=p/q$ in lowest terms, point $n+q$ has the same angle as point $n$ and sits at radius
 $c\bigl(\sqrt{n+q+n_0}-\sqrt{n+n_0}\bigr)\approx cq/(2\sqrt n)$ further out. The picture is $q$ straight rays
 (the 120 degree panel of the figure is $q=3$), the points on a ray crowd together as $n$ grows, and the
-measured minimum spacing at $N=1000$ is $0.047c$, a quarter of one percent of the ideal in area terms. An
+measured minimum spacing at $N=1000$ is $0.047c$, 2.5 percent of the ideal $1.9046c$ derived below. An
 $\alpha$ near a rational with a small denominator is nearly as bad, because the rays merely rotate slowly into
 spiral arms.
 
@@ -113,9 +113,9 @@ partition within a factor of $\varphi^2$ of uniform at every prefix. This is the
 property: the layout is good after every addition, not only when the count is a Fibonacci number.
 
 The same fact in the language of discrepancy: the star discrepancy $D^*_N$ of $\{n\alpha\}$ is
-$O(\log N/N)$ if and only if the partial quotients are bounded on average, and the constant is smallest for
-$\alpha$ with all quotients 1 (Weyl 1916 for equidistribution; Ostrowski 1922 and Kuipers and Niederreiter
-1974 for the discrepancy). In one dimension $D^*_N$ of a sorted sample is exactly
+$O(\log N/N)$ when the partial quotients are bounded, and in general $N D^*_N$ is governed by the sum of the
+partial quotients up to the scale $N$, so it is smallest for $\alpha$ with all quotients 1 (Weyl 1916 for
+equidistribution; Ostrowski 1922 and Kuipers and Niederreiter 1974 for the discrepancy). In one dimension $D^*_N$ of a sorted sample is exactly
 $\frac1{2N}+\max_i\lvert x_{(i)}-\frac{2i-1}{2N}\rvert$. The bottom panel of the figure plots $N D^*_N$ for
 $N=377$. Computed values:
 
@@ -125,8 +125,10 @@ $N=377$. Computed values:
 | 233 | 1.445 | 2.601 | 1.986 | 2.328 | 72.93 |
 | 377 | 1.000 | 2.225 | 6.281 | 2.836 | 112.16 |
 
-At a Fibonacci $N$ the golden sequence has $N D^*_N=1$, which is the best a set of $N$ points can do on the
-circle ($N D^*_N\ge\tfrac12$ in general, $=1$ here by the closed form). Rational angles show the towers.
+At $N=144$ and $N=377$ the golden sequence has $N D^*_N=1$ (it is 1.44 at 89 and 233). One is the least any
+point set containing the origin can have, since a point at 0 alone forces $D^*_N\ge1/N$; equal spacing
+attains it. So at those $N$ the golden angles are as uniform as a lattice of angles. Near rational angles
+the discrepancy grows in towers proportional to $N$.
 
 ### 2.4 From angle to packing: Hurwitz's constant sets the minimum spacing
 
@@ -174,10 +176,9 @@ $N=1000$ points (offset $n_0=0.5$), as a fraction of $d_{\rm hex}$:
 | $\pi-3$ | 0.141593 | 0.819 | 0.430 |
 | 120 deg | 0.333333 | 0.047 | 0.025 |
 
-The golden angle measures 1.675 against the predicted 1.676. Every other angle in the table loses at least a
-fifth of the minimum spacing, and angles within a degree of the golden angle lose nearly half: a deviation
-$\delta$ of the angle shows up as visible spiral arms once the accumulated drift $\sqrt N\,\delta$ becomes
-comparable to the point spacing, which for a few hundred points happens at fractions of a degree.
+The golden angle measures 1.675 against the predicted 1.676. Every other angle in the table loses minimum
+spacing relative to it: 11 percent for the silver angle, 28 percent for $e-2$, 34 to 42 percent for the four
+angles within half a degree of the golden angle, 51 percent for $\pi-3$ and 97 percent for a third of a turn.
 
 ### 2.5 Fibonacci parastichies
 
@@ -230,14 +231,14 @@ stay dense and `span(group)`, one past the highest seat in use, bounds the spira
 carry no meaning beyond arrival order within a group; they are not ranks. The seat becomes a position as
 `spiral(spacing, offset, seat, spin(group))` in Cells (`spiral(spacing, 1.0, ..)`), Reef
 (`spiral(1.3, 0.5, ..)` for fish, `spiral(1.6, 0.5, ..)` for crabs), Globe (`spiral(0.9, 0.5, ..)`, and
-`GOLDEN_ANGLE` directly), and as pits and graves in Necropolis (`Seats` for the zombie pits). Ripple has its
+`GOLDEN_ANGLE` directly), and Necropolis uses `Seats` for its zombie pits. Ripple has its
 own copy of the same slot logic, with `cluster.slots` instead of `Seats` (`Scene::scatter`), and the City
 has a third mechanism below.
 
-**Hidden processes keep their seats.** Reef, Cells, Coop, Globe, Ripple and Cores reserve seats and places
+**Hidden processes keep their seats.** Reef, Cells, Coop, Globe and Ripple reserve seats and places
 for *every sampled process, drawn or not* (the comments in `Scene::scatter` and in `cells.rs`, `reef.rs`,
 `coop.rs` say so). Focusing a subtree or lowering `--limit` hides processes without freeing their seats, so
-clearing the focus brings everything back where it was. This is the same rule as stability under churn, one
+clearing the focus brings everything back where it was (Cores has the same test for its marbles). This is the same rule as stability under churn, one
 level up: the *view of the data* (focus, limit) must not move anything either. The commits
 "Keep hidden processes' Reef and Cells seats and places" (#106) and "Keep Ripple, Strata, Globe, Orbit, Flow
 and Cores layouts when focus or --limit hides processes" (#105) established it.
@@ -281,8 +282,8 @@ $(2s-o,\,s)$, scaled by 23 world units:
 
 ```text
  y
- 3 |  9 10 11 12
- 2 |  8  7  6 11   (shell 3 begins at index 9 and is filled before shell 4)
+ 3 | 15 14 13 12      shell 3 (indices 9..15) is filled before shell 4
+ 2 |  8  7  6 11
  1 |  3  2  5 10
  0 |  0  1  4  9
    +--------------- x
@@ -386,9 +387,9 @@ rank-seated test view.
   still view is therefore a statement about growth, not about the process list.
 * **Camera is separate.** Stable world positions do not mean a stable *screen*: the camera fit follows
   `stage.bounds`, and views whose content moves declare a fixed envelope so that the fit does not chase it.
-* **Not a proof of non-overlap.** `vacant` guarantees clearance at placement, using the radius the disc had
-  then. A disc that is allowed to grow into its reservation stays inside its own reserved disc by
-  construction; a body drawn larger than its reservation is a bug of the view, not of the layout.
+* **Not a proof of non-overlap.** `vacant` guarantees clearance at placement, for the reserved radius. A
+  disc that grows within its reservation stays inside its own reserved disc by construction; a body drawn
+  larger than the radius it asked for would overlap a neighbour, and that is a bug of the view.
 
 ## 6. Try it
 
@@ -443,7 +444,7 @@ helpers; in the code they live in `layout.rs` (`render.rs` imports them). The co
   angle has no single 3-D counterpart; the generalised golden ratio sequences of the Kronecker type
   (the "$R_d$ sequence") are a candidate (unverified; not in the tree).
 * **Two sequences compared.** Replace `GOLDEN_ANGLE` in a scratch build with the silver angle and render Cells:
-  the table in section 2.4 predicts a visible loss of 11 points of packing fraction.
+  the table in section 2.4 predicts an 11 percent smaller minimum spacing.
 
 ## 9. References
 
