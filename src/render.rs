@@ -7,7 +7,7 @@ use crate::medium::Grid;
 use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::tint;
 use crate::simulation::{growth, hash, smoothing};
-use crate::views::systems::{Body, Orbit, is_hub};
+use crate::views::systems::Orbit;
 use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
 use crate::{globe, glyphs};
 
@@ -1214,7 +1214,8 @@ pub(crate) struct Stage<'a> {
     /// what the view makes of the visit, such as a frame it cannot enter.
     pub callout: &'a mut Vec<(Identity, String)>,
     /// The names of the systems the view draws, labelled under their outer edges after
-    /// `places`, in the order pushed.
+    /// `places`, in the order pushed. Each system's centre (`Title::at`) is kept in the camera
+    /// fit with the `positions`, when the view gave no `bounds`.
     pub titles: &'a mut Vec<Title>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
@@ -1475,7 +1476,7 @@ impl Scene {
     }
 
     pub fn fit(&self, camera: &mut Camera, width: u32, height: u32) {
-        if self.positions.is_empty() && self.bounds.is_empty() {
+        if self.positions.is_empty() && self.titles.is_empty() && self.bounds.is_empty() {
             return;
         }
         let probe = Camera {
@@ -1486,7 +1487,14 @@ impl Scene {
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
         let points: Vec<Point> = if self.bounds.is_empty() {
-            self.positions.values().map(|p| [p[0], p[1], 0.0]).collect()
+            // The drawn processes, and the systems' centres a hub stands at, which are no process.
+            let centres = self.titles.iter().map(|title| title.at);
+            self.positions
+                .values()
+                .copied()
+                .chain(centres)
+                .map(|p| [p[0], p[1], 0.0])
+                .collect()
         } else {
             self.bounds.clone()
         };
@@ -1724,8 +1732,7 @@ impl Scene {
         flash: bool,
     ) {
         for (id, &point) in &self.previous {
-            // A hub is no process, so it neither dies nor splashes when it is no longer drawn.
-            if !alive.contains(id) && !is_hub(id) {
+            if !alive.contains(id) {
                 self.deaths.push((point, time));
                 self.splashes.push(point);
             }
@@ -1846,24 +1853,6 @@ pub(crate) fn similar(a: &Grid, b: &Grid) -> bool {
         && (a.cell / b.cell - 1.0).abs() < 0.05
         && (a.origin[0] - b.origin[0]).abs() < a.cell * 2.0
         && (a.origin[1] - b.origin[1]).abs() < a.cell * 2.0
-}
-
-/// The ground-plane grid covering the layout with a margin, and each body's ground position.
-pub(crate) fn footprint(
-    positions: &HashMap<Identity, Point>,
-    processes: &[&Process],
-    bodies: &[Body],
-    cells: usize,
-) -> Option<(Grid, Vec<[f32; 2]>)> {
-    let located: Vec<[f32; 2]> = bodies
-        .iter()
-        .map(|body| {
-            let p = positions[&processes[body.index].id];
-            [p[0], p[1]]
-        })
-        .collect();
-    let grid = cover(&located, cells)?;
-    Some((grid, located))
 }
 
 /// The ground-plane grid covering points with a margin and about `cells` cells along the longer

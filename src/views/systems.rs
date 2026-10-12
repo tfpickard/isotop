@@ -73,10 +73,12 @@ pub(super) struct Path {
 }
 
 /// A process placed in the layout: its index in the process list, where it is drawn (flying
-/// out of its parent while it grows) and how far grown it is.
+/// out of its parent while it grows), where it settles (`target`: what picking, labels and the
+/// tour use, and the ground a view lays its medium over) and how far grown it is.
 pub(crate) struct Body {
     pub index: usize,
     pub position: Point,
+    pub target: Point,
     pub grow: f32,
 }
 
@@ -239,14 +241,18 @@ impl Galaxy {
     }
 }
 
-/// A system's star: the root of a tree, how many processes the system draws besides a hub, and
-/// how far the system reaches from the star in world units.
+/// A system's star: the root of a tree, how many processes the system draws besides a hub, how
+/// far the system reaches from the star in world units, and where the star stands.
 pub(super) struct Star {
     pub id: Identity,
     /// The star's index in the process list.
     pub root: usize,
     pub members: usize,
     pub reach: f32,
+    /// Where the star stands, as `Layout::report` tells the app: its settled place, or the one a
+    /// view gives it on its own ground. A hub is no process, so this is the only place that
+    /// has its position and `Stage::positions` has none.
+    pub at: Point,
 }
 
 /// The systems of one frame: the trees laid out, the orbits and bodies to draw and what to say
@@ -291,9 +297,7 @@ impl Layout<'_> {
     pub(super) fn report(&self, stage: &mut Stage) {
         let processes = self.tree.processes;
         for star in &self.stars {
-            let Some(&at) = stage.positions.get(&star.id) else {
-                continue;
-            };
+            let at = star.at;
             let process = processes[star.root];
             let text = if is_hub(&star.id) {
                 format!(
@@ -465,6 +469,7 @@ pub(super) fn layout<'a>(
             root,
             members: walk.visited.len() - before - hub,
             reach: tree.extents[root],
+            at: point,
         });
     }
     let Walk {
@@ -503,10 +508,14 @@ impl Walk<'_, '_, '_> {
         }
         let tree = self.tree;
         let process = tree.processes[index];
-        self.stage.positions.insert(process.id, target);
+        // A hub is no process: it is not picked, labelled or lost, so the stage does not hold it.
+        if !is_hub(&process.id) {
+            self.stage.positions.insert(process.id, target);
+        }
         self.bodies.push(Body {
             index,
             position: drawn,
+            target,
             grow,
         });
         let kids = &tree.children[index];
@@ -921,6 +930,39 @@ mod tests {
     }
 
     #[test]
+    fn the_camera_fit_keeps_a_hub_in_view_though_the_stage_holds_no_position_for_it() {
+        // A hub with one reader beside it: fit to the leaf alone, the hub could be left off the edge.
+        let snapshot = Snapshot {
+            processes: vec![process(10, 1)],
+            cores: 4,
+            shadows: vec![Shadow {
+                pid: 1,
+                parent: 0,
+                name: "launchd".into(),
+            }],
+            ..Default::default()
+        };
+        for view in [view("orbit"), view("flow")] {
+            let mut scene = Scene::new();
+            render(&mut scene, &snapshot, view, 0.0);
+            let [title] = scene.titles.as_slice() else {
+                panic!("{view:?}: {:?}", scene.titles);
+            };
+            let hub_at = title.at;
+            assert_eq!(scene.positions.len(), 1, "{view:?}: only the leaf");
+            let mut camera = Camera::default();
+            scene.fit(&mut camera, 320, 180);
+            let mut frame = scene.render(&RenderInput::small(&snapshot, view, &camera, 0.1));
+            frame.rasterize();
+            let [x, y] = frame.locate(&camera, hub_at).expect("the hub is on screen");
+            assert!(
+                (0.0..320.0).contains(&x) && (0.0..180.0).contains(&y),
+                "{view:?}: the hub at {x},{y}"
+            );
+        }
+    }
+
+    #[test]
     fn an_unreadable_parent_becomes_one_hollow_hub_instead_of_many_systems() {
         let launchd = Shadow {
             pid: 1,
@@ -957,7 +999,11 @@ mod tests {
                 panic!("{view:?}: {:?}", scene.titles.len());
             };
             assert_eq!(title.text, "launchd (unreadable) (20)", "{view:?}");
-            assert_eq!(scene.positions[&star][..2], title.at[..2], "{view:?}");
+            let hub_at = title.at;
+            assert!(
+                !scene.positions.contains_key(&star),
+                "{view:?}: a hub is no drawn process, so the stage does not hold it"
+            );
             assert!(
                 scene.tour.is_empty(),
                 "{view:?}: a hub has no callout, so the tour passes it over"
@@ -986,9 +1032,7 @@ mod tests {
                     .iter()
                     .all(|&p| p == NONE || frame.target(p).is_some())
             );
-            let [x, y] = frame
-                .locate(&camera, scene.positions[&star])
-                .expect("the hub is on screen");
+            let [x, y] = frame.locate(&camera, hub_at).expect("the hub is on screen");
             let at = y as usize * 320 + x as usize;
             assert_eq!(frame.picks[at], NONE, "{view:?}: the hub is hollow");
             assert_eq!(frame.pick_near(x, y, 2.0), None, "{view:?}");
