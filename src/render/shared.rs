@@ -100,6 +100,11 @@ shared! {
     F32 GLYPH_WIDTH: f32 = glyphs::WIDTH as f32;
     F32 GLYPH_HEIGHT: f32 = glyphs::HEIGHT as f32;
     U32 GLYPH_COLUMNS: u32 = glyphs::WIDTH;
+
+    /// Words of header before a field's node colours in the GPU storage buffer: columns, rows,
+    /// whether an owner grid follows the colours, and one word of padding. The colours come next,
+    /// one packed RGBA word per node, then the owners, one word per node.
+    U32 FIELD_HEADER_WORDS: u32 = 4;
 }
 
 /// The one light every lit surface drawn on the CPU shares (tubes, and the relief of a field): a

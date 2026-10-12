@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::render::field::StorageLayout;
 use crate::render::shared::{self, LINE_DEPTH_BIAS, NONE};
 use crate::render::{Backdrop, Color, Frame, Item};
 
@@ -71,6 +72,16 @@ struct Splat {
     pick: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct FieldVertex {
+    position: [f32; 2],
+    depth: f32,
+    uv: [f32; 2],
+    /// The word offset of the field's slot in the storage buffer.
+    slot: u32,
+}
+
 // Layout assertions. Each struct is uploaded as raw bytes and read through a vertex layout made
 // of tightly packed attributes (see `vertex_attr_array!` below), so its size and field offsets
 // must match the WGSL struct of the same name in shaders.wgsl.
@@ -131,6 +142,15 @@ const _: () = {
     assert!(offset_of!(Splat, pick) == 16);
 };
 
+// FieldVertex: WGSL `FieldVertex`, attributes Float32x2, Float32, Float32x2, Uint32.
+const _: () = {
+    assert!(size_of::<FieldVertex>() == 24);
+    assert!(offset_of!(FieldVertex, position) == 0);
+    assert!(offset_of!(FieldVertex, depth) == 8);
+    assert!(offset_of!(FieldVertex, uv) == 12);
+    assert!(offset_of!(FieldVertex, slot) == 20);
+};
+
 /// The shader source: the generated constants from `render::shared`, then `shaders.wgsl`.
 fn shader_source() -> String {
     format!("{}{}", shared::prelude(), include_str!("shaders.wgsl"))
@@ -146,6 +166,7 @@ enum Pass {
     Glows,
     Glyphs,
     Splats,
+    Fields,
 }
 
 struct Targets {
@@ -198,17 +219,69 @@ impl Stream {
     }
 }
 
+/// Words the storage buffer starts with, before any field needs more: a quarter of a mebibyte
+/// holds a 180 x 180 field with owners.
+const FIELD_STORAGE_WORDS: usize = 1 << 16;
+
+fn bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    globals: &wgpu::Buffer,
+    fields: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("globals"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: fields.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+/// The storage buffer the field pass samples: a header, node colours and owners for each field of
+/// a frame (see `render::field::StorageLayout`), rewritten only where a field changed.
+struct FieldStorage {
+    buffer: wgpu::Buffer,
+    /// What the buffer holds, in words.
+    capacity: usize,
+    layout: StorageLayout,
+}
+
+impl FieldStorage {
+    fn new(device: &wgpu::Device, words: usize) -> Self {
+        Self {
+            buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("fields"),
+                size: words as u64 * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            capacity: words,
+            layout: StorageLayout::default(),
+        }
+    }
+}
+
 pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pub name: String,
     globals: wgpu::Buffer,
+    bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    fields: FieldStorage,
     sky: wgpu::RenderPipeline,
     twilight: wgpu::RenderPipeline,
-    pipelines: [(Pass, wgpu::RenderPipeline); 8],
+    pipelines: [(Pass, wgpu::RenderPipeline); 9],
     targets: Option<Targets>,
-    streams: [Stream; 5],
+    streams: [Stream; 6],
     scratch: Vec<u8>,
     failure: Arc<Mutex<Option<String>>>,
 }
@@ -250,16 +323,28 @@ impl Gpu {
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -267,14 +352,8 @@ impl Gpu {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals"),
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals.as_entire_binding(),
-            }],
-        });
+        let fields = FieldStorage::new(&device, FIELD_STORAGE_WORDS);
+        let bind_group = bind_group(&device, &layout, &globals, &fields.buffer);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("isotop"),
             bind_group_layouts: &[Some(&layout)],
@@ -304,6 +383,11 @@ impl Gpu {
             array_stride: std::mem::size_of::<Splat>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Uint32],
+        };
+        let field = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<FieldVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x2, 3 => Uint32],
         };
         let make = |entry: (&str, &str),
                     buffers: &[Option<wgpu::VertexBufferLayout>],
@@ -438,6 +522,15 @@ impl Gpu {
                     pick_only,
                 ),
             ),
+            (
+                Pass::Fields,
+                make(
+                    ("field_vertex", "field_fragment"),
+                    &[Some(field)],
+                    TriangleList,
+                    solid,
+                ),
+            ),
         ];
         let sky = make(("sky_vertex", "sky_fragment"), &[], TriangleList, backdrop);
         let twilight = make(
@@ -454,7 +547,9 @@ impl Gpu {
             device,
             queue,
             globals,
+            bind_layout: layout,
             bind_group,
+            fields,
             sky,
             twilight,
             pipelines,
@@ -463,6 +558,55 @@ impl Gpu {
             scratch: Vec::new(),
             failure,
         })
+    }
+
+    /// Writes the frame's fields into the storage buffer where they differ from what it holds,
+    /// growing it first if they need more room, and returns where each one sits.
+    fn store_fields(&mut self, frame: &Frame) -> Result<crate::render::field::StoragePlan, String> {
+        let plan = self.fields.layout.plan(&frame.fields, self.fields.capacity);
+        if let Some(words) = plan.grow {
+            let limit = self.device.limits().max_storage_buffer_binding_size;
+            if words as u64 * 4 > limit {
+                self.fields.layout.forget();
+                return Err(format!(
+                    "the frame's fields need {} MiB of GPU storage, over the {} MiB the GPU binds",
+                    (words as u64 * 4) >> 20,
+                    limit >> 20
+                ));
+            }
+            let layout = std::mem::take(&mut self.fields.layout);
+            self.fields = FieldStorage {
+                layout,
+                ..FieldStorage::new(&self.device, words)
+            };
+            self.bind_group = bind_group(
+                &self.device,
+                &self.bind_layout,
+                &self.globals,
+                &self.fields.buffer,
+            );
+        }
+        for &index in &plan.rewrite {
+            let field = &frame.fields[index];
+            let slot = plan.offsets[index] as u64 * 4;
+            let header = StorageLayout::header(field);
+            self.queue
+                .write_buffer(&self.fields.buffer, slot, bytemuck::cast_slice(&header));
+            let texels = slot + header.len() as u64 * 4;
+            self.queue.write_buffer(
+                &self.fields.buffer,
+                texels,
+                bytemuck::cast_slice(&field.texels),
+            );
+            if let Some(owners) = &field.owners {
+                self.queue.write_buffer(
+                    &self.fields.buffer,
+                    texels + field.texels.len() as u64 * 4,
+                    bytemuck::cast_slice(owners),
+                );
+            }
+        }
+        Ok(plan)
     }
 
     fn targets(&mut self, width: u32, height: u32) -> &Targets {
@@ -523,6 +667,8 @@ impl Gpu {
         let mut glows = Vec::new();
         let mut glyphs = Vec::new();
         let mut splats = Vec::new();
+        let mut field_vertices = Vec::new();
+        let plan = self.store_fields(frame)?;
         let mut batches: Vec<(Pass, Range<u32>)> = Vec::new();
         let mut depth = [f32::INFINITY, f32::NEG_INFINITY];
         let mut track = |d: f32| {
@@ -540,6 +686,7 @@ impl Gpu {
                 Item::Beam(..) => (Pass::Beams, vertices.len()),
                 Item::Star(..) => (Pass::Stars, vertices.len()),
                 Item::Pick { .. } => (Pass::Splats, splats.len()),
+                Item::Field { .. } => (Pass::Fields, field_vertices.len()),
             };
             match *item {
                 Item::Triangle(points, color, pick) => {
@@ -642,12 +789,24 @@ impl Gpu {
                         pick,
                     });
                 }
+                Item::Field { points, uv, field } => {
+                    for (p, uv) in points.into_iter().zip(uv) {
+                        track(p[2]);
+                        field_vertices.push(FieldVertex {
+                            position: [p[0], p[1]],
+                            depth: p[2],
+                            uv,
+                            slot: plan.offsets[field as usize],
+                        });
+                    }
+                }
             }
             let end = match pass {
                 Pass::Balls => balls.len(),
                 Pass::Glows => glows.len(),
                 Pass::Glyphs => glyphs.len(),
                 Pass::Splats => splats.len(),
+                Pass::Fields => field_vertices.len(),
                 _ => vertices.len(),
             };
             match batches.last_mut() {
@@ -675,6 +834,7 @@ impl Gpu {
             glow_stream,
             glyph_stream,
             splat_stream,
+            field_stream,
         ] = &mut self.streams;
         let vertex_buffer =
             vertex_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&vertices));
@@ -686,6 +846,11 @@ impl Gpu {
             glyph_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&glyphs));
         let splat_buffer =
             splat_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&splats));
+        let field_buffer = field_stream.upload(
+            &self.device,
+            &self.queue,
+            bytemuck::cast_slice(&field_vertices),
+        );
         self.targets(width, height);
         let targets = self.targets.as_ref().expect("targets exist");
         let mut encoder = self
@@ -753,6 +918,12 @@ impl Gpu {
                         if let Some(buffer) = buffer {
                             pass.set_vertex_buffer(0, buffer.slice(..));
                             pass.draw(0..6, range);
+                        }
+                    }
+                    Pass::Fields => {
+                        if let Some(buffer) = &field_buffer {
+                            pass.set_vertex_buffer(0, buffer.slice(..));
+                            pass.draw(range, 0..1);
                         }
                     }
                     _ => {
@@ -915,8 +1086,11 @@ unsafe fn stream_copy(source: *const u8, target: *mut u8, length: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::medium::Grid;
     use crate::model::Identity;
-    use crate::render::{Backdrop, Buffers, Sky, Target, Thing};
+    use crate::render::{
+        Backdrop, Buffers, Camera, Field, Placement, Relief, Shading, Sky, Target, Thing,
+    };
 
     /// A frame small enough for the GPU to read back every pick: a process's triangle over the
     /// left half at depth 5, a thing's sphere, a thing's pick splat behind the triangle and
@@ -1065,5 +1239,254 @@ mod tests {
             frame.pixels, expected.pixels,
             "the GPU draws the CPU's pixels"
         );
+    }
+
+    #[test]
+    fn the_shader_source_is_valid_wgsl() {
+        use wgpu::naga::front::wgsl;
+        use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+        let module = wgsl::parse_str(&shader_source()).expect("the shader source parses");
+        Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module)
+            .expect("the shader source validates");
+    }
+
+    /// A field of `columns` by `rows` nodes: rolling colours, a smooth height and an owner per
+    /// node, lit with a highlight. `phase` shifts every pattern, so two revisions differ.
+    fn lumpy(key: u64, columns: usize, rows: usize, phase: f32) -> Field {
+        let mut field = Field::new(key, columns, rows);
+        let mut heights = Vec::with_capacity(columns * rows);
+        for j in 0..rows {
+            for i in 0..columns {
+                let (x, y) = (i as f32 / columns as f32, j as f32 / rows as f32);
+                let wave = |k: f32| 0.5 + 0.5 * ((x * 9.0 + y * 4.0) * k + phase).sin();
+                field.colors[j * columns + i] = [
+                    (wave(1.0) * 255.0) as u8,
+                    (wave(1.7) * 200.0) as u8,
+                    ((1.0 - y) * 220.0) as u8,
+                ];
+                heights.push(((x * 11.0 + phase).sin() * (y * 7.0).cos()) * 3.0);
+            }
+        }
+        field.heights = Some(heights);
+        field.owners = Some(
+            (0..(columns * rows) as u32)
+                .map(|node| node % 191)
+                .collect(),
+        );
+        field.shading = Some(Shading {
+            ambient: 0.45,
+            diffuse: 0.75,
+            specular: 0.35,
+            shininess: 20.0,
+        });
+        field
+    }
+
+    /// The three ways to draw a field, each in a frame of its own.
+    fn field_frame(scene: usize, field: &Field) -> Frame {
+        let sky = Sky {
+            backdrop: Backdrop::Dusk,
+            haze: [0.0; 3],
+            time: 0.0,
+        };
+        let mut frame = Frame::new(640, 360, sky, Buffers::default());
+        let camera = Camera {
+            center: [0.0, 0.0],
+            zoom: 5.0,
+            rotation: 0.35,
+            pitch: 0.8,
+            ..Camera::default()
+        };
+        let (columns, rows) = (field.columns, field.rows);
+        let grid = Grid {
+            origin: [-(columns as f32) / 2.0 * 0.75, -(rows as f32) / 2.0 * 0.75],
+            cell: 0.75,
+            columns,
+            rows,
+        };
+        match scene {
+            0 => frame.field(
+                &camera,
+                Placement::Grid { grid, z: 0.0 },
+                field,
+                Relief::Flat,
+            ),
+            1 => frame.field(
+                &camera,
+                Placement::Grid { grid, z: 0.0 },
+                field,
+                Relief::displaced(1.5),
+            ),
+            _ => {
+                // A panel that faces the camera, tilted off the vertical: its normal is the
+                // viewer's direction, its columns run along the horizontal and its rows up it.
+                let n = camera.viewer();
+                let norm = |v: [f32; 3]| {
+                    let length = v.iter().map(|c| c * c).sum::<f32>().sqrt();
+                    v.map(|c| c / length)
+                };
+                let u = norm([n[1], -n[0], 0.0]);
+                let v = [
+                    n[1] * u[2] - n[2] * u[1],
+                    n[2] * u[0] - n[0] * u[2],
+                    n[0] * u[1] - n[1] * u[0],
+                ];
+                let corner = |a: f32, b: f32| [0, 1, 2].map(|k| u[k] * a * 34.0 + v[k] * b * 20.0);
+                frame.field(
+                    &camera,
+                    Placement::Corners([
+                        corner(-1.0, -1.0),
+                        corner(1.0, -1.0),
+                        corner(1.0, 1.0),
+                        corner(-1.0, 1.0),
+                    ]),
+                    field,
+                    Relief::displaced(1.0),
+                );
+            }
+        }
+        frame
+    }
+
+    /// Runs `scripts/compare_png.py` on two frames' PNGs, which stay in `ISOTOP_PARITY_DIR` if it
+    /// is set, and returns its one line of output; asserts that the frames are within tolerance.
+    fn compared(name: &str, cpu: &Frame, hardware: &Frame) -> String {
+        let directory = std::env::var_os("ISOTOP_PARITY_DIR").map_or_else(
+            || std::env::temp_dir().join(format!("isotop-parity-{}", std::process::id())),
+            std::path::PathBuf::from,
+        );
+        std::fs::create_dir_all(&directory).expect("the parity directory is created");
+        let [cpu_png, gpu_png] =
+            ["cpu", "gpu"].map(|backend| directory.join(format!("{name}-{backend}.png")));
+        cpu.write_png(&cpu_png).expect("the CPU frame is written");
+        hardware
+            .write_png(&gpu_png)
+            .expect("the GPU frame is written");
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/scripts/compare_png.py"
+            ))
+            .args([&cpu_png, &gpu_png])
+            .output()
+            .expect("python3 runs scripts/compare_png.py");
+        let line = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if std::env::var_os("ISOTOP_PARITY_DIR").is_none() {
+            std::fs::remove_dir_all(&directory).ok();
+        }
+        assert!(
+            output.status.success(),
+            "{name}: the backends differ beyond the tolerance: {line} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        line
+    }
+
+    /// How many pixels of the pick window around `pointer` the two frames pick differently.
+    fn differing_picks(cpu: &Frame, hardware: &Frame, pointer: [f32; 2]) -> (usize, usize) {
+        let (w, h) = (cpu.width as usize, cpu.height as usize);
+        let half = (PICK_WINDOW / 2) as usize;
+        let (x0, y0) = (pointer[0] as usize - half, pointer[1] as usize - half);
+        let mut differing = 0;
+        let mut inside = 0;
+        for y in y0..(y0 + 2 * half).min(h) {
+            for x in x0..(x0 + 2 * half).min(w) {
+                inside += 1;
+                differing += usize::from(cpu.picks[y * w + x] != hardware.picks[y * w + x]);
+            }
+        }
+        (differing, inside)
+    }
+
+    #[test]
+    #[ignore = "needs a hardware GPU; run with --ignored on one"]
+    fn field_draws_the_same_frame_on_cpu_and_gpu() {
+        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower).expect("a hardware GPU");
+        let pointer = [320.0, 190.0];
+        let mut field = lumpy(11, 97, 65, 0.0);
+        for (scene, name) in [(0, "flat"), (1, "relief"), (2, "corners")] {
+            let mut cpu = field_frame(scene, &field);
+            cpu.rasterize();
+            let mut hardware = field_frame(scene, &field);
+            gpu.render(&mut hardware, Some(pointer))
+                .expect("the GPU renders");
+            let line = compared(name, &cpu, &hardware);
+            let (differing, inside) = differing_picks(&cpu, &hardware, pointer);
+            println!(
+                "field {name}: {line} | picks differ in {differing} of {inside} window pixels"
+            );
+            assert!(
+                differing * 200 <= inside,
+                "{name}: the owners differ in {differing} of {inside} pixels"
+            );
+        }
+        // The same key with new data and a new revision is written again, not left stale; and a
+        // second field beside it takes the slot after it.
+        field = lumpy(11, 97, 65, 1.3);
+        field.revision = 1;
+        let mut cpu = field_frame(0, &field);
+        cpu.rasterize();
+        let mut hardware = field_frame(0, &field);
+        gpu.render(&mut hardware, Some(pointer))
+            .expect("the GPU renders");
+        println!(
+            "field rewritten: {}",
+            compared("rewritten", &cpu, &hardware)
+        );
+        let beside = lumpy(12, 33, 21, 0.4);
+        let draw = |relief: Relief| {
+            let mut frame = field_frame(0, &field);
+            frame.field(
+                &Camera::default(),
+                Placement::Grid {
+                    grid: Grid {
+                        origin: [20.0, 20.0],
+                        cell: 1.0,
+                        columns: 33,
+                        rows: 21,
+                    },
+                    z: 4.0,
+                },
+                &beside,
+                relief,
+            );
+            frame
+        };
+        let mut cpu = draw(Relief::Flat);
+        cpu.rasterize();
+        let mut hardware = draw(Relief::Flat);
+        gpu.render(&mut hardware, Some(pointer))
+            .expect("the GPU renders");
+        println!("two fields: {}", compared("two", &cpu, &hardware));
+        // A field too big for the storage buffer it was first given grows the buffer, which
+        // then holds it and, once written again, the fields that came before.
+        let big = lumpy(14, 300, 300, 0.2);
+        assert!(big.columns * big.rows * 2 > FIELD_STORAGE_WORDS);
+        let mut cpu = field_frame(1, &big);
+        cpu.rasterize();
+        let mut hardware = field_frame(1, &big);
+        gpu.render(&mut hardware, Some(pointer))
+            .expect("the GPU renders");
+        println!("grown storage: {}", compared("grown", &cpu, &hardware));
+        let mut cpu = field_frame(0, &field);
+        cpu.rasterize();
+        let mut hardware = field_frame(0, &field);
+        gpu.render(&mut hardware, Some(pointer))
+            .expect("the GPU renders");
+        println!("after growth: {}", compared("after", &cpu, &hardware));
+        // Without owners every pixel picks nothing, and without shading the colours are the
+        // nodes' own.
+        let mut plain = lumpy(13, 48, 36, 0.7);
+        plain.owners = None;
+        plain.shading = None;
+        let mut cpu = field_frame(0, &plain);
+        cpu.rasterize();
+        let mut hardware = field_frame(0, &plain);
+        gpu.render(&mut hardware, Some(pointer))
+            .expect("the GPU renders");
+        println!("no owners: {}", compared("plain", &cpu, &hardware));
+        assert!(cpu.picks.iter().all(|&pick| pick == NONE));
+        assert_eq!(differing_picks(&cpu, &hardware, pointer).0, 0);
     }
 }
