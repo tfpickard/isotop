@@ -51,11 +51,11 @@ def main():
     ks, over = [], []
     for k in range(2, 30):
         terms = epicycles(z, k)
-        top = max(evaluate(terms, t / 20.0).imag for t in range(-60, 61))
-        # the first sample sits at -0.5 + 0.0083; the plateau next to the wrap is z[-1] and z[0]
-        peak = max(evaluate(terms, 59.0 + t / 40.0).imag for t in range(0, 80))
+        # the largest excess of the chain over the ideal ramp on the high side of the jump
+        excess = max(evaluate(terms, 40.0 + t / 40.0).imag - ((40.0 + t / 40.0) / n - mean)
+                     for t in range(0, 40 * 20 - 40))
         ks.append(k)
-        over.append((peak - z[-1].imag) / abs(z[-1].imag - z[0].imag))
+        over.append(excess / 1.0)
     right.line(ks, over, ORANGE, 2.2)
     right.hline(0.0895, VIOLET, 1, "4 3")
     right.label(29, 0.0895, "0.0895", 10, "end", VIOLET, dy=-5)

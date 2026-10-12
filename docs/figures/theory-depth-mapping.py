@@ -63,7 +63,7 @@ class Svg:
 
 
 def main():
-    svg = Svg(960, 470, "Depth mapping and resolution",
+    svg = Svg(960, 530, "Depth mapping and resolution",
               "The affine depth map from view depth to the z-buffer, with a perspective curve for "
               "contrast, and the smallest resolvable depth step against the scene depth range.")
     svg.text(24, 30, "depth is affine and monotone: one linear map per frame", 17, FG, weight="600")
@@ -96,12 +96,13 @@ def main():
         d = n + (f - n) * t
         pts.append((X(t), Y(f * (d - n) / (d * (f - n)))))
     svg.polyline(pts, DIM, 1.6, dash="5 4")
-    svg.text(X(0.30), Y(0.93) - 6, "perspective z-buffer, n = 1, f = 50", 11, DIM)
-    svg.text(X(0.30), Y(0.93) + 8, "(illustrative; isotop has no perspective divide)", 11, DIM)
-    svg.text(X(0.0) + 8, Y(0.01) - 8, "farthest solid item: 0.01", 11, BLUE)
+    svg.text(X(0.98), Y(0.30), "dashed: a perspective z-buffer, n = 1, f = 50", 11, DIM, "end")
+    svg.text(X(0.98), Y(0.30) + 14, "(illustrative; isotop has no perspective divide)", 11, DIM, "end")
+    svg.text(X(0.0) + 10, Y(0.01) - 10, "farthest solid item: 0.01", 11, BLUE)
     svg.text(X(1.0) - 8, Y(0.99) + 16, "nearest: 0.99", 11, BLUE, "end")
-    svg.text(X(0.5) + 12, Y(0.5) + 24, "z = 0.01 + 0.98 (D - Dmin) / (Dmax - Dmin)", 11.5, BLUE)
-    svg.text(x0 + 6, Y(0.0) - 4 - 2, "clear value 0.0; depth_compare GreaterEqual", 10.5, DIM)
+    svg.text(X(0.14), Y(0.76), "z = 0.01 + 0.98 (D - Dmin)", 11.5, BLUE)
+    svg.text(X(0.14), Y(0.76) + 15, "      / (Dmax - Dmin)", 11.5, BLUE)
+    svg.text(x1 - 6, Y(0.0) - 6, "cleared to 0.0; GreaterEqual", 10.5, DIM, "end")
     for t, label in [(0, "Dmin"), (1, "Dmax")]:
         svg.text(X(t), y1 + 18, label, 12, FG, "middle")
     svg.text((x0 + x1) / 2, y1 + 38, "view depth D in world units (larger is nearer)", 12, FG, "middle")
@@ -138,8 +139,8 @@ def main():
     svg.circle(RX(crossing), RY(0.02), 4, GREEN)
     svg.text(rx0 + 8, RY(0.02) - 7, "LINE_DEPTH_BIAS = 0.02", 11, GREEN)
     svg.text(RX(crossing) - 6, ry0 + 14, f"{crossing:.2e}", 10.5, GREEN, "end")
-    svg.text(rx1 - 6, RY(2.0 ** -24 * hi_range / 0.98) + 18, "z in [0.5, 1): ulp 2^-24", 11, ORANGE, "end")
-    svg.text(rx1 - 6, RY(2.0 ** -30 * hi_range / 0.98) + 18, "z near 0.01: ulp 2^-30", 11, TEAL, "end")
+    svg.text(rx0 + 10, RY(2.0 ** -24 * 1.0e3 / 0.98) - 12, "z in [0.5, 1): ulp 2^-24", 11, ORANGE)
+    svg.text(rx1 - 6, RY(3.0e-8), "z near 0.01: ulp 2^-30", 11, TEAL, "end")
     svg.text((rx0 + rx1) / 2, ry1 + 38, "depth range of the frame, Dmax - Dmin (world units)", 12, FG, "middle")
     svg.text(rx0 - 52, (ry0 + ry1) / 2, "smallest depth step (world units)", 12, FG, "middle", rotate=-90)
 
@@ -150,8 +151,8 @@ def main():
         "Right: a Depth32Float buffer resolves far less than the 0.02 bias until a frame spans some 3e5 world units.",
     ]
     for i, line in enumerate(notes):
-        svg.text(24, 410 + 16 * i, line, 11.5, DIM)
-    svg.text(24, 464, "sources: src/shaders.wgsl (normalized), src/gpu.rs (Gpu::render), src/render/shared.rs (LINE_DEPTH_BIAS)",
+        svg.text(24, 440 + 16 * i, line, 11.5, DIM)
+    svg.text(24, 520, "sources: src/shaders.wgsl (normalized), src/gpu.rs (Gpu::render), src/render/shared.rs (LINE_DEPTH_BIAS)",
              10.5, DIM, style="italic")
 
     out = pathlib.Path("docs/media/figures/theory-depth-mapping.svg")
