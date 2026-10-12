@@ -1309,13 +1309,16 @@ fn merge_memory(process: &mut Process, extras: &Extras, scanned: bool) {
 
 /// The pids that get a rollup: the `ROLLUP_PROCESSES` with the largest resident set, which
 /// `top_n` picks the same way in every sample that has the same sizes. A process with no resident
-/// memory has nothing to roll up.
+/// memory has nothing to roll up, and a kernel thread has no address space to read one from.
 fn rollup_pids(processes: &[Process]) -> Vec<u32> {
-    top_n(processes, ROLLUP_PROCESSES, |process| process.memory as f64)
-        .into_iter()
-        .filter(|process| process.memory > 0)
-        .map(|process| process.id.pid)
-        .collect()
+    top_n(processes, ROLLUP_PROCESSES, |process| match process.kind {
+        Kind::Kernel => f64::NAN,
+        _ => process.memory as f64,
+    })
+    .into_iter()
+    .filter(|process| process.memory > 0 && process.kind != Kind::Kernel)
+    .map(|process| process.id.pid)
+    .collect()
 }
 
 /// What one background cycle found of the out-of-memory ranking and the rollups.
@@ -3664,10 +3667,13 @@ fn demo_kill_cycle(time: f64, count: usize, snapshot: &mut Snapshot) {
     else {
         return;
     };
-    let kills = (((time - DEMO_KILL_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1).max(0) as u64;
+    // Before time 0 the victim has not been killed yet: no kill, no respawn, one incarnation. The
+    // pressure goes round the cycle at every time.
+    let clock = time.max(0.0);
+    let kills = (((clock - DEMO_KILL_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1).max(0) as u64;
     let phase = time.rem_euclid(DEMO_KILL_PERIOD);
     // The incarnation: 0 until the first respawn, and a new one at each 26 s phase.
-    let generation = ((time - DEMO_RESPAWN_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1;
+    let generation = ((clock - DEMO_RESPAWN_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1;
     let process = &mut snapshot.processes[victim];
     if generation != 0 {
         let old = process.id;
@@ -3695,7 +3701,7 @@ fn demo_kill_cycle(time: f64, count: usize, snapshot: &mut Snapshot) {
         }
     }
     let process = &mut snapshot.processes[victim];
-    let alive = !(DEMO_KILL_AT..DEMO_RESPAWN_AT).contains(&phase);
+    let alive = !(DEMO_KILL_AT..DEMO_RESPAWN_AT).contains(&clock.rem_euclid(DEMO_KILL_PERIOD));
     // The kernel scores a process by its share of memory in thousandths plus `oom_score_adj`, so
     // the adjustment that makes a victim of this process's size score exactly as much.
     if alive && let Measured::Known(oom) = &mut process.oom {
@@ -7620,6 +7626,20 @@ mod tests {
     }
 
     #[test]
+    fn a_kernel_thread_is_never_chosen_for_a_rollup() {
+        let kernel = Process {
+            kind: Kind::Kernel,
+            memory: 1 << 30,
+            ..testing::process(2, 0)
+        };
+        let user = Process {
+            memory: 1 << 20,
+            ..testing::process(3, 1)
+        };
+        assert_eq!(rollup_pids(&[kernel, user]), [3]);
+    }
+
+    #[test]
     fn memory_detail_goes_to_the_largest_processes_by_rss_only() {
         let processes = sized(100);
         let chosen = rollup_pids(&processes);
@@ -7936,9 +7956,9 @@ mod tests {
                 snapshot
                     .processes
                     .iter()
-                    .filter(|p| p.memory_detail == Measured::Pending)
+                    .filter(|p| p.memory_detail == Measured::Pending && p.kind != Kind::Kernel)
                     .all(|p| p.memory <= smallest),
-                "the rollups go to the largest"
+                "the rollups go to the largest processes that have an address space"
             );
             for process in detailed {
                 let Some(rollup) = process.memory_detail.known() else {

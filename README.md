@@ -612,7 +612,7 @@ The OOM killer as a Schwarzschild black hole: a lensed accretion disk around a b
 | Disk brightness | Memory pressure (some, 10 s average) | gain = 0.45 + 0.9 p / 100, followed with a time constant of 0.6 s: I = gain F g^4 tex bb(T), shown as 255 srgb(1 - exp(-0.36 I^1.3)) per channel |
 | Disk colour | The orbit and the observer | Page-Thorne flux F of the thin disk from 6 M to 30 M, g = 1 / (1 + z) with 1 + z = (1 - 3/r)^(-1/2) (1 + sqrt(1/r^3) sin i x) for the image at screen x (gravitational and Doppler), T = 7200 K (F^(1/4) g)^1.55 coloured by the blackbody table: the approaching side (left) is brighter and bluer |
 | Inclination i | Camera pitch | Piecewise linear: 86 degrees at the lowest pitch, 80 degrees at the default, 0 at top-down; PgUp, PgDn, `e` and `Q` tilt it; camera rotation turns the disk's azimuth; zoom sets pixels per M |
-| Kill | The kernel's OOM kill count: `oom_kill` in `/proc/vmstat`, else the sum of the cgroups' `memory.events` | A body that vanishes stays a ghost for 2.5 s. If the counter rose within 2.5 s of it, before or after, the best-ranked ghost plunges: it eases to the ISCO in 0.8 s, then follows the geodesic of a body that leaves it with 0.95 of the ISCO's angular momentum and a small inward kick, as a radial streak whose brightness 1.5 (1 - 2/r) falls (the light, its square root, by e every 4 M, 0.4 s), turning red, and freezes at r > 2.0006 M, never reaching the horizon. Every other exit fades where it stood over 1.2 s. The legend says which counter it used and how many kills it has seen |
+| Kill | The kernel's OOM kill count: `oom_kill` in `/proc/vmstat`, else the sum of the cgroups' `memory.events` | A body that vanishes is held for 2.5 s plus the time the counter takes to arrive (the background thread's 2 s and a sample interval). If the counter rose within that of it, before or after, the best-ranked ghost plunges, from the sample that showed the rise if that is later than the exit: it eases to the ISCO in 0.8 s, then follows the geodesic of a body that leaves it with 0.95 of the ISCO's angular momentum and a small inward kick, as a radial streak whose brightness 1.5 (1 - 2/r) falls by e every 4 M of a distant observer's time (0.4 s) once it is near the horizon, turning red, and freezes at r > 2.0006 M, never reaching the horizon; the track is played on that observer's clock, so the plunge takes about 6 s. Every other exit fades where it stood over 1.2 s. The legend says which counter it used and how many kills it has seen |
 | Next victim | The top of the ranking | A red ring on its sphere, the first label and the first stop of the tour |
 | Inspector | `oom_score`, `oom_score_adj`, rank, radius | `oom_score N \| oom_score_adj N`, `rank R of K`, `orbit r = X.XX M \| period P M (S s)` |
 
@@ -620,7 +620,7 @@ The OOM killer as a Schwarzschild black hole: a lensed accretion disk around a b
 
 **Lensing.** Units are G = c = M = 1, so one world unit is one M. Every vertex of the scene is carried to its image on the screen and ordinary triangles are drawn between the images, so the CPU and the GPU draw the same frame and picking works. A table of photon rays traced back from an observer at infinity (fourth-order Runge-Kutta on d2u/dphi2 = 3u^2 - u with u = 1/r, a step of 0.002 rad, 1800 impact parameters) gives, for 360 log-spaced radii from 2.0005 to 150 M and 721 sweep angles, the screen distance of the primary image (the ray that sweeps the angle) and of the secondary image (the ray that sweeps 2 pi minus it, round the other side of the hole, never inside the shadow). The table is built on the first frame, in a fifth of a second. The disk is cut into cells of about 4 px, at most 120,000 triangles in both images (the secondary has half the density), lensed again only when the inclination or the scale changes, and recoloured every frame. The flux is the Page-Thorne integral in closed form, which falls quadratically to zero at the ISCO.
 
-**What cannot be measured.** The kernel keeps the count of kills, not their victims: a plunge is the best-ranked process that vanished within 2.5 s of a rise, which a different exit at the same moment can fool. With no counter at all every exit fades, and the legend says "no oom kills: exits not classified"; where only the cgroups count, it says "kills counted from cgroups". A process whose score cannot be read is left out and counted (`N unranked`). Rewinding with `[` shows the older sample's processes, not the older orbits.
+**What cannot be measured.** The kernel keeps the count of kills, not their victims: a plunge is the best-ranked process that vanished within the window of a rise, which a different exit at the same moment can fool. With no counter at all every exit fades, and the legend says "no oom kills: exits not classified"; where only the cgroups count, it says "kills counted from cgroups". A process whose score cannot be read is left out and counted (`N unranked`). Rewinding with `[` shows the older sample's processes, not the older orbits.
 
 **Platform.** On Linux everything above. On macOS the ranking is by memory footprint, there is no unkillable band and no plunge: see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it). Horizon has no keys of its own; `l` hides the labels.
 ### Murmuration
@@ -743,7 +743,7 @@ processes: system stars, the busiest, and the largest, then every other visible
 process. Each gets a callout with a pointer. On the globe, the tour and search also turn the camera so the process
 faces you, because the world's spin carries home to the far side for half of
 every turn. `g` starts the tour at any time, even with the idle tour disabled.
-Any key or mouse movement ends the tour, except Space, Shift+Space and `*`, which
+Any key or mouse movement ends the tour, except Space, Shift+Space and `*` (and the press of a modifier or lock key on its own), which
 visit the next or a random process in the tour's own order and let it go on from there.
 
 ## Controls
@@ -773,7 +773,7 @@ visit the next or a random process in the tour's own order and let it go on from
 | `h` | Hide or show the status panel, giving the scene the whole terminal |
 | `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
 | Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
-| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names |
+| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names. To tell Shift + Space apart isotop asks such a terminal to report every key as an escape code, so a character composed with AltGr, Option or a dead key reaches the search box as its base key (known limitation) |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
 | Tab while searching / `n` afterward | Next match |
@@ -859,7 +859,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-57,186 lines of Rust (33,748 production, 23,438 test) in 58 files, 774 tests, 17 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+57,338 lines of Rust (33,799 production, 23,539 test) in 58 files, 779 tests, 17 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

@@ -1334,6 +1334,15 @@ impl App {
     }
 
     fn key(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
+        // With every key reported as an escape code (see `terminal::KEYBOARD_FLAGS`), the press of
+        // a modifier or a lock arrives as a key of its own, just before the key it modifies. It
+        // is not a command, and must not end a tour or reset the idle timer.
+        if matches!(
+            code,
+            KeyCode::Modifier(_) | KeyCode::CapsLock | KeyCode::NumLock | KeyCode::ScrollLock
+        ) {
+            return false;
+        }
         let before = self.goal.clone();
         let quit = self.command(code, modifiers, step);
         self.follow(&before);
@@ -2503,6 +2512,25 @@ mod tests {
         age_the_step(&mut app);
         app.update_tour(None);
         assert_eq!(cursor_index(&app), 2, "the next automatic step follows");
+    }
+
+    #[test]
+    fn the_press_of_a_modifier_key_does_not_end_the_tour_before_shift_space_arrives() {
+        let mut app = visiting_app();
+        press(&mut app, KeyCode::Char('g'));
+        // A terminal that reports every key sends Shift on its own first.
+        for modifier in [
+            KeyCode::Modifier(event::ModifierKeyCode::LeftShift),
+            KeyCode::CapsLock,
+        ] {
+            assert!(!press(&mut app, modifier));
+            assert!(app.tour.as_ref().unwrap().running, "{modifier:?}");
+        }
+        assert!(!app.key(KeyCode::Char(' '), KeyModifiers::SHIFT, 1.0));
+        assert!(
+            app.tour.as_ref().unwrap().running,
+            "the tour resumes from the jump"
+        );
     }
 
     #[test]

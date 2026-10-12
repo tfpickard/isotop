@@ -841,6 +841,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_all_lists_every_source_in_declaration_order() {
+        // `Sources` is a bit set indexed by the discriminant, and `iter` walks `ALL`, so the list
+        // must be the enum in order. The last variant is the one a new source is appended after.
+        for (index, source) in Source::ALL.iter().enumerate() {
+            assert_eq!(*source as usize, index, "{} is out of order", source.name());
+        }
+        assert_eq!(Source::Pipes as usize + 1, Source::ALL.len());
+    }
+
+    #[test]
     fn source_names_are_unique_and_match_previous_wording() {
         let names: Vec<&str> = Source::ALL.iter().map(|source| source.name()).collect();
         assert_eq!(

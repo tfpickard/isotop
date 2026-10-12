@@ -352,11 +352,13 @@ pub enum Phase {
     /// defined there as well), so a view whose record hook keeps minutes is settled at the
     /// reference time of 12 s.
     Replay { seconds: u32, before_start: bool },
-    /// Plays the `seconds` before `time` as a live run drew them, for a view that builds its
-    /// state inside `draw` from the samples as they arrived: at each `--sample-ms` the demo
-    /// sample of that moment becomes the whole history, and the frames `step` seconds apart up
-    /// to the next sample are drawn, not rasterized. It replays demo samples, so it belongs
-    /// under `When::DemoHeadless`; samples before time 0 are skipped.
+    /// Plays the `seconds` before `time` for a view that builds its state inside `draw` from the
+    /// samples as they arrived: at each `--sample-ms` the demo sample of that moment becomes the
+    /// whole history, and the frames `step` seconds apart up to the next sample are drawn, not
+    /// rasterized. The played samples are not recorded (`ViewModule::record` and the shared
+    /// history see only what `warm_up`'s replay gave them), so a view that needs a record hook
+    /// to settle uses `Replay`. It plays demo samples, so it belongs under `When::DemoHeadless`;
+    /// samples before time 0 are skipped.
     Play { seconds: u32, step: f32 },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },

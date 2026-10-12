@@ -316,7 +316,7 @@ impl View<'_> {
             return;
         }
         let glowing = mix(ghost.color, VICTIM, 1.0 - state.light);
-        let color = tint(glowing, 0.3 + 0.7 * state.light);
+        let color = tint(glowing, state.light);
         let center = self.screen.pixel(images.primary);
         self.sphere(
             stage.frame,
@@ -354,7 +354,7 @@ impl View<'_> {
                 corner(-along, -across),
                 corner(-along, across),
             ];
-            let shade = tint(glowing, 0.25 + 0.55 * state.light);
+            let shade = tint(glowing, 0.8 * state.light);
             for triangle in [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]] {
                 stage
                     .frame
@@ -564,7 +564,9 @@ impl ViewModule for Horizon {
             ));
         }
         for ghost in self.orbits.ghosts() {
-            view.ghost(stage, ghost);
+            if !ghost.gone(stage.time) {
+                view.ghost(stage, ghost);
+            }
         }
         labelled.sort_by_key(|(rank, ..)| *rank);
         stage.places.extend(
@@ -922,9 +924,10 @@ mod tests {
         let (_, plunging) = demo_frame(23.5);
         assert_eq!(spheres_at(&plunging, layer::PLUNGE), 1);
         assert_eq!(streaks(&plunging), 2, "two triangles");
-        // Frozen, nearly gone, at 24.8 s, and gone by 26.
+        // Nearly frozen at 24.8 s, and gone about 6.7 s after the exit, as the light falls by e
+        // every 0.4 s of a distant observer's time.
         assert_eq!(spheres_at(&demo_frame(24.8).1, layer::PLUNGE), 1);
-        assert_eq!(spheres_at(&demo_frame(26.5).1, layer::PLUNGE), 0);
+        assert_eq!(spheres_at(&demo_frame(27.5).1, layer::PLUNGE), 0);
         // At 26 s a new worker-134 starts, scores 950 again and is the next victim.
         let (scene, _) = demo_frame(27.5);
         let snapshot = demo_snapshot(view("horizon").info(), 26.5, 27.5, 192);

@@ -457,8 +457,17 @@ pub fn disk_emission(radius: f32, screen_x: f32, inclination: f32) -> Emission {
 /// `dphi/dtau = L / r^2`.
 pub struct PlungeTrack {
     time: Vec<f32>,
+    /// When a distant observer sees the body at each point: the retarded time `t - r*`, with
+    /// `r* = r + 2 ln(r/2 - 1)` the tortoise coordinate, counted from the ISCO. It runs twice as
+    /// fast as `time` near the horizon, because the light takes ever longer to climb out.
+    observed: Vec<f32>,
     radius: Vec<f32>,
     azimuth: Vec<f32>,
+}
+
+/// The tortoise coordinate of `radius` in M: `r + 2 ln(r/2 - 1)`.
+fn tortoise(radius: f64) -> f64 {
+    radius + 2.0 * (radius / 2.0 - 1.0).ln()
 }
 
 /// The longest coordinate time the track covers, in M.
@@ -483,8 +492,10 @@ impl PlungeTrack {
         };
         let (mut time, mut azimuth, mut radius) = (0.0, 0.0, 6.0);
         let mut step = 0.01;
+        let isco_tortoise = tortoise(6.0);
         let mut track = PlungeTrack {
             time: vec![0.0],
+            observed: vec![0.0],
             radius: vec![6.0],
             azimuth: vec![0.0],
         };
@@ -502,6 +513,9 @@ impl PlungeTrack {
                 break;
             }
             track.time.push(time as f32);
+            track
+                .observed
+                .push((time - (tortoise(radius) - isco_tortoise)) as f32);
             track.radius.push(radius as f32);
             track.azimuth.push(azimuth as f32);
             // The proper-time step shrinks towards the horizon so coordinate time keeps advancing.
@@ -513,14 +527,25 @@ impl PlungeTrack {
     /// The radius and the azimuth gone round at coordinate time `time` (M) after leaving the ISCO,
     /// held at the last point of the track once the image has frozen. The radius is never below
     /// `PLUNGE_FLOOR`.
+    #[cfg(test)]
     pub fn at(&self, time: f32) -> (f32, f32) {
+        self.along(&self.time, time)
+    }
+
+    /// The radius and the azimuth a distant observer sees at `observed` M after the ISCO, which is
+    /// the clock the light of a plunging body dims on: `1.5 (1 - 2/r)` falls by e every 4 M of it.
+    pub fn seen_at(&self, observed: f32) -> (f32, f32) {
+        self.along(&self.observed, observed)
+    }
+
+    /// The point of the track where `clock` (one of its two time columns) reads `time`.
+    fn along(&self, clock: &[f32], time: f32) -> (f32, f32) {
         let time = time.max(0.0);
-        let above = self.time.partition_point(|&t| t <= time);
-        let (radius, azimuth) = if above >= self.time.len() {
+        let above = clock.partition_point(|&t| t <= time);
+        let (radius, azimuth) = if above >= clock.len() {
             (self.radius[above - 1], self.azimuth[above - 1])
         } else {
-            let fraction =
-                (time - self.time[above - 1]) / (self.time[above] - self.time[above - 1]);
+            let fraction = (time - clock[above - 1]) / (clock[above] - clock[above - 1]);
             let lerp =
                 |values: &[f32]| values[above - 1] + (values[above] - values[above - 1]) * fraction;
             (lerp(&self.radius), lerp(&self.azimuth))
@@ -536,8 +561,8 @@ impl PlungeTrack {
 }
 
 /// How bright a plunging body's image is at `radius`: `1.5 (1 - 2/r)`, 1 at the ISCO and
-/// falling to 0 at the horizon, because every photon is redshifted by sqrt(1 - 2/r) more as the
-/// body nears it.
+/// falling to 0 at the horizon. A distant observer sees the redshift of a falling emitter go as
+/// `1 - 2/r`, which near the horizon falls by e every 4 M of the observer's time (`seen_at`).
 pub fn plunge_brightness(radius: f32) -> f32 {
     (1.5 * (1.0 - HORIZON / radius)).max(0.0)
 }
@@ -937,19 +962,21 @@ mod tests {
     }
 
     #[test]
-    fn the_displayed_brightness_of_a_plunging_image_dims_by_e_about_every_four_m() {
-        // The observed frequency of light from a body falling in, sqrt(1 - 2/r), is the square
-        // root of `plunge_brightness`: it falls by e every 4 M of coordinate time close to the
-        // horizon (the brightness itself every 2 M), which at 10 M per second is 0.4 s.
+    fn the_brightness_of_a_plunging_image_dims_by_e_every_four_m_of_observer_time() {
+        // `1 - 2/r` falls as exp(-u/4) near the horizon in the retarded time u of a distant
+        // observer (and as exp(-t/2) in coordinate time, which is why the clock matters). The
+        // kick of 0.1 leaves the ISCO slowly, so the rate is reached only about 50 M along.
         let track = PlungeTrack::shared();
-        for start in [40.0_f32, 43.0, 46.0] {
-            let (before, after) = (track.at(start).0, track.at(start + 4.0).0);
-            let shift = |r: f32| plunge_brightness(r).sqrt();
-            let folds = (shift(before) / shift(after)).ln();
+        for start in [52.0_f32, 58.0, 64.0] {
+            let (before, after) = (track.seen_at(start).0, track.seen_at(start + 4.0).0);
+            let folds = (plunge_brightness(before) / plunge_brightness(after)).ln();
             assert!(
-                (0.7..1.15).contains(&folds),
+                (0.85..1.15).contains(&folds),
                 "from {start} M: {folds} e-folds in 4 M"
             );
         }
+        // Coordinate time reaches the same radius in half the observer's time near the horizon.
+        assert!(track.seen_at(40.0).0 > track.at(40.0).0);
+        assert_eq!(track.seen_at(0.0), (6.0, 0.0));
     }
 }

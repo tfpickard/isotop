@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::lens::{self, ISCO, PlungeTrack};
 use crate::layout::GOLDEN_ANGLE;
-use crate::model::Identity;
+use crate::model::{BACKGROUND_PERIOD, Identity};
 use crate::render::Color;
 use crate::simulation::{Rng, hash_identity, smoothing, smoothstep};
 
@@ -27,8 +27,8 @@ pub const BAND: (f32, f32) = (25.7, 27.3);
 pub const BAND_LIMIT: usize = 12;
 /// The farthest a process outside the top ranks rides, when it is selected.
 const SELECTED_FARTHEST: f32 = 25.0;
-/// How long a vanished body stays a ghost, and so how close in time a rise of the kill counter
-/// must be to its disappearance to count as its kill, in seconds.
+/// How close in time a rise of the kill counter must be to a body's disappearance to count as its
+/// kill, in seconds, before the delay in seeing it is added (`Orbits::claim_window`).
 pub const GHOST_WINDOW: f32 = 2.5;
 /// How long an ordinary exit takes to fade where the process stood, in seconds.
 pub const FADE_SECONDS: f32 = 1.2;
@@ -226,6 +226,9 @@ pub struct Ghost {
     /// When it vanished: the middle of the interval between the last sample that had it and the
     /// first that did not, on the animation clock.
     pub since: f32,
+    /// When a killed body starts for the ISCO, on the animation clock: `since` when the kill is
+    /// known as soon as the body vanishes, later when the counter rose only in a later sample.
+    pub plunge_at: f32,
     pub fate: Fate,
 }
 
@@ -255,7 +258,8 @@ impl Ghost {
                 stretch: 1.0,
                 plunging: false,
             },
-            Fate::Plunging if age < ISCO_SECONDS => {
+            Fate::Plunging if time - self.plunge_at < ISCO_SECONDS => {
+                let age = (time - self.plunge_at).max(0.0);
                 let eased = smoothstep(age / ISCO_SECONDS);
                 let radius = self.radius + (ISCO - self.radius) * eased;
                 Pose {
@@ -268,11 +272,9 @@ impl Ghost {
             }
             Fate::Plunging => {
                 let leaving = orbit(0.5 * (self.radius + ISCO), ISCO_SECONDS);
-                let (radius, turned) =
-                    PlungeTrack::shared().at((age - ISCO_SECONDS) * M_PER_SECOND);
-                // The displayed light is the square root of the brightness 1.5 (1 - 2/r): the
-                // observed frequency of the light, which falls by e every 4 M.
-                let light = lens::plunge_brightness(radius).sqrt();
+                let (radius, turned) = PlungeTrack::shared()
+                    .seen_at((time - self.plunge_at - ISCO_SECONDS) * M_PER_SECOND);
+                let light = lens::plunge_brightness(radius).min(1.0);
                 let inward = ((ISCO - radius) / 4.0).clamp(0.0, 1.0);
                 Pose {
                     radius,
@@ -287,13 +289,16 @@ impl Ghost {
 
     /// Whether nothing of it is left to draw at `time`.
     pub fn gone(&self, time: f32) -> bool {
-        let age = time - self.since;
         match self.fate {
-            Fate::Fading => age >= GHOST_WINDOW,
-            Fate::Plunging if age < ISCO_SECONDS => false,
+            Fate::Fading => time - self.since >= FADE_SECONDS,
             Fate::Plunging => {
-                let (radius, _) = PlungeTrack::shared().at((age - ISCO_SECONDS) * M_PER_SECOND);
-                lens::plunge_brightness(radius) < GONE
+                let age = time - self.plunge_at;
+                age >= ISCO_SECONDS
+                    && lens::plunge_brightness(
+                        PlungeTrack::shared()
+                            .seen_at((age - ISCO_SECONDS) * M_PER_SECOND)
+                            .0,
+                    ) < GONE
             }
         }
     }
@@ -310,6 +315,8 @@ pub struct Orbits {
     rises: Vec<f32>,
     /// The newest sample taken in: its `elapsed` and the animation time it arrived at.
     seen: Option<(f64, f32)>,
+    /// How long the newest sample came after the one before it, in seconds.
+    interval: f32,
 }
 
 impl Orbits {
@@ -342,6 +349,7 @@ impl Orbits {
                         radius: body.radius,
                         phase: body.phase,
                         since: when,
+                        plunge_at: when,
                         fate: Fate::Fading,
                     });
                 }
@@ -355,6 +363,7 @@ impl Orbits {
                 }
             }
             self.counter = sample.kills;
+            self.interval = (sample.time - before).max(0.0);
             self.seen = Some((sample.elapsed, sample.time));
         }
         self.retarget(sample);
@@ -426,10 +435,21 @@ impl Orbits {
         }
     }
 
+    /// How far apart a body's disappearance and a rise of the kill counter may be seen: the
+    /// `GHOST_WINDOW` between the events themselves, plus the delay in seeing the counter. The
+    /// counter comes from the background thread, which reads it once per `BACKGROUND_PERIOD` and
+    /// hands it over with the next sample, while the frame thread sees the process go at once.
+    fn claim_window(&self) -> f32 {
+        GHOST_WINDOW + BACKGROUND_PERIOD.as_secs_f32() + self.interval
+    }
+
     /// Lets each unclaimed rise of the kill counter take the best-ranked ghost that vanished
-    /// within `GHOST_WINDOW` of it, and drops what is too old to be claimed.
+    /// within `claim_window` of it, and drops what is too old to be claimed. A body claimed
+    /// later than the sample it vanished in starts its plunge as if the kill had been known half
+    /// a sample interval ago, as it is when the counter rises in that same sample.
     fn classify(&mut self, time: f32) {
-        self.rises.retain(|&rise| time - rise <= GHOST_WINDOW);
+        let window = self.claim_window();
+        self.rises.retain(|&rise| time - rise <= window);
         let mut waiting: Vec<usize> = (0..self.ghosts.len())
             .filter(|&index| self.ghosts[index].fate == Fate::Fading)
             .collect();
@@ -442,10 +462,11 @@ impl Orbits {
             if let Some(rise) = self
                 .rises
                 .iter()
-                .position(|&rise| (rise - since).abs() <= GHOST_WINDOW)
+                .position(|&rise| (rise - since).abs() <= window)
             {
                 self.rises.remove(rise);
                 self.ghosts[index].fate = Fate::Plunging;
+                self.ghosts[index].plunge_at = since.max(time - 0.5 * self.interval);
             }
         }
     }
@@ -462,7 +483,12 @@ impl Orbits {
             body.phase = (body.phase + lens::angular_velocity(mean) * M_PER_SECOND * dt)
                 .rem_euclid(std::f32::consts::TAU);
         }
-        self.ghosts.retain(|ghost| !ghost.gone(time));
+        let window = self.claim_window();
+        // A body that has faded stays until a late rise of the counter can no longer claim it.
+        self.ghosts.retain(|ghost| match ghost.fate {
+            Fate::Fading => time - ghost.since < window,
+            Fate::Plunging => !ghost.gone(time),
+        });
     }
 
     pub fn bodies(&self) -> &HashMap<Identity, Body> {
@@ -744,26 +770,63 @@ mod tests {
             radius,
             "it does not leave its orbit"
         );
-        orbits.advance(0.1, 10.5 + 2.4);
-        assert_eq!(
-            orbits.ghosts().len(),
-            1,
-            "it waits out the window for a late rise"
-        );
-        orbits.advance(0.1, 10.5 + 2.6);
+        // It has faded by 1.2 s but waits out the window for a late rise: the window of 2.5 s
+        // plus the 2 s of the background thread plus a sample interval (1 s).
+        assert!(ghost.gone(10.5 + 1.3));
+        orbits.advance(0.1, 10.5 + 5.4);
+        assert_eq!(orbits.ghosts().len(), 1);
+        orbits.advance(0.1, 10.5 + 5.6);
         assert!(orbits.ghosts().is_empty());
-        // A rise that comes 2 s after the exit still counts, one that comes later does not.
+        // A rise that comes in the next sample or the one after counts, one that comes later
+        // than the window does not.
+        for (late, fate) in [(1, Fate::Plunging), (4, Fate::Plunging), (8, Fate::Fading)] {
+            let mut orbits = Orbits::default();
+            take(&mut orbits, 10.0, &population(40), Some(5), None);
+            take(&mut orbits, 11.0, &without(&[2]), Some(5), None);
+            for sample in 1..late {
+                take(
+                    &mut orbits,
+                    11.0 + sample as f64,
+                    &without(&[2]),
+                    Some(5),
+                    None,
+                );
+            }
+            take(
+                &mut orbits,
+                11.0 + late as f64,
+                &without(&[2]),
+                Some(6),
+                None,
+            );
+            assert_eq!(orbits.ghosts()[0].fate, fate, "a rise {late} samples later");
+        }
+    }
+
+    #[test]
+    fn a_kill_the_counter_reports_samples_late_plunges_from_the_isco_not_mid_track() {
+        // The frame thread sees the process go in the sample at 11 s; the background thread's
+        // counter only rises in the sample at 13 s.
         let mut orbits = Orbits::default();
         take(&mut orbits, 10.0, &population(40), Some(5), None);
-        take(&mut orbits, 11.0, &without(&[2]), Some(5), None);
-        take(&mut orbits, 12.0, &without(&[2]), Some(6), None);
-        assert_eq!(orbits.ghosts()[0].fate, Fate::Plunging, "within the window");
+        take(&mut orbits, 11.0, &without(&[1]), Some(5), None);
+        take(&mut orbits, 12.0, &without(&[1]), Some(5), None);
+        assert_eq!(orbits.ghosts()[0].fate, Fate::Fading);
+        take(&mut orbits, 13.0, &without(&[1]), Some(6), None);
+        let ghost = orbits.ghosts()[0].clone();
+        assert_eq!(ghost.fate, Fate::Plunging);
+        assert_eq!(ghost.since, 10.5);
+        assert_eq!(ghost.plunge_at, 12.5, "as if known half an interval ago");
+        // So at 13 s it is still easing to the ISCO at full light, not 12 M down the track.
+        let now = ghost.pose(13.0);
+        assert!(now.plunging && now.light == 1.0 && now.stretch == 1.0);
+        assert!(now.radius < ghost.radius + 0.01);
+        assert!(!ghost.gone(13.0));
+        // When it was known at once, the plunge starts with the exit, as before.
         let mut orbits = Orbits::default();
         take(&mut orbits, 10.0, &population(40), Some(5), None);
-        take(&mut orbits, 11.0, &without(&[2]), Some(5), None);
-        take(&mut orbits, 12.0, &without(&[2]), Some(5), None);
-        take(&mut orbits, 15.0, &without(&[2]), Some(6), None);
-        assert_eq!(orbits.ghosts()[0].fate, Fate::Fading, "out of the window");
+        take(&mut orbits, 11.0, &without(&[1]), Some(6), None);
+        assert_eq!(orbits.ghosts()[0].plunge_at, orbits.ghosts()[0].since);
     }
 
     #[test]
@@ -841,7 +904,7 @@ mod tests {
         let mut last = (start, ghost.phase);
         let mut previous_light = 1.0;
         let mut ended = None;
-        for step in 0..=1200 {
+        for step in 0..=2000 {
             let time = ghost.since + step as f32 * 0.005;
             if ghost.gone(time) {
                 ended = Some(time - ghost.since);
@@ -858,11 +921,11 @@ mod tests {
             (last, previous_light) = ((pose.radius, pose.azimuth), pose.light);
         }
         assert!((ghost.pose(ghost.since + ISCO_SECONDS).radius - 6.0).abs() < 1e-3);
-        let ended = ended.expect("the image fades below 0.02 within six seconds");
-        assert!((4.0..6.0).contains(&ended), "removed after {ended} s");
+        let ended = ended.expect("the image fades below 0.02 within ten seconds");
+        assert!((6.0..8.0).contains(&ended), "removed after {ended} s");
         // Stretch grows as it falls in.
         assert_eq!(ghost.pose(ghost.since + 0.5).stretch, 1.0);
-        assert!(ghost.pose(ghost.since + 3.5).stretch > 2.0);
+        assert!(ghost.pose(ghost.since + 5.0).stretch > 2.0);
     }
 
     #[test]

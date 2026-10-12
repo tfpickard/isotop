@@ -38,6 +38,8 @@ SHIFTED_KEYS = {"+": "=", "*": "8", "?": "/"}
 # What Shift+Space is: a CSI u sequence under the Kitty keyboard protocol, otherwise the `*`
 # fallback, because a legacy terminal sends Space for it.
 SHIFT_SPACE = b"\x1b[32;2u"
+# Reporting every key also reports the modifier on its own first: the press of Left Shift.
+SHIFT_PRESS = b"\x1b[57441;2u"
 CALLOUT_PID = re.compile(rb"\| pid (\d+)")
 KEYBOARD_PUSH = b"\x1b[>13u"
 KEYBOARD_POP = b"\x1b[<1u"
@@ -51,9 +53,14 @@ def kitty_encoded(keys):
     out = b""
     index = 0
     while index < len(keys):
-        if keys[index:].startswith(SHIFT_SPACE):
-            out += SHIFT_SPACE
-            index += len(SHIFT_SPACE)
+        for raw in (SHIFT_PRESS, SHIFT_SPACE):
+            if keys[index:].startswith(raw):
+                out += raw
+                index += len(raw)
+                break
+        else:
+            raw = None
+        if raw is not None:
             continue
         if keys[index : index + 3] == b"\x1b[Z":
             out += b"\x1b[9;2u"
@@ -202,6 +209,9 @@ def exercise(binary, demo, shared_memory, keyboard):
         # one shown, and P pauses.
         (b"g", [b"/ TOUR"]),
         (b" ", [NewCallout, b"/ TOUR"]),
+        # Under the keyboard protocol Shift is reported on its own just before Shift+Space, and
+        # that press must not end the tour: the strip still says TOUR after the jump.
+        (SHIFT_PRESS + SHIFT_SPACE if keyboard else b"*", [NewCallout, b"/ TOUR"]),
         (b"g", [b"/ LIVE"]),
         (b" ", [NewCallout, b"/ LIVE"]),
         (SHIFT_SPACE if keyboard else b"*", [NewCallout, b"/ LIVE"]),

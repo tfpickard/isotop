@@ -239,17 +239,27 @@ const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
 /// Writes everything that undoes `Terminal::enter` except raw mode. The keyboard flags go first:
 /// the main and the alternate screen keep separate stacks of them, and the push was made on the
 /// alternate screen.
+///
+/// Every step is tried whatever became of the ones before it, so that one failed write cannot
+/// leave the cursor hidden or the terminal on the alternate screen; the first error is returned.
 fn restore_screen(out: &mut impl Write, keyboard: bool) -> io::Result<()> {
+    let mut first = Ok(());
+    let mut note = |step: io::Result<()>| {
+        if first.is_ok() {
+            first = step;
+        }
+    };
     if keyboard {
-        execute!(out, PopKeyboardEnhancementFlags)?;
+        note(execute!(out, PopKeyboardEnhancementFlags));
     }
-    write!(out, "\x1b[?2026l\x1b[?1016l\x1b_Ga=d,d=A,q=2\x1b\\")?;
-    execute!(
+    note(write!(out, "\x1b[?2026l\x1b[?1016l\x1b_Ga=d,d=A,q=2\x1b\\"));
+    note(execute!(
         out,
         crossterm::event::DisableMouseCapture,
         cursor::Show,
         terminal::LeaveAlternateScreen
-    )
+    ));
+    first
 }
 
 /// macOS limits a shared-memory name, leading slash included, to `PSHMNAMLEN` bytes; longer
@@ -658,6 +668,45 @@ mod tests {
         let mut out = Vec::new();
         restore_screen(&mut out, false).unwrap();
         assert!(!String::from_utf8(out).unwrap().contains("\x1b[<"));
+    }
+
+    /// A writer whose first write fails and whose later ones land in `written`.
+    struct FailsOnce {
+        failed: bool,
+        written: Vec<u8>,
+    }
+
+    impl Write for FailsOnce {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if !self.failed {
+                self.failed = true;
+                return Err(io::Error::other("the first write fails"));
+            }
+            self.written.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_write_does_not_leave_the_alternate_screen_in_place() {
+        let mut out = FailsOnce {
+            failed: false,
+            written: Vec::new(),
+        };
+        assert!(
+            restore_screen(&mut out, true).is_err(),
+            "the error is reported"
+        );
+        let text = String::from_utf8(out.written).unwrap();
+        assert!(
+            text.contains("\x1b[?1049l"),
+            "but the screen is left: {text:?}"
+        );
+        assert!(text.contains("\x1b[?25h"), "and the cursor shown");
     }
 
     #[test]

@@ -1522,8 +1522,10 @@ impl ThreadReader for Threads {
         let pid = target.id.pid as c_int;
         match list_thread_ids(pid, &mut self.ids) {
             Ok(()) => {}
-            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return Listing::Unreadable,
-            Err(_) => return Listing::Gone,
+            // Only a process that has exited is gone. Any other refusal (EPERM for another user's,
+            // or a kernel that does not know the flavor) leaves its threads unread, never absent.
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Listing::Gone,
+            Err(_) => return Listing::Unreadable,
         }
         logic::oldest_first(&mut self.ids);
         let complete = self.ids.len() <= limit;
