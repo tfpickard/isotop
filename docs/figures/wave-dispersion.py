@@ -59,7 +59,7 @@ curves = [
 a = Axes(figure, 60, 90, 330, 280, (3, 60), (0.84, 1.02), xlog=True, xlabel="wavelength (cells)",
          ylabel="phase speed / c", title="Phase speed", xticks=[3, 4, 6, 8, 12, 20, 40, 60],
          yticks=[0.85, 0.9, 0.95, 1.0])
-a.vband(11.19, 42.0, AQUA, 0.16)
+a.vband(11.25, 42.2, AQUA, 0.16)
 a.label(21.0, 0.855, "pebble band", 11, "middle", AQUA)
 a.hline(1.0, MUTED, 1.0, "2 3")
 for name, color, dash, symbol, theta in curves:
@@ -68,7 +68,7 @@ for name, color, dash, symbol, theta in curves:
 b = Axes(figure, 460, 90, 330, 280, (3, 60), (0.0, 1.05), xlog=True, xlabel="wavelength (cells)",
          ylabel="group speed / c", title="Group speed (energy travels at this)",
          xticks=[3, 4, 6, 8, 12, 20, 40, 60], yticks=[0, 0.25, 0.5, 0.75, 1.0])
-b.vband(11.19, 42.0, AQUA, 0.16)
+b.vband(11.25, 42.2, AQUA, 0.16)
 b.hline(1.0, MUTED, 1.0, "2 3")
 for name, color, dash, symbol, theta in curves:
     b.plot(wavelengths, [group_ratio(symbol, NU, 2 * math.pi / w, theta) for w in wavelengths], color, 1.9, dash)
@@ -79,7 +79,7 @@ ks = [math.pi * i / 200 for i in range(1, 201)]
 c = Axes(figure, 860, 90, 310, 280, (0, math.pi), (0, 3.2), xlabel="wavenumber k (rad per cell)",
          ylabel="omega / c (rad per cell)", title="Band diagram", xticks=[0, 0.5, 1, 1.5, 2, 2.5, 3],
          yticks=[0, 1, 2, 3])
-c.vband(0.1495, 0.5613, AQUA, 0.22)
+c.vband(0.1488, 0.5587, AQUA, 0.22)
 c.plot(ks, ks, MUTED, 1.4, "2 3")
 c.plot(ks, [omega(s9, NU, k, 0.0) for k in ks], INK, 2.0)
 c.plot(ks, [omega(s5, NU, k, math.pi / 4) for k in ks], BLUE, 2.0, "6 3")

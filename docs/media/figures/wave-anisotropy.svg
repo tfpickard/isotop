@@ -114,7 +114,7 @@
 </g>
 <text x="834.66" y="119.96" font-size="11" text-anchor="start" fill="#3987e5">5-point: falls as k^2.0</text>
 <text x="632.73" y="283.84" font-size="11" text-anchor="start" fill="#d95926">9-point: falls as k^4.0</text>
-<rect x="799.97" y="90" width="204.8" height="300" fill="#199e70" fill-opacity="0.16"/>
+<rect x="800.8" y="90" width="204.71" height="300" fill="#199e70" fill-opacity="0.16"/>
 <text x="897.44" y="377.1" font-size="11" text-anchor="middle" fill="#199e70">pebble band</text>
 <text x="70" y="452" font-size="11" text-anchor="start" fill="#8b949e">Along an axis both stencils have the same symbol (2 - 2 cos k); only the diagonal differs. Slopes are measured between 30 and 60 cells.</text>
 <text x="70" y="470" font-size="11" text-anchor="start" fill="#8b949e">Taylor series: 5-point symbol = k^2 - (kx^4 + ky^4)/12; 9-point symbol = k^2 - k^4/12, isotropic to fourth order.</text>

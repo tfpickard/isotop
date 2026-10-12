@@ -68,7 +68,7 @@ def slope(symbol):
 
 b.label(14.0, 2.0, "5-point: falls as k^%.1f" % slope(s5), 11, "start", BLUE)
 b.label(3.8, 3e-4, "9-point: falls as k^%.1f" % slope(s9), 11, "start", ORANGE)
-b.vband(11.19, 42.0, AQUA, 0.16)
+b.vband(11.25, 42.2, AQUA, 0.16)
 b.label(21.0, 2.0e-6, "pebble band", 11, "middle", AQUA)
 
 figure.text(70, 452, "Along an axis both stencils have the same symbol (2 - 2 cos k); only the diagonal differs. Slopes are measured between 30 and 60 cells.",

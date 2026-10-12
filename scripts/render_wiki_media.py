@@ -5,7 +5,7 @@ Run from the repository root after `cargo build --release`:
 
     python3 scripts/render_wiki_media.py              # everything
     python3 scripts/render_wiki_media.py --only reef  # one view: still, loop and filmstrip
-    python3 scripts/render_wiki_media.py --only contact-sheet
+    python3 scripts/render_wiki_media.py --only stills       # also: contact-sheet, loops, filmstrips
     python3 scripts/render_wiki_media.py --check-tools
 
 Standard library only. It calls the isotop binary (CPU rasterizer, demo workload, so every
@@ -122,9 +122,11 @@ LOOP_BUDGET = 1_600_000
 CONTACT_BUDGET = 900_000
 FILMSTRIP_BUDGET = 700_000
 
-STILL_QUALITIES = (90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40)
+GROUPS = ["stills", "contact-sheet", "loops", "filmstrips"]
+
+STILL_QUALITIES = (95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40)
 LOOP_QUALITIES = (80, 72, 64, 56, 48, 40, 32)
-SHEET_QUALITIES = (85, 80, 75, 70, 65, 60, 55, 50, 45, 40)
+SHEET_QUALITIES = (95, 90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40)
 
 BACKGROUND = "#0e1116"
 FOREGROUND = "#c9d1d9"
@@ -300,7 +302,8 @@ def report(path, detail):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--only", metavar="NAME",
-                        help="one view (still, loop and filmstrip) or 'contact-sheet'")
+                        help="one view (its still, loop and filmstrip), or a group: "
+                             + ", ".join(GROUPS))
     parser.add_argument("--check-tools", action="store_true",
                         help="check isotop, ImageMagick and ffmpeg and exit")
     parser.add_argument("--output", type=Path, default=OUTPUT, help="output directory")
@@ -311,22 +314,31 @@ def main():
         sys.exit(0 if check_tools() else 1)
     if not check_tools():
         sys.exit("missing tools (see above)")
-    if args.only and args.only != "contact-sheet" and args.only not in STILLS:
-        sys.exit(f"--only: unknown name {args.only!r}; one of {', '.join(ORDER)}, contact-sheet")
+    if args.only and args.only not in STILLS and args.only not in GROUPS:
+        sys.exit(f"--only: unknown name {args.only!r}; one of {', '.join(ORDER + GROUPS)}")
     args.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="isotop-wiki-media-") as work:
         job = Job(work, args.output, args.jobs)
-        if args.only == "contact-sheet":
-            job.contact_sheet()
+        if args.only in STILLS:
+            job.still(args.only)
+            if args.only in LOOPS:
+                job.loop(args.only)
+            if args.only in FILMSTRIPS:
+                job.filmstrip(args.only)
             return
-        for view in [args.only] if args.only else ORDER:
-            job.still(view)
-            if view in LOOPS:
-                job.loop(view)
-            if view in FILMSTRIPS:
-                job.filmstrip(view)
-        if not args.only:
+        # Everything, in the order of how much the wiki needs it.
+        everything = args.only is None
+        if everything or args.only == "stills":
+            for view in ORDER:
+                job.still(view)
+        if everything or args.only == "contact-sheet":
             job.contact_sheet()
+        if everything or args.only == "loops":
+            for view in LOOPS:
+                job.loop(view)
+        if everything or args.only == "filmstrips":
+            for view in FILMSTRIPS:
+                job.filmstrip(view)
 
 
 if __name__ == "__main__":
