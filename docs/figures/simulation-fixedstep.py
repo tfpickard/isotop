@@ -29,7 +29,7 @@ def oscillator(step, until):
 
 
 def main():
-    svg = Svg(1100, 720, "Fixed-step clock: ticks, interpolation fraction and rendered path",
+    svg = Svg(1100, 780, "Fixed-step clock: ticks, interpolation fraction and rendered path",
               "FixedStep with step 0.05 s. Top: the returned fraction against time with frames at 10 and 60 per second. "
               "Bottom: the damped oscillator rendered at 10 and 60 frames per second lies on one curve, while naive per-frame "
               "stepping gives a different path at each frame rate.")
@@ -55,7 +55,7 @@ def main():
         t = 0.013 + j * 0.1
         svg.circle(top.px(t), top.py(alpha(t)), 5, "none", ORANGE, 2)
     svg.text(top.x, 18, "dashed: ticks every 0.05 s    green dots: frames at 60 per second    orange rings: frames at 10 per second", 11, MUTED)
-    svg.text(top.x + 8, top.y + top.h - 8, "α = (T − T₀)/h − K  (K = ticks so far); drawn state R(T) = S[K−1] + α (S[K] − S[K−1]) = P(T − T₀ − h)", 11, INK)
+    svg.text(top.x, 38, "α = (T − T₀)/h − K  (K = ticks so far); drawn state R(T) = S[K−1] + α (S[K] − S[K−1]) = P(T − T₀ − h)", 11, INK)
 
     # (b) trajectory
     until = 2.0
@@ -94,8 +94,8 @@ def main():
     svg.text(bot.x + 46, ly + 44, "naive: one Euler step per frame, 60 per second (dt = 1/60)", 11, INK)
     svg.line(bot.x + 12, ly + 58, bot.x + 40, ly + 58, ORANGE, 1.6, "6 4")
     svg.text(bot.x + 46, ly + 62, "naive: one Euler step per frame, 10 per second (dt = 0.1): a different path", 11, INK)
-    svg.text(70, 690, "x'' = −40 x − 0.8 v, semi-implicit Euler (v += a h; x += v h), x(0) = 1: the oscillator of fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second.", 11, MUTED)
-    svg.text(70, 708, "The fixed-step curve is one polyline, delayed by exactly one step (50 ms), whatever the frame rate; naive stepping drifts differently at each rate.", 11, MUTED)
+    svg.text(70, 746, "x'' = −40 x − 0.8 v, semi-implicit Euler (v += a h; x += v h), x(0) = 1: the oscillator of fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second.", 11, MUTED)
+    svg.text(70, 764, "The fixed-step curve is one polyline, delayed by exactly one step (50 ms), whatever the frame rate; naive stepping drifts differently at each rate.", 11, MUTED)
     svg.save("docs/media/figures/simulation-fixedstep.svg")
 
 

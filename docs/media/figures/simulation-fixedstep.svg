@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 720" width="1100" height="720" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 780" width="1100" height="780" role="img">
 <title>Fixed-step clock: ticks, interpolation fraction and rendered path</title>
 <desc>FixedStep with step 0.05 s. Top: the returned fraction against time with frames at 10 and 60 per second. Bottom: the damped oscillator rendered at 10 and 60 frames per second lies on one curve, while naive per-frame stepping gives a different path at each frame rate.</desc>
-<rect width="1100" height="720" fill="#0e1116"/>
+<rect width="1100" height="780" fill="#0e1116"/>
 <line x1="70" y1="228" x2="1060" y2="228" stroke="#262c36" stroke-width="1"/>
 <text x="64" y="232" font-size="11" fill="#8b949e" text-anchor="end" font-family="system-ui, sans-serif">0</text>
 <line x1="70" y1="143" x2="1060" y2="143" stroke="#262c36" stroke-width="1"/>
@@ -82,7 +82,7 @@
 <circle cx="689.74" cy="183.8" r="5" fill="none" stroke="#d95926" stroke-width="2"/>
 <circle cx="887.74" cy="183.8" r="5" fill="none" stroke="#d95926" stroke-width="2"/>
 <text x="70" y="18" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">dashed: ticks every 0.05 s    green dots: frames at 60 per second    orange rings: frames at 10 per second</text>
-<text x="78" y="220" font-size="11" fill="#c9d1d9" text-anchor="start" font-family="system-ui, sans-serif">α = (T − T₀)/h − K  (K = ticks so far); drawn state R(T) = S[K−1] + α (S[K] − S[K−1]) = P(T − T₀ − h)</text>
+<text x="70" y="38" font-size="11" fill="#c9d1d9" text-anchor="start" font-family="system-ui, sans-serif">α = (T − T₀)/h − K  (K = ticks so far); drawn state R(T) = S[K−1] + α (S[K] − S[K−1]) = P(T − T₀ − h)</text>
 <line x1="70" y1="552.39" x2="1060" y2="552.39" stroke="#262c36" stroke-width="1"/>
 <text x="64" y="556.39" font-size="11" fill="#8b949e" text-anchor="end" font-family="system-ui, sans-serif">-1</text>
 <line x1="70" y1="493.7" x2="1060" y2="493.7" stroke="#262c36" stroke-width="1"/>
@@ -199,6 +199,6 @@
 <text x="116" y="670" font-size="11" fill="#c9d1d9" text-anchor="start" font-family="system-ui, sans-serif">naive: one Euler step per frame, 60 per second (dt = 1/60)</text>
 <line x1="82" y1="684" x2="110" y2="684" stroke="#d95926" stroke-width="1.6" stroke-dasharray="6 4"/>
 <text x="116" y="688" font-size="11" fill="#c9d1d9" text-anchor="start" font-family="system-ui, sans-serif">naive: one Euler step per frame, 10 per second (dt = 0.1): a different path</text>
-<text x="70" y="690" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">x'' = −40 x − 0.8 v, semi-implicit Euler (v += a h; x += v h), x(0) = 1: the oscillator of fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second.</text>
-<text x="70" y="708" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">The fixed-step curve is one polyline, delayed by exactly one step (50 ms), whatever the frame rate; naive stepping drifts differently at each rate.</text>
+<text x="70" y="746" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">x'' = −40 x − 0.8 v, semi-implicit Euler (v += a h; x += v h), x(0) = 1: the oscillator of fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second.</text>
+<text x="70" y="764" font-size="11" fill="#8b949e" text-anchor="start" font-family="system-ui, sans-serif">The fixed-step curve is one polyline, delayed by exactly one step (50 ms), whatever the frame rate; naive stepping drifts differently at each rate.</text>
 </svg>
