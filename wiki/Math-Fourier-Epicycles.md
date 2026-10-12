@@ -223,10 +223,7 @@ three times that budget, and the view makes no claim about elephants.
 | Easing | When a sample arrives, coefficients ease from their current value to the new target with a smoothstep over the measured sample interval, clamped to 0.1 to 10 s; a term that left the twelve eases to nothing | `Planet::retarget`, `EASE` |
 | Retrograde | `Im(conj(p) p') < 0` with `p` the deferent point plus the chain and `p'` the sum of both velocities | `retrograde()`, `chain_velocity()` |
 
-The gain is worth a line. `tanh` saturates: a chain whose coefficients sum to `T` has length `K L tanh(T/L)`-ish, never more than
-`L = 7.6` units however wild the process. A process with `sum |c| = 1` core-or-doubling gets a chain 3.2 units long;
-at 2, 5.4; at 4, 7.2; at 8, 7.6. The scale is the same for every planet so amplitudes remain comparable between planets;
-it is *not* comparable between a core and a doubling, which the page on [Ptolemy](View-Ptolemy) takes up.
+The gain is worth a line. With `T = K * sum` of the radii in cores and doublings, the scaled radii add up to exactly $L\tanh(T/L)$: linear for small $T$ (a process that barely varies gets $3.4$ units per core or doubling) and saturating at $L = 7.6$ units, however wild the process. A process whose radii sum to 1 gets a chain 3.2 units long; to 2, 5.4; to 4, 7.2; to 8, 7.6. The scale is the same for every planet so amplitudes remain comparable between planets, but it is *not* comparable between a core and a doubling, which [View Ptolemy](View-Ptolemy) takes up.
 
 Every sphere's deferent is larger than the whole chain. The smallest sphere, the Moon's, has radius `0.245 * 40 = 9.8` against a
 maximum chain length of 7.6, so the `r < R` case of 1.7 always applies and retrograde means exactly "the tip speed beats the deferent's speed". The periods follow
