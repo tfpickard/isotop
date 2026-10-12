@@ -23,30 +23,14 @@ Work items are referred to by ID: P1 to P5 (prerequisites), S1 to S6 (shared pre
 
 ## Adding a view
 
-### Today (before [P1 (#17)](https://github.com/tfpickard/isotop/issues/17))
-
-`AGENTS.md` ("A new view is a module view") lists what a view touches today:
-
-- a module `src/<name>.rs` with a `draw(&mut Stage, ...)` and a `mod` line in `main.rs`;
-- in `render.rs`, the `View` variant, `View::ALL`, `View::backdrop`, a `Scene` field and the arms in `Scene::render`;
-- in `main.rs`, the title and legend arms in `App::text` and any headless warm-up in `warm_up`;
-- outside `src/`, the README, the view loop in CI and `tests/golden.txt`.
-
-`View::next`, Tab, the number keys and `--view` follow from `View::ALL`.
-
-No new view is built this way. Every view issue depends on [P1 (#17)](https://github.com/tfpickard/isotop/issues/17).
-
-### After [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)
-
-A view is one module plus one registry row. Do not add arms to `Scene::render`, `App::text`, the headless warm-ups or `App::command`. [P1 (#17)](https://github.com/tfpickard/isotop/issues/17) also rewrites the paragraph in `AGENTS.md`.
+A view is one module plus one registry row, and there is no other way to write one. Do not add a `Scene` field, an arm to `Scene::render`, or a branch to `App::text`, the headless warm-ups or `App::command`: `Scene` holds only frame-wide state and reaches the view through `ViewModule`, and `scene_has_no_view_specific_fields` fails on a field named or typed after a view. `AGENTS.md` ("The view contract" and "A new view is one module plus one registry row") says the same.
 
 1. Create `src/<name>.rs` with a `#[derive(Default)]` state struct. Keep pure simulation state free of drawing, either in that file or in a pure helper module, as `medium.rs` does. Add a row for each new module to the file table in `AGENTS.md`.
-2. Add one registry row (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)). Set only the fields you need; the defaults reproduce existing behaviour. The row carries:
+2. Add one registry row (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)). Set only the fields you need; the defaults are those of a plain view. The row carries:
    - name (lowercase CLI name) and title (status-line text, e.g. `COOP`)
    - backdrop
    - `available()`
-   - legend
-   - per-sample record hook
+   - `build`, the constructor of the module (`|| Box::new(<Name>::default())`), whose `ViewModule` methods are the view's legend, per-sample record hook and view-local key hook
    - headless warm-up (see "Demo synthesis")
    - links rule: all, quiet, or drawn by the view, and whether the scene draws the links as hairlines (`link_strokes`) and how high it lifts them above the drawn positions (`link_lift`, 0 by default)
    - generic birth and death flash, on or off
@@ -54,7 +38,6 @@ A view is one module plus one registry row. Do not add arms to `Scene::render`, 
    - default pitch
    - tour participation
    - header-count override
-   - view-local key hook
    - `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27))
    - `demo` options (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25))
    - the harness `contract` (from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)): whether it draws processes, its stability tolerance, the demo time it is checked at, and anchors for creatures that wander (a module view returns them from `ViewModule::anchors`)
