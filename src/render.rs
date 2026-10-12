@@ -308,6 +308,17 @@ pub enum Item {
         color: Color,
         strength: f32,
     },
+    /// A soft halo like `Glow`, blended with round-to-nearest, as the GPU's blend unit does, so
+    /// that any number of them can stack and the two rasterizers still agree to a level (a
+    /// `Glow` truncates on the CPU, and stacked ones drift apart). Strength is clamped to
+    /// [0, 1]. For content whose look is the density of many splats, such as a flock.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    Puff {
+        center: [f32; 2],
+        radius: f32,
+        color: Color,
+        strength: f32,
+    },
     /// Translucent one-pixel line blended without depth or picking.
     Beam([f32; 2], [f32; 2], Color, f32),
     /// Background point behind everything.
@@ -434,6 +445,12 @@ impl Frame {
                     color,
                     strength,
                 } => self.halo(center, radius, color, strength),
+                Item::Puff {
+                    center,
+                    radius,
+                    color,
+                    strength,
+                } => self.puff(center, radius, color, strength.clamp(0.0, 1.0)),
                 Item::Beam(a, b, color, weight) => self.ray(a, b, color, weight),
                 Item::Star([x, y], color) => {
                     self.pixel(x as i32, y as i32, BACKGROUND, color, NONE)
@@ -623,6 +640,17 @@ impl Frame {
         }
     }
 
+    /// `blend` rounded to the nearest level, as the GPU's blend unit rounds.
+    fn blend_rounded(&mut self, x: i32, y: i32, color: Color, weight: f32) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let i = (y as usize * self.width as usize + x as usize) * 3;
+        for (channel, &target) in self.pixels[i..i + 3].iter_mut().zip(&color) {
+            *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight + 0.5) as u8;
+        }
+    }
+
     fn pixel(&mut self, x: i32, y: i32, depth: f32, color: Color, pick: u32) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
@@ -729,6 +757,23 @@ impl Frame {
     }
 
     fn halo(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
+        self.disc(p, radius, color, strength, Self::blend);
+    }
+
+    fn puff(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
+        self.disc(p, radius, color, strength, Self::blend_rounded);
+    }
+
+    /// Blends `color` over the pixels within `radius` of `p` with weight `strength` times the
+    /// square of one minus the distance in radii, by `blend`.
+    fn disc(
+        &mut self,
+        p: [f32; 2],
+        radius: f32,
+        color: Color,
+        strength: f32,
+        blend: fn(&mut Self, i32, i32, Color, f32),
+    ) {
         let x0 = (p[0] - radius).floor() as i32;
         let x1 = (p[0] + radius).ceil() as i32;
         let y0 = (p[1] - radius).floor() as i32;
@@ -737,7 +782,7 @@ impl Frame {
             for x in x0..=x1 {
                 let d = (x as f32 + 0.5 - p[0]).hypot(y as f32 + 0.5 - p[1]) / radius;
                 if d < 1.0 {
-                    self.blend(x, y, color, strength * (1.0 - d) * (1.0 - d));
+                    blend(self, x, y, color, strength * (1.0 - d) * (1.0 - d));
                 }
             }
         }
@@ -4145,6 +4190,42 @@ mod tests {
                     .map(|&r| u64::from(r))
                     .sum::<u64>()
         );
+    }
+
+    #[test]
+    fn stacked_puffs_round_to_the_nearest_level_where_glows_truncate() {
+        // Over black, a centred half-strength disc of 255 blends to 127.5, then 191.5, then 223.5.
+        let mut puffs = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        let mut glows = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        puffs.pixels = vec![0; 48];
+        glows.pixels = vec![0; 48];
+        let (mut rounded, mut truncated) = ([0u8; 3], [0u8; 3]);
+        for k in 0..3 {
+            puffs.puff([1.5, 1.5], 2.0, [255; 3], 0.5);
+            glows.halo([1.5, 1.5], 2.0, [255; 3], 0.5);
+            rounded[k] = puffs.pixels[(4 + 1) * 3];
+            truncated[k] = glows.pixels[(4 + 1) * 3];
+        }
+        assert_eq!(
+            rounded,
+            [128, 192, 224],
+            "a puff rounds to the nearest level"
+        );
+        assert_eq!(
+            truncated,
+            [127, 191, 223],
+            "a glow truncates, as it always has"
+        );
+        // A strength above one is a full blend, never an overshoot.
+        let mut frame = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        frame.items = vec![Item::Puff {
+            center: [1.5, 1.5],
+            radius: 2.0,
+            color: [90; 3],
+            strength: 3.0,
+        }];
+        frame.rasterize();
+        assert_eq!(frame.pixels[(4 + 1) * 3], 90);
     }
 
     #[test]
