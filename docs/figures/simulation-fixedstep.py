@@ -29,12 +29,12 @@ def oscillator(step, until):
 
 
 def main():
-    svg = Svg(1100, 640, "Fixed-step clock: ticks, interpolation fraction and rendered path",
+    svg = Svg(1100, 720, "Fixed-step clock: ticks, interpolation fraction and rendered path",
               "FixedStep with step 0.05 s. Top: the returned fraction against time with frames at 10 and 60 per second. "
               "Bottom: the damped oscillator rendered at 10 and 60 frames per second lies on one curve, while naive per-frame "
               "stepping gives a different path at each frame rate.")
     # (a) fraction
-    top = Axes(svg, 70, 40, 990, 180, (0.0, 0.5), (0.0, 1.0))
+    top = Axes(svg, 70, 58, 990, 170, (0.0, 0.5), (0.0, 1.0))
     top.frame([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], [0, 0.5, 1], "wall-clock time (s)", "returned fraction α", lambda v: "%g" % v, lambda v: "%g" % v)
     for k in range(11):
         svg.line(top.px(k * H), top.y, top.px(k * H), top.y + top.h, BLUE, 1, "4 3", 0.55)
@@ -51,15 +51,15 @@ def main():
     for j in range(31):
         t = j / 60
         svg.circle(top.px(t), top.py(alpha(t)), 2.2, AQUA)
-    for j in range(6):
+    for j in range(5):
         t = 0.013 + j * 0.1
         svg.circle(top.px(t), top.py(alpha(t)), 5, "none", ORANGE, 2)
-    svg.text(top.x + 8, top.y + 14, "dashed: ticks every 0.05 s    green dots: frames at 60 per second    orange rings: frames at 10 per second", 11, MUTED)
+    svg.text(top.x, 18, "dashed: ticks every 0.05 s    green dots: frames at 60 per second    orange rings: frames at 10 per second", 11, MUTED)
     svg.text(top.x + 8, top.y + top.h - 8, "α = (T − T₀)/h − K  (K = ticks so far); drawn state R(T) = S[K−1] + α (S[K] − S[K−1]) = P(T − T₀ − h)", 11, INK)
 
     # (b) trajectory
     until = 2.0
-    bot = Axes(svg, 70, 290, 990, 270, (0.0, until), (-1.15, 1.15))
+    bot = Axes(svg, 70, 300, 990, 270, (0.0, until), (-1.15, 1.15))
     bot.frame([0, 0.5, 1.0, 1.5, 2.0], [-1, -0.5, 0, 0.5, 1], "wall-clock time (s)", "x", lambda v: "%g" % v, lambda v: "%g" % v)
     states = oscillator(H, until)
 
@@ -85,7 +85,7 @@ def main():
     for j in range(1, 21):
         t = j * 0.1 + 0.013
         svg.circle(bot.px(t), bot.py(rendered(t)), 4.5, "none", BLUE, 1.6)
-    ly = bot.y + 18
+    ly = bot.y + bot.h + 56
     svg.line(bot.x + 12, ly, bot.x + 40, ly, BLUE, 2.2)
     svg.text(bot.x + 46, ly + 4, "rendered with FixedStep(0.05): the 60-per-second line, with the 10-per-second frames (rings) on it", 11, INK)
     svg.circle(bot.x + 26, ly + 18, 2.2, INK)
@@ -94,8 +94,8 @@ def main():
     svg.text(bot.x + 46, ly + 44, "naive: one Euler step per frame, 60 per second (dt = 1/60)", 11, INK)
     svg.line(bot.x + 12, ly + 58, bot.x + 40, ly + 58, ORANGE, 1.6, "6 4")
     svg.text(bot.x + 46, ly + 62, "naive: one Euler step per frame, 10 per second (dt = 0.1): a different path", 11, INK)
-    svg.text(70, 604, "x'' = −40 x − 0.8 v, semi-implicit Euler (v += a h; x += v h), x(0) = 1: the oscillator of fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second.", 11, MUTED)
-    svg.text(70, 622, "The fixed-step curve is one polyline, delayed by exactly one step (50 ms), whatever the frame rate; naive stepping drifts differently at each rate.", 11, MUTED)
+    svg.text(70, 690, "x'' = −40 x − 0.8 v, semi-implicit Euler (v += a h; x += v h), x(0) = 1: the oscillator of fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second.", 11, MUTED)
+    svg.text(70, 708, "The fixed-step curve is one polyline, delayed by exactly one step (50 ms), whatever the frame rate; naive stepping drifts differently at each rate.", 11, MUTED)
     svg.save("docs/media/figures/simulation-fixedstep.svg")
 
 
