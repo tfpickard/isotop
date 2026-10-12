@@ -1052,6 +1052,8 @@ impl App {
         }
         let id = self.inspected()?;
         let snapshot = self.snapshot();
+        // The lines `Stage::sparklines` supplied, which the terminal cleans as braille.
+        let mut braille = Vec::new();
         let lines = match snapshot.processes.iter().find(|p| p.id == id) {
             Some(p) => {
                 let mut lines = vec![
@@ -1112,6 +1114,10 @@ impl App {
                     ));
                 }
                 lines.extend(self.scene.notes.get(&id).into_iter().flatten().cloned());
+                for line in self.scene.sparklines.get(&id).into_iter().flatten() {
+                    braille.push(lines.len());
+                    lines.push(line.clone());
+                }
                 lines.extend([
                     p.group.clone(),
                     p.command.clone(),
@@ -1125,8 +1131,9 @@ impl App {
                 "Esc close".into(),
             ],
         };
-        place_panel(
+        place_lines(
             lines,
+            braille,
             frame.anchor.map(|a| layout.cell_of(a)),
             layout,
             false,
@@ -1595,8 +1602,32 @@ fn place_panel(
     above: bool,
     min_width: usize,
 ) -> Option<Popup> {
+    place_lines(lines, Vec::new(), anchor, layout, above, min_width)
+}
+
+/// `place_panel` for lines of which those at the indices in `braille` are sparklines: one cell
+/// per character, where the others are measured in bytes.
+fn place_lines(
+    lines: Vec<String>,
+    braille: Vec<usize>,
+    anchor: Option<(u16, u16)>,
+    layout: &Layout,
+    above: bool,
+    min_width: usize,
+) -> Option<Popup> {
     let (columns, rows) = (layout.columns, layout.rows);
-    let longest = lines.iter().map(String::len).max().unwrap_or(0);
+    let longest = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if braille.contains(&index) {
+                line.chars().count()
+            } else {
+                line.len()
+            }
+        })
+        .max()
+        .unwrap_or(0);
     let width = (longest + 4).clamp(min_width, 64).min(columns as usize) as u16;
     let height = lines.len() as u16 + 2;
     if height > rows {
@@ -1623,6 +1654,7 @@ fn place_panel(
         row,
         width,
         lines,
+        braille,
     })
 }
 
@@ -3600,6 +3632,48 @@ mod tests {
                 .iter()
                 .any(|line| line == views::testing::GUIDE_LINE)
         );
+    }
+
+    #[test]
+    fn sparklines_from_the_stage_reach_the_inspector_cleaned_as_braille() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        app.selected = Some(last);
+        let frame = app.render(320, 180, 512);
+        let popup = app
+            .popup(&frame, &layout)
+            .expect("the selection has a popup");
+        let at = popup
+            .lines
+            .iter()
+            .position(|line| line == views::testing::GUIDE_SPARKLINE)
+            .expect("the sparkline is in the popup");
+        assert_eq!(popup.braille, [at]);
+        assert!(
+            popup.width >= 44,
+            "forty cells and the border fit: {}",
+            popup.width
+        );
+        let mut output = Vec::new();
+        crate::terminal::draw_popup(&mut output, &popup).expect("drawn");
+        let text = String::from_utf8(output).expect("text");
+        assert!(
+            text.contains(views::testing::GUIDE_SPARKLINE),
+            "braille survives in a sparkline line"
+        );
+        // The same braille in an ordinary line is cleaned away.
+        let mut plain = popup;
+        plain.braille.clear();
+        let mut output = Vec::new();
+        crate::terminal::draw_popup(&mut output, &plain).expect("drawn");
+        let text = String::from_utf8(output).expect("text");
+        assert!(!text.contains('⣿'));
     }
 
     #[test]

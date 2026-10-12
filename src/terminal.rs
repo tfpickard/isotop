@@ -33,6 +33,9 @@ pub struct Popup {
     pub row: u16,
     pub width: u16,
     pub lines: Vec<String>,
+    /// The indices of the lines that are generated sparklines (`Stage::sparklines`), which are
+    /// cleaned by `clean_sparkline` instead of `clean_text`.
+    pub braille: Vec<usize>,
 }
 
 impl Popup {
@@ -512,11 +515,15 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
         } else {
             "\x1b[38;2;206;220;236m"
         };
+        let text = if popup.braille.contains(&index) {
+            clean_sparkline(line, inner)
+        } else {
+            clean_text(line, inner)
+        };
         write!(
             output,
-            "\x1b[{};{column}H{border}│ {style}{:<inner$}{border} │",
+            "\x1b[{};{column}H{border}│ {style}{text:<inner$}{border} │",
             popup.row + 2 + index as u16,
-            clean_text(line, inner)
         )?;
     }
     write!(
@@ -524,6 +531,23 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
         "\x1b[{};{column}H{border}╰{rule}╯\x1b[0m",
         popup.row + 2 + popup.lines.len() as u16
     )
+}
+
+/// A sparkline line for the terminal: the Braille Patterns block (U+2800 to U+28FF) and the space
+/// pass, and every other character becomes `?`, so a sparkline can carry nothing but the dots a
+/// view generated. It is a separate function because `clean_text` stays ASCII-only for process
+/// text, and only `Stage::sparklines` reaches it.
+pub fn clean_sparkline(text: &str, width: usize) -> String {
+    text.chars()
+        .map(|c| {
+            if ('\u{2800}'..='\u{28ff}').contains(&c) || c == ' ' {
+                c
+            } else {
+                '?'
+            }
+        })
+        .take(width)
+        .collect()
 }
 
 pub fn clean_text(text: &str, width: usize) -> String {
@@ -543,6 +567,25 @@ pub fn clean_text(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparkline_sanitizer_passes_braille_but_not_controls_or_other_text() {
+        assert_eq!(clean_sparkline("⣀⣤⣶⣿ ⠁", 80), "⣀⣤⣶⣿ ⠁");
+        assert_eq!(clean_sparkline("\u{2800}\u{28ff}", 80), "\u{2800}\u{28ff}");
+        assert_eq!(clean_sparkline("⣿\x1b[2J\n⣿", 80), "⣿?????⣿");
+        assert_eq!(clean_sparkline("a\u{27ff}\u{2900}\u{202e}", 80), "????");
+        assert_eq!(
+            clean_sparkline("⣿⣿⣿⣿", 2),
+            "⣿⣿",
+            "cut to the width in cells"
+        );
+    }
+
+    #[test]
+    fn process_names_still_lose_braille_in_clean_text() {
+        assert_eq!(clean_text("⣿⣤name", 80), "??name");
+        assert_eq!(clean_text("\u{2800}", 80), "?");
+    }
 
     #[test]
     fn process_text_cannot_inject_terminal_controls() {

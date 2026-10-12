@@ -1065,6 +1065,12 @@ pub(crate) struct Stage<'a> {
     pub bounds: &'a mut Vec<Point>,
     /// Extra lines for a process's inspector popup, after its sockets.
     pub notes: &'a mut HashMap<Identity, Vec<String>>,
+    /// Braille sparkline lines for a process's inspector popup, right after its notes. Only
+    /// generated Braille Patterns (U+2800 to U+28FF) and spaces: the terminal draws them through
+    /// `terminal::clean_sparkline`, which turns everything else into `?`, so text from the system
+    /// never belongs here.
+    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
+    pub sparklines: &'a mut HashMap<Identity, Vec<String>>,
     /// Processes the tour should visit; a hub is passed over, since it has no callout.
     pub tour: &'a mut Vec<TourTarget>,
     /// Lines for a process's inspector popup, right after its own figures and in the order
@@ -1241,6 +1247,8 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     bounds: Vec<Point>,
     pub notes: HashMap<Identity, Vec<String>>,
+    /// The last frame's `Stage::sparklines`.
+    pub sparklines: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::tour`, `Stage::popup` and `Stage::callout`.
     pub tour: Vec<TourTarget>,
     pub popup: Vec<(Identity, String)>,
@@ -1306,6 +1314,7 @@ impl Scene {
             places: Vec::new(),
             bounds: Vec::new(),
             notes: HashMap::new(),
+            sparklines: HashMap::new(),
             tour: Vec::new(),
             popup: Vec::new(),
             callout: Vec::new(),
@@ -1559,6 +1568,7 @@ impl Scene {
         self.places.clear();
         self.bounds.clear();
         self.notes.clear();
+        self.sparklines.clear();
         self.tour.clear();
         self.popup.clear();
         self.callout.clear();
@@ -1699,6 +1709,7 @@ impl Scene {
                     places: &mut self.places,
                     bounds: &mut self.bounds,
                     notes: &mut self.notes,
+                    sparklines: &mut self.sparklines,
                     tour: &mut self.tour,
                     popup: &mut self.popup,
                     callout: &mut self.callout,

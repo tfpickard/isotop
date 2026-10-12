@@ -975,6 +975,9 @@ pub mod testing {
     /// The line `Guide` adds to the popup of the process it tours.
     pub const GUIDE_LINE: &str = "guide: the last seat";
 
+    /// The sparkline `Guide` adds below the popup of the process it tours, forty cells wide.
+    pub const GUIDE_SPARKLINE: &str = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿";
+
     /// A module view that seats every process on a line, asks the tour to visit the last one at
     /// a point beside its seat and adds a line to its popup. Its legend lists the `dt` of each
     /// frame it drew.
@@ -1010,6 +1013,11 @@ pub mod testing {
                     weight: 1.0,
                 });
                 stage.popup.push((last.id, GUIDE_LINE.into()));
+                stage
+                    .sparklines
+                    .entry(last.id)
+                    .or_default()
+                    .push(GUIDE_SPARKLINE.into());
             }
             processes.len()
         }
