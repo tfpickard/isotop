@@ -144,8 +144,8 @@ and the depth by the affine normalisation described in [Theory GPU and Parity](T
 ## Reading the picture
 
 * **Size means nothing about distance.** Two equal bodies at different depths draw at the same size; only occlusion and the vertical position on screen say which is nearer. A body that rises in the frame is further along the view direction on the ground, or higher.
-* **Height and depth are entangled at this pitch.** On screen a point at height $z$ and a point displaced along the view direction by $z/\tan\varphi$ coincide. This is the ambiguity every isometric picture has; the shadows City draws and the top-down toggle (`t`) are the ways out.
-* **Rotation is by quarter turns for a reason.** `e` and `Q` turn by $\pi/2$, which keeps ground grids axis-aligned with the screen diagonal; free rotation is by Alt-wheel or a right drag.
+* **Height and depth are entangled at this pitch.** On screen a point at height $z$ and a point displaced along the view direction by $z/\tan\varphi$ coincide. This is the ambiguity every isometric picture has; the ground grid City draws, and the top-down toggle (`t`), are the ways out.
+* **Rotation has two speeds.** `e` and `Q` turn by a quarter turn, $\pi/2$, at once (eased); free rotation is Alt-wheel or a drag with a button other than the left.
 
 ## Where in the code
 
