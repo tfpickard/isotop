@@ -211,7 +211,7 @@ pub enum Source {
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 32] = [
+    pub const ALL: &[Source] = &[
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -327,7 +327,8 @@ impl Sources {
     /// The sources in the set, in declaration order.
     pub fn iter(self) -> impl Iterator<Item = Source> {
         Source::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(move |&source| self.contains(source))
     }
 }
@@ -928,7 +929,12 @@ mod tests {
         );
         assert!(Sources::of(&[]).is_empty());
         assert_eq!(
-            Source::ALL.into_iter().collect::<Sources>().iter().count(),
+            Source::ALL
+                .iter()
+                .copied()
+                .collect::<Sources>()
+                .iter()
+                .count(),
             Source::ALL.len()
         );
     }

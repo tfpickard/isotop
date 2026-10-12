@@ -6381,7 +6381,7 @@ mod tests {
         let mut reads = Reads::new(Demand::default());
         assert!(Demand::default().is_empty());
         let mut calls = 0;
-        for source in Source::ALL {
+        for &source in Source::ALL {
             assert_eq!(
                 Demand::default().read_if(source, || {
                     calls += 1;

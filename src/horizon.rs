@@ -998,10 +998,9 @@ mod tests {
         }
         // The horizon row switches the scene's ring off: nothing but its own ghosts.
         assert!(!view("horizon").info().flash);
-        assert_eq!(
-            REGISTRY.iter().filter(|row| !row.flash).count(),
-            4,
-            "ptolemy, necropolis, horizon, murmuration"
+        assert!(
+            REGISTRY.iter().take(11).all(|row| row.flash),
+            "no built-in view loses its ring"
         );
     }
 

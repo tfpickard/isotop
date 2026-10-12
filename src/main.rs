@@ -2850,7 +2850,7 @@ mod tests {
     }
 
     /// The macOS gaps, as the collector reports them on a Mac without cluster clocks.
-    const MACOS: [Source; 10] = [
+    const MACOS: &[Source] = &[
         Source::CpuPressure,
         Source::IoPressure,
         Source::LastCpu,
@@ -2924,7 +2924,7 @@ mod tests {
             "{}",
             full[4]
         );
-        let mac = lines_with(view("city"), &MACOS, 0);
+        let mac = lines_with(view("city"), MACOS, 0);
         assert!(
             mac[4].contains(&format!("pressure cpu n/a mem {memory} io n/a")),
             "{}",
@@ -3022,7 +3022,7 @@ mod tests {
             "{}",
             one[0]
         );
-        let many = lines_with(view("city"), &MACOS, 37);
+        let many = lines_with(view("city"), MACOS, 37);
         assert!(
             many[0].contains(" processes (+37 unreadable: run with sudo) | "),
             "{}",
@@ -3033,7 +3033,7 @@ mod tests {
 
     #[test]
     fn unreadable_notice_survives_an_80_column_terminal() {
-        let first = &lines_with(view("city"), &MACOS, 212)[0];
+        let first = &lines_with(view("city"), MACOS, 212)[0];
         let visible: String = first.chars().take(80).collect();
         assert!(
             visible.contains("(+212 unreadable: run with sudo)"),
@@ -3043,14 +3043,14 @@ mod tests {
 
     #[test]
     fn legends_name_what_the_platform_cannot_measure() {
-        let cores = lines_with(view("cores"), &MACOS, 0)[2].clone();
+        let cores = lines_with(view("cores"), MACOS, 0)[2].clone();
         assert!(
             cores.contains("lanes = load; macOS reports no last CPU per process, so no marbles"),
             "{cores}"
         );
         assert!(cores.contains("no clock readings"), "{cores}");
         assert!(!cores.contains("marble ="), "{cores}");
-        let cells = lines_with(view("cells"), &MACOS, 0)[2].clone();
+        let cells = lines_with(view("cells"), MACOS, 0)[2].clone();
         assert!(
             cells.contains(&format!(
                 "{}, so no limits, quotas or pressure",
@@ -3058,17 +3058,17 @@ mod tests {
             )),
             "{cells}"
         );
-        let orbit = lines_with(view("orbit"), &MACOS, 0)[2].clone();
+        let orbit = lines_with(view("orbit"), MACOS, 0)[2].clone();
         assert!(
             orbit.contains("glow + trail = CPU | cyan arcs") && !orbit.contains("NVIDIA"),
             "{orbit}"
         );
-        let globe = lines_with(view("globe"), &MACOS, 0)[2].clone();
+        let globe = lines_with(view("globe"), MACOS, 0)[2].clone();
         assert!(
             globe.contains("no per-connection rates or RTT on macOS"),
             "{globe}"
         );
-        let coop = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        let coop = lines_with(view("coop"), MACOS, 0)[2].clone();
         assert!(
             coop.contains("no last CPU: running chickens share one trough"),
             "{coop}"
@@ -3078,7 +3078,7 @@ mod tests {
 
     #[test]
     fn coop_legend_names_app_groups_and_drops_foxes_without_cgroups() {
-        let mac = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        let mac = lines_with(view("coop"), MACOS, 0)[2].clone();
         assert!(
             mac.contains(&format!("flock = {} | ", platform::GROUP_LABEL)),
             "{mac}"
@@ -3102,7 +3102,7 @@ mod tests {
 
     #[test]
     fn coop_legend_on_macos_counts_open_files_but_has_no_brooding() {
-        let mac = lines_with(view("coop"), &MACOS, 0)[2].clone();
+        let mac = lines_with(view("coop"), MACOS, 0)[2].clone();
         assert!(
             mac.contains("eggs = open files (log2), cracked = deleted but open | chicks = threads"),
             "{mac}"
@@ -4496,7 +4496,10 @@ mod tests {
             !press(&mut plain, KeyCode::Char('q')),
             "q filters and does not quit"
         );
-        assert_eq!(picker_lines(&plain, 31)[0], "View: q_  0/17");
+        assert_eq!(
+            picker_lines(&plain, 31)[0],
+            format!("View: q_  0/{}", REGISTRY.len())
+        );
     }
 
     /// A 1600 by 896 scene of 8 by 16 pixel cells whose mouse reports arrive in pixels.
@@ -4727,6 +4730,7 @@ mod tests {
     fn the_picker_scrolls_to_keep_the_highlight_visible() {
         let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
         press(&mut app, KeyCode::Char('v'));
+        let last = REGISTRY.last().expect("the registry has rows").name;
         for _ in 0..REGISTRY.len() - 1 {
             press(&mut app, KeyCode::Down);
         }
@@ -4735,7 +4739,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("murmuration"))
+                .any(|line| line.starts_with("> ") && line.contains(last))
         );
         press(&mut app, KeyCode::Down);
         let lines = picker_lines(&app, 8);
@@ -4750,7 +4754,7 @@ mod tests {
         assert!(
             picker_lines(&app, 8)
                 .iter()
-                .any(|line| line.starts_with("> ") && line.contains("murmuration"))
+                .any(|line| line.starts_with("> ") && line.contains(last))
         );
     }
 

@@ -1656,6 +1656,9 @@ mod tests {
         assert_eq!(availability(), vec![true; REGISTRY.len()]);
     }
 
+    /// The first rows are the eleven views that predate the module contract; the digits pick them.
+    const ELEVEN_BUILT_IN: usize = 11;
+
     #[test]
     fn only_coop_records_and_only_matrix_replaces_the_inspector() {
         let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
@@ -1688,14 +1691,11 @@ mod tests {
         );
         assert_eq!(
             with(|hooks| matches!(hooks, Hooks::Module(_))),
-            [
-                "ptolemy",
-                "tesseract",
-                "necropolis",
-                "cortex",
-                "horizon",
-                "murmuration"
-            ]
+            REGISTRY[ELEVEN_BUILT_IN..]
+                .iter()
+                .map(|row| row.name)
+                .collect::<Vec<_>>(),
+            "every row after the eleven built-in views is a module"
         );
     }
 }
