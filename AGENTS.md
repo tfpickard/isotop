@@ -33,7 +33,9 @@ The README covers usage. This file covers how to work on the code.
    `JOURNAL_LINGER` (30 s) after; no view is special-cased. While the demand contains it, `feed` attaches
    each frame's new lines (the follower's, or the demo's) to the newest sample as `Snapshot.journal`
    (`journal::Delivery`, numbered so a view takes each line once), and the view that draws them reads
-   them from its snapshot. The kernel counters (`Source::Interrupts`, `Softirqs`,
+   them from its snapshot. A sample that stops being the newest (`App::push_sample`) lets go of its
+   lines and keeps their numbering, so the history holds one sample's lines (at most 2048), not
+   `--history` times that. The kernel counters (`Source::Interrupts`, `Softirqs`,
    `IrqAffinity` and `OomKills`; `platform/linux/counters.rs`, `model/kernel.rs`) go through it
    too: with none demanded no `/proc` counter file is opened, and `Snapshot.interrupts`,
    `softirqs` and `oom_kills` stay Pending, Pending and None. Threads (`Source::Threads`) are read

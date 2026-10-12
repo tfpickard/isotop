@@ -591,7 +591,8 @@ pub struct Snapshot {
     /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
     /// follower's, or the demo's. `main.rs` attaches them frame by frame, not the collector, which
     /// does not own the follower, so a collected or demo sample starts with none. A view takes in
-    /// the ones it has not seen (`Delivery::unseen`).
+    /// the ones it has not seen (`Delivery::unseen`). Only the newest sample keeps its lines
+    /// (`Delivery::retire`).
     pub journal: crate::journal::Delivery,
 }
 

@@ -22,7 +22,7 @@ const ERROR: u8 = 3;
 const READER_GRACE: Duration = Duration::from_millis(500);
 /// Lines one sample keeps in its `Delivery`: the follower's backlog, which is as many as a frame
 /// can drain. A longer flood loses its oldest lines, counted as dropped.
-const KEPT: usize = BACKLOG;
+pub(crate) const KEPT: usize = BACKLOG;
 
 /// One journal entry as text, with its syslog severity.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +76,14 @@ impl Delivery {
         totals.dropped += excess as u64;
         self.through = totals.lines;
         self.dropped = totals.dropped;
+    }
+
+    /// Lets go of the lines once the sample is no longer the newest, the only one that is ever
+    /// fed: a view takes in a sample's lines when it draws it live, and the next frame draws the
+    /// next sample, so an older delivery is not read again. The numbering stays, so `unseen`
+    /// finds nothing in it, and the history holds the lines of one sample at most.
+    pub fn retire(&mut self) {
+        self.lines = Vec::new();
     }
 
     /// The lines of the delivery after the first `taken` that ever arrived.
@@ -264,6 +272,18 @@ pub fn demo(from: f64, to: f64) -> Vec<Line> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retired_delivery_keeps_its_numbering_and_offers_no_lines() {
+        let mut totals = Totals::default();
+        let mut delivery = Delivery::default();
+        delivery.add(&mut totals, vec![Line::new(6, "a"), Line::new(6, "b")], 3);
+        assert_eq!(delivery.unseen(0).len(), 2);
+        delivery.retire();
+        assert!(delivery.lines.is_empty());
+        assert_eq!((delivery.through, delivery.dropped), (2, 3));
+        assert!(delivery.unseen(0).is_empty() && delivery.unseen(5).is_empty());
+    }
 
     /// macOS, where the follower is a shell and `log` in a group of their own: the reader sees
     /// the end of the stream only once every process holding the pipe is gone.
