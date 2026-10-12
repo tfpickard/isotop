@@ -36,6 +36,7 @@ def trace(b, limit=40.0, keep_path=False):
         k2u, k2v = v + 0.5 * STEP * k1v, acceleration(u + 0.5 * STEP * k1u)
         k3u, k3v = v + 0.5 * STEP * k2v, acceleration(u + 0.5 * STEP * k2u)
         k4u, k4v = v + STEP * k3v, acceleration(u + STEP * k3u)
+        previous = u
         u += STEP / 6 * (k1u + 2 * k2u + 2 * k3u + k4u)
         v += STEP / 6 * (k1v + 2 * k2v + 2 * k3v + k4v)
         phi += STEP
@@ -44,6 +45,8 @@ def trace(b, limit=40.0, keep_path=False):
         if u >= 0.5:
             return True, phi, path
         if u <= 0.0:
+            # the ray has left: interpolate the crossing of u = 0 inside the last step
+            phi -= STEP * (-u) / (previous - u)
             return False, phi, path
     return False, phi, path
 

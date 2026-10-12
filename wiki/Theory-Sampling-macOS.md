@@ -196,7 +196,7 @@ Both use `proc_pidinfo(PROC_PIDLISTFDS)` to list a process's descriptors and `pr
 Not a gap but not the same quantity: `major_faults` is the page-in count (`pti_pageins`, which includes read-ahead
 and wraps as an `i32`, so it is widened through `u32`), not Linux's `majflt`. The journal is the unified log
 ([Journal](Theory-Journal)). Under demanded life events, `Source::ForkEvents` and `Source::ExitRecords` are missing
-because there is no proc connector and no taskstats: see [Life events](Theory-Life-Events#macos-kqueue).
+because there is no proc connector and no taskstats: see [Life events](Theory-Life-Events#2-macos-kqueue).
 
 How a view degrades is the view's business and is described on its page; the model's part is only that a value that
 could not be measured is absent, not zero, and that `Snapshot::missing` says why.
