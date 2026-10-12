@@ -94,7 +94,7 @@ def main():
     right.note(1.0, -66, "null at 1 Hz", color=MUTED, dx=4)
     right.note(2.0, -66, "null at 2 Hz", color=MUTED, dx=4)
     figure.text(
-        72, 436, "The interval average is the only anti-alias filter: its gain at the Nyquist limit is 2/pi (-3.9 dB) and its first sidelobe still passes 21% at 1.4 Hz.",
+        72, 436, "The interval average is the only anti-alias filter: its gain at the Nyquist limit is 2/pi (-3.9 dB) and its first sidelobe still passes 22% at 1.4 Hz.",
         size=11.5, color=MUTED,
     )
     figure.text(

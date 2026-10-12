@@ -90,6 +90,6 @@
 <text x="652.67" y="171.57" font-size="11" fill="#d2a8ff" text-anchor="start" font-weight="normal">1.1 Hz: -23.6 dB, seen at 0.1 Hz</text>
 <text x="637.33" y="364.47" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal">null at 1 Hz</text>
 <text x="750.67" y="364.47" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal">null at 2 Hz</text>
-<text x="72" y="436" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">The interval average is the only anti-alias filter: its gain at the Nyquist limit is 2/pi (-3.9 dB) and its first sidelobe still passes 21% at 1.4 Hz.</text>
+<text x="72" y="436" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">The interval average is the only anti-alias filter: its gain at the Nyquist limit is 2/pi (-3.9 dB) and its first sidelobe still passes 22% at 1.4 Hz.</text>
 <text x="72" y="453" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">A load faster than 0.5 Hz is attenuated but then reads as a slower one; only an exact multiple of the sampling frequency vanishes.</text>
 </svg>

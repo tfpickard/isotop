@@ -66,8 +66,9 @@ def main():
         times.append(t)
         eased.append(e)
         angle_seconds.append(marble)
-        # True cumulative CPU time at the last sample, which is all anyone knows at time t.
-        lag.append(true_time[k] - marble)
+        # True cumulative CPU time at time t: constant use inside each interval, so linear.
+        ahead = raw[min(k + 1, samples)] / 100.0 * (t - k * SAMPLE) if k < samples else 0.0
+        lag.append(true_time[k] + ahead - marble)
     peak = max(lag)
     where = times[lag.index(peak)]
 
@@ -79,12 +80,13 @@ def main():
     top.frame(xticks=list(range(0, 21, 2)), yticks=[0, 50, 100], xlabel="",
               ylabel="CPU use (% of one core)")
     svg.text(left, 38, "Input and the two filters", 13, weight="600")
-    top.steps([k * SAMPLE for k in range(samples + 1)], raw, S.MUTED, 1.6)
+    top.steps([k * SAMPLE for k in range(samples)], raw[1:], S.MUTED, 1.6)
+    top.curve([samples * SAMPLE - SAMPLE, samples * SAMPLE], [raw[samples]] * 2, S.MUTED, 1.6)
     top.curve([k * SAMPLE for k in range(samples + 1)], smoothed, S.GOLD, 1.0, dash="4 3")
     for k in range(samples + 1):
         svg.circle(top.px(k * SAMPLE), top.py(smoothed[k]), 2.8, S.GOLD, "#0e1116", 0.6)
     top.curve(times, eased, S.TEAL, 2.0)
-    svg.text(top.px(8.2), top.py(100) - 8, "raw interval CPU (steps)", 11, fill=S.MUTED)
+    svg.text(top.px(8.4), top.py(100) - 8, "raw CPU of each 1 s interval (steps)", 11, fill=S.MUTED)
     svg.text(top.px(2.2), top.py(30), "model smoothing, tau 1.5 s (dots, per sample)", 11,
              fill=S.GOLD)
     svg.text(top.px(2.2), top.py(18), "scene easing, tau 0.3 s (line, per frame)", 11, fill=S.TEAL)
@@ -98,9 +100,9 @@ def main():
     svg.line(bot.px(0), bot.py(0), bot.px(END), bot.py(0), S.AXIS, 1)
     svg.text(bot.px(where) + 8, bot.py(peak) - 6,
              "peak %.2f s = %.3f lap (at t = %.1f s)" % (peak, peak / LAP, where), 11, fill=S.VIOLET)
-    svg.text(left, 590, "One lap is 10 CPU-seconds, so 1 CPU-second of lag is 0.1 lap. The lag follows "
+    svg.text(left, 594, "One lap is 10 CPU-seconds, so 1 CPU-second of lag is 0.1 lap. The lag follows "
              "the current CPU level and returns to zero when the process idles;", 11, fill=S.MUTED)
-    svg.text(left, 608, "it never accumulates, because the filters conserve area. The marble is "
+    svg.text(left, 612, "it never accumulates, because the filters conserve area. The marble is "
              "re-seated at 2 pi cpu_time / LAP whenever it is created again.", 11, fill=S.MUTED)
     print(svg.save("cores-phase-lag"))
     print("peak lag", round(peak, 3), "at", round(where, 2), "final lag", round(lag[-1], 4))
