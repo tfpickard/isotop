@@ -644,11 +644,12 @@ always have a blank column between them; one that would touch another is left
 out. Hovering a body or building shows its full name and a short description of
 what it is. After 20 seconds without input
 (`--tour`, `0` disables), a guided tour eases the camera between notable
-processes: system stars, the busiest, and the largest. Each gets a callout with
-a pointer. On the globe, the tour and search also turn the camera so the process
+processes: system stars, the busiest, and the largest, then every other visible
+process. Each gets a callout with a pointer. On the globe, the tour and search also turn the camera so the process
 faces you, because the world's spin carries home to the far side for half of
 every turn. `g` starts the tour at any time, even with the idle tour disabled.
-Any key or mouse movement ends the tour.
+Any key or mouse movement ends the tour, except Space, Shift+Space and `*`, which
+visit the next or a random process in the tour's own order and let it go on from there.
 
 ## Controls
 
@@ -675,14 +676,16 @@ Any key or mouse movement ends the tour.
 | Left drag | Pan (on the globe too) |
 | `l` | Toggle labels |
 | `h` | Hide or show the status panel, giving the scene the whole terminal |
-| `g` | Start the guided tour now; `g` again (or any input) ends it; on the globe it also lets a turned earth spin again |
+| `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
+| Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
+| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names |
 | `c` | Socket links: all, highlighted only, off |
 | `/` | Search name, command, or exact PID |
 | Tab while searching / `n` afterward | Next match |
 | Enter | Accept search |
 | `f` | Focus selected process and descendants |
 | Esc | Leave search, close the popup, or clear subtree focus |
-| Space | Pause / resume |
+| `P` (Shift + p) | Pause / resume |
 | `[` / `]` | Previous / next retained snapshot |
 | `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
 | `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
@@ -761,7 +764,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-44,890 lines of Rust (27,243 production, 17,647 test) in 47 files, 593 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+45,314 lines of Rust (27,367 production, 17,947 test) in 47 files, 610 tests, 14 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

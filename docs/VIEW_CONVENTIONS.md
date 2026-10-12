@@ -254,7 +254,7 @@ Orbit, flow and strata exceed even the line-dominant limit. They are known parit
 - arrows, w a s d
 - + = -, e, Q, PgUp, PgDn
 - t, l, h, 0-9, g, c, Home, r
-- ?, /, n, f, Esc, Space, [, ]
+- ?, /, n, f, Esc, Space (visit the next process), Shift+Space and * (visit a random one), [, ]
 - v (the picker, from [P2 (#18)](https://github.com/tfpickard/isotop/issues/18))
 - every capital letter, kept for future global use
 

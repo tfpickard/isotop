@@ -771,6 +771,12 @@ impl Rng {
         splitmix_finalizer(self.state)
     }
 
+    /// Uniform in `0..bound`, which must not be zero. The bias of the multiply-shift is below
+    /// `bound / 2^32`, far under anything a view could show.
+    pub fn below(&mut self, bound: usize) -> usize {
+        (((self.next_u64() >> 32) * bound as u64) >> 32) as usize
+    }
+
     /// Uniform in [0, 1). Uses 24 bits, the width of an `f32` mantissa, so 1.0 cannot occur.
     pub fn unit(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 / 16_777_216.0
@@ -1038,6 +1044,17 @@ mod tests {
             start: 1235,
         };
         assert_ne!(draw(identity(100), 1), draw(other_start, 1));
+    }
+
+    #[test]
+    fn rng_below_covers_every_value_under_the_bound_and_none_above() {
+        let mut rng = Rng::new(3);
+        let mut seen = [0_u32; 5];
+        for _ in 0..5000 {
+            seen[rng.below(5)] += 1;
+        }
+        assert!(seen.iter().all(|&count| count > 800), "{seen:?}");
+        assert_eq!(rng.below(1), 0);
     }
 
     #[test]

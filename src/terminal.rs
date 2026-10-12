@@ -4,6 +4,9 @@ use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::{cursor, execute, terminal};
 use flate2::{Compression, write::ZlibEncoder};
 
@@ -16,6 +19,9 @@ pub struct Terminal {
     pub pixel_mouse: bool,
     /// Frames travel through POSIX shared memory instead of compressed inline data.
     pub shared_memory: bool,
+    /// The Kitty keyboard protocol is on (`KEYBOARD_FLAGS` pushed), so Shift+Space arrives apart
+    /// from Space. Restoring the terminal pops it.
+    pub keyboard: bool,
     serial: u64,
     /// Recently written shared-memory names; the terminal unlinks each after reading it, and
     /// anything it never read is removed once it is old enough or when isotop exits.
@@ -67,6 +73,7 @@ impl Terminal {
             image: 100,
             pixel_mouse: false,
             shared_memory: false,
+            keyboard: false,
             serial: 0,
             pending: VecDeque::new(),
         };
@@ -89,6 +96,11 @@ impl Terminal {
             guard.pixel_mouse = true;
         }
         guard.shared_memory = support.shared_memory && !direct;
+        if support.keyboard {
+            // Set before the push is written, so a restore that follows a failed write still pops.
+            guard.keyboard = true;
+            execute!(io::stdout(), PushKeyboardEnhancementFlags(KEYBOARD_FLAGS))?;
+        }
         Ok(guard)
     }
 
@@ -200,16 +212,7 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.active {
-            let _ = write!(
-                io::stdout(),
-                "\x1b[?2026l\x1b[?1016l\x1b_Ga=d,d=A,q=2\x1b\\"
-            );
-            let _ = execute!(
-                io::stdout(),
-                crossterm::event::DisableMouseCapture,
-                cursor::Show,
-                terminal::LeaveAlternateScreen
-            );
+            let _ = restore_screen(&mut io::stdout(), self.keyboard);
             let _ = terminal::disable_raw_mode();
             let _ = io::stdout().flush();
             for name in self.pending.drain(..) {
@@ -218,6 +221,32 @@ impl Drop for Terminal {
             self.active = false;
         }
     }
+}
+
+/// The keyboard flags pushed when the terminal answers the Kitty keyboard query. Shift+Space is
+/// text, which the protocol sends as plain text, apart from Space or not at all, unless every
+/// key is reported as an escape code (`REPORT_ALL_KEYS_AS_ESCAPE_CODES`). That in turn sends
+/// Shift+q as `q` with Shift held, so `REPORT_ALTERNATE_KEYS` supplies the shifted key (`Q`, `?`,
+/// `*`) that crossterm substitutes.
+const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        .union(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS)
+        .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
+
+/// Writes everything that undoes `Terminal::enter` except raw mode. The keyboard flags go first:
+/// the main and the alternate screen keep separate stacks of them, and the push was made on the
+/// alternate screen.
+fn restore_screen(out: &mut impl Write, keyboard: bool) -> io::Result<()> {
+    if keyboard {
+        execute!(out, PopKeyboardEnhancementFlags)?;
+    }
+    write!(out, "\x1b[?2026l\x1b[?1016l\x1b_Ga=d,d=A,q=2\x1b\\")?;
+    execute!(
+        out,
+        crossterm::event::DisableMouseCapture,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    )
 }
 
 /// macOS limits a shared-memory name, leading slash included, to `PSHMNAMLEN` bytes; longer
@@ -296,12 +325,14 @@ fn unlink_shared(name: &str) {
 }
 
 struct Support {
+    /// The terminal answered the Kitty keyboard protocol query.
+    keyboard: bool,
     graphics: bool,
     pixels: bool,
     shared_memory: bool,
 }
 
-/// Asks for Kitty graphics (inline and via shared memory) and SGR-Pixels mouse support, then
+/// Asks for Kitty graphics (inline and via shared memory), the Kitty keyboard protocol and SGR-Pixels mouse support, then
 /// waits for the primary device attributes reply. Every terminal answers DA1 and answers in
 /// order, so its arrival means any capability reply has already come; tmux and plain terminals
 /// fail fast instead of timing out.
@@ -318,7 +349,7 @@ fn probe() -> io::Result<Support> {
             base64::engine::general_purpose::STANDARD.encode(&name)
         )?;
     }
-    write!(out, "\x1b[?1016$p\x1b[c")?;
+    write!(out, "\x1b[?u\x1b[?1016$p\x1b[c")?;
     out.flush()?;
     drop(out);
     let deadline = Instant::now() + Duration::from_millis(1500);
@@ -342,9 +373,19 @@ fn probe() -> io::Result<Support> {
     let text = String::from_utf8_lossy(&response);
     unlink_shared(&name);
     Ok(Support {
+        keyboard: keyboard_reply(&text),
         graphics: text.contains("i=31;OK"),
         pixels: text.contains("\x1b[?1016;1$y") || text.contains("\x1b[?1016;2$y"),
         shared_memory: text.contains("i=32;OK"),
+    })
+}
+
+/// Whether `text` holds the reply to the keyboard query, `CSI ? flags u`; the device attributes
+/// reply, `CSI ? ... c`, and mode reports, `CSI ? ... $ y`, do not match.
+fn keyboard_reply(text: &str) -> bool {
+    text.split("\x1b[?").skip(1).any(|rest| {
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        digits > 0 && rest[digits..].starts_with('u')
     })
 }
 
@@ -516,6 +557,36 @@ mod tests {
             b"\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?62;22;52c"
         ));
         assert!(primary_attributes(b"\x1b[?1;2c"));
+    }
+
+    #[test]
+    fn the_keyboard_query_reply_is_told_from_the_other_replies() {
+        assert!(keyboard_reply("\x1b[?0u\x1b[?62;22c"));
+        assert!(keyboard_reply(
+            "\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?15u\x1b[?1;2c"
+        ));
+        assert!(!keyboard_reply(
+            "\x1b_Gi=31;OK\x1b\\\x1b[?1016;2$y\x1b[?62;22c"
+        ));
+        assert!(!keyboard_reply("\x1b[?u"));
+    }
+
+    #[test]
+    fn keyboard_enhancement_is_popped_on_restore() {
+        let mut out = Vec::new();
+        restore_screen(&mut out, true).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let pop = text.find("\x1b[<1u").expect("the flags are popped");
+        let leave = text
+            .find("\x1b[?1049l")
+            .expect("the alternate screen is left");
+        assert!(pop < leave, "the stack to pop is the alternate screen's");
+        let mut push = Vec::new();
+        execute!(&mut push, PushKeyboardEnhancementFlags(KEYBOARD_FLAGS)).unwrap();
+        assert_eq!(push, b"\x1b[>13u", "disambiguate, alternate keys, all keys");
+        let mut out = Vec::new();
+        restore_screen(&mut out, false).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains("\x1b[<"));
     }
 
     #[test]
