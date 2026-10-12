@@ -30,7 +30,10 @@ The README covers usage. This file covers how to work on the code.
    descriptor walk and fdinfo reads behind `Snapshot.pipes`) go through it; the unread bytes of
    Unix sockets (`Snapshot.unix_queues`) ride the socket scan, which every view reads, and are not
    demanded. The journal follower in `main.rs` runs while the demand contains `Source::Journal` and for
-   `JOURNAL_LINGER` (30 s) after; no view is special-cased. The kernel counters (`Source::Interrupts`, `Softirqs`,
+   `JOURNAL_LINGER` (30 s) after; no view is special-cased. While the demand contains it, `feed` attaches
+   each frame's new lines (the follower's, or the demo's) to the newest sample as `Snapshot.journal`
+   (`journal::Delivery`, numbered so a view takes each line once), and the view that draws them reads
+   them from its snapshot. The kernel counters (`Source::Interrupts`, `Softirqs`,
    `IrqAffinity` and `OomKills`; `platform/linux/counters.rs`, `model/kernel.rs`) go through it
    too: with none demanded no `/proc` counter file is opened, and `Snapshot.interrupts`,
    `softirqs` and `oom_kills` stay Pending, Pending and None. Threads (`Source::Threads`) are read
@@ -76,7 +79,7 @@ The README covers usage. This file covers how to work on the code.
 | `threads.rs` | Per-thread sampling (`Source::Threads`): `Thread`, `ThreadList` (in `Process::thread_list`), the caps, `ThreadReader` (what each platform's `Threads` provides), `DeltaTracker` (cumulative counters to growth, forgetting keys a pass missed) and `ThreadScan` (the capped pass and per-thread CPU keyed `(tid, start)`), `targets` (the order the frame thread hands over) and `demo_list` (the demo's threads, `DemoOptions::threads`) |
 | `platform/linux/threads.rs` | The Linux `ThreadReader`: `/proc/<pid>/task/<tid>/stat`, parsed after the last `)` with the field indices `parse_stat` uses (`split_stat`, `timing` in `platform/linux/mod.rs`) |
 | `platform/linux/events.rs` | The `isotop-events` thread on Linux: proc connector fork, exec and exit events and taskstats exit records over netlink, decoded by byte offset from the uapi headers, thread records summed per process |
-| `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines |
+| `journal.rs` | Journal lines for the Matrix view: reader thread, bounded backlog, demo lines, and `Delivery`, the lines one sample carries on `Snapshot.journal` |
 | `views.rs` | The view registry: `REGISTRY`, one `ViewInfo` row per view in Tab order; `View`, an index into it; `Hooks`, `BuiltIn`, the `ViewModule` trait, `ViewKey`, `Warmup`, `LinkRule` and the harness `Contract` (`Property`, `Unstable`); the built-in views' legends and record hooks; and `testing`, module views for tests |
 | `harness.rs` | Test only: the shared view harness. `Session` runs a view headless through `warm_up` and `App::render`; `rescaled` and `churned` perturb a demo sample; `check` tests every `Property` of a row against its `Contract`, and `every_view_satisfies_the_view_contract` runs it for every registered view |
 | `render.rs` | `Camera`, `Sky`, `Item`, `Frame` (CPU rasterizer and picking), `Thing`, `Target` and `Card` (non-process pickables and their inspector cards), `RenderInput`, `Stage` with its `dt` policy and `TourTarget`, and `Scene`, which draws its registry rows: module views through `ViewModule`, and the built-in views in its own arms (City, Orbit, Ripple and Flow as methods, Matrix by hand, and the views below through `Stage`) |
@@ -128,7 +131,8 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
 `render`. The exceptions, so don't assume otherwise:
 
 - `model` and `platform` import each other: the platform builds `model` types and `model` calls the
-  `Sampler`. `journal` and `platform/*/journal.rs` do the same.
+  `Sampler`. `journal` and `platform/*/journal.rs` do the same,
+  and `model` imports `journal::Delivery` for `Snapshot.journal`.
 - `render` imports each module view, and each view imports `render` for `Frame`, `Stage` and
   `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
   `Scene`, `Stage` and `Backdrop` and call the built-in views' legends. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and

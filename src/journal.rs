@@ -20,6 +20,9 @@ const BACKLOG: usize = 2048;
 const ERROR: u8 = 3;
 /// How long stopping waits for the reader thread to see the end of the follower's output.
 const READER_GRACE: Duration = Duration::from_millis(500);
+/// Lines one sample keeps in its `Delivery`: the follower's backlog, which is as many as a frame
+/// can drain. A longer flood loses its oldest lines, counted as dropped.
+const KEPT: usize = BACKLOG;
 
 /// One journal entry as text, with its syslog severity.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +37,52 @@ impl Line {
             priority,
             text: text.into(),
         }
+    }
+}
+
+/// The journal lines that arrived while one sample was the newest, which travel on that
+/// `Snapshot` (`Snapshot::journal`) to the view that draws them. `main.rs` attaches what the
+/// follower (or the demo) produced each frame to the newest sample; a view takes in the lines it
+/// has not seen yet (`unseen`), so drawing the same sample twice, or an older one after a rewind,
+/// adds nothing. Empty on a sample nothing was attached to.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Delivery {
+    /// The lines attached to the sample, oldest first.
+    pub lines: Vec<Line>,
+    /// How many lines had arrived in all once the last of these did. The first of `lines` is
+    /// number `through - lines.len()`.
+    pub through: u64,
+    /// How many lines had been dropped in all by then: the follower's backlog was full, or a
+    /// sample held more than it keeps.
+    pub dropped: u64,
+}
+
+/// What has been handed over since the follower started, which numbers the lines of a `Delivery`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    lines: u64,
+    dropped: u64,
+}
+
+impl Delivery {
+    /// Attaches `lines` that just arrived and the `dropped` count the follower reported, counting
+    /// both in `totals`.
+    pub fn add(&mut self, totals: &mut Totals, lines: Vec<Line>, dropped: u64) {
+        totals.lines += lines.len() as u64;
+        totals.dropped += dropped;
+        self.lines.extend(lines);
+        let excess = self.lines.len().saturating_sub(KEPT);
+        self.lines.drain(..excess);
+        totals.dropped += excess as u64;
+        self.through = totals.lines;
+        self.dropped = totals.dropped;
+    }
+
+    /// The lines of the delivery after the first `taken` that ever arrived.
+    pub fn unseen(&self, taken: u64) -> &[Line] {
+        let first = self.through - self.lines.len() as u64;
+        let skip = usize::try_from(taken.saturating_sub(first)).unwrap_or(usize::MAX);
+        self.lines.get(skip..).unwrap_or(&[])
     }
 }
 
@@ -224,6 +273,55 @@ mod tests {
         let mut journal = Journal::start();
         assert!(journal.stop(), "the reader outlived its follower");
         assert!(journal.child.is_none() && journal.reader.is_none());
+    }
+
+    fn lines(first: usize, count: usize) -> Vec<Line> {
+        (first..first + count)
+            .map(|k| Line::new(6, format!("line {k}")))
+            .collect()
+    }
+
+    #[test]
+    fn a_delivery_numbers_its_lines_so_a_reader_takes_each_once() {
+        let mut totals = Totals::default();
+        let mut delivery = Delivery::default();
+        delivery.add(&mut totals, lines(0, 3), 0);
+        assert_eq!(delivery.unseen(0), lines(0, 3));
+        assert_eq!(delivery.unseen(3), []);
+        delivery.add(&mut totals, lines(3, 2), 4);
+        assert_eq!((delivery.through, delivery.dropped), (5, 4));
+        assert_eq!(
+            delivery.unseen(3),
+            lines(3, 2),
+            "only the lines after the third"
+        );
+        // A later sample starts empty and its numbers continue from the totals.
+        let mut next = Delivery::default();
+        next.add(&mut totals, lines(5, 1), 0);
+        assert_eq!(next.unseen(5), lines(5, 1));
+        assert_eq!(
+            next.unseen(0),
+            lines(5, 1),
+            "a reader that missed some takes what is there"
+        );
+        assert_eq!(Delivery::default().unseen(7), []);
+    }
+
+    #[test]
+    fn a_sample_keeps_the_newest_lines_of_a_flood_and_counts_the_rest_as_dropped() {
+        let mut totals = Totals::default();
+        let mut delivery = Delivery::default();
+        for batch in 0..3 {
+            delivery.add(&mut totals, lines(batch * KEPT, KEPT), 1);
+        }
+        assert_eq!(delivery.lines.len(), KEPT);
+        assert_eq!(delivery.through as usize, 3 * KEPT);
+        assert_eq!(delivery.unseen(0), lines(2 * KEPT, KEPT));
+        assert_eq!(
+            delivery.dropped as usize,
+            3 + 2 * KEPT,
+            "three reported, two samples' worth cut"
+        );
     }
 
     #[test]

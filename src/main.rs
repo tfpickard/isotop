@@ -401,6 +401,8 @@ struct App {
     renderer: String,
     /// When the demand last contained `Source::Journal`; None while it has not.
     journal_demanded: Option<Instant>,
+    /// What `deliver_journal` has attached to samples so far, which numbers the next lines.
+    journal_totals: journal::Totals,
     /// Whether each of the scene's views runs on this platform, in row order.
     available: Vec<bool>,
     /// The views Tab and Shift+Tab cycle; never empty while any view is available.
@@ -452,6 +454,7 @@ impl App {
             gpu: None,
             renderer: "cpu".into(),
             journal_demanded: None,
+            journal_totals: journal::Totals::default(),
             playlist: picker::playlist(&[], &available),
             picker: None,
             available,
@@ -2218,19 +2221,25 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
     }
 }
 
-/// Hands the matrix view its journal lines: synthetic ones arriving in `(from, to]` demo seconds,
-/// or whatever `journalctl` has written since the last call.
+/// Attaches the journal lines of this frame to the newest sample (`Snapshot::journal`), where the
+/// view that draws them finds them: synthetic ones arriving in `(from, to]` demo seconds, or
+/// whatever `journalctl` has written since the last call.
 fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64) {
     let lines = match (demo, source) {
         (true, _) => journal::demo(from, to),
         (false, Some(source)) => source.drain(),
         (false, None) => Vec::new(),
     };
-    for line in lines {
-        app.scene.matrix.push(line);
-    }
-    if let Some(source) = source {
-        app.scene.matrix.skipped += source.dropped();
+    let dropped = source.map_or(0, Journal::dropped);
+    if !lines.is_empty() || dropped > 0 {
+        let App {
+            history,
+            journal_totals,
+            ..
+        } = app;
+        if let Some(newest) = history.back_mut() {
+            newest.journal.add(journal_totals, lines, dropped);
+        }
     }
 }
 
@@ -2833,6 +2842,26 @@ mod tests {
         };
         assert!(app.popup(&frame, &layout).is_none());
         assert_eq!(app.selected, Some(selected), "kept for the process views");
+    }
+
+    #[test]
+    fn feed_attaches_each_frames_journal_lines_to_the_newest_sample() {
+        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
+        app.history.push_front(model::demo(0.0, 16));
+        feed(&mut app, None, true, 0.0, 1.0);
+        assert!(
+            app.history[0].journal.lines.is_empty(),
+            "an older sample gets none"
+        );
+        assert_eq!(app.history[1].journal.lines, journal::demo(0.0, 1.0));
+        feed(&mut app, None, true, 1.0, 2.0);
+        let newest = &app.history[1].journal;
+        assert_eq!(newest.lines, journal::demo(0.0, 2.0));
+        assert_eq!(newest.through as usize, newest.lines.len());
+        // A frame that brought nothing leaves the sample as it was.
+        let before = newest.clone();
+        feed(&mut app, None, true, 2.0, 2.05);
+        assert_eq!(app.history[1].journal, before);
     }
 
     #[test]

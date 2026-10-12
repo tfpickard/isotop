@@ -1841,6 +1841,7 @@ impl Scene {
             }
             Some(BuiltIn::Matrix) => {
                 self.positions.clear();
+                self.matrix.take(&snapshot.journal);
                 self.matrix.draw(frame, time);
                 self.visible = 0;
             }

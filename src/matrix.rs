@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 
 use crate::glyphs::{self, HEIGHT, WIDTH};
-use crate::journal::Line;
+use crate::journal::{Delivery, Line};
 use crate::palette::mix;
 use crate::render::{Color, Frame, Item};
 use crate::simulation::{Rng, hash};
@@ -79,11 +79,26 @@ pub struct Rain {
     greeted: bool,
     /// Lines dropped because they arrived faster than the log could show them.
     pub skipped: u64,
+    /// Lines of the journal taken in so far, and the follower's drops counted in `skipped`, which
+    /// is how `take` tells a delivery it has seen from one it has not.
+    taken: u64,
+    counted: u64,
     /// The name in the greeting; `None` reads `$USER`.
     pub user: Option<String>,
 }
 
 impl Rain {
+    /// Takes in the lines of a sample's `Delivery` that earlier samples (or an earlier draw of
+    /// this one) did not bring: each journal line is queued once however often a sample is drawn.
+    pub fn take(&mut self, delivery: &Delivery) {
+        for line in delivery.unseen(self.taken) {
+            self.push(line.clone());
+        }
+        self.taken = self.taken.max(delivery.through);
+        self.skipped += delivery.dropped.saturating_sub(self.counted);
+        self.counted = self.counted.max(delivery.dropped);
+    }
+
     /// Queues a journal line to be written into the log.
     pub fn push(&mut self, line: Line) {
         self.latest = Some(line.text.clone());
@@ -360,6 +375,7 @@ fn wrap(text: &str, width: usize) -> Vec<Vec<char>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::Totals;
     use crate::render::{Backdrop, Buffers, Sky};
 
     fn frame() -> Frame {
@@ -545,6 +561,24 @@ mod tests {
         run(&mut rain, 0.0, 0.0);
         assert_eq!(rain.rows.len(), rows);
         assert!(rain.streams.len() <= columns * rows + columns);
+    }
+
+    #[test]
+    fn a_delivery_is_taken_in_once_however_often_it_is_drawn() {
+        let mut totals = Totals::default();
+        let mut first = Delivery::default();
+        first.add(&mut totals, vec![Line::new(6, "a"), Line::new(6, "b")], 3);
+        let mut rain = rain();
+        rain.take(&first);
+        rain.take(&first);
+        assert_eq!((rain.pending(), rain.skipped), (2, 3));
+        let mut second = Delivery::default();
+        second.add(&mut totals, vec![Line::new(6, "c")], 1);
+        rain.take(&second);
+        // The first sample drawn again after a rewind brings nothing.
+        rain.take(&first);
+        assert_eq!((rain.pending(), rain.skipped), (3, 4));
+        assert_eq!(rain.latest(), Some("c"));
     }
 
     #[test]
