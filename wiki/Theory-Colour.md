@@ -93,7 +93,7 @@ Functions:
 * `kind_color(process)` (Orbit, Ripple, Flow, Cores, Cells, Strata, Globe, Coop, Ptolemy, Tesseract): the state
   colour, else the kind base brightness-scaled per pid (section 3.2). State colours are **not** jittered.
 * `core_color(kind)` and `core_name(kind)` ("performance", "efficiency", "unknown").
-* Colours used by only one view stay in that view (Reef's own palette, the Globe's coastline), and the terminal
+* Colours used by only one view stay in that view (for example Reef's own palette), and the terminal
   overlay colours (`Tone::Quiet` 150, 172, 198; `Bright` 214, 226, 240; `Tag` 255, 226, 170 on 12, 19, 31; the popup
   border 92, 122, 158 on 12, 19, 31; the status text 180, 199, 218) are in `terminal.rs`, outside `palette.rs`.
 
@@ -128,8 +128,8 @@ For $s\le1$ the exponent law holds to a percent; above 1 the red channel clips a
 saturation toward yellow, and the brightening falls short of $s^{2.2}$. The sphere light of the rasterizer,
 $\text{light}=\min(0.25+\max(0,\,\mathbf n\cdot\mathbf l),\,1.2)$ (constants `SPHERE_AMBIENT`, `SPHERE_LIGHT_*`),
 is a `tint` with a scale in $[0.25,1.2]$: a shaded side at 0.25 has about $0.25^{2.2}=5\%$ of the luminance of
-the lit side. That is a contrast ratio of 20 to 1 from a mere factor-of-four in the number, and it is why
-spheres look deeply shaded rather than lightly.
+the lit side. That is a luminance ratio of 20 to 1 from a factor of four in the number, which is why spheres look deeply
+shaded rather than lightly.
 
 `kind_color` scales its base by `0.86 + 0.24 * j`, where `j = (hash::knuth(pid) >> 24) / 255` takes 256 values in
 $[0,1]$, so the scale spans $[0.86,1.10]$ "so neighbours differ". The cost, measured:
@@ -186,17 +186,13 @@ additive in light; they are compositing operators on display values, consistent 
 
 ## 4. Perceptual notes
 
-* **Hue carries kind, lightness carries identity noise, saturation is high.** The four kind colours have
-  $L^*$ of 51, 64, 69, 76: slate is the darkest and amber the lightest, and the jitter moves each by $\pm0.1$ in
-  scale.
-* **Teal and amber are the only pair of unrelated hues placed at the same lightness class** ($L^*$ 69 against
-  76), which is why they are also the two core colours: they read as "this machine's two kinds of core"
-  without implying more or less.
+* **Hue carries kind, lightness carries identity noise.** The four kind colours have $L^*$ of 51 (slate), 64
+  (violet), 69 (teal) and 76 (amber): three of them within 12 units of each other, so lightness is a poor
+  channel for kind even before the jitter. The two core colours are the teal and the amber.
 * **Slate is a ground colour.** At 4.25:1 on Dusk bottom and 2.27:1 on the Sea backdrop it recedes, which suits
   kernel threads (many, uninteresting) and fails for any view that puts them on the lighter backdrops.
-* **Warm colours dominate attention.** Amber (session) is the brightest and most saturated of the four, the
-  user's own processes. That agrees with the mapping, and it is the same colour as the stopped state
-  (section 5), which does not.
+* **Amber is the lightest of the four** ($L^*$ 76, luminance 0.50), the user's own processes, which fits the
+  mapping; it is also nearly the colour of the stopped state (section 5), which does not.
 * **Simultaneous contrast and adaptation** are not modelled: colours are chosen against the dark backdrops
   only, and the selection ring (237, 220, 154) is contrasted with them only by being bright: against
   `SESSION` its contrast is 1.38:1 ($\Delta E_{00}$ 14.2), the weakest of the kinds; against `KERNEL` 3.15:1.
@@ -205,7 +201,8 @@ additive in light; they are compositing operators on display values, consistent 
 
 All pairs among the eight colours of the table (four kinds, three states, the unknown core), by $\Delta E_{00}$,
 for normal vision and under the three deficiencies. CIEDE2000 was implemented from the formulae and checked
-against seven of the published test pairs of Sharma et al. (2005), agreeing to the four printed decimals. The
+against seven test pairs of Sharma et al. (2005), remembered by the author, all of which it reproduced to the
+four printed decimals. The
 colour-vision matrices (Machado et al. 2009, severity 1.0, in linear RGB; each row sums to 1 so that greys stay
 grey, and I checked that) were transcribed by the author from memory of the published table and are marked
 **(unverified)**; treat the numbers as indicative, and the issue's planned unit test as authoritative.
@@ -229,8 +226,7 @@ Reading the table:
   range**: the nearest jittered session shade is (220, 165, 85), at $\Delta E_{00}$ 2.3 from the stopped colour,
   and for 63 percent of the 256 jitter values the difference is under 5, for 23 percent under 3. In Orbit, Ripple,
   Flow and every other view that uses `kind_color`, **a stopped process in the user's session is, by colour
-  alone, indistinguishable from a running one**. The state is carried by other cues in some views (the
-  inspector, motion), not by the colour that was meant to carry it.
+  alone, indistinguishable from a running one**, although the state colour exists to tell them apart.
 * **`UNKNOWN_CORE` is a steel blue between slate and teal**, and a deuteranope sees it 1.6 away from the
   efficiency-core teal. It only matters if both appear in one view (a part-hybrid machine reporting some cores
   as unknown).
@@ -310,8 +306,8 @@ What the table shows about the design:
   constant: 0.23 at 1 000 K, 0.96 at 6 500 K, 0.49 at 40 000 K. A view that wants brightness to encode luminosity
   (the HR diagram) must scale separately, and a view that does not will make mid-temperature stars look brightest.
 * **At 6 500 K the colour is almost white** `(255, 249, 254)`; the whole blue half of the locus is the pale
-  band from `#cdd9ff` to `#9eb8ff`, which at the 8-bit resolution of the display is a modest range: a hundred
-  steps of temperature above 10 000 K are within 47 levels of blue-white.
+  band from `#cdd9ff` to `#9eb8ff`, which at the 8-bit resolution of the display is a modest range: about 96
+  of the 256 table steps (10 000 K to 40 000 K) lie within 47 levels of red and 33 of green.
 
 ## 8. Try it
 
@@ -319,9 +315,6 @@ What the table shows about the design:
 # the City uses process_color (state or district), the others kind_color (state or kind with jitter)
 ./target/release/isotop --demo --view city  --time 12 --width 1200 --renderer cpu --output city.png
 ./target/release/isotop --demo --view orbit --time 12 --width 1200 --renderer cpu --output orbit.png
-
-# a stopped process is process 9 of the demo (state 'T'); find it in Orbit by its state colour
-./target/release/isotop --demo --view orbit --time 12 --width 1600 --renderer cpu --output orbit.png
 
 # tests that pin the palette
 cargo test palette_kind_colours_match_their_previous_literals
