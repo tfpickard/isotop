@@ -66,8 +66,9 @@ struct System {
 impl Ripple {
     /// Places every process as a pebble in its cgroup's cluster and records the positions of the
     /// drawn ones. A process keeps its slot while it lives, drawn or not; a cluster spreads out
-    /// or moves only when it outgrows the water reserved for it. Returns each drawn process's
-    /// pebble radius, and the clusters that make a system.
+    /// only when its largest pebble would touch a neighbour, and moves only when it outgrows the
+    /// water reserved for it. Returns each drawn process's pebble radius, and the clusters that
+    /// make a system.
     fn scatter(
         &mut self,
         stage: &mut Stage,
@@ -127,9 +128,14 @@ impl Ripple {
                 .map(|id| members[id].1)
                 .fold(0.0, f32::max);
             // Spiral neighbours sit at least ~1.6 spacings apart; jitter takes up to 0.2 of that.
-            let needed = (2.0 * largest + PEBBLE_GAP) / 1.4;
-            if needed > cluster.spacing {
-                cluster.spacing = needed * 1.15;
+            // A cluster is laid out with PEBBLE_GAP to spare and 15% more spacing than that
+            // needs, and its pebbles grow in place into all of it: it is spread out again only
+            // when the largest would touch a neighbour. Even the dearest pebble (the radius
+            // caps at 4.5) can thus double its memory, a radius of 2^(1/3) times, without moving
+            // anything.
+            let touching = 2.0 * largest / 1.4;
+            if touching > cluster.spacing {
+                cluster.spacing = (2.0 * largest + PEBBLE_GAP) / 1.4 * 1.15;
             }
             let outermost = cluster.slots.keys().max().copied().unwrap_or(0);
             cluster.extent = cluster.spacing * (outermost as f32 + 1.0).sqrt() + largest;
@@ -449,6 +455,14 @@ mod tests {
         frame
     }
 
+    /// Renders `snapshot` every tenth of a second from `from` for 3 s, long enough for the scene's
+    /// easing of memory to settle on it.
+    fn settle(scene: &mut Scene, snapshot: &Snapshot, from: f32) {
+        for k in 1..=30 {
+            render(scene, snapshot, view("ripple"), from + k as f32 * 0.1);
+        }
+    }
+
     fn pond(scene: &Scene) -> &Ripple {
         scene
             .module::<Ripple>(view("ripple"))
@@ -524,6 +538,82 @@ mod tests {
         render(&mut scene, &snapshot, view("ripple"), 1.1);
         for p in &snapshot.processes {
             assert_eq!(flat(&scene, &p.id), before[&p.id], "{} moved", p.name);
+        }
+    }
+
+    #[test]
+    fn doubling_every_pebble_leaves_them_in_place_and_clear_of_each_other() {
+        let mut snapshot = demo(1.0, 64);
+        let mut scene = Scene::new();
+        let flat = |scene: &Scene, id: &Identity| {
+            let p = scene.positions[id];
+            [p[0], p[1]]
+        };
+        render(&mut scene, &snapshot, view("ripple"), 1.0);
+        let before: HashMap<Identity, [f32; 2]> = snapshot
+            .processes
+            .iter()
+            .map(|p| (p.id, flat(&scene, &p.id)))
+            .collect();
+        let homes: HashMap<String, [f32; 2]> = pond(&scene)
+            .clusters
+            .iter()
+            .map(|(name, cluster)| (name.clone(), cluster.center))
+            .collect();
+        for p in &mut snapshot.processes {
+            p.memory *= 2;
+        }
+        settle(&mut scene, &snapshot, 1.0);
+        for p in &snapshot.processes {
+            assert_eq!(flat(&scene, &p.id), before[&p.id], "{} moved", p.name);
+        }
+        for (name, cluster) in &pond(&scene).clusters {
+            assert_eq!(cluster.center, homes[name], "{name} was placed again");
+        }
+        for (i, a) in snapshot.processes.iter().enumerate() {
+            for b in snapshot.processes[i + 1..]
+                .iter()
+                .filter(|b| b.group == a.group)
+            {
+                let (at, to) = (flat(&scene, &a.id), flat(&scene, &b.id));
+                let touching = mass_radius(a.memory as f32) + mass_radius(b.memory as f32);
+                assert!(
+                    (at[0] - to[0]).hypot(at[1] - to[1]) > touching,
+                    "{} and {} touch",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pebbles_that_outgrow_their_cluster_spread_it_out_without_touching() {
+        let mut snapshot = demo(1.0, 64);
+        let mut scene = Scene::new();
+        render(&mut scene, &snapshot, view("ripple"), 1.0);
+        for p in &mut snapshot.processes {
+            p.memory *= 40;
+        }
+        settle(&mut scene, &snapshot, 1.0);
+        let flat = |id: &Identity| {
+            let p = scene.positions[id];
+            [p[0], p[1]]
+        };
+        for (i, a) in snapshot.processes.iter().enumerate() {
+            for b in snapshot.processes[i + 1..]
+                .iter()
+                .filter(|b| b.group == a.group)
+            {
+                let (at, to) = (flat(&a.id), flat(&b.id));
+                let touching = mass_radius(a.memory as f32) + mass_radius(b.memory as f32);
+                assert!(
+                    (at[0] - to[0]).hypot(at[1] - to[1]) >= touching,
+                    "{} and {} touch",
+                    a.name,
+                    b.name
+                );
+            }
         }
     }
 
