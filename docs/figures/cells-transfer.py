@@ -29,8 +29,8 @@ def main():
                 "Cell radius against memory, memory-limit ring against usage, membrane wobble "
                 "against pressure and CPU arc against quota use.")
     # (a) radius against memory
-    a = S.Axes(svg, 80, 60, 360, 220, (1, 65536), (0, 24), xlog=True)
-    a.frame(xticks=[1, 16, 256, 4096, 65536], yticks=[0, 6, 12, 18, 24],
+    a = S.Axes(svg, 80, 60, 360, 220, (1, 65536), (0, 45), xlog=True)
+    a.frame(xticks=[1, 16, 256, 4096, 65536], yticks=[0, 10, 20, 30, 40],
             xlabel="cgroup memory (MiB, log scale)", ylabel="cell radius (world units)",
             xfmt=lambda v: {1: "1 MiB", 16: "16", 256: "256", 4096: "4 GiB", 65536: "64 GiB"}[v])
     svg.text(80, 46, "(a) radius = max(1.3 + 0.16 sqrt(MiB), seats term)", 13, weight="600")
@@ -40,8 +40,8 @@ def main():
         r = 0.75 * math.sqrt(span + 1) + 1
         a.curve([1, 65536], [r, r], shade, 1.2, dash="4 3")
         svg.text(a.px(65536) - 4, a.py(r) - 4, "%d seats" % span, 10, "end", S.MUTED)
-    svg.text(a.px(12), a.py(20), "area follows memory:", 11, fill=S.GOLD)
-    svg.text(a.px(12), a.py(20) + 14, "r grows as sqrt(memory)", 11, fill=S.GOLD)
+    svg.text(a.px(1.5), a.py(36), "area follows memory:", 11, fill=S.GOLD)
+    svg.text(a.px(1.5), a.py(36) + 14, "r grows as sqrt(memory)", 11, fill=S.GOLD)
 
     # (b) limit ring
     b = S.Axes(svg, 560, 60, 360, 220, (0, 1.0), (0.9, 1.7))
@@ -81,7 +81,6 @@ def main():
     xs = [2.0 * k / 200 for k in range(201)]
     ys = [min(x, 1.0) for x in xs]
     d.curve(xs, ys, S.GOLD, 2.2)
-    d.curve([0.9, 2.0], [0.9, 1.0], S.RED, 0.0)
     svg.line(d.px(0.9), d.py(0), d.px(0.9), d.py(1.1), S.RED, 1, dash="3 3")
     svg.text(d.px(0.9) + 6, d.py(0.3), "red above 0.9", 11, fill=S.RED)
     svg.text(d.px(0.9) + 6, d.py(0.3) + 14, "(only with a quota)", 11, fill=S.RED)

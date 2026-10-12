@@ -136,12 +136,11 @@ def main():
     svg.circle(pts2[-1][0], pts2[-1][1], 3.0, fill=P.BLUE)
     hx, hy = fit([(0.0, 0.0)] + track2, left2, top, size)[0][0]
     svg.circle(hx, hy, 3.0, fill=P.MUTED)
-    svg.text(hx - 8, hy + 16, "home", size=10.5, fill=P.MUTED, anchor="end")
     svg.line(left2 + 16, top + size - 20, left2 + 16 + scale2 * 5.0, top + size - 20,
              stroke=P.TEXT, width=1.5)
     svg.text(left2 + 16, top + size - 28, "5 world units", size=10.5)
-    svg.text(left2 + size - 10, top + size - 12, "CPU = 0.05 + 1.6 exp(-t / 14 s); track ends "
-             "when CPU < 0.10", size=10.5, anchor="end", fill=P.MUTED)
+    svg.text(left2 + size - 10, top + size - 12, "grey dot: home. CPU = 0.05 + 1.6 exp(-t / 14 s), "
+             "track ends below 0.10", size=10.5, anchor="end", fill=P.MUTED)
     svg.save("docs/media/figures/chamber-spirals.svg")
     print("delta ray path cm", round(path, 3), "points", len(track))
     print("process track seconds", round(seconds, 2), "points", len(track2))

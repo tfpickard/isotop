@@ -19,8 +19,7 @@
 <circle cx="546.67" cy="339.63" r="3" fill="#e8743a"/>
 <circle cx="786.31" cy="327.41" r="3" fill="#4c97f0"/>
 <circle cx="779.18" cy="340.17" r="3" fill="#8b949e"/>
-<text x="771.18" y="356.17" font-size="10.5" text-anchor="end" fill="#8b949e">home</text>
 <line x1="536" y1="490" x2="603.1" y2="490" stroke="#c9d1d9" stroke-width="1.5"/>
 <text x="536" y="482" font-size="10.5" text-anchor="start" fill="#c9d1d9">5 world units</text>
-<text x="930" y="498" font-size="10.5" text-anchor="end" fill="#8b949e">CPU = 0.05 + 1.6 exp(-t / 14 s); track ends when CPU &lt; 0.10</text>
+<text x="930" y="498" font-size="10.5" text-anchor="end" fill="#8b949e">grey dot: home. CPU = 0.05 + 1.6 exp(-t / 14 s), track ends below 0.10</text>
 </svg>
