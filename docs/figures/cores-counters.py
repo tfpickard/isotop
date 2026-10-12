@@ -91,25 +91,23 @@ def main():
     svg.text(mid.px(12) - 6, mid.py(W[12]) - 8, "W", 12, "end", S.RED, weight="600")
     svg.text(mid.px(0.2), mid.py(6.6), "dots: isotop's once-per-second reads", 11, fill=S.MUTED)
 
-    bot = S.Axes(svg, left, 530, width, 150, (0, SPAN), (0, 1.0))
-    bot.frame(xticks=list(range(13)), yticks=[0, 0.5, 1.0], xlabel="time (s)",
-              ylabel="busy share", yfmt=lambda v: "%g" % v)
+    bot = S.Axes(svg, left, 530, width, 150, (0, SPAN), (0, 1.5))
+    bot.frame(xticks=list(range(13)), yticks=[0, 0.5, 1.0, 1.5], xlabel="time (s)",
+              ylabel="share / mean tasks", yfmt=lambda v: "%g" % v)
     svg.text(left, 518, "3. What a lane shows each second: busy share (gold bars), mean queue (red)",
              13, weight="600")
     for k in range(12):
         x0, x1 = bot.px(k) + 6, bot.px(k + 1) - 6
         y = bot.py(busy[k])
         svg.rect(x0, y, (x1 - x0) / 2 - 1, bot.py(0) - y, S.GOLD, opacity=0.85)
-        qy = bot.py(min(wait[k], 1.0))
+        qy = bot.py(wait[k])
         svg.rect((x0 + x1) / 2 + 1, qy, (x1 - x0) / 2 - 1, bot.py(0) - qy, S.RED, opacity=0.85)
         svg.text((x0 + x1) / 2 - 1, bot.py(0) - 6 if busy[k] < 0.12 else y - 5,
                  "%.2f" % busy[k], 9.5, "middle", S.TEXT)
         if wait[k] > 0.005:
             svg.text((x0 + x1) / 2 + 12, qy - 17 if qy > bot.top + 22 else qy + 12,
                      "%.2f" % wait[k], 9.5, "start", S.RED)
-    svg.text(left + width, 718, "queue bars are clipped at 1.0 on this axis; the lane draws "
-             "round(wait) red beads, at most 6", 11, "end", S.MUTED)
-    svg.text(left, 740, "The sample interval sets only the time resolution: the counters never "
+    svg.text(left, 742, "The sample interval sets only the time resolution: the counters never "
              "lose a burst, they lose when it happened.", 11, fill=S.MUTED)
     print(svg.save("cores-counters"))
 

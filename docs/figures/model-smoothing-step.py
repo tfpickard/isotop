@@ -56,9 +56,8 @@ def main():
     axes.path(ts, [100 * (1 - math.exp(-(t - STEP_AT) / TAU)) for t in ts], INK, 1.3, "6 4", 0.8)
     # dt = 1 s: the raw interval averages and the filter output.
     t1, raw1, out1 = response(1.0, 10)
-    axes.steps([0.0] + t1[:-1], [0.0] + raw1[:-1], ORANGE, 1.6)
+    axes.steps([0.0] + t1[:-1], raw1, ORANGE, 1.6)
     axes.points(t1, out1, BLUE, 4.2)
-    axes.path([0.0] + t1, [0.0] + out1, BLUE, 1.3, None, 0.6)
     # dt = 0.25 s.
     t2, raw2, out2 = response(0.25, 10)
     axes.points(t2, out2, GREEN, 1.9, 0.95)
@@ -74,7 +73,7 @@ def main():
         [
             (MUTED, "true load", "2 4"),
             (INK, "ideal continuous filter, 1 - exp(-t / tau)", "6 4"),
-            (ORANGE, "raw reading: counter delta / dt, dt = 1 s", None),
+            (ORANGE, "raw reading: mean load over each 1 s interval", None),
             (BLUE, "displayed CPU, dt = 1 s (dots)", None),
             (GREEN, "displayed CPU, dt = 0.25 s (dots)", None),
         ],

@@ -43,7 +43,7 @@ def main():
         (1.5, (1.0, 1.0), "mu = 1.5, equal start: the short tube wins"),
         (1.5, (0.3, 1.5), "mu = 1.5, long tube favoured at the start: it wins"),
     ]
-    width, height = 1000, 640
+    width, height = 1000, 600
     svg = P.Svg(width, height, "Two parallel tubes under flux reinforcement",
                 "Conductivity against time for a short and a long tube between one source and "
                 "one sink, for mu = 0.6, 1 and 1.5.")
