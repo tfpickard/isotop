@@ -728,9 +728,9 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: the view's own targets (Orbit's system stars, and
-    /// a module view's `Stage::tour`), heaviest first, then the busiest and the largest. Hubs
-    /// are not processes, so they have no callout to show and are passed over.
+    /// Notable processes to visit while idle: the view's own targets (Ripple's clusters, and a
+    /// module view's `Stage::tour`, which leaves out what has no callout to show, such as the
+    /// hub of an Orbit system), heaviest first, then the busiest and the largest.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
             .snapshot()
@@ -753,7 +753,6 @@ impl App {
                     .iter()
                     .map(|target| (target.id, target.weight)),
             )
-            .filter(|(id, _)| !render::is_hub(id))
             .collect();
         stars.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut targets = Vec::new();
@@ -1156,29 +1155,16 @@ impl App {
         )
     }
 
-    /// The label of an orbit system's star with `members` processes: its process's name, or
-    /// for a hub the name of the parent it stands for, which isotop could not read.
+    /// The label of the Ripple cluster anchored by `id`, with `members` pebbles: its process's
+    /// name.
     fn star_label(
-        &self,
         lookup: &HashMap<Identity, &Process>,
         id: Identity,
         members: usize,
     ) -> Option<String> {
-        if let Some(p) = lookup.get(&id) {
-            let name = match (p.name.as_str(), p.id.pid) {
-                ("systemd", 1) => "init",
-                ("systemd", _) => "systemd --user",
-                (name, _) => name,
-            };
-            let name = label_name(name);
-            return Some(if members > 1 {
-                format!("{name} ({members})")
-            } else {
-                name.into_owned()
-            });
-        }
-        let name = self.scene.hub_names.get(&id)?;
-        Some(format!("{} (unreadable) ({members})", label_name(name)))
+        lookup
+            .get(&id)
+            .map(|p| crate::views::systems::system_label(p, members))
     }
 
     /// The label of a system centred on `star` that reaches `reach` world units: just below its
@@ -1330,7 +1316,7 @@ impl App {
             ));
         }
         for &(id, members, reach) in &self.scene.stars {
-            if let Some(text) = self.star_label(&lookup, id, members)
+            if let Some(text) = Self::star_label(&lookup, id, members)
                 && let Some(&star) = self.scene.positions.get(&id)
             {
                 labels.extend(self.title_label(frame, layout, &mut board, star, reach, text));
@@ -2441,7 +2427,13 @@ mod tests {
         for view in [view("orbit"), view("flow")] {
             let mut app = App::new(view, snapshot.clone(), all_available());
             app.render(1600, 900, 512);
-            assert!(!app.scene.hub_names.is_empty(), "{view:?} draws the hub");
+            assert!(
+                app.scene
+                    .titles
+                    .iter()
+                    .any(|title| title.text.contains("(unreadable)")),
+                "{view:?} draws the hub"
+            );
             let targets = app.tour_targets();
             assert!(!targets.is_empty());
             for target in &targets {

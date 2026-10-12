@@ -3,12 +3,15 @@
 //! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
 //! row instead of naming the view, so a new view is one module plus one row.
 //!
-//! Four of the eleven views that predate the registry (city, orbit, ripple and flow) are still
-//! built in: `Scene` keeps their state in typed fields and draws them in its own arms, picked by
-//! `BuiltIn`. The others, and every new view, are module views: a type that implements
-//! `ViewModule`, which `Scene` builds from the row and calls through the trait.
+//! One of the eleven views that predate the registry, ripple, is still built in: `Scene` keeps
+//! its state in typed fields and draws it in its own arm, picked by `BuiltIn`. The others, and
+//! every new view, are module views: a type that implements `ViewModule`, which `Scene` builds
+//! from the row and calls through the trait.
 
 mod city;
+mod flow;
+mod orbit;
+pub(crate) mod systems;
 
 #[cfg(test)]
 use std::collections::HashMap;
@@ -310,9 +313,7 @@ pub enum Hooks {
 /// The arm of `Scene::render` that draws a built-in view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuiltIn {
-    Orbit,
     Ripple,
-    Flow,
 }
 
 /// Which socket links the scene draws over a view.
@@ -496,12 +497,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "orbit",
             "ORBIT",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Orbit,
-                legend: orbit_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(orbit::Orbits::default())),
         )
     },
     ViewInfo {
@@ -548,12 +544,7 @@ pub static REGISTRY: &[ViewInfo] = &[
             "flow",
             "FLOW",
             Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Flow,
-                legend: flow_legend,
-                record: None,
-                inspector_line: None,
-            },
+            Hooks::Module(|| Box::new(flow::Wells::default())),
         )
     },
     ViewInfo {
@@ -886,42 +877,8 @@ pub static REGISTRY: &[ViewInfo] = &[
     },
 ];
 
-fn orbit_legend(scene: &Scene, snapshot: &Snapshot) -> String {
-    format!(
-        " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU{} | cyan arcs = sockets, pink = outside{}",
-        gpu_note(snapshot),
-        hub_note(scene)
-    )
-}
-
 fn ripple_legend(_: &Scene, _: &Snapshot) -> String {
     " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into()
-}
-
-fn flow_legend(scene: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}",
-        hub_note(scene)
-    )
-}
-
-/// The Orbit legend's GPU entry, left out where per-process GPU memory is not measured.
-fn gpu_note(snapshot: &Snapshot) -> &'static str {
-    if snapshot.missing.contains(Source::GpuMemory) {
-        ""
-    } else {
-        " | green = NVIDIA GPU"
-    }
-}
-
-/// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
-/// focused subtree or a platform that reads every process gets the legend it always had.
-fn hub_note(scene: &Scene) -> &'static str {
-    if scene.hub_names.is_empty() {
-        ""
-    } else {
-        " | hollow star = a parent isotop can't read (run with sudo)"
-    }
 }
 
 /// The registered view called `name`, for tests.
