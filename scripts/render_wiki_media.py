@@ -99,13 +99,14 @@ FILMSTRIPS = {
     # One minute of worldlines is replayed from time 0, so the worldlines lengthen until 60 s.
     "tesseract": [(10, None), (25, None), (40, None), (60, None)],
     # The graves are always ten minutes of deaths; what advances is the moon, computed from
-    # the demo's wall clock: new, first quarter, full, last quarter, each at a time where the
-    # memory-pressure wave is at its trough (so the fog does not change between panels).
+    # the demo's wall clock: a thin crescent (the demo epoch is 1.2 days before new moon), then
+    # first quarter, full and last quarter, each at a time where the memory-pressure wave is at
+    # its trough (so the fog does not change between panels).
     "necropolis": [
-        (0, "t = 0 d, new moon"),
-        (744065, "t = 8.6 d, first quarter"),
+        (0, "t = 0 d, thin crescent"),
+        (742371, "t = 8.6 d, first quarter"),
         (1383062, "t = 16.0 d, full moon"),
-        (2018083, "t = 23.4 d, last quarter"),
+        (2018098, "t = 23.4 d, last quarter"),
     ],
 }
 

@@ -75,7 +75,7 @@ def main():
         avg_some.append(a * 100)
         avg_full.append(b * 100)
 
-    svg = S.Svg(900, 720, "Pressure stall information",
+    svg = S.Svg(900, 740, "Pressure stall information",
                 "Three tasks' states, the some and full stall shares per 2 s period, and the avg10 "
                 "exponential averages.")
     left, width = 90, 770
@@ -96,26 +96,26 @@ def main():
     svg.text(left, 238, "'some' (orange) and 'full' (red) share of each 2 s period", 13,
              weight="600")
     for k in range(buckets):
-        x0, x1 = mid.px(k * PERIOD) + 2, mid.px((k + 1) * PERIOD) - 2
-        half = (x1 - x0) / 2
-        svg.rect(x0, mid.py(some_share[k]), half - 0.5, mid.py(0) - mid.py(some_share[k]),
+        x0, x1 = mid.px(k * PERIOD), mid.px((k + 1) * PERIOD)
+        svg.rect(x0, mid.py(some_share[k]), x1 - x0, mid.py(0) - mid.py(some_share[k]),
                  S.GOLD, opacity=0.9)
-        svg.rect(x0 + half + 0.5, mid.py(full_share[k]), half - 0.5,
-                 mid.py(0) - mid.py(full_share[k]), S.RED, opacity=0.9)
+        svg.rect(x0, mid.py(full_share[k]), x1 - x0, mid.py(0) - mid.py(full_share[k]),
+                 S.RED, opacity=0.95)
 
     low = S.Axes(svg, left, 460, width, 170, (0, END), (0, 80))
     low.frame(xticks=list(range(0, 41, 5)), yticks=[0, 20, 40, 60, 80], xlabel="time (s)",
               ylabel="avg10 (%)")
     svg.text(left, 448, "avg10 as the kernel reports it (updated every 2 s) and as isotop reads it",
              13, weight="600")
-    xs = [(k + 1) * PERIOD for k in range(buckets)]
-    low.steps([0.0] + xs[:-1], avg_some, S.GOLD, 2.2)
-    low.steps([0.0] + xs[:-1], avg_full, S.RED, 2.2)
-    svg.text(low.px(32.5), low.py(avg_some[16]) - 8, "some avg10", 12, fill=S.GOLD)
-    svg.text(low.px(32.5), low.py(avg_full[16]) - 8, "full avg10", 12, fill=S.RED)
-    svg.text(left, 672, "A stall that lasts 10 s at 100 % reads avg10 = 100 (1 - 1/e) = 63 %: the window is "
+    # The average that closes period k is published when the period ends, at (k + 1) * PERIOD.
+    xs = [k * PERIOD for k in range(buckets + 1)]
+    low.steps(xs, [0.0] + avg_some, S.GOLD, 2.2)
+    low.steps(xs, [0.0] + avg_full, S.RED, 2.2)
+    svg.text(low.px(31.0), low.py(avg_some[15]) - 8, "some avg10", 12, fill=S.GOLD)
+    svg.text(low.px(31.0), low.py(avg_full[15]) - 8, "full avg10", 12, fill=S.RED)
+    svg.text(left, 686, "A stall that lasts 10 s at 100 % reads avg10 = 100 (1 - 1/e) = 63 %: the window is "
              "a time constant, not a box of 10 s.", 11, fill=S.MUTED)
-    svg.text(left, 690, "isotop samples the file every 2 s on the background thread, so a Cells "
+    svg.text(left, 706, "isotop samples the file every 2 s on the background thread, so a Cells "
              "membrane trembles for several seconds after the stall that caused it.", 11,
              fill=S.MUTED)
     print(svg.save("cells-psi"))
