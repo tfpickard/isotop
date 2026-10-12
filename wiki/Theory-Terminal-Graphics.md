@@ -45,7 +45,7 @@ sequenceDiagram
     Note over I,T: startup
     I->>T: raw mode, alt screen, mouse modes
     I->>T: APC query i=31 (direct), APC query i=32 (shm), DECRQM 1016, DA1
-    T-->>I: i=31;OK, i=32;OK, 1016;n$y, DA1 reply
+    T-->>I: replies: i=31 OK, i=32 OK, 1016 known, then the DA1 reply
     I->>T: ESC[?1016h (if known)
     loop every frame
         I->>I: write pixels to /isotop-pid-n (or zlib + base64)
@@ -98,7 +98,7 @@ Per frame this costs `shm_open`, a copy of $3WH$ bytes and, on the terminal's si
 
 ### Transport B: inline, zlib and base64
 
-If shared memory is unavailable (SSH, `--direct`, a terminal that failed `i=32`), `present` compresses `frame.pixels` with zlib at `Compression::fast()` (level 1), base64-encodes the result and sends it as chunks of 4096 base64 characters: the first carries the full control string with `t=d,o=z,m=1`, the following ones only `m=` and `q=2`, the last `m=0`. This happens synchronously on the frame thread each frame. In the captured demo run of the City view at a 320 by 165 frame (158,400 raw bytes) the compressed payloads were between 30,460 and 67,924 base64 bytes per frame, roughly 3 to 7 times smaller than the raw frame, growing as the scene filled in; the first frames compress best because they are the emptiest. The status strip prints `<n> KiB/frame inline`, and `--duration N` prints the presented frame rate and the inline MiB/s on exit, with the explicit disclaimer "display latency not measured".
+If shared memory is unavailable (SSH, `--direct`, a terminal that failed `i=32`), `present` compresses `frame.pixels` with zlib at `Compression::fast()` (level 1), base64-encodes the result and sends it as chunks of 4096 base64 characters: the first carries the full control string with `t=d,o=z,m=1`, the following ones only `m=` and `q=2`, the last `m=0`. This happens synchronously on the frame thread each frame. In the captured demo run of the City view at a 320 by 165 frame (158,400 raw bytes), the base64 payloads of the first ten frames were 30,460, 43,632, 45,748, 56,176, 59,592, 59,008, 63,356, 65,228, 65,188 and 67,924 bytes, that is, compressed sizes of 22.8 to 50.9 KB, roughly 7 down to 3 times smaller than the raw frame; the payload grows as the scene fills in, because the first frames are the emptiest. The status strip prints `<n> KiB/frame inline`, and `--duration N` prints the presented frame rate and the inline MiB/s on exit, with the explicit disclaimer "display latency not measured".
 
 ### The text overlay
 
