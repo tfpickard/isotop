@@ -2530,6 +2530,17 @@ pub struct DemoOptions {
     /// frame is as without it; at 16 processes some of these pairs collapse onto one process and
     /// are dropped. `pipes_partial` stays false.
     pub channels: bool,
+    /// Runs an out-of-memory kill every 30 s of `time` on the highest-index base process of the
+    /// first 135 that is not a kernel thread (index 134 at the default count). It lives from the
+    /// phase 26 s of one cycle to the phase 20 s of the next, scores 950 (with the
+    /// `oom_score_adj` that makes it so, when `oom_and_memory_detail` gives the scores) and is
+    /// absent from the sample at the phase 20 s, until it starts again at 26 s with a new
+    /// `Identity::start` and `started`. From the phase 20 s the `oom_kills` of its cgroup, and so
+    /// the kernel counter when `kernel_counters` is on, is one higher per kill so far. Nothing
+    /// else changes but the memory pressure (some, 10 s average), which builds from 45% to 90%
+    /// over each cycle until the kill and falls back over the next 6 s, as it does before an
+    /// OOM kill: no other process, no random stream. Off, there is no cycle.
+    pub oom_cycle: bool,
 }
 
 impl DemoOptions {
@@ -2545,6 +2556,7 @@ impl DemoOptions {
         kernel_counters: false,
         threads: false,
         channels: false,
+        oom_cycle: false,
     };
 }
 
@@ -2569,6 +2581,23 @@ pub const DEMO_ZOMBIE_SECONDS: f64 = 1.0;
 
 /// Seconds between the out-of-memory kills.
 const DEMO_OOM_PERIOD: f64 = 90.0;
+
+/// Seconds between the kills of `DemoOptions::oom_cycle`.
+const DEMO_KILL_PERIOD: f64 = 30.0;
+
+/// Seconds into a kill cycle at which the victim is killed, and at which a new one starts.
+const DEMO_KILL_AT: f64 = 20.0;
+const DEMO_RESPAWN_AT: f64 = 26.0;
+
+/// The last base index that may be the kill cycle's victim, and the score it has.
+const DEMO_VICTIM_LAST: usize = 134;
+
+/// The memory pressure of the kill cycle: where each cycle starts and where the kill leaves it,
+/// in percent, and the seconds it takes to fall back after the kill.
+const DEMO_PRESSURE_CALM: f32 = 45.0;
+const DEMO_PRESSURE_PEAK: f32 = 90.0;
+const DEMO_PRESSURE_RELIEF: f64 = 6.0;
+const DEMO_VICTIM_SCORE: i32 = 950;
 
 /// Added to a transient's birth in 1/100 s ticks to make `Identity::start`, which puts it above
 /// every base `start` (those count processes from 1).
@@ -3566,7 +3595,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             process.thread_list = Measured::Known(threads::demo_list(process, time));
         }
     }
-    Snapshot {
+    let mut snapshot = Snapshot {
         processes,
         memory_total: Some(DEMO_MEMORY_TOTAL),
         memory_available: Some(12 * 1024_u64.pow(3)),
@@ -3618,6 +3647,93 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         interrupts,
         softirqs,
         oom_kills,
+    };
+    if options.oom_cycle {
+        demo_kill_cycle(time, count, &mut snapshot);
+    }
+    snapshot
+}
+
+/// Runs the kill cycle `DemoOptions::oom_cycle` asks for over a finished demo `snapshot` of
+/// `count` base processes: the victim's score and identity while it lives, its absence between
+/// its kill and its replacement, and the kills so far on its cgroup and the kernel counter.
+fn demo_kill_cycle(time: f64, count: usize, snapshot: &mut Snapshot) {
+    let Some(victim) = (0..count.min(DEMO_VICTIM_LAST + 1))
+        .rev()
+        .find(|&index| snapshot.processes[index].kind != Kind::Kernel)
+    else {
+        return;
+    };
+    let kills = (((time - DEMO_KILL_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1).max(0) as u64;
+    let phase = time.rem_euclid(DEMO_KILL_PERIOD);
+    // The incarnation: 0 until the first respawn, and a new one at each 26 s phase.
+    let generation = ((time - DEMO_RESPAWN_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1;
+    let process = &mut snapshot.processes[victim];
+    if generation != 0 {
+        let old = process.id;
+        process.id.start = old.start.wrapping_add((generation as u64) << 40);
+        process.started = DEMO_EPOCH + DEMO_RESPAWN_AT + DEMO_KILL_PERIOD * (generation - 1) as f64;
+        let new = process.id;
+        let rename = |id: Identity| if id == old { new } else { id };
+        for link in &mut snapshot.links {
+            (link.0, link.1) = (rename(link.0), rename(link.1));
+        }
+        snapshot.link_traffic = std::mem::take(&mut snapshot.link_traffic)
+            .into_iter()
+            .map(|((a, b), rate)| ((rename(a), rename(b)), rate))
+            .collect();
+        snapshot.unix_links = std::mem::take(&mut snapshot.unix_links)
+            .into_iter()
+            .map(|(a, b)| (rename(a), rename(b)))
+            .collect();
+        snapshot.outside = std::mem::take(&mut snapshot.outside)
+            .into_iter()
+            .map(|(id, count)| (rename(id), count))
+            .collect();
+        for remote in &mut snapshot.remotes {
+            remote.id = rename(remote.id);
+        }
+    }
+    let process = &mut snapshot.processes[victim];
+    let alive = !(DEMO_KILL_AT..DEMO_RESPAWN_AT).contains(&phase);
+    // The kernel scores a process by its share of memory in thousandths plus `oom_score_adj`, so
+    // the adjustment that makes a victim of this process's size score exactly as much.
+    if alive && let Measured::Known(oom) = &mut process.oom {
+        let share = (u128::from(process.memory) * 1000 / u128::from(DEMO_MEMORY_TOTAL)) as i32;
+        let adjust = (DEMO_VICTIM_SCORE - share).clamp(-1000, 1000);
+        *oom = Oom {
+            badness: DEMO_VICTIM_SCORE,
+            adjust: Some(adjust as i16),
+            exempt: false,
+        };
+    }
+    let (cgroup, memory, cpu) = (process.cgroup.clone(), process.memory, process.cpu);
+    if let Some(unit) = snapshot.units.get_mut(&cgroup) {
+        unit.oom_kills = Some(unit.oom_kills.unwrap_or(0) + kills);
+        if !alive {
+            unit.memory = unit.memory.saturating_sub(memory);
+            unit.cpu = unit.cpu.map(|total| (total - cpu).max(0.0));
+            unit.pids = unit.pids.map(|total| total.saturating_sub(1));
+        }
+    }
+    snapshot.oom_kills = snapshot.oom_kills.map(|total| total + kills);
+    // Pressure rises as the square of the way to the kill, then the kill frees the memory.
+    let built = (phase / DEMO_KILL_AT).min(1.0) as f32;
+    let freed = ((phase - DEMO_KILL_AT) / DEMO_PRESSURE_RELIEF).clamp(0.0, 1.0) as f32;
+    let relief = freed * freed * (3.0 - 2.0 * freed);
+    snapshot.pressure[1] = DEMO_PRESSURE_CALM
+        + (DEMO_PRESSURE_PEAK - DEMO_PRESSURE_CALM) * built * built * (1.0 - relief);
+    if !alive {
+        let gone = snapshot.processes.remove(victim).id;
+        snapshot.links.retain(|(a, b, _)| *a != gone && *b != gone);
+        snapshot
+            .link_traffic
+            .retain(|(a, b), _| *a != gone && *b != gone);
+        snapshot
+            .unix_links
+            .retain(|(a, b)| *a != gone && *b != gone);
+        snapshot.outside.remove(&gone);
+        snapshot.remotes.retain(|remote| remote.id != gone);
     }
 }
 
@@ -7941,5 +8057,143 @@ mod tests {
         assert!(snapshot.sources.contains(Source::Oom));
         assert!(snapshot.sources.contains(Source::MemoryDetail));
         assert!(ranked > 0 && detailed > 0 && detailed + unreadable <= ROLLUP_PROCESSES);
+    }
+    #[test]
+    fn the_demo_kill_cycle_is_off_unless_a_row_asks_for_it() {
+        let asking = DemoOptions {
+            oom_and_memory_detail: true,
+            kernel_counters: true,
+            ..DemoOptions::NONE
+        };
+        for time in [0.0, 12.0, 20.5, 25.0, 26.5, 55.0] {
+            assert_eq!(
+                fingerprint(&demo_with(time, 192, DemoOptions::NONE)),
+                fingerprint(&demo(time, 192)),
+                "the options' empty value is the plain demo"
+            );
+            let plain = demo_with(time, 192, asking);
+            let victim = plain.processes.iter().find(|p| p.id.pid == 1134);
+            let victim = victim.expect("index 134 lives all the time without the cycle");
+            assert_eq!(victim.id.start, 135, "and keeps its identity");
+            assert_ne!(
+                victim.oom.known().map(|oom| oom.badness),
+                Some(DEMO_VICTIM_SCORE),
+                "and its own score"
+            );
+        }
+    }
+
+    #[test]
+    fn the_demo_kill_cycle_kills_replaces_and_counts_the_victim() {
+        let base = DemoOptions {
+            oom_and_memory_detail: true,
+            kernel_counters: true,
+            ..DemoOptions::NONE
+        };
+        let cycling = DemoOptions {
+            oom_cycle: true,
+            ..base
+        };
+        let victim = |snapshot: &Snapshot| snapshot.processes.iter().position(|p| p.id.pid == 1134);
+        let mut starts = Vec::new();
+        // (time, victim alive, kills so far)
+        for (time, alive, kills) in [
+            (-45.0, true, 0),
+            (12.0, true, 0),
+            (19.99, true, 0),
+            (20.0, false, 1),
+            (25.99, false, 1),
+            (26.0, true, 1),
+            (49.9, true, 1),
+            (50.0, false, 2),
+            (56.0, true, 2),
+            (110.5, false, 4),
+        ] {
+            let (plain, cycle) = (demo_with(time, 192, base), demo_with(time, 192, cycling));
+            assert_eq!(victim(&cycle).is_some(), alive, "alive at {time}");
+            assert_eq!(
+                cycle.oom_kills.unwrap() - plain.oom_kills.unwrap(),
+                kills,
+                "kills at {time}"
+            );
+            let family = "/system.slice/district-08.service";
+            let (unit, unit_plain) = (&cycle.units[family], &plain.units[family]);
+            assert_eq!(
+                unit.oom_kills.unwrap() - unit_plain.oom_kills.unwrap(),
+                kills
+            );
+            if let Some(index) = victim(&cycle) {
+                let process = &cycle.processes[index];
+                let oom = process.oom.known().expect("scored");
+                assert_eq!((oom.badness, oom.exempt), (DEMO_VICTIM_SCORE, false));
+                let share =
+                    (u128::from(process.memory) * 1000 / u128::from(DEMO_MEMORY_TOTAL)) as i32;
+                assert_eq!(i32::from(oom.adjust.unwrap()), DEMO_VICTIM_SCORE - share);
+                starts.push((time, process.id.start, process.started));
+                assert_eq!(unit.pids, unit_plain.pids);
+            } else {
+                assert_eq!(unit.pids.unwrap() + 1, unit_plain.pids.unwrap());
+                assert!(unit.memory < unit_plain.memory);
+            }
+            // The memory pressure builds until the kill and falls back after it; the others stand.
+            let phase = time.rem_euclid(30.0) as f32;
+            let expected = match phase {
+                p if p < 20.0 => 45.0 + 45.0 * (p / 20.0).powi(2),
+                p if p < 26.0 => {
+                    let freed = (p - 20.0) / 6.0;
+                    45.0 + 45.0 * (1.0 - freed * freed * (3.0 - 2.0 * freed))
+                }
+                _ => 45.0,
+            };
+            assert!(
+                (cycle.pressure[1] - expected).abs() < 1e-3,
+                "pressure at {time}"
+            );
+            assert_eq!(
+                (cycle.pressure[0], cycle.pressure[2]),
+                (plain.pressure[0], plain.pressure[2])
+            );
+            // Nothing else changes: every other process is what the plain demo draws.
+            let others = |snapshot: &Snapshot| {
+                snapshot
+                    .processes
+                    .iter()
+                    .filter(|p| p.id.pid != 1134)
+                    .map(|p| format!("{p:?}"))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(others(&cycle), others(&plain), "at {time}");
+            assert!(
+                cycle.links.iter().all(|(a, b, _)| {
+                    cycle.processes.iter().any(|p| p.id == *a)
+                        && cycle.processes.iter().any(|p| p.id == *b)
+                }),
+                "no link leads to a process that is gone, at {time}"
+            );
+        }
+        let start_of = |time: f64| starts.iter().find(|(at, ..)| *at == time).unwrap();
+        assert_eq!(start_of(12.0).1, 135, "the first incarnation");
+        assert_eq!(start_of(19.99).1, start_of(12.0).1);
+        assert_ne!(
+            start_of(26.0).1,
+            start_of(12.0).1,
+            "a new start after the kill"
+        );
+        assert_eq!(start_of(26.0).1, start_of(49.9).1);
+        assert_ne!(start_of(56.0).1, start_of(26.0).1);
+        assert!(start_of(26.0).2 > start_of(12.0).2 && start_of(56.0).2 > start_of(26.0).2);
+    }
+
+    #[test]
+    fn the_demo_kill_cycle_counts_in_cgroups_when_the_kernel_counters_are_off() {
+        let cycling = DemoOptions {
+            oom_and_memory_detail: true,
+            oom_cycle: true,
+            ..DemoOptions::NONE
+        };
+        let snapshot = demo_with(21.0, 192, cycling);
+        assert_eq!(snapshot.oom_kills, None, "vmstat is not read");
+        let family = &snapshot.units["/system.slice/district-08.service"];
+        assert_eq!(family.oom_kills, Some(1));
     }
 }
