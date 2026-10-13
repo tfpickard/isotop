@@ -510,6 +510,16 @@ impl Roster {
         Roster { seats, per_seat }
     }
 
+    /// Whether `other` seats the same CPUs on the same operators, whatever they are doing.
+    pub fn seats_alike(&self, other: &Roster) -> bool {
+        self.seats.len() == other.seats.len()
+            && self
+                .seats
+                .iter()
+                .zip(&other.seats)
+                .all(|(a, b)| a.cpus == b.cpus && a.kind == b.kind)
+    }
+
     /// The seat that holds `cpu`.
     pub fn seat_of(&self, cpu: u32) -> Option<usize> {
         self.seats.iter().position(|seat| seat.cpus.contains(&cpu))
@@ -598,7 +608,11 @@ impl Lines {
     /// light again and the local timer is not restarted from the same count.
     pub fn take_in(&mut self, snapshot: &Snapshot, time: f32, reseed: bool) {
         let reading = Reading::new(snapshot);
-        self.roster = Roster::new(&snapshot.cpus, &reading.cpu_ids);
+        let roster = Roster::new(&snapshot.cpus, &reading.cpu_ids);
+        if !self.roster.seats.is_empty() && !self.roster.seats_alike(&roster) {
+            self.unseat();
+        }
+        self.roster = roster;
         let rewound = self.last.is_none_or(|last| snapshot.elapsed < last);
         self.reseed |= reseed || rewound;
         let new_pass = snapshot.kernel_pass.is_none() || snapshot.kernel_pass != self.pass;
@@ -641,6 +655,22 @@ impl Lines {
         }
         self.last = Some(snapshot.elapsed);
         self.reading = Some(reading);
+    }
+
+    /// Forgets every seat number the board holds, after the roster changed which CPUs sit where
+    /// (a CPU went offline or came back, or the machine crossed the grouping threshold): the
+    /// cords are plugged again from the next known table, quietly, and the shelves and lamps
+    /// start empty.
+    fn unseat(&mut self) {
+        for cord in self.cords.values_mut() {
+            cord.plugged = None;
+            cord.swing = None;
+            cord.moved = None;
+            cord.candidate = None;
+        }
+        self.shelf.clear();
+        self.nmi.clear();
+        self.reseed = true;
     }
 
     fn seat_jacks(&mut self, reading: &Reading, watching: bool) {
@@ -1098,6 +1128,41 @@ pub mod tests {
         );
         assert_eq!(plugged(&lines, 44), Some(1));
         assert!(lines.cords[&44].swing.is_some());
+    }
+
+    #[test]
+    fn a_cord_follows_its_cpu_when_the_roster_seats_the_cpus_differently() {
+        // CPUs 0 and 1 are performance, 2 and 3 efficiency: CPU 2 sits at seat 2.
+        let mut lines = board(vec![row(47, "eth0-rx-0", 2, 500.0, Some(2))]);
+        assert_eq!(plugged(&lines, 47), Some(2));
+        lines.nmi.insert(2, 1.0);
+        // CPU 0 goes offline: every seat after it moves up, and CPU 2 sits at seat 1.
+        let mut offline = sample(vec![row(47, "eth0-rx-0", 2, 500.0, Some(2))], 2.0);
+        offline.cpus.remove(0);
+        lines.take_in(&offline, 2.0, false);
+        assert_eq!(lines.roster.seat_of(2), Some(1));
+        assert_eq!(
+            plugged(&lines, 47),
+            Some(1),
+            "the cord stays on CPU 2's operator"
+        );
+        let cord = &lines.cords[&47];
+        assert!(
+            cord.swing.is_none() && cord.moved.is_none(),
+            "a renumbering is not a swing"
+        );
+        assert_eq!(
+            cord.plugged.map(|p| p.1),
+            Some(0),
+            "on a shelf of its own again"
+        );
+        assert!(lines.nmi.is_empty(), "a lamp lit for the old seat 2 is out");
+        // The next change is watched again.
+        let mut back = sample(vec![row(47, "eth0-rx-0", 3, 500.0, Some(3))], 3.0);
+        back.cpus.remove(0);
+        lines.take_in(&back, 3.0, false);
+        assert_eq!(plugged(&lines, 47), Some(2));
+        assert!(lines.cords[&47].swing.is_some());
     }
 
     #[test]
