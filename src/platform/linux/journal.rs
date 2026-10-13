@@ -4,7 +4,7 @@
 use std::io::{self, BufRead, Read};
 use std::process::{Child, Command, Stdio};
 
-use crate::journal::Line;
+use crate::journal::{JobResult, Line};
 use crate::platform::JournalParser;
 
 /// Name of the log follower, for error messages.
@@ -22,7 +22,7 @@ pub fn journal() -> io::Result<(Child, JournalParser)> {
             "--follow",
             "--lines=200",
             "--output=export",
-            "--output-fields=PRIORITY,SYSLOG_IDENTIFIER,_COMM,_PID,MESSAGE",
+            "--output-fields=PRIORITY,SYSLOG_IDENTIFIER,_COMM,_PID,MESSAGE,JOB_RESULT",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -43,7 +43,8 @@ fn parse(mut reader: &mut dyn BufRead) -> io::Result<Option<Line>> {
     read_entry(&mut reader)
 }
 
-/// Reads one entry of `journalctl --output=export` and formats it as `source[pid]: message`.
+/// Reads one entry of `journalctl --output=export` and formats it as `source[pid]: message`, with
+/// the `JOB_RESULT` of an entry that ends a job.
 /// Returns `None` at the end of the stream. A field is either `NAME=value` on one line or, when
 /// the value is binary or spans lines, `NAME`, a little-endian 64-bit length, the bytes, and a
 /// newline. Each field keeps at most `FIELD` bytes; the rest is read and discarded.
@@ -53,6 +54,7 @@ fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
     let mut command = None;
     let mut pid = None;
     let mut message = None;
+    let mut job = None;
     let mut started = false;
     loop {
         let Some(line) = read_line(reader)? else {
@@ -90,6 +92,7 @@ fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
             b"_COMM" => command = Some(value),
             b"_PID" => pid = Some(value),
             b"MESSAGE" => message = Some(value),
+            b"JOB_RESULT" => job = JobResult::parse(&value),
             _ => {}
         }
     }
@@ -99,7 +102,7 @@ fn read_entry(reader: &mut impl BufRead) -> io::Result<Option<Line>> {
         Some(pid) => format!("{source}[{pid}]: {message}"),
         None => format!("{source}: {message}"),
     };
-    Ok(Some(Line::new(priority, text)))
+    Ok(Some(Line::new(priority, text).with_job(job)))
 }
 
 /// Reads up to the next newline, which is consumed but not returned, keeping at most `FIELD`
@@ -151,6 +154,26 @@ mod tests {
             Some(Line::new(INFO, "journal: no source"))
         );
         assert_eq!(read_entry(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn the_export_reader_keeps_a_job_result() {
+        let data = b"PRIORITY=6\nSYSLOG_IDENTIFIER=systemd\n_PID=1\nMESSAGE=Finished backup.service.\nJOB_RESULT=done\n\n\
+                     PRIORITY=3\nSYSLOG_IDENTIFIER=systemd\n_PID=1\nMESSAGE=Failed to start mount.\nJOB_RESULT=failed\n\n\
+                     PRIORITY=6\nMESSAGE=Started something.\nJOB_RESULT=unheard-of\n\n\
+                     PRIORITY=6\nMESSAGE=Plain.\n\n";
+        let mut reader = &data[..];
+        let mut next = || read_entry(&mut reader).unwrap().expect("an entry");
+        assert_eq!(
+            next(),
+            Line::new(6, "systemd[1]: Finished backup.service.").with_job(Some(JobResult::Done))
+        );
+        assert_eq!(
+            next(),
+            Line::new(3, "systemd[1]: Failed to start mount.").with_job(Some(JobResult::Failed))
+        );
+        assert_eq!(next().job, None, "a result this reader does not know");
+        assert_eq!(next().job, None, "an entry that announces no job");
     }
 
     #[test]

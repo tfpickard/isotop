@@ -208,7 +208,8 @@ pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
 /// run queue, cgroups, socket traffic, the lock table, GPU memory (Apple GPUs share memory
 /// with the CPU and report none per process), syscall I/O (no per-process counters of the
 /// bytes and calls of read and write), memory by kind (no smaps_rollup) and the kernel counters
-/// (no interrupt or softirq table, no IRQ affinity, and no readable count of OOM kills). The clock is missing too unless it is measured
+/// (no interrupt or softirq table, no IRQ affinity, and no readable count of OOM kills) and the
+/// job results of the journal (the unified log has no `JOB_RESULT`). The clock is missing too unless it is measured
 /// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
 pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
     let mut missing = Sources::from([
@@ -226,6 +227,7 @@ pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
         Source::Softirqs,
         Source::IrqAffinity,
         Source::OomKills,
+        Source::JobResults,
     ]);
     if !clocked {
         missing.insert(Source::CpuClock);
@@ -1211,6 +1213,15 @@ mod tests {
                 assert!(gaps.contains(source), "{gaps:?}");
             }
         }
+    }
+
+    #[test]
+    fn macos_reports_job_results_as_missing() {
+        for clocked in [false, true] {
+            let gaps = missing(clocked, true);
+            assert!(gaps.contains(Source::JobResults), "{gaps:?}");
+        }
+        assert_eq!(Source::JobResults.name(), "job results");
     }
 
     #[test]

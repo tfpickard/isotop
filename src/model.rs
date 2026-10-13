@@ -2563,6 +2563,12 @@ pub struct DemoOptions {
     /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
     /// `unreadable` 0, as in `demo`.
     pub unreadable_parent: bool,
+    /// Feeds the demo journal (`journal::demo_spirits`, which the app attaches to the newest
+    /// sample) the lines that end a job, with their `JOB_RESULT`, every seven seconds, and one in
+    /// 25 of the ordinary lines, which `journal::demo` has no result for. Off, the journal demo is
+    /// `journal::demo`, as it has always been. The processes and every other field are the same
+    /// either way.
+    pub job_results: bool,
 }
 
 impl DemoOptions {
@@ -2581,6 +2587,7 @@ impl DemoOptions {
         oom_cycle: false,
         thread_churn: false,
         unreadable_parent: false,
+        job_results: false,
     };
 }
 

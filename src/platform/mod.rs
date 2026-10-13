@@ -207,6 +207,9 @@ pub enum Source {
     /// demands it; the unread bytes of Unix sockets (`Snapshot::unix_queues`) come with the
     /// socket scan and are not behind it.
     Pipes,
+    /// `journal::Line::job`, the `JOB_RESULT` of the journal entries that end a job: none on macOS,
+    /// whose unified log has no such field. It travels with `Journal`, which a view demands.
+    JobResults,
 }
 
 impl Source {
@@ -244,6 +247,7 @@ impl Source {
         Source::OomKills,
         Source::Threads,
         Source::Pipes,
+        Source::JobResults,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -281,6 +285,7 @@ impl Source {
             Source::OomKills => "oom kills",
             Source::Threads => "threads",
             Source::Pipes => "pipes",
+            Source::JobResults => "job results",
         }
     }
 
@@ -847,7 +852,7 @@ mod tests {
         for (index, source) in Source::ALL.iter().enumerate() {
             assert_eq!(*source as usize, index, "{} is out of order", source.name());
         }
-        assert_eq!(Source::Pipes as usize + 1, Source::ALL.len());
+        assert_eq!(Source::JobResults as usize + 1, Source::ALL.len());
     }
 
     #[test]
