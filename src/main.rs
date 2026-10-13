@@ -1207,14 +1207,16 @@ impl App {
             };
             let width = tag.text.chars().count() as u16;
             let (column, row) = layout.cell_of(at);
-            let (right, left) = (column + 2, column.saturating_sub(width + 1));
+            // The left side must end before the point's own cell: a point near the left edge has
+            // no left side, and the text is never written over it.
+            let (right, left) = (Some(column + 2), column.checked_sub(width + 1));
             let sides = match tag.side {
                 Side::Right => [right, left],
                 Side::Left => [left, right],
             };
             let fits = |column: u16| column + width <= layout.columns;
             if row < layout.rows
-                && let Some(&column) = sides.iter().find(|&&column| fits(column))
+                && let Some(column) = sides.into_iter().flatten().find(|&column| fits(column))
                 && board.claim(column, row, width, 1)
             {
                 labels.push(Label {
@@ -3921,6 +3923,59 @@ mod tests {
         assert_eq!(label.row, row);
         app.labels = false;
         assert!(tag(&app, &mut frame).is_none(), "labels off hides tags too");
+    }
+
+    #[test]
+    fn a_tag_at_the_left_edge_is_never_written_over_its_own_point() {
+        let (mut app, last) = guided_app();
+        let mut layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 512);
+        frame.rasterize();
+        let seat = frame
+            .locate(&app.camera, app.scene.positions[&last])
+            .expect("the seat is on screen");
+        let [across, along] = app.camera.ground(
+            -(layout.width as f32) * 0.5 + 2.0,
+            seat[1] - layout.height as f32 * ORIGIN_Y,
+        );
+        app.scene.tags[0].at = [
+            app.camera.center[0] + across,
+            app.camera.center[1] + along,
+            0.0,
+        ];
+        app.scene.tags[0].side = Side::Left;
+        let width = views::testing::GUIDE_TAG.chars().count() as u16;
+        let tag = |app: &App, frame: &mut Frame, layout: &Layout| -> Option<Label> {
+            let (labels, _) = app.overlay(frame, layout, layout.pick_radius(false));
+            labels
+                .into_iter()
+                .find(|label| label.text == views::testing::GUIDE_TAG)
+        };
+        let at = frame
+            .locate(&app.camera, app.scene.tags[0].at)
+            .expect("the point is on screen");
+        let (column, _) = layout.cell_of(at);
+        assert!(
+            column < width + 1,
+            "the point is too near the edge for a left side"
+        );
+        let label = tag(&app, &mut frame, &layout).expect("the right side fits");
+        assert_eq!(
+            label.column,
+            column + 2,
+            "it goes to the right of the point"
+        );
+        // With no room on the right either it is not drawn, rather than drawn over the point.
+        layout.columns = column + 1 + width;
+        let (narrow, _) = layout.cell_of(at);
+        assert!(narrow + 2 + width > layout.columns);
+        assert!(tag(&app, &mut frame, &layout).is_none());
     }
 
     #[test]
