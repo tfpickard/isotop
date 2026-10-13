@@ -149,7 +149,7 @@ pub(super) fn place_lines(
     min_width: usize,
 ) -> Option<Popup> {
     let (columns, rows) = (layout.columns, layout.rows);
-    let longest = lines.iter().map(SafeText::width).max().unwrap_or(0);
+    let longest = lines.iter().map(SafeText::width).max().unwrap_or_default();
     let width = (longest + 4).clamp(min_width, 64).min(columns as usize) as u16;
     let height = lines.len() as u16 + 2;
     if height > rows {

@@ -291,7 +291,7 @@ impl IoScan {
         let start = self
             .resume
             .and_then(|resume| targets.iter().position(|&id| id == resume))
-            .unwrap_or(0);
+            .unwrap_or_default();
         self.resume = None;
         let order = targets[start..].iter().chain(&targets[..start]);
         for &id in order {

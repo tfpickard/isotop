@@ -192,7 +192,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 | `#[expect(clippy::too_many_lines` | 11 |
 | `#[expect(clippy::too_many_arguments` | 7 |
 | `unsafe` blocks | 120 |
-| `unwrap_or(0` sites | 32 |
+| `unwrap_or(0` sites | 30 |
 | `unwrap_or(0.0` sites | 16 |
 | `known_unstable` harness entries | 0 |
 
