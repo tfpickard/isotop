@@ -10,10 +10,20 @@ name: Wiki
 on:
   push:
     branches: [main]
-    paths: ['wiki/**', '.github/workflows/wiki.yml']
+    paths:
+      - 'wiki/**'
+      - 'docs/media/**'
+      - 'docs/mockups/**'
+      - 'scripts/check_wiki.py'
+      - '.github/workflows/wiki.yml'
   workflow_dispatch:
   pull_request:
-    paths: ['wiki/**', 'scripts/check_wiki.py', '.github/workflows/wiki.yml']
+    paths:
+      - 'wiki/**'
+      - 'docs/media/**'
+      - 'docs/mockups/**'
+      - 'scripts/check_wiki.py'
+      - '.github/workflows/wiki.yml'
 
 permissions:
   contents: read
@@ -32,7 +42,8 @@ jobs:
 
   publish:
     needs: check
-    if: github.event_name != 'pull_request'
+    # Only main publishes, including manual runs: a feature branch must not overwrite the wiki.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

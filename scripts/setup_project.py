@@ -30,14 +30,30 @@ print(f"{len(issues)} issues to add")
 if DRY:
     sys.exit(0)
 
-project = gh("project", "create", "--owner", OWNER, "--title", "isotop", "--format", "json")
+# Safe to rerun after a failure: reuse the project, add only the missing field, and let
+# item-add return the existing item for an issue that is already on the board.
+existing = [p for p in gh("project", "list", "--owner", OWNER, "--format", "json")["projects"]
+            if p["title"] == "isotop"]
+project = existing[0] if existing else gh("project", "create", "--owner", OWNER,
+                                          "--title", "isotop", "--format", "json")
 number, project_id = str(project["number"]), project["id"]
-gh("project", "field-create", number, "--owner", OWNER, "--name", "Kind",
-   "--data-type", "SINGLE_SELECT", "--single-select-options", ",".join([*KINDS, "other"]))
-gh("project", "link", number, "--owner", OWNER, "--repo", REPO)
 
-fields = {f["name"]: f for f in gh("project", "field-list", number, "--owner", OWNER,
-                                   "--format", "json")["fields"]}
+
+def fields_of(project_number):
+    return {f["name"]: f for f in gh("project", "field-list", project_number, "--owner", OWNER,
+                                     "--format", "json")["fields"]}
+
+
+fields = fields_of(number)
+if "Kind" not in fields:
+    gh("project", "field-create", number, "--owner", OWNER, "--name", "Kind",
+       "--data-type", "SINGLE_SELECT", "--single-select-options", ",".join([*KINDS, "other"]))
+    fields = fields_of(number)
+try:
+    gh("project", "link", number, "--owner", OWNER, "--repo", REPO)
+except subprocess.CalledProcessError:
+    pass  # already linked
+
 status, kinds = fields["Status"], fields["Kind"]
 status_option = {o["name"]: o["id"] for o in status["options"]}
 kind_option = {o["name"]: o["id"] for o in kinds["options"]}
