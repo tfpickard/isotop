@@ -1,0 +1,32 @@
+# Built by hand, not captured: the layout is what show_interrupts() in kernel/irq/proc.c and
+# arch_show_interrupts() in arch/x86/kernel/irq.c print (Linux 6.8, x86-64, 4 CPUs, CONFIG_X86_LOCAL_APIC,
+# CONFIG_IRQ_REMAP, CONFIG_SMP). Counts are invented. Rows ERR and MIS have one column, as there.
+           CPU0       CPU1       CPU2       CPU3       
+  0:         10          0          0          0   IO-APIC    2-edge      timer
+  1:          0        512          0          0  IO-APIC    1-edge      i8042
+  8:          0          0          1          0   IO-APIC    8-edge      rtc0
+  9:          0          0          0          0   IO-APIC    9-fasteoi   acpi
+ 12:          0          0          0        634  IO-APIC   12-edge      i8042
+ 24:          0          0          0          0  PCI-MSI-0000:00:1c.0    0-edge      PCIe PME, pciehp
+ 27:      41230          0          0          0  IR-PCI-MSIX-0000:01:00.0    0-edge      nvme0q0
+ 28:          0     912033          0          0  IR-PCI-MSIX-0000:01:00.0    1-edge      nvme0q1
+ 41:       7000       7100       6900       7050  IR-PCI-MSI-0000:00:14.0 327680-edge      xhci_hcd
+NMI:          1          0          0          1   Non-maskable interrupts
+LOC:    9100322    9001201    8999812    9043321   Local timer interrupts
+SPU:          0          0          0          0   Spurious interrupts
+PMI:          1          0          0          1   Performance monitoring interrupts
+IWI:      11200      10020       9800      10400   IRQ work interrupts
+RTR:          0          0          0          0   APIC ICR read retries
+RES:     310441     322900     301222     299871   Rescheduling interrupts
+CAL:     220100     231044     210300     215990   Function call interrupts
+TLB:      50300      49822      48100      47990   TLB shootdowns
+TRM:          0          0          0          0   Thermal event interrupts
+THR:          0          0          0          0   Threshold APIC interrupts
+DFR:          0          0          0          0   Deferred Error APIC interrupts
+MCE:          0          0          0          0   Machine check exceptions
+MCP:         37         37         37         37   Machine check polls
+ERR:          0
+MIS:          0
+PIN:          0          0          0          0   Posted-interrupt notification event
+NPI:          0          0          0          0   Nested posted-interrupt event
+PIW:          0          0          0          0   Posted-interrupt wakeup event

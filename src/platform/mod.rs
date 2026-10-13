@@ -36,8 +36,36 @@
 //!     pid the scan has not reached is absent;
 //!   - `locks() -> Option<Locks>`: file locks with their holders and waiters, None when they
 //!     cannot be read (the collector then reports `Source::FileLocks` missing);
+//!   - `PipeScan::new() -> PipeScan` and `PipeScan::sample(&mut self) -> Option<PipeSample>`:
+//!     the pipe and FIFO descriptors each process holds, read only while `Source::Pipes` is
+//!     demanded; bounded, so a pass may reach only some pids (`PipeSample::partial`); None when
+//!     the platform cannot read them (the collector then reports `Source::Pipes` missing);
 //!   - `Gpu::load() -> Option<Gpu>` and `Gpu::sample(&self) -> HashMap<u32, GpuMemory>`: GPU
 //!     memory per pid; without a `Gpu` the collector reports `Source::GpuMemory` missing.
+//!   - `oom_scores(pids: &[u32]) -> Option<HashMap<u32, Option<Oom>>>`: the out-of-memory ranking of
+//!     each pid, None for one that could not be read; a pid that has exited is absent. None for
+//!     the whole call when the platform cannot rank at all (the collector then reports
+//!     `Source::Oom` missing);
+//!   - `MEMORY_DETAIL: bool` and `rollup(pid: u32) -> Taken<Rollup>`: whether this platform reads
+//!     a process's memory by kind, and one such reading (the collector keeps to the
+//!     `model::ROLLUP_PROCESSES` largest and to a time budget). Without it the collector reports
+//!     `Source::MemoryDetail` missing.
+//! - Kernel counters, each read on the background thread while its source is demanded:
+//!   - `interrupts() -> Option<Vec<Interrupt>>`: every row of the interrupt table with its
+//!     counts per CPU, no rates and no affinity; None when it cannot be read
+//!     (`Source::Interrupts`);
+//!   - `softirqs() -> Option<Vec<Softirq>>`: every softirq with its counts per CPU
+//!     (`Source::Softirqs`);
+//!   - `irq_affinity(id: &str) -> Option<Vec<u32>>`: the CPUs that serve the numbered interrupt
+//!     `id`, None when they cannot be read (`Source::IrqAffinity`);
+//!   - `oom_kills() -> Option<u64>`: the kernel's count of OOM kills since boot
+//!     (`Source::OomKills`). macOS reads none of the four, and `Sampler::missing` says so.
+//!   - `Threads::new() -> Threads`, a `threads::ThreadReader`, read only while `Source::Threads`
+//!     is demanded: `ticks_per_second()` is the unit of its cumulative CPU counters, and
+//!     `list(target, limit)` lists the threads of one process, leader first, at most `limit` of
+//!     them (`Listing::Unreadable` for another user's process). The pass that walks the
+//!     processes within the caps and derives per-thread CPU is `threads::ThreadScan`, shared by
+//!     both platforms.
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -68,7 +96,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::journal::Line;
-use crate::model::{Blocker, Identity, IoBytes, Process, SyscallCounts};
+use crate::model::{Blocker, Identity, IoBytes, Process, Queue, SyscallCounts};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -156,11 +184,34 @@ pub enum Source {
     ForkEvents,
     /// Exit records (`ExitRecord`): an exit has no command, CPU, memory or I/O totals.
     ExitRecords,
+    /// `Process::oom`, the out-of-memory ranking: Linux `oom_score` and `oom_score_adj`; macOS
+    /// jetsam priorities, which only root can list.
+    Oom,
+    /// `Process::memory_detail`, `smaps_rollup` for the largest processes: none on macOS.
+    MemoryDetail,
+    /// The split of the proportional set size into anonymous, file and shared-memory pages
+    /// (`Rollup::pss_anon` and the two after it), which needs Linux 5.3.
+    MemorySplit,
+    /// `Snapshot::interrupts`, the interrupt counts and rates per CPU (`/proc/interrupts`).
+    Interrupts,
+    /// `Snapshot::softirqs`, the softirq counts and rates per CPU (`/proc/softirqs`).
+    Softirqs,
+    /// `Interrupt::affinity`, the CPUs that serve each numbered interrupt. It fills the rows of
+    /// `Interrupts`, so a view that draws it declares both.
+    IrqAffinity,
+    /// `Snapshot::oom_kills`, the kernel's count of OOM kills (`oom_kill` in `/proc/vmstat`).
+    OomKills,
+    /// `Process::thread_list`, each process's threads with their names, CPU and states.
+    Threads,
+    /// `Snapshot::pipes`: the pipes and FIFOs that connect processes, with direction. A view
+    /// demands it; the unread bytes of Unix sockets (`Snapshot::unix_queues`) come with the
+    /// socket scan and are not behind it.
+    Pipes,
 }
 
 impl Source {
     /// Every source, in declaration order.
-    pub const ALL: [Source; 23] = [
+    pub const ALL: &[Source] = &[
         Source::CpuPressure,
         Source::MemoryPressure,
         Source::IoPressure,
@@ -184,6 +235,15 @@ impl Source {
         Source::SampleDiff,
         Source::ForkEvents,
         Source::ExitRecords,
+        Source::Oom,
+        Source::MemoryDetail,
+        Source::MemorySplit,
+        Source::Interrupts,
+        Source::Softirqs,
+        Source::IrqAffinity,
+        Source::OomKills,
+        Source::Threads,
+        Source::Pipes,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -212,6 +272,15 @@ impl Source {
             Source::SampleDiff => "sample diff",
             Source::ForkEvents => "fork events",
             Source::ExitRecords => "exit records",
+            Source::Oom => "oom score",
+            Source::MemoryDetail => "memory detail",
+            Source::MemorySplit => "memory split",
+            Source::Interrupts => "interrupts",
+            Source::Softirqs => "softirqs",
+            Source::IrqAffinity => "irq affinity",
+            Source::OomKills => "oom kills",
+            Source::Threads => "threads",
+            Source::Pipes => "pipes",
         }
     }
 
@@ -258,7 +327,8 @@ impl Sources {
     /// The sources in the set, in declaration order.
     pub fn iter(self) -> impl Iterator<Item = Source> {
         Source::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter(move |&source| self.contains(source))
     }
 }
@@ -293,6 +363,19 @@ impl fmt::Debug for Sources {
             .entries(self.iter().map(Source::name))
             .finish()
     }
+}
+
+/// How reading one process's detail came out.
+#[cfg_attr(
+    all(target_os = "macos", not(test)),
+    expect(dead_code, reason = "only Linux reads a process's memory by kind")
+)]
+pub enum Taken<T> {
+    Value(T),
+    /// It exists but this user may not read it, or the kernel lacks the file.
+    Unreadable,
+    /// It exited before or while it was read, so there is nothing to keep, not even a gap.
+    Gone,
 }
 
 /// One process as the OS reports it, before isotop smooths anything.
@@ -616,6 +699,11 @@ pub struct Network {
     pub remotes: Vec<Remote>,
     /// Loopback TCP sockets between two known processes, for per-link traffic.
     pub loopback: Vec<Loopback>,
+    /// What waits unread on the connected Unix sockets between two different processes, by
+    /// (reader pid, writer pid), summed over the sockets of the pair: the reader owns the socket
+    /// whose receive queue it is, the writer owns its peer. A pair is present once its queue was
+    /// read, empty or not.
+    pub unix_queues: HashMap<(u32, u32), Queue>,
 }
 
 /// One end of an established loopback TCP connection between two different processes.
@@ -689,9 +777,78 @@ pub struct Locks {
     pub unattributed: u32,
 }
 
+/// How a process may use one end of a pipe or FIFO, from the open flags of its descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessMode {
+    Read,
+    Write,
+    /// A FIFO opened for reading and writing.
+    Both,
+}
+
+impl AccessMode {
+    pub fn reads(self) -> bool {
+        self != AccessMode::Write
+    }
+
+    pub fn writes(self) -> bool {
+        self != AccessMode::Read
+    }
+
+    /// What a process may do with a pipe through two descriptors of it.
+    pub fn union(self, other: AccessMode) -> AccessMode {
+        if self == other {
+            self
+        } else {
+            AccessMode::Both
+        }
+    }
+}
+
+/// What the descriptors of one pipe or FIFO have in common, whichever process holds them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PipeId {
+    /// An anonymous pipe: its inode on Linux, the lower of its handle and its peer's on macOS.
+    Anonymous(u64),
+    /// A named pipe, by the device and inode of its file.
+    Fifo { device: u64, inode: u64 },
+}
+
+/// One descriptor of a pipe or FIFO that a process holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PipeEnd {
+    pub id: PipeId,
+    pub access: AccessMode,
+    /// Bytes waiting in the pipe, where the platform tells (macOS, for anonymous pipes); None
+    /// where it does not (Linux exposes no count for a pipe another process holds, and no
+    /// platform counts a FIFO's).
+    pub buffered: Option<u64>,
+}
+
+/// What one `PipeScan::sample` pass read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PipeSample {
+    /// The pipe and FIFO descriptors of each process the pass reached, an empty list for a
+    /// process that holds none. A pid the pass did not reach, or could not read, is absent.
+    pub ends: HashMap<u32, Vec<PipeEnd>>,
+    /// Whether the pass stopped at its cap before reaching every pid, or read only part of one
+    /// process's descriptors. The next pass resumes after the last pid it reached.
+    pub partial: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_all_lists_every_source_in_declaration_order() {
+        // `Sources` is a bit set indexed by the discriminant, and `iter` walks `ALL`, so the list
+        // must be the enum in order. The last variant is the one a new source is appended after.
+        for (index, source) in Source::ALL.iter().enumerate() {
+            assert_eq!(*source as usize, index, "{} is out of order", source.name());
+        }
+        assert_eq!(Source::Pipes as usize + 1, Source::ALL.len());
+    }
 
     #[test]
     fn source_names_are_unique_and_match_previous_wording() {
@@ -782,7 +939,12 @@ mod tests {
         );
         assert!(Sources::of(&[]).is_empty());
         assert_eq!(
-            Source::ALL.into_iter().collect::<Sources>().iter().count(),
+            Source::ALL
+                .iter()
+                .copied()
+                .collect::<Sources>()
+                .iter()
+                .count(),
             Source::ALL.len()
         );
     }

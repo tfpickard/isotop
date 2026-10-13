@@ -341,19 +341,11 @@ impl SpatialHash {
 
 /// The sort key of an `(index, distance)` candidate: distance, then index, as one integer. The
 /// bits of a non-negative `f32` order like its value, and a NaN distance ranks after every number.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 fn rank(candidate: &(usize, f32)) -> u64 {
     u64::from(candidate.1.to_bits()) << 32 | candidate.0 as u64
 }
 
 /// Orders candidates by distance, then index.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 fn closer(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
     rank(a).cmp(&rank(b))
 }
@@ -371,10 +363,6 @@ fn closer(a: &(usize, f32), b: &(usize, f32)) -> std::cmp::Ordering {
 /// shells suffice. Coordinates must be finite; a grid holding non-finite points, or points
 /// whose cell coordinates leave `+-2^30`, answers every query by scanning all points.
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 pub struct SpatialHash3 {
     inverse_cell: f32,
     points: Vec<[f32; 3]>,
@@ -392,10 +380,6 @@ pub struct SpatialHash3 {
 /// The integer coordinates of one grid cell. Its own hash (below) is cheaper than the default
 /// SipHash, which cost a k-nearest query about as much as the distances it computes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 struct Cell([i32; 3]);
 
 impl std::hash::Hash for Cell {
@@ -410,10 +394,6 @@ impl std::hash::Hash for Cell {
 
 /// Hashes the one `u64` a [`Cell`] writes: one multiply, then the high half folded onto the low.
 #[derive(Default)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 struct CellHasher(u64);
 
 impl std::hash::Hasher for CellHasher {
@@ -437,16 +417,8 @@ impl std::hash::Hasher for CellHasher {
 
 /// Cell coordinates beyond this magnitude may be saturated casts, so their cell geometry is
 /// unreliable.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 const CELL_LIMIT: i32 = 1 << 30;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no caller until the first view that uses it")
-)]
 impl SpatialHash3 {
     /// Creates an empty grid whose cells are `cell` wide. Non-positive sizes fall back to 1.
     pub fn new(cell: f32) -> Self {
@@ -534,6 +506,10 @@ impl SpatialHash3 {
     /// Clears `out`, then fills it with the indices of every stored point whose distance to
     /// `point` is strictly less than `radius`, in ascending index order. A query point that is
     /// itself stored is included at distance zero.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no caller until a view that needs a radius query")
+    )]
     pub fn neighbours(&self, point: [f32; 3], radius: f32, out: &mut Vec<usize>) {
         out.clear();
         if self.points.is_empty() || radius.is_nan() || radius <= 0.0 {
@@ -771,6 +747,12 @@ impl Rng {
         splitmix_finalizer(self.state)
     }
 
+    /// Uniform in `0..bound`, which must not be zero. The bias of the multiply-shift is below
+    /// `bound / 2^32`, far under anything a view could show.
+    pub fn below(&mut self, bound: usize) -> usize {
+        (((self.next_u64() >> 32) * bound as u64) >> 32) as usize
+    }
+
     /// Uniform in [0, 1). Uses 24 bits, the width of an `f32` mantissa, so 1.0 cannot occur.
     pub fn unit(&mut self) -> f32 {
         (self.next_u64() >> 40) as f32 / 16_777_216.0
@@ -785,10 +767,6 @@ impl Rng {
     /// [`unit`](Self::unit) draws: `sqrt(-2 ln u1) * cos(2 pi u2)`. `u1` is `1 - unit()`, which
     /// lies in (0, 1], so the logarithm never sees zero. The second value of the pair is
     /// discarded, which keeps the generator a single `state` word.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no caller until the first view that uses it")
-    )]
     pub fn normal(&mut self) -> f32 {
         let radius = (-2.0 * (1.0 - self.unit()).ln()).sqrt();
         radius * (std::f32::consts::TAU * self.unit()).cos()
@@ -1038,6 +1016,17 @@ mod tests {
             start: 1235,
         };
         assert_ne!(draw(identity(100), 1), draw(other_start, 1));
+    }
+
+    #[test]
+    fn rng_below_covers_every_value_under_the_bound_and_none_above() {
+        let mut rng = Rng::new(3);
+        let mut seen = [0_u32; 5];
+        for _ in 0..5000 {
+            seen[rng.below(5)] += 1;
+        }
+        assert!(seen.iter().all(|&count| count > 800), "{seen:?}");
+        assert_eq!(rng.below(1), 0);
     }
 
     #[test]

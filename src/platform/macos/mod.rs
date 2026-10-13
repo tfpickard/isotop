@@ -21,8 +21,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Child;
 use std::time::Instant;
 
-use crate::model::{CoreKind, Cpu, GpuMemory, Identity, IoBytes, Kind, Measured, Process, Unit};
-use crate::platform::{Files, Locks, Network, RawProcess, Shadow, Source, Sources};
+use crate::model::{
+    CoreKind, Cpu, GpuMemory, Identity, Interrupt, IoBytes, Kind, Measured, Oom, Process, Rollup,
+    Softirq, Unit,
+};
+use crate::platform::{
+    Files, Locks, Network, PipeEnd, PipeSample, RawProcess, Shadow, Source, Sources, Taken,
+};
+use crate::threads::{Listing, RawThread, Target, ThreadReader};
 
 pub use events::{monotonic_ns, open_events};
 pub use journal::{JOURNAL, journal};
@@ -271,6 +277,10 @@ impl Sampler {
             syscall_io: None,
             major_faults: None,
             started: logic::start_seconds(bsd.pbi_start_tvsec, bsd.pbi_start_tvusec),
+            oom: Measured::Pending,
+            // macOS has no smaps_rollup: `Source::MemoryDetail` is one of its gaps.
+            memory_detail: Measured::Unreadable,
+            thread_list: Measured::Pending,
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -477,6 +487,49 @@ impl Sampler {
     pub fn shadows(&self) -> Vec<Shadow> {
         self.shadows.clone()
     }
+}
+
+/// macOS has no `smaps_rollup`: memory by kind is one of its gaps (`Source::MemoryDetail`).
+pub const MEMORY_DETAIL: bool = false;
+
+/// Never called: `MEMORY_DETAIL` is false.
+pub fn rollup(_pid: u32) -> Taken<Rollup> {
+    Taken::Unreadable
+}
+
+const _: () = assert!(logic::JETSAM_ENTRY_SIZE == size_of::<ffi::memorystatus_priority_entry>());
+
+/// The jetsam rank of each of `pids`. Only root may list the priority bands, so anyone else gets
+/// None, as does a call that fails or returns bytes that are not that list; the collector then
+/// reports `Source::Oom` missing. A pid the list does not hold is absent.
+pub fn oom_scores(pids: &[u32]) -> Option<HashMap<u32, Option<Oom>>> {
+    // SAFETY: geteuid cannot fail and has no preconditions.
+    if unsafe { libc::geteuid() } != 0 {
+        return None;
+    }
+    let priorities = logic::jetsam_priorities(&jetsam_list()?)?;
+    Some(
+        pids.iter()
+            .filter_map(|pid| Some((*pid, Some(logic::jetsam_oom(*priorities.get(pid)?)))))
+            .collect(),
+    )
+}
+
+/// The bytes of the kernel's jetsam priority list, or None when the call fails.
+fn jetsam_list() -> Option<Vec<u8>> {
+    let command = ffi::MEMORYSTATUS_CMD_GET_PRIORITY_LIST;
+    // SAFETY: with a null buffer the call only returns how many bytes the list needs; it
+    // reads and writes no memory of ours.
+    let needed = unsafe { ffi::memorystatus_control(command, 0, 0, std::ptr::null_mut(), 0) };
+    let needed = usize::try_from(needed).ok().filter(|&needed| needed > 0)?;
+    // Room for processes that start between the two calls.
+    let mut bytes = vec![0u8; needed + 16 * logic::JETSAM_ENTRY_SIZE];
+    // SAFETY: `bytes` is writable for `bytes.len()` bytes, and the kernel copies out at most
+    // the buffer size it is given.
+    let written =
+        unsafe { ffi::memorystatus_control(command, 0, 0, bytes.as_mut_ptr().cast(), bytes.len()) };
+    bytes.truncate(usize::try_from(written).ok()?);
+    Some(bytes)
 }
 
 /// Ends the log follower and everything it started, then reaps it. `journal` makes the child
@@ -922,6 +975,11 @@ impl Sockets {
                     pid,
                     pcb: socket.soi_pcb,
                     peer,
+                    queue: logic::unix_queue(
+                        socket.soi_type,
+                        socket.soi_options,
+                        socket.soi_rcv.sbi_cc,
+                    ),
                 });
             }
             _ => {}
@@ -1130,6 +1188,193 @@ fn vnode_descriptor(pid: c_int, fd: i32) -> Option<logic::Descriptor> {
     }))
 }
 
+/// How much one pipe pass may read. Listing a table is one `proc_pidinfo` call. Each pipe
+/// descriptor then costs one `proc_pidfdinfo` call, as does each vnode descriptor, which may be
+/// a FIFO and cannot be told from a file without the call; the vnode calls are the many cheap
+/// ones and are bounded apart, with the same numbers as the open-file scan.
+#[derive(Clone, Copy, Debug)]
+struct PipeBounds {
+    /// Pipe descriptors read per pass.
+    reads: usize,
+    /// Vnode descriptors examined per pass.
+    probes: usize,
+    /// Descriptors listed per process; the listing stops there.
+    listed: usize,
+    /// Descriptors listed per pass. A process is only scanned while a whole `listed` share
+    /// remains, so none is judged from a sliver of its table.
+    scan: usize,
+}
+
+const PIPE_BOUNDS: PipeBounds = PipeBounds {
+    reads: 4096,
+    probes: 65536,
+    listed: 16384,
+    scan: 65536,
+};
+
+/// The pipe and FIFO scan across processes, which resumes where the previous pass ran out of
+/// budget.
+pub struct PipeScan {
+    bounds: PipeBounds,
+    /// The last pid scanned, so the next pass starts after it.
+    after: u32,
+    /// Buffers reused by every pass.
+    pids: Vec<c_int>,
+    descriptors: Vec<libc::proc_fdinfo>,
+}
+
+/// What reading one descriptor's pipe record came to.
+enum PipeRead {
+    End(PipeEnd),
+    /// Not a pipe end any more, or one that could not be read: the descriptor closed or was
+    /// reused since the listing, or the kernel refused.
+    Absent,
+    /// The kernel's record is not the size of ours: the layouts differ, so nothing it says about
+    /// pipes can be trusted.
+    Mismatch,
+}
+
+impl PipeScan {
+    pub fn new() -> Self {
+        Self {
+            bounds: PIPE_BOUNDS,
+            after: 0,
+            pids: Vec::new(),
+            descriptors: Vec::new(),
+        }
+    }
+
+    /// The pipe and FIFO descriptors of the processes this pass reached, in pid order from where
+    /// the last pass stopped. None when the processes cannot be listed, or when the kernel's
+    /// pipe record differs from ours in size.
+    ///
+    /// The pass stops before a process whose descriptors would exceed what is left of a budget
+    /// and marks the result partial; the next pass starts with that process, which then gets the
+    /// whole budget even if it holds more than that: only its first descriptors are read, and the
+    /// pass is partial again. Every pass therefore reaches at least one new process.
+    pub fn sample(&mut self) -> Option<PipeSample> {
+        list_pids(&mut self.pids).ok()?;
+        let mut pids: Vec<u32> = self
+            .pids
+            .iter()
+            .filter_map(|&pid| u32::try_from(pid).ok())
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        let start = pids.partition_point(|&pid| pid <= self.after);
+        let (mut listing, mut reads, mut probes) =
+            (self.bounds.scan, self.bounds.reads, self.bounds.probes);
+        let mut sample = PipeSample::default();
+        let mut first = true;
+        for &pid in pids[start..].iter().chain(&pids[..start]) {
+            if listing < self.bounds.listed {
+                sample.partial = true;
+                break;
+            }
+            // Another user's process, or one that has exited: nothing to read, and no ends
+            // recorded, so an earlier reading of the pid is kept.
+            let Ok((listed, truncated)) =
+                list_descriptors(pid as c_int, &mut self.descriptors, self.bounds.listed)
+            else {
+                continue;
+            };
+            let table = &self.descriptors[..listed];
+            let count = |kind: i32| {
+                table
+                    .iter()
+                    .filter(|descriptor| descriptor.proc_fdtype == kind as u32)
+                    .count()
+            };
+            let (pipes, vnodes) = (
+                count(libc::PROX_FDTYPE_PIPE),
+                count(libc::PROX_FDTYPE_VNODE),
+            );
+            let fits = pipes <= reads && vnodes <= probes;
+            if !fits && !first {
+                sample.partial = true;
+                break;
+            }
+            sample.partial |= truncated || !fits;
+            let (mut pipe_budget, mut probe_budget) = (reads, probes);
+            let mut ends = Vec::new();
+            for descriptor in table {
+                let end = match descriptor.proc_fdtype as i32 {
+                    libc::PROX_FDTYPE_PIPE if pipe_budget > 0 => {
+                        pipe_budget -= 1;
+                        pipe_end(pid as c_int, descriptor.proc_fd)
+                    }
+                    libc::PROX_FDTYPE_VNODE if probe_budget > 0 => {
+                        probe_budget -= 1;
+                        fifo_end(pid as c_int, descriptor.proc_fd)
+                    }
+                    _ => PipeRead::Absent,
+                };
+                match end {
+                    PipeRead::End(end) => ends.push(end),
+                    PipeRead::Absent => {}
+                    PipeRead::Mismatch => return None,
+                }
+            }
+            (reads, probes) = (pipe_budget, probe_budget);
+            listing -= listed;
+            self.after = pid;
+            first = false;
+            sample.ends.insert(pid, ends);
+        }
+        Some(sample)
+    }
+}
+
+/// The pipe end that pipe descriptor `fd` of `pid` holds.
+fn pipe_end(pid: c_int, fd: i32) -> PipeRead {
+    let mut info = MaybeUninit::<ffi::pipe_fdinfo>::zeroed();
+    let size = size_of::<ffi::pipe_fdinfo>() as c_int;
+    // SAFETY: the buffer is valid for writes of `size` bytes.
+    let written = unsafe {
+        libc::proc_pidfdinfo(
+            pid,
+            fd,
+            ffi::PROC_PIDFDPIPEINFO,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written <= 0 {
+        return PipeRead::Absent;
+    }
+    if written != size {
+        return PipeRead::Mismatch;
+    }
+    // SAFETY: pipe_fdinfo holds only integers, so the bytes the kernel wrote are valid.
+    let info = unsafe { info.assume_init() };
+    logic::pipe_end(
+        info.pipeinfo.pipe_handle,
+        info.pipeinfo.pipe_peerhandle,
+        info.pfi.fi_openflags,
+        info.pipeinfo.pipe_stat.vst_size,
+    )
+    .map_or(PipeRead::Absent, PipeRead::End)
+}
+
+/// The FIFO end that vnode descriptor `fd` of `pid` holds, if its file is a FIFO.
+fn fifo_end(pid: c_int, fd: i32) -> PipeRead {
+    let Ok(info) = vnode_info(pid, fd) else {
+        return PipeRead::Absent;
+    };
+    let stat = info.pvi.vi_stat;
+    logic::fifo_end(
+        logic::VnodeStat {
+            device: stat.vst_dev,
+            mode: stat.vst_mode,
+            links: stat.vst_nlink,
+            inode: stat.vst_ino,
+            size: stat.vst_size,
+        },
+        info.pfi.fi_openflags,
+    )
+    .map_or(PipeRead::Absent, PipeRead::End)
+}
+
 /// An open vnode's `vnode_fdinfo`, only when the kernel wrote exactly the size of ours, which
 /// proves the layouts agree. The kernel stats the vnode the descriptor holds, so a file
 /// deleted while open is still found, with a link count of 0. macOS has no equivalent of
@@ -1168,6 +1413,29 @@ pub fn locks() -> Option<Locks> {
     None
 }
 
+/// The interrupt table. macOS has none that can be read, and `Sampler::missing` names
+/// "interrupts".
+pub fn interrupts() -> Option<Vec<Interrupt>> {
+    None
+}
+
+/// The softirq counts. macOS has no softirqs; `Sampler::missing` names "softirqs".
+pub fn softirqs() -> Option<Vec<Softirq>> {
+    None
+}
+
+/// The CPUs serving an interrupt. macOS has no table to name one from; `Sampler::missing` names
+/// "irq affinity".
+pub fn irq_affinity(_id: &str) -> Option<Vec<u32>> {
+    None
+}
+
+/// The count of OOM kills. macOS keeps none short of the private IOReport framework;
+/// `Sampler::missing` names "oom kills".
+pub fn oom_kills() -> Option<u64> {
+    None
+}
+
 /// GPU memory per process. Apple GPUs share memory with the CPU and report no per-process
 /// figure here, so there is none.
 pub struct Gpu;
@@ -1182,13 +1450,119 @@ impl Gpu {
     }
 }
 
+/// The ids of a process's threads are 64 bits wide and kept in a buffer that grows with the
+/// largest list seen, up to this many.
+const MAX_THREAD_IDS: usize = 1 << 16;
+
+/// Reads the threads of a process: their unique ids with `PROC_PIDLISTTHREADIDS`, then each
+/// thread's `proc_threadinfo` by that id. Its CPU times are in nanoseconds, so the process's
+/// CPU (converted from Mach time) and a thread's count the same unit. A process of another user
+/// is refused with EPERM, as for the other flavors. The identity of the process is not checked
+/// against the pid again: macOS hands pids out in turn and takes a long time to reuse one.
+pub struct Threads {
+    ids: Vec<u64>,
+}
+
+impl Threads {
+    pub fn new() -> Self {
+        Threads { ids: Vec::new() }
+    }
+}
+
+/// Lists the unique ids of the threads of `pid` into `ids`, a buffer reused between processes.
+/// An error when the process cannot be listed: EPERM for another user's, ESRCH for one that
+/// has exited. The list is empty for a process with no task.
+fn list_thread_ids(pid: c_int, ids: &mut Vec<u64>) -> io::Result<()> {
+    if ids.len() < 64 {
+        ids.resize(64, 0);
+    }
+    loop {
+        let bytes = ids.len() * size_of::<u64>();
+        // libproc returns 0 both for an empty list and for an error, which alone sets errno.
+        // SAFETY: __error returns this thread's errno, which is always writable.
+        unsafe { *libc::__error() = 0 };
+        // SAFETY: the buffer is valid for writes of `bytes` bytes.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                ffi::PROC_PIDLISTTHREADIDS,
+                0,
+                ids.as_mut_ptr().cast(),
+                bytes as c_int,
+            )
+        };
+        let Ok(written) = usize::try_from(written).map(|written| written.min(bytes)) else {
+            return Err(io::Error::last_os_error());
+        };
+        if written == 0 {
+            ids.clear();
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(0) | None => Ok(()),
+                Some(_) => Err(error),
+            };
+        }
+        // The kernel fills at most the whole buffer and says nothing when it truncates.
+        if written < bytes || ids.len() >= MAX_THREAD_IDS {
+            ids.truncate(written / size_of::<u64>());
+            return Ok(());
+        }
+        let grown = ids.len() * 2;
+        ids.resize(grown, 0);
+    }
+}
+
+impl ThreadReader for Threads {
+    /// `pth_user_time` and `pth_system_time` count nanoseconds.
+    fn ticks_per_second(&self) -> f64 {
+        1e9
+    }
+
+    fn list(&mut self, target: &Target, limit: usize) -> Listing {
+        let pid = target.id.pid as c_int;
+        match list_thread_ids(pid, &mut self.ids) {
+            Ok(()) => {}
+            // Only a process that has exited is gone. Any other refusal (EPERM for another user's,
+            // or a kernel that does not know the flavor) leaves its threads unread, never absent.
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Listing::Gone,
+            Err(_) => return Listing::Unreadable,
+        }
+        logic::oldest_first(&mut self.ids);
+        let complete = self.ids.len() <= limit;
+        let mut threads = Vec::with_capacity(self.ids.len().min(limit));
+        for &id in self.ids.iter().take(limit) {
+            match pid_info::<libc::proc_threadinfo>(pid, ffi::PROC_PIDTHREADID64INFO, id) {
+                Ok(info) => threads.push(RawThread {
+                    tid: logic::thread_tid(id),
+                    start: id,
+                    name: logic::thread_name(&c_text(&info.pth_name), &target.name),
+                    ticks: info.pth_user_time.saturating_add(info.pth_system_time),
+                    state: logic::thread_state(info.pth_run_state),
+                    leader: false,
+                }),
+                Err(Absent::Unreadable) => return Listing::Unreadable,
+                // The thread exited after the list was taken.
+                Err(Absent::Gone) => {}
+            }
+        }
+        // The oldest thread that is still there leads.
+        let Some(oldest) = threads.first_mut() else {
+            return Listing::Gone;
+        };
+        oldest.leader = true;
+        Listing::Found { threads, complete }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Queue;
+    use crate::platform::AccessMode;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1310,6 +1684,136 @@ mod tests {
         assert_eq!(sampler.per_cluster().is_empty(), !sampler.clocked());
     }
 
+    /// The path of a file of this test run in the temporary directory, removed first.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("isotop-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn unix_queues_are_the_bytes_of_a_stream_and_the_flag_of_a_datagram() {
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        writer.write_all(&[7; 3000]).unwrap();
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        sender.send(&[1; 100]).unwrap();
+        let path = scratch("queue.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let _waiting = UnixStream::connect(&path).unwrap();
+        let pid = std::process::id() as c_int;
+        let mut sockets = Sockets::default();
+        sockets.scan(pid, &mut Vec::new());
+        let queue = |fd: i32| {
+            let pcb = socket_info(pid, fd).unwrap().psi.soi_pcb;
+            sockets
+                .unix
+                .iter()
+                .find(|socket| socket.pcb == pcb)
+                .expect("the Unix socket was scanned")
+                .queue
+        };
+        let bytes = |unread| {
+            Some(Queue {
+                unread,
+                datagram_waiting: false,
+            })
+        };
+        assert_eq!(queue(reader.as_raw_fd()), bytes(3000));
+        assert_eq!(queue(writer.as_raw_fd()), bytes(0));
+        assert_eq!(
+            queue(receiver.as_raw_fd()),
+            Some(Queue {
+                unread: 0,
+                datagram_waiting: true
+            }),
+            "a waiting packet is a flag, not its size"
+        );
+        assert_eq!(queue(sender.as_raw_fd()), Some(Queue::default()));
+        assert_eq!(
+            queue(listener.as_raw_fd()),
+            None,
+            "a listener's buffer holds no data"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_pipe_descriptor_reports_its_direction_its_peer_and_the_bytes_waiting() {
+        let mut fds = [0 as c_int; 2];
+        // SAFETY: pipe writes two descriptors to the array, which has room for them.
+        let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(made, 0);
+        let pid = std::process::id() as c_int;
+        let [read, write] = fds;
+        // SAFETY: write is a descriptor of this process and the buffer is valid for 5 bytes.
+        let written = unsafe { libc::write(write, b"hello".as_ptr().cast(), 5) };
+        assert_eq!(written, 5);
+        let end = |fd| match pipe_end(pid, fd) {
+            PipeRead::End(end) => end,
+            PipeRead::Absent => panic!("descriptor {fd} is not a readable pipe end"),
+            PipeRead::Mismatch => panic!("pipe_fdinfo has the wrong size"),
+        };
+        let (reading, writing) = (end(read), end(write));
+        assert_eq!(reading.id, writing.id, "the ends swap handle and peer");
+        assert_eq!(reading.access, AccessMode::Read);
+        assert_eq!(writing.access, AccessMode::Write);
+        // Either end reports the bytes waiting in the pipe.
+        assert_eq!((reading.buffered, writing.buffered), (Some(5), Some(5)));
+        // SAFETY: both descriptors are open and owned by this test.
+        unsafe {
+            libc::close(read);
+            libc::close(write);
+        }
+    }
+
+    #[test]
+    fn a_fifo_this_process_holds_open_is_found_by_the_pipe_scan() {
+        use std::os::unix::fs::MetadataExt;
+        let path = scratch("queue.fifo");
+        let c_path = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        // SAFETY: c_path is a NUL-terminated string that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let fifo = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let regular = std::fs::File::create(scratch("queue.file")).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let (me, mut scan, mut found) = (std::process::id(), PipeScan::new(), None);
+        // A bounded pass may reach this process over several passes.
+        for _ in 0..50 {
+            found = scan
+                .sample()
+                .expect("the processes can be listed")
+                .ends
+                .remove(&me);
+            if found.is_some() {
+                break;
+            }
+        }
+        let ends = found.expect("the scan reached this process");
+        let named: Vec<_> = ends
+            .iter()
+            .filter(|end| matches!(end.id, crate::platform::PipeId::Fifo { .. }))
+            .collect();
+        assert_eq!(named.len(), 1, "the regular file is not a pipe: {ends:?}");
+        assert_eq!(
+            (named[0].id, named[0].access, named[0].buffered),
+            (
+                crate::platform::PipeId::Fifo {
+                    device: u64::from(metadata.dev() as u32),
+                    inode: metadata.ino()
+                },
+                AccessMode::Both,
+                None
+            )
+        );
+        drop((fifo, regular));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(scratch("queue.file"));
+    }
+
     #[test]
     fn socket_info_has_the_size_the_kernel_reports() {
         let (mut left, right) = UnixStream::pair().unwrap();
@@ -1341,6 +1845,17 @@ mod tests {
         };
         let (a, b) = (unix(left.as_raw_fd()), unix(right.as_raw_fd()));
         assert_eq!((a.peer, b.peer), (b.pcb, a.pcb));
+        // The byte written to `left` waits in `right`'s receive buffer.
+        assert_eq!(
+            (a.queue, b.queue),
+            (
+                Some(Queue::default()),
+                Some(Queue {
+                    unread: 1,
+                    datagram_waiting: false
+                })
+            )
+        );
         assert_eq!(logic::pair_unix(&[a, b]), vec![(me, me)]);
 
         let end = |local: SocketAddr, foreign: SocketAddr| {
@@ -1485,6 +2000,31 @@ mod tests {
     }
 
     #[test]
+    fn the_jetsam_list_is_refused_without_root_and_ranks_this_process_with_it() {
+        let me = std::process::id();
+        // SAFETY: geteuid cannot fail and has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(oom_scores(&[me]), None, "rank only for root");
+            // SAFETY: with a null buffer the call reads and writes no memory of ours.
+            let answer = unsafe {
+                ffi::memorystatus_control(
+                    ffi::MEMORYSTATUS_CMD_GET_PRIORITY_LIST,
+                    0,
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            assert_eq!(answer, -1, "the call links, and only root may list");
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        } else {
+            let found = oom_scores(&[me]).expect("root lists the bands");
+            let oom = found[&me].expect("this process has a band");
+            assert_eq!(oom.adjust, None);
+        }
+    }
+
+    #[test]
     fn stopping_the_journal_ends_the_whole_follower_group() {
         let (mut child, _) = journal().unwrap();
         let mut output = child.stdout.take().unwrap();
@@ -1563,6 +2103,105 @@ mod tests {
         };
         assert_eq!((files, listed), (Files::default(), 0));
         child.wait().unwrap();
+    }
+
+    /// This process, as the thread reader is asked about it.
+    fn myself() -> Target {
+        Target {
+            id: Identity {
+                pid: std::process::id(),
+                start: 0,
+            },
+            name: "isotop".into(),
+        }
+    }
+
+    #[test]
+    fn the_threads_of_this_process_are_listed_oldest_first_with_their_names_and_cpu() {
+        // Two threads that stay, named, until the end of the test.
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let release = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = ["probe-a", "probe-b"]
+            .into_iter()
+            .map(|name| {
+                let (ready, release) = (
+                    std::sync::Arc::clone(&ready),
+                    std::sync::Arc::clone(&release),
+                );
+                std::thread::Builder::new()
+                    .name(name.into())
+                    .spawn(move || {
+                        ready.wait();
+                        release.wait();
+                    })
+                    .unwrap()
+            })
+            .collect();
+        ready.wait();
+        let mut reader = Threads::new();
+        let Listing::Found { threads, complete } = reader.list(&myself(), 1024) else {
+            panic!("this process's threads are readable");
+        };
+        assert!(complete);
+        assert!(threads.len() >= 3, "{threads:?}");
+        assert!(threads[0].leader, "the oldest thread leads");
+        assert_eq!(threads.iter().filter(|thread| thread.leader).count(), 1);
+        let starts: Vec<u64> = threads.iter().map(|thread| thread.start).collect();
+        assert!(
+            starts.windows(2).all(|pair| pair[0] < pair[1]),
+            "{starts:?}"
+        );
+        assert!(
+            threads
+                .iter()
+                .all(|thread| thread.tid == thread.start as u32)
+        );
+        let named = |name: &str| threads.iter().any(|thread| thread.name == name);
+        assert!(named("probe-a") && named("probe-b"), "{threads:?}");
+        assert!(
+            threads.iter().all(|thread| !thread.name.is_empty()),
+            "an unnamed thread takes the process's name"
+        );
+        assert!(threads.iter().any(|thread| thread.ticks > 0));
+        // A smaller limit keeps the oldest threads and says the list is cut.
+        let Listing::Found {
+            threads: cut,
+            complete,
+        } = reader.list(&myself(), 2)
+        else {
+            panic!("readable");
+        };
+        assert!(!complete);
+        assert_eq!(cut.len(), 2);
+        assert_eq!(cut[0].start, threads[0].start);
+        release.wait();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn another_users_threads_are_unreadable_and_an_exited_process_is_gone() {
+        let mut reader = Threads::new();
+        // SAFETY: getuid cannot fail and has no preconditions.
+        if unsafe { libc::getuid() } != 0 {
+            let launchd = Target {
+                id: Identity { pid: 1, start: 0 },
+                name: "launchd".into(),
+            };
+            assert_eq!(reader.list(&launchd, 1024), Listing::Unreadable);
+        }
+        let gone = Target {
+            id: Identity {
+                pid: 99_998,
+                start: 0,
+            },
+            name: "none".into(),
+        };
+        // pid 99998 is one the kernel does not hand out near here; skip when it exists.
+        if pid_info::<libc::proc_bsdshortinfo>(99_998, libc::PROC_PIDT_SHORTBSDINFO, 0).is_err() {
+            assert_eq!(reader.list(&gone, 1024), Listing::Gone);
+        }
     }
 
     #[test]

@@ -1,19 +1,32 @@
 //! The view registry. Every view is one row of `REGISTRY`, and the row holds everything that sets
-//! the view apart: its names, sky, legend, record and key hooks, headless warm-up, link rule, the
-//! sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read the
-//! row instead of naming the view, so a new view is one module plus one row.
+//! the view apart: its names, sky, the constructor of its module, headless warm-up, link rule,
+//! the sources it reads and the platforms it runs on. `Scene`, `App` and the headless path read
+//! the row instead of naming the view, so a new view is one module plus one row.
 //!
-//! The eleven views that predate the registry are built in: `Scene` keeps their state in typed
-//! fields and draws them in its own arms, picked by `BuiltIn`. A new view is a module view: a type
-//! that implements `ViewModule`, which `Scene` builds from the row and calls through the trait.
+//! There is one way to write a view: a type that implements `ViewModule`. The row's `build`
+//! makes one when the `Scene` is created, the scene keeps it in its row's slot and calls it
+//! through the trait (`draw`, `record`, `legend`, `key`, `inspector_line`, `card`), and nothing
+//! outside the module reaches into its state.
 
+mod city;
+mod flow;
+mod orbit;
+mod ripple;
+pub(crate) mod systems;
+
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::model::{DemoOptions, Identity, Process, Snapshot};
-use crate::platform::{self, Source, Sources};
-use crate::render::{Backdrop, Camera, Card, Point, Scene, Stage, Thing};
-use crate::{cells, cores, globe, necropolis, ptolemy, tesseract};
+#[cfg(test)]
+use crate::model::Identity;
+use crate::model::{DemoOptions, Process, Snapshot};
+use crate::platform::{Source, Sources};
+use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
+use crate::{
+    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
+    reef, strata, tesseract,
+};
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -63,7 +76,7 @@ impl fmt::Debug for View {
 }
 
 /// One row of the registry: everything that sets a view apart from the others. `ViewInfo::new`
-/// fills every field after `hooks` with its default, which is how the views without that
+/// fills every field after `build` with its default, which is how the views without that
 /// special case behave, so a row sets only what differs.
 pub struct ViewInfo {
     /// The lowercase name `--view` and `--list-views` use.
@@ -76,8 +89,9 @@ pub struct ViewInfo {
     /// is skipped by Tab and the digits, and a headless run of it exits 1. A runtime probe lives
     /// in `platform/`. Default: everywhere.
     pub available: fn() -> bool,
-    /// How the scene draws the view and asks for its legend, records and keys.
-    pub hooks: Hooks,
+    /// Makes the view's module, which draws the view and answers for its legend, records and
+    /// keys. The scene calls it once per row when it is created and owns the module from then on.
+    pub build: Build,
     /// What a headless run does before the captured frame, phase by phase in slice order.
     /// Default: nothing.
     pub warmup: &'static [Warmup],
@@ -85,8 +99,12 @@ pub struct ViewInfo {
     pub links: LinkRule,
     /// Whether the scene draws those links as hairlines (`Frame::hairline`, thin triangles), which the CPU
     /// and the GPU rasterize alike, rather than as beams, whose one-pixel lines they do not.
-    /// Default: off, the beams the built-in views were blessed with; a new view turns it on.
+    /// Default: off, the beams the eleven original views were blessed with; a new view turns it on.
     pub link_strokes: bool,
+    /// How high, in world units, the scene lifts the ends of its links above the points the view
+    /// put in `Stage::positions`, so they clear the rooftops of a view that draws buildings.
+    /// Default: 0, links on the ground.
+    pub link_lift: f32,
     /// The generic exit flash: an expanding ring and glow where a process left. Default: on.
     pub flash: bool,
     /// The pressure haze tinting the sky. Default: on.
@@ -144,22 +162,23 @@ pub struct Turn {
 }
 
 impl ViewInfo {
-    /// A row with every field after `hooks` at its default.
+    /// A row with every field after `build` at its default.
     pub const fn new(
         name: &'static str,
         title: &'static str,
         backdrop: Backdrop,
-        hooks: Hooks,
+        build: Build,
     ) -> ViewInfo {
         ViewInfo {
             name,
             title,
             backdrop,
             available: everywhere,
-            hooks,
+            build,
             warmup: &[],
             links: LinkRule::Quiet,
             link_strokes: false,
+            link_lift: 0.0,
             flash: true,
             haze: true,
             pitch: None,
@@ -168,12 +187,7 @@ impl ViewInfo {
             face: None,
             turn: None,
             sources: Sources::of(&[]),
-            demo: DemoOptions {
-                churn: false,
-                exact_cpu_time: false,
-                observer: false,
-                mortality: false,
-            },
+            demo: DemoOptions::NONE,
             keys: "",
             contract: Contract::DEFAULT,
         }
@@ -193,10 +207,6 @@ pub struct Contract {
     /// How far, in world units, a surviving process may move when resources or the population
     /// change. Default: 1.
     pub tolerance: f32,
-    /// Where the stability properties look for a process instead of where it is drawn: its
-    /// anchor (seat, house), for a built-in view whose creatures wander. Default: None, which
-    /// checks `Scene::positions`. A module view returns its anchors from `ViewModule::anchors`.
-    pub anchors: Option<Anchors>,
     /// The demo time, in seconds, the harness checks the view at: the default reference time, or
     /// a later one for a view whose history window is not full by then. Default: 12.
     pub time: f64,
@@ -205,14 +215,10 @@ pub struct Contract {
     pub known_unstable: &'static [Unstable],
 }
 
-/// Where each drawn process is anchored, read from the scene after a frame.
-pub type Anchors = fn(&Scene) -> HashMap<Identity, Point>;
-
 impl Contract {
     pub const DEFAULT: Contract = Contract {
         draws_processes: true,
         tolerance: 1.0,
-        anchors: None,
         time: 12.0,
         known_unstable: &[],
     };
@@ -287,40 +293,8 @@ fn everywhere() -> bool {
     true
 }
 
-/// How the scene draws a view and reaches its legend, record and key hooks. Each hook lives in
-/// exactly one place: on the row for a built-in view, on the trait for a module view.
-pub enum Hooks {
-    /// One of the views that predate the registry, drawn by its arm of `Scene::render`.
-    BuiltIn {
-        arm: BuiltIn,
-        /// The third status line while no process is inspected.
-        legend: fn(&Scene, &Snapshot) -> String,
-        /// Takes in each new sample, whichever view is shown.
-        record: Option<fn(&mut Scene, &Snapshot, f32)>,
-        /// Replaces the inspector line, the second status line, and hides the inspector popup:
-        /// for a view that draws no processes.
-        inspector_line: Option<fn(&Scene) -> String>,
-    },
-    /// A view drawn through `ViewModule`. The scene builds one with this function when it is
-    /// created and owns it from then on; nothing outside the module reaches into its state.
-    Module(fn() -> Box<dyn ViewModule>),
-}
-
-/// The arm of `Scene::render` that draws a built-in view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BuiltIn {
-    City,
-    Orbit,
-    Ripple,
-    Flow,
-    Cores,
-    Cells,
-    Strata,
-    Globe,
-    Reef,
-    Matrix,
-    Coop,
-}
+/// The constructor a row holds: it makes the module that draws the view.
+pub type Build = fn() -> Box<dyn ViewModule>;
 
 /// Which socket links the scene draws over a view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +331,14 @@ pub enum Phase {
     /// defined there as well), so a view whose record hook keeps minutes is settled at the
     /// reference time of 12 s.
     Replay { seconds: u32, before_start: bool },
+    /// Plays the `seconds` before `time` for a view that builds its state inside `draw` from the
+    /// samples as they arrived: at each `--sample-ms` the demo sample of that moment becomes the
+    /// whole history, and the frames `step` seconds apart up to the next sample are drawn, not
+    /// rasterized. The played samples are not recorded (`ViewModule::record` and the shared
+    /// history see only what `warm_up`'s replay gave them), so a view that needs a record hook
+    /// to settle uses `Replay`. It plays demo samples, so it belongs under `When::DemoHeadless`;
+    /// samples before time 0 are skipped.
+    Play { seconds: u32, step: f32 },
     /// Rasterizes `frames` frames `step` seconds apart, starting `lead` seconds before `time`.
     Settle { frames: u32, step: f32, lead: f32 },
     /// The same as `Settle`, in `f64` seconds, handing the journal lines that arrived since the
@@ -404,7 +386,7 @@ pub enum ViewKey {
 }
 
 /// A view that the scene draws, records and asks for its legend through this trait. Its state
-/// lives in the implementing type, which the registry row's `Hooks::Module` builds.
+/// lives in the implementing type, which the registry row's `build` makes.
 pub trait ViewModule {
     /// Draws the view onto the stage and returns how many of `processes` it showed; the scene
     /// counts the rest as collapsed. Fill `stage.positions` for every drawn process, and
@@ -439,6 +421,13 @@ pub trait ViewModule {
         None
     }
 
+    /// The view's state as `Any`, for `Scene::module`: a module's own tests read what its legend
+    /// and `Stage` outputs do not tell. None, the default, shows nothing.
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Where the view harness looks for each drawn process instead of where it is drawn, for a
     /// view whose bodies move by themselves: the place each one keeps, read after a frame. None,
     /// the default, checks `Scene::positions`.
@@ -458,166 +447,51 @@ pub fn availability() -> Vec<bool> {
 pub static REGISTRY: &[ViewInfo] = &[
     ViewInfo {
         links: LinkRule::All,
-        ..ViewInfo::new(
-            "city",
-            "CITY",
-            Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::City,
-                legend: city_legend,
-                record: None,
-                inspector_line: None,
-            },
-        )
+        // Links rise above the rooftops.
+        link_lift: 1.5,
+        ..ViewInfo::new("city", "CITY", Backdrop::Dusk, || {
+            Box::new(city::City::default())
+        })
     },
     ViewInfo {
         links: LinkRule::All,
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#114",
-                    reason: "orbits and systems are sized by memory, so the galaxy is laid out again",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#114",
-                    reason: "an exit or a birth lays the systems and their shells out again",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "orbit",
-            "ORBIT",
-            Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Orbit,
-                legend: orbit_legend,
-                record: None,
-                inspector_line: None,
-            },
-        )
+        ..ViewInfo::new("orbit", "ORBIT", Backdrop::Space, || {
+            Box::new(orbit::Orbits::default())
+        })
     },
     ViewInfo {
         links: LinkRule::All,
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#116",
-                reason: "pebble clusters are placed again when memory grows their pebbles",
-            }],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "ripple",
-            "RIPPLE",
-            Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Ripple,
-                legend: ripple_legend,
-                record: None,
-                inspector_line: None,
-            },
-        )
+        ..ViewInfo::new("ripple", "RIPPLE", Backdrop::Space, || {
+            Box::new(ripple::Ripple::default())
+        })
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#115",
-                    reason: "wells are laid out like Orbit's systems, sized by memory",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#115",
-                    reason: "an exit or a birth lays the wells out again, as in Orbit",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "flow",
-            "FLOW",
-            Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Flow,
-                legend: flow_legend,
-                record: None,
-                inspector_line: None,
-            },
-        )
+        ..ViewInfo::new("flow", "FLOW", Backdrop::Space, || {
+            Box::new(flow::Wells::default())
+        })
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#117",
-                reason: "marbles lap at their CPU and no anchor (the lane) is declared",
-            }],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "cores",
-            "CORES",
-            Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Cores,
-                legend: |_, snapshot| cores::legend(snapshot),
-                record: None,
-                inspector_line: None,
-            },
-        )
+        // Marbles lap at their CPU; the lane is what must stay put, and `Track::anchors` says
+        // which one each rides.
+        ..ViewInfo::new("cores", "CORES", Backdrop::Space, || {
+            Box::new(cores::Track::default())
+        })
     },
-    ViewInfo {
-        contract: Contract {
-            known_unstable: &[
-                Unstable {
-                    property: Property::ResourceChange,
-                    issue: "#118",
-                    reason: "the largest member is the nucleus at the centre, and memory sizes the cell",
-                },
-                Unstable {
-                    property: Property::Churn,
-                    issue: "#118",
-                    reason: "when the nucleus exits, the next largest member moves to the centre",
-                },
-            ],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "cells",
-            "CELLS",
-            Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Cells,
-                legend: |_, snapshot| cells::legend(snapshot),
-                record: None,
-                inspector_line: None,
-            },
-        )
-    },
+    ViewInfo::new("cells", "CELLS", Backdrop::Dusk, || {
+        Box::new(cells::Dishes::default())
+    }),
     ViewInfo {
         // A minute of history, so the landscape is full in the captured frame.
         warmup: &[Warmup {
             phase: Phase::History { seconds: 60 },
             when: When::DemoOutput,
         }],
-        ..ViewInfo::new(
-            "strata",
-            "STRATA",
-            Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Strata,
-                legend: strata_legend,
-                record: None,
-                inspector_line: None,
-            },
-        )
+        ..ViewInfo::new("strata", "STRATA", Backdrop::Dusk, || {
+            Box::new(strata::Strata::default())
+        })
     },
     ViewInfo {
         face: Some(globe::face),
@@ -626,43 +500,23 @@ pub static REGISTRY: &[ViewInfo] = &[
             upright: globe::upright,
         }),
         sources: Sources::of(&[Source::Locations]),
-        ..ViewInfo::new(
-            "globe",
-            "GLOBE",
-            Backdrop::Space,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Globe,
-                legend: |_, snapshot| globe::legend(snapshot),
-                record: None,
-                inspector_line: None,
-            },
-        )
+        ..ViewInfo::new("globe", "GLOBE", Backdrop::Space, || {
+            Box::new(globe::Globe::default())
+        })
     },
     ViewInfo {
         warmup: &[SETTLE],
-        contract: Contract {
-            known_unstable: &[Unstable {
-                property: Property::ResourceChange,
-                issue: "#119",
-                reason: "fish swim and crabs scuttle at their CPU and no anchor is declared",
-            }],
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "reef",
-            "REEF",
-            Backdrop::Sea,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Reef,
-                legend: reef_legend,
-                record: None,
-                inspector_line: None,
-            },
-        )
+        // Fish swim and crabs scuttle at their CPU; their school's target and their seat are
+        // what must stay put, and `Reef::anchors` says where those are.
+        ..ViewInfo::new("reef", "REEF", Backdrop::Sea, || {
+            Box::new(reef::Reef::default())
+        })
     },
     ViewInfo {
         haze: false,
         sources: Sources::of(&[Source::Journal]),
+        // The rain draws no processes and collapses none, whatever the machine runs.
+        header: Some(|_| (0, 0)),
         // The rain draws journal lines, not processes.
         contract: Contract {
             draws_processes: false,
@@ -677,17 +531,9 @@ pub static REGISTRY: &[ViewInfo] = &[
             },
             when: When::Headless,
         }],
-        ..ViewInfo::new(
-            "matrix",
-            "MATRIX",
-            Backdrop::Void,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Matrix,
-                legend: matrix_legend,
-                record: None,
-                inspector_line: Some(matrix_line),
-            },
-        )
+        ..ViewInfo::new("matrix", "MATRIX", Backdrop::Void, || {
+            Box::new(matrix::Rain::default())
+        })
     },
     ViewInfo {
         // The CPU history and fox baselines come from the samples before the frame.
@@ -698,22 +544,11 @@ pub static REGISTRY: &[ViewInfo] = &[
             },
             SETTLE,
         ],
-        // Chickens walk; their seats and houses are what must stay put.
-        contract: Contract {
-            anchors: Some(|scene| scene.coop.anchors()),
-            ..Contract::DEFAULT
-        },
-        ..ViewInfo::new(
-            "coop",
-            "COOP",
-            Backdrop::Dusk,
-            Hooks::BuiltIn {
-                arm: BuiltIn::Coop,
-                legend: |scene, _| scene.coop.legend(),
-                record: Some(|scene, snapshot, _| scene.coop.record(snapshot)),
-                inspector_line: None,
-            },
-        )
+        // Chickens walk; their seats and houses are what must stay put, and `Coop::anchors` says
+        // where those are.
+        ..ViewInfo::new("coop", "COOP", Backdrop::Dusk, || {
+            Box::new(coop::Coop::default())
+        })
     },
     ViewInfo {
         // Stars flash their own novae and fades.
@@ -722,21 +557,17 @@ pub static REGISTRY: &[ViewInfo] = &[
         haze: false,
         demo: DemoOptions {
             churn: true,
-            exact_cpu_time: false,
             observer: true,
-            mortality: false,
+            ..DemoOptions::NONE
         },
         // The window of 60 samples is full only after a minute.
         contract: Contract {
             time: 300.0,
             ..Contract::DEFAULT
         },
-        ..ViewInfo::new(
-            "ptolemy",
-            "PTOLEMY",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(ptolemy::Ptolemy::default())),
-        )
+        ..ViewInfo::new("ptolemy", "PTOLEMY", Backdrop::Space, || {
+            Box::new(ptolemy::Ptolemy::default())
+        })
     },
     ViewInfo {
         links: LinkRule::All,
@@ -753,15 +584,11 @@ pub static REGISTRY: &[ViewInfo] = &[
         demo: DemoOptions {
             churn: true,
             exact_cpu_time: true,
-            observer: false,
-            mortality: false,
+            ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "tesseract",
-            "TESSERACT",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(tesseract::Tesseract::default())),
-        )
+        ..ViewInfo::new("tesseract", "TESSERACT", Backdrop::Dusk, || {
+            Box::new(tesseract::Tesseract::default())
+        })
     },
     ViewInfo {
         // Graves are drawn by the view; the zombies have no socket links worth drawing.
@@ -782,93 +609,127 @@ pub static REGISTRY: &[ViewInfo] = &[
         }],
         demo: DemoOptions {
             churn: true,
-            exact_cpu_time: false,
-            observer: false,
             mortality: true,
+            ..DemoOptions::NONE
         },
-        ..ViewInfo::new(
-            "necropolis",
-            "NECROPOLIS",
-            Backdrop::Dusk,
-            Hooks::Module(|| Box::new(necropolis::Necropolis::default())),
-        )
+        ..ViewInfo::new("necropolis", "NECROPOLIS", Backdrop::Dusk, || {
+            Box::new(necropolis::Necropolis::default())
+        })
+    },
+    ViewInfo {
+        // Axons are the view's own: they follow the `c` key and carry the spikes.
+        links: LinkRule::DrawnByView,
+        link_strokes: true,
+        // The slice is a drawing, not a scene to haze.
+        haze: false,
+        // The slice faces the default camera.
+        pitch: Some(ISOMETRIC),
+        face: Some(|_, _| (0.0, ISOMETRIC)),
+        sources: Sources::of(&[Source::Pipes]),
+        // Twelve seconds of the demo as a live run drew it, so the raster is full at 12 s and the
+        // simulation has settled before the ten seconds it shows begin.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 12,
+                step: 0.1,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            channels: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("cortex", "CORTEX", Backdrop::Void, || {
+            Box::new(cortex::Cortex::default())
+        })
+    },
+    ViewInfo {
+        // No sockets: the lensed images are not where processes talk. A process that vanishes
+        // fades where it stood or plunges into the hole, by the view's own `Orbits`, so the
+        // scene's expanding ring would say it twice (this is `own_exits` of the issue).
+        links: LinkRule::DrawnByView,
+        flash: false,
+        // Scores and the kill counter are read only while the view is shown.
+        sources: Sources::of(&[Source::Oom, Source::OomKills]),
+        // The view takes in each sample to see who vanished; replayed as a live run takes them.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 8,
+                before_start: false,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            oom_and_memory_detail: true,
+            kernel_counters: true,
+            oom_cycle: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("horizon", "HORIZON", Backdrop::Void, || {
+            Box::new(horizon::Horizon::default())
+        })
+    },
+    ViewInfo {
+        // Sockets join processes, and the flocks fly clear of one another.
+        links: LinkRule::DrawnByView,
+        // Threads that exit fall to the roost instead.
+        flash: false,
+        // The camera looks across the sky at the flock.
+        pitch: Some(LOWEST_PITCH),
+        // A flock flies high above the ground, so a tour or a search centres the flock itself
+        // rather than the ground below it; the camera turns and tilts as it is.
+        face: Some(|_, goal| (goal.rotation, goal.pitch)),
+        sources: Sources::of(&[Source::Threads, Source::OomKills]),
+        // Fifteen seconds of flight, a step at a time, as a live run would have drawn them: the
+        // flock settles from its clumps, and the demo's samples set off its falcon.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 15,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            threads: true,
+            kernel_counters: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("murmuration", "MURMURATION", Backdrop::Twilight, || {
+            Box::new(murmuration::Murmuration::default())
+        })
+    },
+    ViewInfo {
+        // Sockets join the tips of the processes that hold them, as hairlines.
+        link_strokes: true,
+        // A thread that exits drops its leaf, and a process that exits all of its leaves.
+        flash: false,
+        // The tree stands at its own point of the camera; a tour or a search centres the point
+        // itself, since a twig is far above the ground under it.
+        face: Some(|_, goal| (goal.rotation, goal.pitch)),
+        // The camera looks across the canopy more than down on it.
+        pitch: Some(0.48),
+        sources: Sources::of(&[Source::Threads]),
+        // Eight seconds of wind, blossoms and falling leaves, a frame at a time, as a live run
+        // would have drawn them.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 8,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            threads: true,
+            thread_churn: true,
+            unreadable_parent: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
+            Box::new(arbor::Arbor::default())
+        })
     },
 ];
-
-fn city_legend(_: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Height = CPU | footprint = {} | district = cgroup | amber lights = CPU | cyan pulses = IO",
-        platform::MEMORY_LABEL
-    )
-}
-
-fn orbit_legend(scene: &Scene, snapshot: &Snapshot) -> String {
-    format!(
-        " Size = memory (stars: whole system) | rings = threads | glow + trail = CPU{} | cyan arcs = sockets, pink = outside{}",
-        gpu_note(snapshot),
-        hub_note(scene)
-    )
-}
-
-fn ripple_legend(_: &Scene, _: &Snapshot) -> String {
-    " Pebbles = processes, clustered by cgroup | ripples = CPU, each at its own pitch | size = memory | water tint = nearest process | drops = births, splashes = exits | swell = pressure".into()
-}
-
-fn flow_legend(scene: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Wells = memory | whirlpools + coloured particles = CPU | two-lane rivers = sockets | rising sparks = outside | turbulence = pressure{}",
-        hub_note(scene)
-    )
-}
-
-fn strata_legend(_: &Scene, _: &Snapshot) -> String {
-    " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into()
-}
-
-fn reef_legend(_: &Scene, _: &Snapshot) -> String {
-    " Coral = system services | fish = your session's apps | crabs = containers | plankton = kernel threads | glow = CPU | size = memory | bubbles = I/O".into()
-}
-
-fn matrix_legend(scene: &Scene, _: &Snapshot) -> String {
-    format!(
-        " Journal lines decode as the rain passes | red = error, amber = warning, green = info, teal = debug | {} queued{}",
-        scene.matrix.pending(),
-        match scene.matrix.skipped {
-            0 => String::new(),
-            skipped => format!(", {skipped} skipped"),
-        }
-    )
-}
-
-/// The newest journal line, in place of the inspector: the rain draws no processes.
-fn matrix_line(scene: &Scene) -> String {
-    format!(
-        " > {}",
-        scene
-            .matrix
-            .latest()
-            .unwrap_or("waiting for the journal...")
-    )
-}
-
-/// The Orbit legend's GPU entry, left out where per-process GPU memory is not measured.
-fn gpu_note(snapshot: &Snapshot) -> &'static str {
-    if snapshot.missing.contains(Source::GpuMemory) {
-        ""
-    } else {
-        " | green = NVIDIA GPU"
-    }
-}
-
-/// What the Orbit and Flow legends add while the frame draws a hub; nothing otherwise, so a
-/// focused subtree or a platform that reads every process gets the legend it always had.
-fn hub_note(scene: &Scene) -> &'static str {
-    if scene.hub_names.is_empty() {
-        ""
-    } else {
-        " | hollow star = a parent isotop can't read (run with sudo)"
-    }
-}
 
 /// The registered view called `name`, for tests.
 #[cfg(test)]
@@ -880,7 +741,7 @@ pub fn view(name: &str) -> View {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use crate::render::TourTarget;
+    use crate::render::{Title, TourTarget};
 
     /// A module view that seats the first half of the processes on a line and lets the rest
     /// collapse. Its legend counts what reached it through the trait. `m` toggles a mode that
@@ -894,6 +755,10 @@ pub mod testing {
     }
 
     impl ViewModule for Probe {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -983,15 +848,29 @@ pub mod testing {
     /// The line `Guide` adds to the popup of the process it tours.
     pub const GUIDE_LINE: &str = "guide: the last seat";
 
+    /// The sparkline `Guide` adds below the popup of the process it tours, forty cells wide.
+    pub const GUIDE_SPARKLINE: &str = "⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣶⣶⣶⣶⣶⣶⣶⣶⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿";
+
+    /// The text `Guide` titles its system with.
+    pub const GUIDE_TITLE: &str = "guide system";
+
     /// A module view that seats every process on a line, asks the tour to visit the last one at
-    /// a point beside its seat and adds a line to its popup. Its legend lists the `dt` of each
-    /// frame it drew.
+    /// a point beside its seat, adds a line to its popup and titles the line as a system. Its
+    /// legend lists the `dt` of each frame it drew, and its state what the stage handed it.
     #[derive(Default)]
     pub struct Guide {
         steps: Vec<f32>,
+        /// The `Stage::frames` of each frame it drew.
+        pub frames: Vec<u64>,
+        /// How many `Stage::splashes` and `Stage::newborn` each frame it drew had.
+        pub disturbances: Vec<(usize, usize)>,
     }
 
     impl ViewModule for Guide {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -999,6 +878,9 @@ pub mod testing {
             _snapshot: &Snapshot,
         ) -> usize {
             self.steps.push(stage.dt);
+            self.frames.push(stage.frames);
+            self.disturbances
+                .push((stage.splashes.len(), stage.newborn.len()));
             for (index, process) in processes.iter().enumerate() {
                 let position = [index as f32 * 4.0, 0.0, 0.0];
                 stage.positions.insert(process.id, position);
@@ -1012,12 +894,22 @@ pub mod testing {
                 );
             }
             if let Some((index, last)) = processes.iter().enumerate().next_back() {
+                stage.titles.push(Title {
+                    at: [index as f32 * 4.0, 0.0, 0.0],
+                    reach: 3.0,
+                    text: GUIDE_TITLE.into(),
+                });
                 stage.tour.push(TourTarget {
                     id: last.id,
                     position: [index as f32 * 4.0, 3.0, 0.0],
                     weight: 1.0,
                 });
                 stage.popup.push((last.id, GUIDE_LINE.into()));
+                stage
+                    .sparklines
+                    .entry(last.id)
+                    .or_default()
+                    .push(GUIDE_SPARKLINE.into());
             }
             processes.len()
         }
@@ -1030,18 +922,12 @@ pub mod testing {
 
     /// `guide`, then `probe` to switch to and back.
     pub static GUIDED: &[ViewInfo] = &[
-        ViewInfo::new(
-            "guide",
-            "GUIDE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Guide::default())),
-        ),
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("guide", "GUIDE", Backdrop::Space, || {
+            Box::new(Guide::default())
+        }),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
     ];
 
     /// A module view that seats each process by its rank in the frame's process order, so one
@@ -1085,9 +971,15 @@ pub mod testing {
     #[derive(Default)]
     pub struct Witness {
         seen: String,
+        /// The `Stage::age` of every process of the last frame, by pid.
+        pub ages: HashMap<u32, Option<f32>>,
     }
 
     impl ViewModule for Witness {
+        fn state(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
         fn draw(
             &mut self,
             stage: &mut Stage,
@@ -1100,6 +992,10 @@ pub mod testing {
                 stage.focus.map(|id| id.pid),
                 stage.limit
             );
+            self.ages = processes
+                .iter()
+                .map(|process| (process.id.pid, stage.age(process.id)))
+                .collect();
             for (index, process) in processes.iter().enumerate() {
                 let position = [index as f32 * 4.0, 0.0, 0.0];
                 stage.positions.insert(process.id, position);
@@ -1123,34 +1019,58 @@ pub mod testing {
         }
     }
 
+    /// A module view that seats every process on a line and tells the link mode and the highlighted
+    /// processes the stage handed it, in its legend.
+    #[derive(Default)]
+    pub struct Linker {
+        seen: String,
+    }
+
+    impl ViewModule for Linker {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            self.seen = format!(
+                "links {:?} | highlight {:?}",
+                stage.links,
+                stage.highlight.iter().map(|id| id.pid).collect::<Vec<_>>()
+            );
+            Witness::default().draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" linker: {}", self.seen)
+        }
+    }
+
+    /// `linker`, a view that draws its own links.
+    pub static LINKER: &[ViewInfo] = &[ViewInfo {
+        links: LinkRule::DrawnByView,
+        ..ViewInfo::new("linker", "LINKER", Backdrop::Space, || {
+            Box::new(Linker::default())
+        })
+    }];
+
     /// `witness`, whose keys the help line shows, then `probe`.
     pub static WITNESSED: &[ViewInfo] = &[
         ViewInfo {
             keys: "m witness mode",
-            ..ViewInfo::new(
-                "witness",
-                "WITNESS",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Witness::default())),
-            )
+            ..ViewInfo::new("witness", "WITNESS", Backdrop::Space, || {
+                Box::new(Witness::default())
+            })
         },
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
     ];
 
     /// `shuffle`, then `listed`, the same view with its churn failure listed as known, and a
     /// resource-change failure it does not have.
     pub static SHUFFLED: &[ViewInfo] = &[
-        ViewInfo::new(
-            "shuffle",
-            "SHUFFLE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Shuffle)),
-        ),
+        ViewInfo::new("shuffle", "SHUFFLE", Backdrop::Space, || Box::new(Shuffle)),
         ViewInfo {
             contract: Contract {
                 known_unstable: &[
@@ -1167,12 +1087,7 @@ pub mod testing {
                 ],
                 ..Contract::DEFAULT
             },
-            ..ViewInfo::new(
-                "listed",
-                "LISTED",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Shuffle)),
-            )
+            ..ViewInfo::new("listed", "LISTED", Backdrop::Space, || Box::new(Shuffle))
         },
     ];
 
@@ -1217,23 +1132,17 @@ pub mod testing {
             time: 40.0,
             ..Contract::DEFAULT
         },
-        ..ViewInfo::new(
-            "anchored",
-            "ANCHORED",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Anchored::default())),
-        )
+        ..ViewInfo::new("anchored", "ANCHORED", Backdrop::Space, || {
+            Box::new(Anchored::default())
+        })
     }];
 
     /// Two module views: `probe`, with every optional field at its default, then `quiet`, which
     /// sets them otherwise: no links, flash, haze or tour, a pitch of its own and fixed counts.
     pub static ROWS: &[ViewInfo] = &[
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
         ViewInfo {
             links: LinkRule::DrawnByView,
             flash: false,
@@ -1241,12 +1150,9 @@ pub mod testing {
             pitch: Some(std::f32::consts::FRAC_PI_2),
             tour: false,
             header: Some(|_| (7, 3)),
-            ..ViewInfo::new(
-                "quiet",
-                "QUIET",
-                Backdrop::Dusk,
-                Hooks::Module(|| Box::new(Quiet::default())),
-            )
+            ..ViewInfo::new("quiet", "QUIET", Backdrop::Dusk, || {
+                Box::new(Quiet::default())
+            })
         },
     ];
 
@@ -1346,40 +1252,28 @@ pub mod testing {
 
     /// `lanterns`, then `probe` to switch to.
     pub static THINGS: &[ViewInfo] = &[
-        ViewInfo::new(
-            "lanterns",
-            "LANTERNS",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Lanterns::default())),
-        ),
-        ViewInfo::new(
-            "probe",
-            "PROBE",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("lanterns", "LANTERNS", Backdrop::Space, || {
+            Box::new(Lanterns::default())
+        }),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
     ];
 
     /// `beamed` and `stroked`, which draw every link, as beams and as strokes.
     pub static LINKED: &[ViewInfo] = &[
         ViewInfo {
             links: LinkRule::All,
-            ..ViewInfo::new(
-                "beamed",
-                "BEAMED",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Probe::default())),
-            )
+            ..ViewInfo::new("beamed", "BEAMED", Backdrop::Space, || {
+                Box::new(Probe::default())
+            })
         },
         ViewInfo {
             links: LinkRule::All,
             link_strokes: true,
-            ..ViewInfo::new(
-                "stroked",
-                "STROKED",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Probe::default())),
-            )
+            ..ViewInfo::new("stroked", "STROKED", Backdrop::Space, || {
+                Box::new(Probe::default())
+            })
         },
     ];
 
@@ -1393,12 +1287,48 @@ pub mod testing {
             },
             when: When::DemoHeadless,
         }],
-        ..ViewInfo::new(
-            "replaying",
-            "REPLAYING",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        )
+        ..ViewInfo::new("replaying", "REPLAYING", Backdrop::Space, || {
+            Box::new(Probe::default())
+        })
+    }];
+
+    /// A module view that remembers when each frame it drew was and which sample it showed, as
+    /// `time@elapsed` in its legend.
+    #[derive(Default)]
+    pub struct Player {
+        frames: Vec<String>,
+    }
+
+    impl ViewModule for Player {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            self.frames
+                .push(format!("{:.1}@{:.1}", stage.time, snapshot.elapsed));
+            Probe::default().draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" player: {}", self.frames.join(" "))
+        }
+    }
+
+    /// `playing`, which plays four seconds of demo frames, two a sample, before a headless frame
+    /// of a demo run.
+    pub static PLAYING: &[ViewInfo] = &[ViewInfo {
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 4,
+                step: 0.5,
+            },
+            when: When::DemoHeadless,
+        }],
+        ..ViewInfo::new("playing", "PLAYING", Backdrop::Space, || {
+            Box::new(Player::default())
+        })
     }];
 
     /// `remembering`, which replays twenty seconds of demo samples, those before time 0 as well,
@@ -1411,24 +1341,18 @@ pub mod testing {
             },
             when: When::DemoHeadless,
         }],
-        ..ViewInfo::new(
-            "remembering",
-            "REMEMBERING",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        )
+        ..ViewInfo::new("remembering", "REMEMBERING", Backdrop::Space, || {
+            Box::new(Probe::default())
+        })
     }];
 
     /// Two module views for the demo options: `plain`, which asks for nothing, then `demanding`,
     /// which asks for births, exits and exact CPU time and replays two seconds of history before
     /// a captured frame.
     pub static DEMO_ROWS: &[ViewInfo] = &[
-        ViewInfo::new(
-            "plain",
-            "PLAIN",
-            Backdrop::Space,
-            Hooks::Module(|| Box::new(Probe::default())),
-        ),
+        ViewInfo::new("plain", "PLAIN", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
         ViewInfo {
             warmup: &[
                 Warmup {
@@ -1443,15 +1367,11 @@ pub mod testing {
             demo: DemoOptions {
                 churn: true,
                 exact_cpu_time: true,
-                observer: false,
-                mortality: false,
+                ..DemoOptions::NONE
             },
-            ..ViewInfo::new(
-                "demanding",
-                "DEMANDING",
-                Backdrop::Space,
-                Hooks::Module(|| Box::new(Probe::default())),
-            )
+            ..ViewInfo::new("demanding", "DEMANDING", Backdrop::Space, || {
+                Box::new(Probe::default())
+            })
         },
     ];
 }
@@ -1473,38 +1393,97 @@ mod tests {
     }
 
     #[test]
-    fn only_coop_records_and_only_matrix_replaces_the_inspector() {
-        let with = |test: fn(&Hooks) -> bool| -> Vec<&str> {
-            REGISTRY
-                .iter()
-                .filter(|row| test(&row.hooks))
-                .map(|row| row.name)
-                .collect()
+    fn a_process_that_arrives_after_the_first_frame_has_an_age_and_the_first_ones_have_none() {
+        use crate::model::testing::process;
+        use crate::render::{Camera, RenderInput};
+        let rows = testing::WITNESSED;
+        let at_start = Snapshot {
+            processes: vec![process(10, 1), process(11, 1)],
+            ..Snapshot::default()
         };
+        let mut later = at_start.clone();
+        later.processes.push(process(12, 1));
+        let mut scene = Scene::with_rows(rows);
+        let camera = Camera::default();
+        let mut ages = |snapshot: &Snapshot, time: f32| {
+            let input = RenderInput::small(snapshot, View::at(0), &camera, time);
+            scene.render(&input);
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .ages
+                .clone()
+        };
+        let first = ages(&at_start, 5.0);
+        assert_eq!(first[&10], None, "present on the first frame: never new");
+        let second = ages(&later, 6.0);
+        assert_eq!(second[&10], None);
+        assert_eq!(second[&12], Some(0.0), "first seen this frame");
+        let third = ages(&later, 8.5);
+        assert_eq!(third[&12], Some(2.5));
+        assert_eq!(third[&11], None);
+        let rewound = ages(&later, 5.0);
+        assert_eq!(rewound[&12], None, "before it arrived");
+    }
+
+    #[test]
+    fn an_arrival_survives_a_rewind_to_before_the_birth_so_forward_navigation_restores_its_age() {
+        use crate::model::testing::process;
+        use crate::render::{Camera, RenderInput};
+        let at_start = Snapshot {
+            processes: vec![process(10, 1)],
+            ..Snapshot::default()
+        };
+        let mut later = at_start.clone();
+        later.processes.push(process(12, 1));
+        let mut scene = Scene::with_rows(testing::WITNESSED);
+        let camera = Camera::default();
+        let mut age_of_twelve = |snapshot: &Snapshot, time: f32| {
+            let input = RenderInput::small(snapshot, View::at(0), &camera, time);
+            scene.render(&input);
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .ages
+                .get(&12)
+                .copied()
+                .flatten()
+        };
+        assert_eq!(age_of_twelve(&at_start, 5.0), None);
+        assert_eq!(age_of_twelve(&later, 6.0), Some(0.0));
+        // Rewound to a sample from before it started, then forward again.
+        assert_eq!(age_of_twelve(&at_start, 5.5), None);
         assert_eq!(
-            with(|hooks| matches!(
-                hooks,
-                Hooks::BuiltIn {
-                    record: Some(_),
-                    ..
-                }
-            )),
-            ["coop"],
-            "Strata reads the shared history, so it has no record hook"
+            age_of_twelve(&later, 8.5),
+            Some(2.5),
+            "the process keeps the age it had, not a fresh one"
         );
+    }
+
+    #[test]
+    fn every_row_builds_its_own_module_and_only_the_matrix_replaces_the_inspector() {
+        let scene = Scene::new();
+        let snapshot = Snapshot::default();
+        let replacing: Vec<&str> = View::all()
+            .filter(|&view| scene.inspector_line(view).is_some())
+            .map(View::name)
+            .collect();
         assert_eq!(
-            with(|hooks| matches!(
-                hooks,
-                Hooks::BuiltIn {
-                    inspector_line: Some(_),
-                    ..
-                }
-            )),
-            ["matrix"]
+            replacing,
+            ["matrix"],
+            "a view replaces the inspector line through ViewModule, and only a view that draws no \
+             processes has reason to"
         );
-        assert_eq!(
-            with(|hooks| matches!(hooks, Hooks::Module(_))),
-            ["ptolemy", "tesseract", "necropolis"]
-        );
+        for view in View::all() {
+            assert_eq!(
+                view.info().contract.draws_processes,
+                scene.inspector_line(view).is_none(),
+                "{view:?}: the line replaces the inspector of a view that draws no processes"
+            );
+            assert!(
+                scene.legend(view, &snapshot).starts_with(' '),
+                "{view:?}: the legend the module answers with starts with a space"
+            );
+        }
     }
 }

@@ -1,17 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub(crate) mod kernel;
+
 use crate::geo;
 use crate::places::COUNTRIES;
 use crate::platform::{
-    self, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation, Observed,
-    OpenEvents, RawProcess, Source, Sources,
+    self, AccessMode, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation,
+    Observed, OpenEvents, PipeEnd, PipeId, RawProcess, Source, Sources, Taken,
 };
 use crate::simulation::{Rng, hash, hash_identity, smoothing};
+use crate::threads::{self, Target, ThreadList, ThreadScan};
+use kernel::{KernelReadings, KernelScan, Readers};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -103,7 +107,61 @@ pub struct Process {
     /// When it started, in seconds since the Unix epoch; 0 when the platform cannot tell (Linux
     /// without `btime` in /proc/stat).
     pub started: f64,
+    /// How soon the out-of-memory killer would pick it (`Source::Oom`). Read for every process
+    /// while the source is demanded; `Pending` otherwise, `Unreadable` where the platform
+    /// cannot say (`Snapshot::missing` then holds the source).
+    pub oom: Measured<Oom>,
+    /// Its memory by kind, from `smaps_rollup` (`Source::MemoryDetail`). Read only for the
+    /// `ROLLUP_PROCESSES` processes with the largest resident set while the source is demanded.
+    pub memory_detail: Measured<Rollup>,
+    /// Its threads, read on the background thread only while a shown view demands
+    /// `Source::Threads`: `Pending` otherwise, and for a process the last pass has not reached
+    /// yet. `Unreadable` for another user's process without privileges. The true count stays
+    /// `threads`: a list that is not `complete` was cut by `threads::THREADS_PER_PROCESS` or
+    /// `threads::THREADS_PER_PASS`.
+    pub thread_list: Measured<ThreadList>,
 }
+
+/// A process's place in the out-of-memory killer's ranking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Oom {
+    /// The kernel's `oom_score` as read, not normalized: its range differs between kernel
+    /// versions. A higher value is killed sooner. macOS: the negated jetsam priority.
+    pub badness: i32,
+    /// `oom_score_adj`, -1000 to 1000, which is added to the score in proportion to memory;
+    /// None where the platform has no such setting (macOS) or it could not be parsed.
+    pub adjust: Option<i16>,
+    /// The kernel never picks it (`oom_score_adj` is -1000).
+    pub exempt: bool,
+}
+
+/// A process's memory by kind, in bytes, from `/proc/<pid>/smaps_rollup`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rollup {
+    /// Resident set size: the four `shared` and `private` parts below add up to it.
+    pub rss: u64,
+    /// Proportional set size: each shared page counted in proportion to its sharers.
+    pub pss: u64,
+    /// The parts of `pss` that are anonymous, file-backed and shared-memory pages. None before
+    /// Linux 5.3, which `Source::MemorySplit` reports.
+    pub pss_anon: Option<u64>,
+    pub pss_file: Option<u64>,
+    pub pss_shmem: Option<u64>,
+    pub shared_clean: u64,
+    pub shared_dirty: u64,
+    pub private_clean: u64,
+    pub private_dirty: u64,
+    /// Pages swapped out, and the same in proportion to their sharers.
+    pub swap: u64,
+    pub swap_pss: u64,
+}
+
+/// How many processes get a `Process::memory_detail`: the ones with the largest resident set.
+pub const ROLLUP_PROCESSES: usize = 64;
+
+/// The most time one background cycle spends reading rollups; the processes it did not reach
+/// keep their previous reading and are read first in the next cycle.
+const ROLLUP_BUDGET: Duration = Duration::from_millis(50);
 
 /// The scheduling class of a process's main thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -174,6 +232,9 @@ impl Default for Process {
             syscall_io: None,
             major_faults: None,
             started: 0.0,
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         }
     }
 }
@@ -186,6 +247,8 @@ impl Process {
             id,
             files: Measured::Unreadable,
             locks_held: Measured::Unreadable,
+            oom: Measured::Unreadable,
+            memory_detail: Measured::Unreadable,
             ..Process::default()
         }
     }
@@ -336,6 +399,43 @@ pub struct Unit {
     pub pids_max: Option<u64>,
 }
 
+/// One CPU's count of an interrupt or softirq: the CPU, the events counted since boot, and their
+/// rate per second over the interval between two reads. The rate is None on the first read, for
+/// a CPU that was not there before and when the count went backwards.
+pub type CpuCount = (u32, u64, Option<f32>);
+
+/// One row of `/proc/softirqs`: the softirq's name (`TIMER`, `NET_RX`, ...) and its count on each
+/// CPU.
+pub type Softirq = (String, Vec<CpuCount>);
+
+/// One row of the interrupt table (`Snapshot::interrupts`). Text is as the kernel wrote it:
+/// whoever shows it cleans it (`terminal::clean_text`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Interrupt {
+    /// The row's label without its colon: an interrupt number (`27`) or a name (`LOC`, `NMI`,
+    /// `IPI0`). `Interrupt::is_numbered` tells them apart.
+    pub id: String,
+    /// The interrupt controller or MSI domain of a numbered row; empty for a named one.
+    pub chip: String,
+    /// The controller's own number for the interrupt, when the row has one.
+    pub hwirq: Option<u64>,
+    /// How the line triggers or what handles it (`edge`, `fasteoi`, `Level`), when the row says.
+    pub trigger: String,
+    /// The devices that registered a handler, in the kernel's order; empty for a named row.
+    pub devices: Vec<String>,
+    /// What a named row counts (`Local timer interrupts`); empty for a numbered one.
+    pub description: String,
+    /// The count on each online CPU, in column order. A `total_only` row has one entry, filed
+    /// under the first CPU, which holds the row's total.
+    pub per_cpu: Vec<CpuCount>,
+    /// The kernel printed fewer counts than there are CPUs (`ERR`, `MIS`, `Err`): one total for
+    /// the machine, not a count per CPU.
+    pub total_only: bool,
+    /// The CPUs that serve the interrupt (`effective_affinity_list`): only numbered rows have
+    /// one, and None when it was not read (`Source::IrqAffinity`) or cannot be.
+    pub affinity: Option<Vec<u32>>,
+}
+
 /// An established TCP connection to another machine.
 #[derive(Clone, Debug)]
 pub struct Remote {
@@ -349,6 +449,50 @@ pub struct Remote {
     pub up: Option<f32>,
     pub down: Option<f32>,
     pub location: Location,
+}
+
+/// What waits unread on the connected Unix sockets from one process to another, as the receiving
+/// sockets hold it.
+///
+/// The kernel's receive-queue length (`UNIX_DIAG_RQLEN`, `unix_inq_len` in `net/unix/af_unix.c`)
+/// means two things. On a stream or seqpacket socket it is the bytes queued and not yet read. On
+/// a datagram socket it is only the size of the next packet, so it says that a datagram is
+/// waiting and not how much: `datagram_waiting`, never a byte count. macOS reports the receive
+/// buffer's byte count for both, and the datagram rule is applied to it alike. The send queue is
+/// allocated buffer, not payload, and is never read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Queue {
+    /// Bytes waiting on stream and seqpacket sockets; 0 for datagram sockets.
+    pub unread: u64,
+    /// Whether any datagram socket of the pair holds a packet nobody has read.
+    pub datagram_waiting: bool,
+}
+
+impl Queue {
+    /// Adds the queue of another socket of the same pair.
+    pub fn add(&mut self, other: Queue) {
+        self.unread = self.unread.saturating_add(other.unread);
+        self.datagram_waiting = self.datagram_waiting || other.datagram_waiting;
+    }
+}
+
+/// A pipe or FIFO connecting two processes, found by pairing the descriptors that name the same
+/// pipe (`pair_pipes`). Pipes are not in `Snapshot::links`, so the views that draw `links` do not
+/// draw them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pipe {
+    /// The process that may read it and the one that may write it, from the open flags of their
+    /// descriptors. For a pipe that carries data both ways (`two_way`), listed once, the
+    /// reader is the process with the lower `Identity`.
+    pub reader: Identity,
+    pub writer: Identity,
+    /// Both processes opened it for reading and writing: a FIFO opened `O_RDWR` at both ends.
+    pub two_way: bool,
+    /// Bytes waiting in the pipe, where the platform tells (macOS, for anonymous pipes); None
+    /// where it does not: Linux exposes no count for a pipe another process holds.
+    pub buffered: Option<u64>,
+    /// A named pipe (a FIFO file), not an anonymous one.
+    pub fifo: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -374,6 +518,23 @@ pub struct Snapshot {
     /// can have Unix and TCP sockets both. Empty when the platform does not tell the protocols
     /// apart.
     pub unix_links: HashSet<(Identity, Identity)>,
+    /// What waits unread on the connected Unix sockets between two processes, keyed (reader,
+    /// writer) and summed over the sockets of the pair: the reader owns the sockets whose receive
+    /// queues these are, the writer owns their peers, and a pair talking both ways has an entry in
+    /// each direction. A pair is present once its queues were read, with an empty `Queue` when
+    /// they held nothing (measured idle); a pair not measured is absent. Read with the socket
+    /// scan, so there is nothing to demand: empty only where the platform reports no queues
+    /// (a kernel without `UNIX_DIAG_RQLEN`).
+    pub unix_queues: HashMap<(Identity, Identity), Queue>,
+    /// The pipes and FIFOs that connect two different processes, one entry per pipe and per
+    /// (reader, writer), sorted. Empty unless `Source::Pipes` is in `sources`: it is read only
+    /// while a view demands it. A pipe one process holds both ends of, or whose other end is held
+    /// only by a process isotop may not read, is not listed (as with sockets).
+    pub pipes: Vec<Pipe>,
+    /// Whether `pipes` may be incomplete because the scan reads a bounded number of descriptors
+    /// per pass: processes it had not reached keep what an earlier pass read of them, and one it
+    /// never reached has no pipes listed yet. False when nothing was read.
+    pub pipes_partial: bool,
     /// TCP connections leaving the machine, per process.
     pub outside: HashMap<Identity, u32>,
     pub cpus: Vec<Cpu>,
@@ -417,6 +578,22 @@ pub struct Snapshot {
     /// `processes`, or None when it was not read. The demo synthesizes one only when the shown
     /// view asks (`DemoOptions::observer`), outside `processes`.
     pub observer: Option<Process>,
+    /// The interrupt table with its rates per CPU (`Source::Interrupts`, and `Source::IrqAffinity`
+    /// for each row's affinity): Pending until a pass has read it, which only a view that
+    /// declares the source causes, and Unreadable where the platform has none. In the demo it is
+    /// Pending unless the shown view asks for `DemoOptions::kernel_counters`.
+    pub interrupts: Measured<Vec<Interrupt>>,
+    /// The softirq counts with their rates per CPU (`Source::Softirqs`), as `interrupts`.
+    pub softirqs: Measured<Vec<Softirq>>,
+    /// The kernel's count of OOM kills since boot (`Source::OomKills`): cumulative, so a view takes
+    /// the difference between samples. None when it was not read or cannot be.
+    pub oom_kills: Option<u64>,
+    /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
+    /// follower's, or the demo's. `main.rs` attaches them frame by frame, not the collector, which
+    /// does not own the follower, so a collected or demo sample starts with none. A view takes in
+    /// the ones it has not seen (`Delivery::unseen`). Only the newest sample keeps its lines
+    /// (`Delivery::retire`).
+    pub journal: crate::journal::Delivery,
 }
 
 /// The optional sources the shown view wants read. The background thread reads an optional
@@ -486,15 +663,21 @@ impl Reads {
         }
         value
     }
+
+    /// `Reads::read` for a source that fills a `Measured`: Pending when it is not demanded,
+    /// Unreadable (and missing) when `read` could not read it, Known (and active) otherwise.
+    fn measure<T>(&mut self, source: Source, read: impl FnOnce() -> Option<T>) -> Measured<T> {
+        match self.read(source, read) {
+            Some(value) => Measured::Known(value),
+            None if self.missing.contains(source) => Measured::Unreadable,
+            None => Measured::Pending,
+        }
+    }
 }
 
 /// The `n` processes with the largest `key`, largest first. Ties go to the smaller `Identity`,
 /// and a NaN key sorts after every number, so the choice is the same in every sample that has
 /// the same keys.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no budgeted selection uses it yet")
-)]
 pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
     let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
     let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
@@ -636,6 +819,11 @@ struct Extras {
     /// Open files per pid, None for an unreadable descriptor table; absent until scanned.
     files: HashMap<u32, Option<platform::Files>>,
     locks: Measured<platform::Locks>,
+    /// The kernel counters this cycle read, for the sources that were demanded.
+    kernel: KernelReadings,
+    /// The threads of the processes the last pass reached (`Source::Threads`), by identity; empty
+    /// while nothing demands them.
+    threads: HashMap<Identity, Measured<ThreadList>>,
     /// The slow sources found absent: GPU memory without a `Gpu`, file locks without a table,
     /// and the demanded optional sources that could not be read.
     missing: Sources,
@@ -646,6 +834,15 @@ struct Extras {
     latency: Vec<(Source, Duration)>,
     /// When the cycle that measured all this finished; None before the first.
     finished: Option<Instant>,
+    /// The out-of-memory ranking per pid, None for one that could not be read; empty unless
+    /// `Source::Oom` was demanded and readable.
+    oom: HashMap<u32, Option<Oom>>,
+    /// The rollups kept for the processes chosen for them, None for an unreadable one.
+    rollups: HashMap<u32, Option<Rollup>>,
+    /// The pipes between the processes this cycle named, paired by the cycle; empty unless
+    /// `Source::Pipes` was demanded.
+    pipes: Vec<Pipe>,
+    pipes_partial: bool,
 }
 
 /// The background thread, as the frame loop sees it: what it measured last and whether it is
@@ -742,6 +939,12 @@ pub struct Collector {
     demand: Arc<Mutex<Demand>>,
     /// The processes of the latest sample by pid, which the background scans are joined against.
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
+    /// The pids of the `ROLLUP_PROCESSES` largest processes while `Source::MemoryDetail` is
+    /// demanded, which the background thread reads rollups for; empty otherwise.
+    rollup_pids: Arc<Mutex<Vec<u32>>>,
+    /// The processes whose threads the background thread reads, busiest first, while
+    /// `Source::Threads` is demanded; empty otherwise.
+    thread_targets: Arc<Mutex<Vec<Target>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
@@ -762,6 +965,8 @@ fn background(
     wanted: Arc<Mutex<HashSet<String>>>,
     demand: Arc<Mutex<Demand>>,
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
+    rollup_pids: Arc<Mutex<Vec<u32>>>,
+    thread_targets: Arc<Mutex<Vec<Target>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
         let gpu = platform::Gpu::load();
@@ -772,6 +977,12 @@ fn background(
         let mut retained = HashSet::new();
         let mut files = platform::FileScan::new();
         let mut kept = KeptFiles::default();
+        let mut memory = MemoryReads::new();
+        let mut kernel = KernelScan::default();
+        let mut thread_reader = platform::Threads::new();
+        let mut thread_scan = ThreadScan::default();
+        let mut pipe_scan = platform::PipeScan::new();
+        let mut kept_pipes = KeptPipes::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -815,6 +1026,49 @@ fn background(
             let locks = timed(&mut latency, Source::FileLocks, || {
                 platform::locks().map_or(Measured::Unreadable, Measured::Known)
             });
+            let selected = rollup_pids
+                .lock()
+                .map(|pids| pids.clone())
+                .unwrap_or_default();
+            let found = memory.read(
+                &mut reads,
+                &mut latency,
+                &identities,
+                &selected,
+                platform::oom_scores,
+                platform::rollup,
+            );
+            let kernel = kernel.scan(Readers::PLATFORM, &mut reads, &mut latency);
+            let targets = thread_targets
+                .lock()
+                .map(|targets| targets.clone())
+                .unwrap_or_default();
+            let thread_lists = read_threads(
+                &mut reads,
+                &mut thread_scan,
+                &mut thread_reader,
+                &targets,
+                &mut latency,
+            );
+            let sample = reads.read(Source::Pipes, || {
+                timed(&mut latency, Source::Pipes, || pipe_scan.sample())
+            });
+            let (pipes, pipes_partial) = match sample {
+                Some(sample) => {
+                    let ends = kept_pipes.update(sample.ends, &identities);
+                    let held = ends
+                        .iter()
+                        .filter_map(|(pid, ends)| Some((*identities.get(pid)?, ends.as_slice())));
+                    let (pipes, truncated) = pair_pipes(held);
+                    (pipes, sample.partial || truncated)
+                }
+                // Not demanded or not readable: what was kept would be stale when it is wanted
+                // again.
+                None => {
+                    kept_pipes = KeptPipes::default();
+                    (Vec::new(), false)
+                }
+            };
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -825,38 +1079,76 @@ fn background(
                 traffic,
                 files,
                 locks,
+                kernel,
+                threads: thread_lists,
                 missing,
                 sources: reads.active,
                 geo: geo.source.clone(),
                 latency,
                 finished: None,
+                oom: found.oom,
+                rollups: found.rollups,
+                pipes,
+                pipes_partial,
             }
         }
     })
 }
 
-/// Open-file tables kept between background cycles, each with the process it was read for. The
-/// file scan is bounded and reaches every pid only over several cycles, so a table read earlier
-/// stands in until the scan comes round again, but only while its pid still names that process:
-/// a reused pid starts out unscanned instead of showing its predecessor's files.
-#[derive(Default)]
-struct KeptFiles(HashMap<u32, (Identity, Option<platform::Files>)>);
+/// Readings kept between background cycles, each with the process it was read for. A scan that
+/// is bounded (open files) or budgeted (rollups) reaches every pid only over several cycles, so a
+/// reading taken earlier stands in until the scan comes round again, but only while its pid still
+/// names that process: a reused pid starts out unscanned instead of showing its predecessor's.
+struct Kept<T>(HashMap<u32, (Identity, T)>);
 
-impl KeptFiles {
-    /// Takes the tables this cycle's scan read, against `identities` (the processes by pid when
-    /// the cycle began), and returns every table that still belongs to the process its pid names
-    /// there.
+/// Reads the threads of `targets` through `reader` when `Source::Threads` is demanded, and records
+/// the source as read. Nothing is read otherwise, and the CPU the scan tracked is dropped, so a
+/// view that asks again later starts without readings instead of averaging over the gap.
+fn read_threads(
+    reads: &mut Reads,
+    scan: &mut ThreadScan,
+    reader: &mut impl threads::ThreadReader,
+    targets: &[Target],
+    latency: &mut Vec<(Source, Duration)>,
+) -> HashMap<Identity, Measured<ThreadList>> {
+    let found = reads.read(Source::Threads, || {
+        Some(timed(latency, Source::Threads, || {
+            scan.pass(targets, reader)
+        }))
+    });
+    found.unwrap_or_else(|| {
+        scan.forget();
+        HashMap::new()
+    })
+}
+
+impl<T> Default for Kept<T> {
+    fn default() -> Self {
+        Kept(HashMap::new())
+    }
+}
+
+/// The open-file tables of the file scan.
+type KeptFiles = Kept<Option<platform::Files>>;
+
+/// The pipe and FIFO descriptors of each process, which the pipe scan reaches round-robin.
+type KeptPipes = Kept<Vec<PipeEnd>>;
+
+impl<T: Clone> Kept<T> {
+    /// Takes the readings this cycle's scan took, against `identities` (the processes by pid
+    /// when the cycle began), and returns every reading that still belongs to the process its
+    /// pid names there.
     fn update(
         &mut self,
-        scanned: HashMap<u32, Option<platform::Files>>,
+        scanned: HashMap<u32, T>,
         identities: &HashMap<u32, Identity>,
-    ) -> HashMap<u32, Option<platform::Files>> {
+    ) -> HashMap<u32, T> {
         self.0
             .retain(|pid, (id, _)| identities.get(pid) == Some(id));
-        for (pid, files) in scanned {
+        for (pid, reading) in scanned {
             match identities.get(&pid) {
                 Some(&id) => {
-                    self.0.insert(pid, (id, files));
+                    self.0.insert(pid, (id, reading));
                 }
                 // Born since the cycle began, so it is not joined this cycle; its next scan
                 // will have an identity to keep it under.
@@ -867,7 +1159,7 @@ impl KeptFiles {
         }
         self.0
             .iter()
-            .map(|(&pid, (_, files))| (pid, files.clone()))
+            .map(|(&pid, (_, reading))| (pid, reading.clone()))
             .collect()
     }
 }
@@ -889,6 +1181,12 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         let scanned = extras.identities.get(&process.id.pid) == Some(&process.id);
         process.gpu_memory = extras.gpu.get(&process.id.pid).filter(|_| scanned).copied();
         merge_files(process, &extras.files, &extras.locks, scanned);
+        merge_memory(process, extras, scanned);
+        process.thread_list = extras
+            .threads
+            .get(&process.id)
+            .cloned()
+            .unwrap_or(Measured::Pending);
         // A holder that has exited since released its locks, so nothing waits on it any more.
         process.blocked_on = process.blocked_on.filter(|blocker| match blocker {
             Blocker::Process(holder) => id(holder).is_some(),
@@ -919,6 +1217,20 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         .iter()
         .filter_map(|(a, b)| Some((id(a)?, id(b)?)))
         .collect();
+    snapshot.unix_queues = extras
+        .network
+        .unix_queues
+        .iter()
+        .filter_map(|(&(reader, writer), &queue)| Some(((id(&reader)?, id(&writer)?), queue)))
+        .collect();
+    // Paired when the cycle ran, so a process that has exited since takes its pipes with it.
+    snapshot.pipes = extras
+        .pipes
+        .iter()
+        .filter(|pipe| current.contains(&pipe.reader) && current.contains(&pipe.writer))
+        .copied()
+        .collect();
+    snapshot.pipes_partial = extras.pipes_partial;
     snapshot.units = extras.units.clone();
     snapshot.remotes = extras
         .remotes
@@ -931,6 +1243,9 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         })
         .collect();
     snapshot.geo = extras.geo.clone();
+    snapshot.interrupts = extras.kernel.interrupts.clone();
+    snapshot.softirqs = extras.kernel.softirqs.clone();
+    snapshot.oom_kills = extras.kernel.oom_kills;
     snapshot.missing = snapshot.missing.union(extras.missing);
     snapshot.sources = snapshot.sources.union(extras.sources);
 }
@@ -976,6 +1291,230 @@ fn merge_files(
         Measured::Known(_) | Measured::Pending => (Measured::Pending, None),
         Measured::Unreadable => (Measured::Unreadable, None),
     };
+}
+
+/// Sets a process's out-of-memory ranking and memory rollup from the background scans. A pid the
+/// scans did not reach, or reached as another process (`scanned` false), is pending; where the
+/// platform cannot rank at all the ranking is unreadable. Where the platform has no rollups the
+/// sampler has set the field unreadable, and it stays.
+fn merge_memory(process: &mut Process, extras: &Extras, scanned: bool) {
+    let pid = process.id.pid;
+    process.oom = match extras.oom.get(&pid).filter(|_| scanned) {
+        Some(Some(oom)) => Measured::Known(*oom),
+        Some(None) => Measured::Unreadable,
+        None if extras.missing.contains(Source::Oom) => Measured::Unreadable,
+        None => Measured::Pending,
+    };
+    process.memory_detail = match extras.rollups.get(&pid).filter(|_| scanned) {
+        Some(Some(rollup)) => Measured::Known(*rollup),
+        Some(None) => Measured::Unreadable,
+        None if platform::MEMORY_DETAIL => Measured::Pending,
+        None => process.memory_detail.clone(),
+    };
+}
+
+/// The pids that get a rollup: the `ROLLUP_PROCESSES` with the largest resident set, which
+/// `top_n` picks the same way in every sample that has the same sizes. A process with no resident
+/// memory has nothing to roll up, and a kernel thread has no address space to read one from.
+fn rollup_pids(processes: &[Process]) -> Vec<u32> {
+    top_n(processes, ROLLUP_PROCESSES, |process| match process.kind {
+        Kind::Kernel => f64::NAN,
+        _ => process.memory as f64,
+    })
+    .into_iter()
+    .filter(|process| process.memory > 0 && process.kind != Kind::Kernel)
+    .map(|process| process.id.pid)
+    .collect()
+}
+
+/// What one background cycle found of the out-of-memory ranking and the rollups.
+#[derive(Default)]
+struct MemoryFound {
+    oom: HashMap<u32, Option<Oom>>,
+    rollups: HashMap<u32, Option<Rollup>>,
+}
+
+/// The two memory sources of the background thread, and what the rollup pass keeps between
+/// cycles.
+struct MemoryReads {
+    /// Whether the platform reads rollups at all.
+    detail: bool,
+    /// How long one rollup pass may run once it has read a process.
+    budget: Duration,
+    /// Where the next rollup pass starts in its list, so that a pass cut short by the budget does
+    /// not starve the processes at the end of the list.
+    cursor: usize,
+    kept: Kept<Option<Rollup>>,
+}
+
+impl MemoryReads {
+    fn new() -> Self {
+        MemoryReads {
+            detail: platform::MEMORY_DETAIL,
+            budget: ROLLUP_BUDGET,
+            cursor: 0,
+            kept: Kept::default(),
+        }
+    }
+
+    /// Reads the sources `reads` demands. `oom` ranks the pids of `identities` (None where the
+    /// platform cannot, which makes `Source::Oom` missing), and `rollup` reads one of `selected`,
+    /// the pids chosen on the frame loop. A rollup read without the split of its proportional
+    /// set size makes `Source::MemorySplit` missing.
+    fn read(
+        &mut self,
+        reads: &mut Reads,
+        latency: &mut Vec<(Source, Duration)>,
+        identities: &HashMap<u32, Identity>,
+        selected: &[u32],
+        oom: impl FnOnce(&[u32]) -> Option<HashMap<u32, Option<Oom>>>,
+        rollup: impl FnMut(u32) -> Taken<Rollup>,
+    ) -> MemoryFound {
+        let oom = reads
+            .read(Source::Oom, || {
+                let pids: Vec<u32> = identities.keys().copied().collect();
+                timed(latency, Source::Oom, || oom(&pids))
+            })
+            .unwrap_or_default();
+        let scanned = reads.read(Source::MemoryDetail, || {
+            self.detail.then(|| {
+                timed(latency, Source::MemoryDetail, || {
+                    self.scan(selected, rollup)
+                })
+            })
+        });
+        let rollups = match scanned {
+            Some(scanned) => {
+                // Only the selected processes keep a rollup, so one that fell out of the
+                // largest loses it.
+                let chosen: HashSet<u32> = selected.iter().copied().collect();
+                let chosen: HashMap<u32, Identity> = identities
+                    .iter()
+                    .filter(|(pid, _)| chosen.contains(pid))
+                    .map(|(&pid, &id)| (pid, id))
+                    .collect();
+                self.kept.update(scanned, &chosen)
+            }
+            None => {
+                self.kept = Kept::default();
+                HashMap::new()
+            }
+        };
+        if rollups
+            .values()
+            .flatten()
+            .any(|rollup| rollup.pss_anon.is_none())
+        {
+            reads.missing.insert(Source::MemorySplit);
+        }
+        MemoryFound { oom, rollups }
+    }
+
+    /// Reads rollups for `pids` in order from the cursor until `budget` is spent, always at
+    /// least one. A process that is unreadable is None, and one that exited is left out.
+    fn scan(
+        &mut self,
+        pids: &[u32],
+        mut rollup: impl FnMut(u32) -> Taken<Rollup>,
+    ) -> HashMap<u32, Option<Rollup>> {
+        let mut found = HashMap::new();
+        if pids.is_empty() {
+            self.cursor = 0;
+            return found;
+        }
+        let started = Instant::now();
+        let first = self.cursor % pids.len();
+        for step in 0..pids.len() {
+            if step > 0 && started.elapsed() >= self.budget {
+                self.cursor = (first + step) % pids.len();
+                return found;
+            }
+            let pid = pids[(first + step) % pids.len()];
+            match rollup(pid) {
+                Taken::Value(reading) => found.insert(pid, Some(reading)),
+                Taken::Unreadable => found.insert(pid, None),
+                Taken::Gone => None,
+            };
+        }
+        self.cursor = first;
+        found
+    }
+}
+
+/// The most readers, and the most writers, of one pipe that `pair_pipes` pairs: a pipe that
+/// hundreds of processes inherited would otherwise make a link for every reader and writer.
+const PIPE_FAN_OUT: usize = 64;
+
+/// The pipes and FIFOs that connect two different processes, from the descriptors each process
+/// holds: the descriptors that name the same pipe (`PipeId`) are paired, a reader (a process with
+/// a descriptor that may read it) to each writer (one that may write it). Two descriptors of one
+/// pipe in one process count as one with the access of both, and a process paired with itself
+/// is no link. Processes that may each read and write it make one `two_way` entry, with the lower
+/// `Identity` as reader.
+///
+/// Sorted by (reader, writer, pipe). The second value is whether a pipe had more than
+/// `PIPE_FAN_OUT` readers or writers, the lowest identities of which were paired.
+pub(crate) fn pair_pipes<'a>(
+    held: impl IntoIterator<Item = (Identity, &'a [PipeEnd])>,
+) -> (Vec<Pipe>, bool) {
+    // Per pipe, each holder with the access of all its descriptors and the most it saw buffered.
+    let mut holders: BTreeMap<PipeId, BTreeMap<Identity, (AccessMode, Option<u64>)>> =
+        BTreeMap::new();
+    for (holder, ends) in held {
+        for end in ends {
+            holders
+                .entry(end.id)
+                .or_default()
+                .entry(holder)
+                .and_modify(|(access, buffered)| {
+                    *access = access.union(end.access);
+                    *buffered = (*buffered).max(end.buffered);
+                })
+                .or_insert((end.access, end.buffered));
+        }
+    }
+    let mut pipes = Vec::new();
+    let mut truncated = false;
+    for (&id, holders) in &holders {
+        let ends = |wanted: fn(AccessMode) -> bool| {
+            holders
+                .iter()
+                .filter(|(_, (access, _))| wanted(*access))
+                .map(|(&holder, &(_, buffered))| (holder, buffered))
+                .collect::<Vec<_>>()
+        };
+        let (mut readers, mut writers) = (ends(AccessMode::reads), ends(AccessMode::writes));
+        truncated |= readers.len() > PIPE_FAN_OUT || writers.len() > PIPE_FAN_OUT;
+        readers.truncate(PIPE_FAN_OUT);
+        writers.truncate(PIPE_FAN_OUT);
+        for &(reader, buffered) in &readers {
+            for &(writer, other) in &writers {
+                if reader == writer {
+                    continue;
+                }
+                // The mirror of this pair, where the writer also reads and the reader also
+                // writes, is listed once, from its lower identity.
+                let two_way = readers.iter().any(|&(holder, _)| holder == writer)
+                    && writers.iter().any(|&(holder, _)| holder == reader);
+                if two_way && reader > writer {
+                    continue;
+                }
+                pipes.push(Pipe {
+                    reader,
+                    writer,
+                    two_way,
+                    buffered: if two_way {
+                        buffered.max(other)
+                    } else {
+                        buffered
+                    },
+                    fifo: matches!(id, PipeId::Fifo { .. }),
+                });
+            }
+        }
+    }
+    pipes.sort_by_key(|pipe| (pipe.reader, pipe.writer, pipe.fifo));
+    (pipes, truncated)
 }
 
 /// Where each of `sockets` is, in order, from the GeoIP database; None when no database can be
@@ -1522,6 +2061,8 @@ impl Collector {
             wanted: Arc::new(Mutex::new(HashSet::new())),
             demand: Arc::new(Mutex::new(Demand::default())),
             identities: Arc::new(Mutex::new(HashMap::new())),
+            rollup_pids: Arc::new(Mutex::new(Vec::new())),
+            thread_targets: Arc::new(Mutex::new(Vec::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -1570,6 +2111,17 @@ impl Collector {
         snapshot.unreadable = self.sampler.unreadable();
         snapshot.shadows = self.sampler.shadows();
         snapshot.processes.sort_by_key(|p| p.id);
+        let demand = self
+            .demand
+            .lock()
+            .map_or_else(|error| *error.into_inner(), |demand| *demand);
+        if let Ok(mut targets) = self.thread_targets.lock() {
+            *targets = if demand.contains(Source::Threads) {
+                threads::targets(&snapshot.processes)
+            } else {
+                Vec::new()
+            };
+        }
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = snapshot
                 .processes
@@ -1577,6 +2129,17 @@ impl Collector {
                 .filter(|p| !p.cgroup.is_empty())
                 .map(|p| p.cgroup.clone())
                 .collect();
+        }
+        let demand = self
+            .demand
+            .lock()
+            .map_or_else(|error| *error.into_inner(), |demand| *demand);
+        if let Ok(mut pids) = self.rollup_pids.lock() {
+            *pids = if demand.contains(Source::MemoryDetail) {
+                rollup_pids(&snapshot.processes)
+            } else {
+                Vec::new()
+            };
         }
         if let Ok(mut identities) = self.identities.lock() {
             *identities = snapshot
@@ -1593,6 +2156,8 @@ impl Collector {
                 Arc::clone(&self.wanted),
                 Arc::clone(&self.demand),
                 Arc::clone(&self.identities),
+                Arc::clone(&self.rollup_pids),
+                Arc::clone(&self.thread_targets),
             );
         }
         if let Some(background) = &self.background {
@@ -1604,10 +2169,6 @@ impl Collector {
             .iter()
             .find(|process| process.id.pid == std::process::id())
             .cloned();
-        let demand = self
-            .demand
-            .lock()
-            .map_or_else(|error| *error.into_inner(), |demand| *demand);
         if demand.contains(Source::LifeEvents) {
             // After the identities are published, which kqueue watches.
             self.life.start(self.open_events, &self.identities);
@@ -1942,7 +2503,95 @@ pub struct DemoOptions {
     /// kills; and one exit in ten seen only by sample diffing, with no cause or record. Off, the
     /// churn is as described above.
     pub mortality: bool,
+    /// Synthesizes `Process::oom` for every process and `Process::memory_detail` for the
+    /// `ROLLUP_PROCESSES` largest, from hashes of each process's identity apart from every other
+    /// stream. The score is about 1000 times its share of `memory_total` (the kernel's, with a
+    /// few points of page tables); the first three System processes that are not zombies have
+    /// `oom_score_adj` -1000 and are exempt, the fourth -250, and kernel threads and zombies
+    /// score 0. A rollup is consistent: its four parts add up to `rss`, `pss` lies between the
+    /// private part and `rss`, its three `pss_` parts add up to `pss`, and `swap_pss <= swap`.
+    /// One of the 64 is unreadable. Off, both are `Pending`, as in `demo`.
+    pub oom_and_memory_detail: bool,
+    /// Synthesizes the kernel counters (`Snapshot::interrupts`, `softirqs` and `oom_kills`, with
+    /// each interrupt's affinity) for 16 CPUs: device rows `nvme0q0` to `nvme0q7`, `xhci_hcd`,
+    /// `iwlwifi` (whose affinity moves to another CPU every 37 s), `i915` and `ahci`; the named
+    /// rows `NMI`, `LOC` (about 250 Hz per CPU, scaled by the CPU's busy share), `RES`, `CAL` and
+    /// `TLB`; all ten softirqs; and `oom_kills`, the sum of the units' `oom_kills` at the same
+    /// time. Counts grow from a day of uptime and rates wander, both pure functions of `time`.
+    /// Off, the three fields hold what an unread source holds: Pending, Pending and None.
+    pub kernel_counters: bool,
+    /// Gives every process, the transients and the observer included, the threads
+    /// `threads::demo_list` synthesizes (`Process::thread_list`): as many as `Process::threads`
+    /// (at most `THREADS_PER_PROCESS`, which no demo process reaches), the leader's tid the pid,
+    /// their CPU summing to the process's, their ids, names and start times fixed by the
+    /// process's identity. It also lists `Source::Threads` in `Snapshot::sources`, as a live run
+    /// does while the source is demanded. Off, `thread_list` is `Pending`, as in any view that
+    /// demands no threads, and `sources` stays empty.
+    pub threads: bool,
+    /// Synthesizes `Snapshot::unix_queues` and `Snapshot::pipes`, which `demo` leaves empty. The
+    /// Unix pairs of `unix_links` get a queue in the direction they were drawn (the reverse
+    /// direction measured idle), cycling through bytes pulsing between a few KiB and a few
+    /// hundred KiB, a pair with nothing queued, bytes up to a MiB and, for the pair numbered 3
+    /// (process 39), a datagram waiting. There are three shell pipelines of four, three and
+    /// five processes (the middle one reporting `buffered` bytes, as macOS does, the others
+    /// `None`, as Linux does) and one FIFO opened for reading and writing at both ends. The
+    /// pairs come from process indices alone, with no random stream, so every other field and
+    /// frame is as without it; at 16 processes some of these pairs collapse onto one process and
+    /// are dropped. `pipes_partial` stays false.
+    pub channels: bool,
+    /// Runs an out-of-memory kill every 30 s of `time` on the highest-index base process of the
+    /// first 135 that is not a kernel thread (index 134 at the default count). It lives from the
+    /// phase 26 s of one cycle to the phase 20 s of the next, scores 950 (with the
+    /// `oom_score_adj` that makes it so, when `oom_and_memory_detail` gives the scores) and is
+    /// absent from the sample at the phase 20 s, until it starts again at 26 s with a new
+    /// `Identity::start` and `started`. From the phase 20 s the `oom_kills` of its cgroup, and so
+    /// the kernel counter when `kernel_counters` is on, is one higher per kill so far. Nothing
+    /// else changes but the memory pressure (some, 10 s average), which builds from 45% to 90%
+    /// over each cycle until the kill and falls back over the next 6 s, as it does before an
+    /// OOM kill: no other process, no random stream. Off, there is no cycle.
+    pub oom_cycle: bool,
+    /// Lets the thread pools of the base processes breathe: a process that has four threads or
+    /// more sheds up to two fifths of them and takes them back, each on its own period of 18 to
+    /// 33 s, so `Process::threads` falls and rises between samples (the higher thread indices
+    /// leave first and come back as the same threads). With `exact_cpu_time` it never falls
+    /// below one thread per 100% of the process's peak CPU use. A pure function of `time`;
+    /// the transients and every other field are as without it. Off, a process keeps its count.
+    pub thread_churn: bool,
+    /// Hides one parent from `Snapshot::processes` and lists it in `Snapshot::shadows` instead,
+    /// as another user's process would be: the leader of the second family (index 16, `init-16`,
+    /// a child of the first process), whose fifteen siblings keep their parent pid. `unreadable`
+    /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
+    /// `unreadable` 0, as in `demo`.
+    pub unreadable_parent: bool,
 }
+
+impl DemoOptions {
+    /// Every option off, which `demo` uses. Name the options a row turns on and take the rest
+    /// from here (`DemoOptions { churn: true, ..DemoOptions::NONE }`), so a new option does not
+    /// touch the rows that leave it off.
+    pub const NONE: Self = Self {
+        churn: false,
+        exact_cpu_time: false,
+        observer: false,
+        mortality: false,
+        oom_and_memory_detail: false,
+        kernel_counters: false,
+        threads: false,
+        channels: false,
+        oom_cycle: false,
+        thread_churn: false,
+        unreadable_parent: false,
+    };
+}
+
+/// The machine's memory in the demo: `Snapshot::memory_total`.
+const DEMO_MEMORY_TOTAL: u64 = 32 * 1024_u64.pow(3);
+
+/// Seeds the demo's out-of-memory scores, apart from every other use of an identity.
+const DEMO_OOM_SALT: u64 = 0x00a1_c0de_5c0e;
+
+/// Seeds the demo's memory rollups; the second hash of a process takes the xor of `1`.
+const DEMO_ROLLUP_SALT: u64 = 0x0071_11b0_7ea5;
 
 /// One transient family per this many base processes.
 const DEMO_FAMILY_SIZE: usize = 16;
@@ -1956,6 +2605,23 @@ pub const DEMO_ZOMBIE_SECONDS: f64 = 1.0;
 
 /// Seconds between the out-of-memory kills.
 const DEMO_OOM_PERIOD: f64 = 90.0;
+
+/// Seconds between the kills of `DemoOptions::oom_cycle`.
+const DEMO_KILL_PERIOD: f64 = 30.0;
+
+/// Seconds into a kill cycle at which the victim is killed, and at which a new one starts.
+const DEMO_KILL_AT: f64 = 20.0;
+const DEMO_RESPAWN_AT: f64 = 26.0;
+
+/// The last base index that may be the kill cycle's victim, and the score it has.
+const DEMO_VICTIM_LAST: usize = 134;
+
+/// The memory pressure of the kill cycle: where each cycle starts and where the kill leaves it,
+/// in percent, and the seconds it takes to fall back after the kill.
+const DEMO_PRESSURE_CALM: f32 = 45.0;
+const DEMO_PRESSURE_PEAK: f32 = 90.0;
+const DEMO_PRESSURE_RELIEF: f64 = 6.0;
+const DEMO_VICTIM_SCORE: i32 = 950;
 
 /// Added to a transient's birth in 1/100 s ticks to make `Identity::start`, which puts it above
 /// every base `start` (those count processes from 1).
@@ -2464,6 +3130,9 @@ impl Transient {
             syscall_io: running.then(|| demo_syscall_io(index, io_rate, write_rate)),
             major_faults: running.then(|| demo_major_faults(index, phase)),
             started: demo_transient_started(self.birth),
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         }
     }
 }
@@ -2668,6 +3337,24 @@ fn demo_threads(index: usize, exact: bool) -> u32 {
     }
 }
 
+/// The thread count of base process `index` at `time` under `DemoOptions::thread_churn`: its
+/// `base` count less up to two fifths, shed and regained along a sine of its own period.
+fn demo_breathing_threads(base: u32, index: usize, time: f64, exact: bool) -> u32 {
+    if base < 4 {
+        return base;
+    }
+    let period = 18.0 + 5.0 * (index % 4) as f64;
+    let wave = 0.5 + 0.5 * (std::f64::consts::TAU * time / period + index as f64 * 1.3).sin();
+    let shed = (f64::from(base) * 0.4 * wave).floor() as u32;
+    let kept = if exact {
+        let (scale, bonus) = demo_cpu_shape(index);
+        (((scale + bonus) / 100.0).ceil() as u32).min(base)
+    } else {
+        1
+    };
+    (base - shed).max(kept)
+}
+
 /// The scheduler priority and nice value of demo process `index` of `kind`.
 fn demo_priority(index: usize, kind: Kind) -> (i32, i32) {
     if kind == Kind::Kernel && index.is_multiple_of(3) {
@@ -2788,6 +3475,9 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
             major_faults: Some(demo_major_faults(i, phase)),
             started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
+            oom: Measured::Pending,
+            memory_detail: Measured::Pending,
+            thread_list: Measured::Pending,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -2813,12 +3503,17 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         .filter(|i| i % 3 == 0 && i % 4 == 3)
         .map(|i| (id(i), id(i * 7 + 16)))
         .collect();
+    let (unix_queues, pipes) = if options.channels {
+        demo_channels(time, count, id)
+    } else {
+        (HashMap::new(), Vec::new())
+    };
     let outside = (0..count)
         .filter(|i| i % 11 == 0)
         .map(|i| (id(i), 1 + (i % 3) as u32))
         .collect();
     let wave = |rate: f64, scale: f32| ((time * rate).sin() as f32).max(0.0) * scale;
-    let cpus = (0..16)
+    let cpus: Vec<Cpu> = (0..16)
         .map(|id| {
             let load = (time as f32 * 0.4 + id as f32 * 0.9).sin() * 0.5 + 0.5;
             Cpu {
@@ -2927,9 +3622,30 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         }
         processes.extend(transients);
     }
-    Snapshot {
+    if options.oom_and_memory_detail {
+        demo_oom_and_memory_detail(&mut processes, count);
+    }
+    let (interrupts, softirqs, oom_kills) = if options.kernel_counters {
+        let (interrupts, softirqs) = kernel::demo(time, cpus.len());
+        let kills = units.values().filter_map(|unit| unit.oom_kills).sum();
+        (interrupts, softirqs, Some(kills))
+    } else {
+        (Measured::Pending, Measured::Pending, None)
+    };
+    if options.thread_churn {
+        for (index, process) in processes.iter_mut().enumerate().take(count) {
+            process.threads =
+                demo_breathing_threads(process.threads, index, time, options.exact_cpu_time);
+        }
+    }
+    if options.threads {
+        for process in &mut processes {
+            process.thread_list = Measured::Known(threads::demo_list(process, time));
+        }
+    }
+    let mut snapshot = Snapshot {
         processes,
-        memory_total: Some(32 * 1024_u64.pow(3)),
+        memory_total: Some(DEMO_MEMORY_TOTAL),
         memory_available: Some(12 * 1024_u64.pow(3)),
         cores: 16,
         elapsed: time,
@@ -2938,13 +3654,20 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         links,
         link_traffic,
         unix_links,
+        unix_queues,
+        pipes,
+        pipes_partial: false,
         outside,
         cpus,
         units,
         remotes,
         unattributed_locks: 1,
         missing: Sources::default(),
-        sources: Sources::default(),
+        sources: if options.threads {
+            Sources::from(Source::Threads)
+        } else {
+            Sources::default()
+        },
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
@@ -2962,8 +3685,267 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             name: "Amsterdam".into(),
         }),
         geo: "demo locations".into(),
-        observer: options.observer.then(|| demo_observer(time)),
+        observer: options.observer.then(|| {
+            let mut observer = demo_observer(time);
+            if options.threads {
+                observer.thread_list = Measured::Known(threads::demo_list(&observer, time));
+            }
+            observer
+        }),
+        interrupts,
+        softirqs,
+        oom_kills,
+        journal: crate::journal::Delivery::default(),
+    };
+    if options.oom_cycle {
+        demo_kill_cycle(time, count, &mut snapshot);
     }
+    if options.unreadable_parent && count > DEMO_FAMILY_SIZE {
+        let hidden = snapshot.processes.remove(DEMO_FAMILY_SIZE);
+        snapshot.shadows.push(platform::Shadow {
+            pid: hidden.id.pid,
+            parent: hidden.parent,
+            name: hidden.name,
+        });
+        snapshot.unreadable += 1;
+    }
+    snapshot
+}
+
+/// Runs the kill cycle `DemoOptions::oom_cycle` asks for over a finished demo `snapshot` of
+/// `count` base processes: the victim's score and identity while it lives, its absence between
+/// its kill and its replacement, and the kills so far on its cgroup and the kernel counter.
+fn demo_kill_cycle(time: f64, count: usize, snapshot: &mut Snapshot) {
+    let Some(victim) = (0..count.min(DEMO_VICTIM_LAST + 1))
+        .rev()
+        .find(|&index| snapshot.processes[index].kind != Kind::Kernel)
+    else {
+        return;
+    };
+    // Before time 0 the victim has not been killed yet: no kill, no respawn, one incarnation. The
+    // pressure goes round the cycle at every time.
+    let clock = time.max(0.0);
+    let kills = (((clock - DEMO_KILL_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1).max(0) as u64;
+    let phase = time.rem_euclid(DEMO_KILL_PERIOD);
+    // The incarnation: 0 until the first respawn, and a new one at each 26 s phase.
+    let generation = ((clock - DEMO_RESPAWN_AT) / DEMO_KILL_PERIOD).floor() as i64 + 1;
+    let process = &mut snapshot.processes[victim];
+    if generation != 0 {
+        let old = process.id;
+        process.id.start = old.start.wrapping_add((generation as u64) << 40);
+        process.started = DEMO_EPOCH + DEMO_RESPAWN_AT + DEMO_KILL_PERIOD * (generation - 1) as f64;
+        let new = process.id;
+        let rename = |id: Identity| if id == old { new } else { id };
+        for link in &mut snapshot.links {
+            (link.0, link.1) = (rename(link.0), rename(link.1));
+        }
+        snapshot.link_traffic = std::mem::take(&mut snapshot.link_traffic)
+            .into_iter()
+            .map(|((a, b), rate)| ((rename(a), rename(b)), rate))
+            .collect();
+        snapshot.unix_links = std::mem::take(&mut snapshot.unix_links)
+            .into_iter()
+            .map(|(a, b)| (rename(a), rename(b)))
+            .collect();
+        snapshot.outside = std::mem::take(&mut snapshot.outside)
+            .into_iter()
+            .map(|(id, count)| (rename(id), count))
+            .collect();
+        for remote in &mut snapshot.remotes {
+            remote.id = rename(remote.id);
+        }
+    }
+    let process = &mut snapshot.processes[victim];
+    let alive = !(DEMO_KILL_AT..DEMO_RESPAWN_AT).contains(&clock.rem_euclid(DEMO_KILL_PERIOD));
+    // The kernel scores a process by its share of memory in thousandths plus `oom_score_adj`, so
+    // the adjustment that makes a victim of this process's size score exactly as much.
+    if alive && let Measured::Known(oom) = &mut process.oom {
+        let share = (u128::from(process.memory) * 1000 / u128::from(DEMO_MEMORY_TOTAL)) as i32;
+        let adjust = (DEMO_VICTIM_SCORE - share).clamp(-1000, 1000);
+        *oom = Oom {
+            badness: DEMO_VICTIM_SCORE,
+            adjust: Some(adjust as i16),
+            exempt: false,
+        };
+    }
+    let (cgroup, memory, cpu) = (process.cgroup.clone(), process.memory, process.cpu);
+    if let Some(unit) = snapshot.units.get_mut(&cgroup) {
+        unit.oom_kills = Some(unit.oom_kills.unwrap_or(0) + kills);
+        if !alive {
+            unit.memory = unit.memory.saturating_sub(memory);
+            unit.cpu = unit.cpu.map(|total| (total - cpu).max(0.0));
+            unit.pids = unit.pids.map(|total| total.saturating_sub(1));
+        }
+    }
+    snapshot.oom_kills = snapshot.oom_kills.map(|total| total + kills);
+    // Pressure rises as the square of the way to the kill, then the kill frees the memory.
+    let built = (phase / DEMO_KILL_AT).min(1.0) as f32;
+    let freed = ((phase - DEMO_KILL_AT) / DEMO_PRESSURE_RELIEF).clamp(0.0, 1.0) as f32;
+    let relief = freed * freed * (3.0 - 2.0 * freed);
+    snapshot.pressure[1] = DEMO_PRESSURE_CALM
+        + (DEMO_PRESSURE_PEAK - DEMO_PRESSURE_CALM) * built * built * (1.0 - relief);
+    if !alive {
+        let gone = snapshot.processes.remove(victim).id;
+        snapshot.links.retain(|(a, b, _)| *a != gone && *b != gone);
+        snapshot
+            .link_traffic
+            .retain(|(a, b), _| *a != gone && *b != gone);
+        snapshot
+            .unix_links
+            .retain(|(a, b)| *a != gone && *b != gone);
+        snapshot.outside.remove(&gone);
+        snapshot.remotes.retain(|remote| remote.id != gone);
+    }
+}
+
+/// Fills `Process::oom` of every process and `Process::memory_detail` of the largest, which
+/// `DemoOptions::oom_and_memory_detail` asks for. `base` is how many processes come before the
+/// transients.
+fn demo_oom_and_memory_detail(processes: &mut [Process], base: usize) {
+    let mut exempt = 0;
+    for (index, process) in processes.iter_mut().enumerate() {
+        let hash = hash_identity(process.id, DEMO_OOM_SALT);
+        let ranked = process.kind != Kind::Kernel && process.state != 'Z';
+        let adjust: i16 = match exempt {
+            0..=2 if index < base && ranked && process.kind == Kind::System => {
+                exempt += 1;
+                -1000
+            }
+            3 if index < base && ranked && process.kind == Kind::System => {
+                exempt += 1;
+                -250
+            }
+            _ => 0,
+        };
+        // The kernel scores a process by its share of memory in thousandths, plus a little for
+        // its page tables, plus the adjustment; a process it never picks, or without memory of
+        // its own, reads 0.
+        let share = (u128::from(process.memory) * 1000 / u128::from(DEMO_MEMORY_TOTAL)) as i64;
+        let badness = if ranked && adjust != -1000 {
+            (share + (hash % 4) as i64 + i64::from(adjust)).clamp(0, 1000)
+        } else {
+            0
+        };
+        process.oom = Measured::Known(Oom {
+            badness: badness as i32,
+            adjust: Some(adjust),
+            exempt: adjust == -1000,
+        });
+    }
+    let chosen = rollup_pids(processes);
+    let unreadable = chosen
+        .iter()
+        .filter_map(|pid| processes.iter().find(|p| p.id.pid == *pid))
+        .min_by_key(|p| hash_identity(p.id, DEMO_ROLLUP_SALT ^ 2))
+        .map(|p| p.id);
+    for process in processes.iter_mut().filter(|p| chosen.contains(&p.id.pid)) {
+        process.memory_detail = if Some(process.id) == unreadable {
+            Measured::Unreadable
+        } else {
+            Measured::Known(demo_rollup(process.id, process.memory))
+        };
+    }
+}
+
+/// A consistent memory rollup for a process that holds `rss` bytes, from its identity alone.
+fn demo_rollup(id: Identity, rss: u64) -> Rollup {
+    let (first, second) = (
+        hash_identity(id, DEMO_ROLLUP_SALT),
+        hash_identity(id, DEMO_ROLLUP_SALT ^ 1),
+    );
+    let unit = |hash: u64, shift: u32| ((hash >> shift) & 0xffff) as f64 / 65535.0;
+    let part = |whole: u64, fraction: f64| (whole as f64 * fraction) as u64;
+    let shared = part(rss, 0.2 + 0.4 * unit(first, 0));
+    let private = rss - shared;
+    let shared_dirty = part(shared, 0.15 * unit(first, 16));
+    let private_dirty = part(private, 0.3 + 0.5 * unit(first, 32));
+    // Each shared page counts in proportion to its sharers, so the proportional size lies
+    // between the private part and the resident set.
+    let pss = private + part(shared, 0.2 + 0.5 * unit(first, 48));
+    let anonymous = part(pss, 0.45 + 0.35 * unit(second, 0));
+    let file = part(pss - anonymous, 0.6 + 0.35 * unit(second, 16));
+    let swap = if hash_identity(id, DEMO_ROLLUP_SALT ^ 3).is_multiple_of(3) {
+        0
+    } else {
+        part(rss, 0.3 * unit(second, 32))
+    };
+    Rollup {
+        rss,
+        pss,
+        pss_anon: Some(anonymous),
+        pss_file: Some(file),
+        pss_shmem: Some(pss - anonymous - file),
+        shared_clean: shared - shared_dirty,
+        shared_dirty,
+        private_clean: private - private_dirty,
+        private_dirty,
+        swap,
+        swap_pss: part(swap, 0.5 + 0.5 * unit(second, 48)),
+    }
+}
+
+/// The Unix queues and pipes `DemoOptions::channels` asks for, between the demo processes `id`
+/// names by index. Pure in `time`.
+fn demo_channels(
+    time: f64,
+    count: usize,
+    id: impl Fn(usize) -> Identity,
+) -> (HashMap<(Identity, Identity), Queue>, Vec<Pipe>) {
+    let mut queues = HashMap::new();
+    for i in (1..count).filter(|i| i % 3 == 0 && i % 4 == 3) {
+        let (writer, reader) = (id(i), id(i * 7 + 16));
+        if writer == reader {
+            continue;
+        }
+        let pulse = ((time * 0.8 + i as f64 * 0.9).sin() as f32) * 0.5 + 0.5;
+        let queue = match (i / 12) % 4 {
+            0 => Queue {
+                unread: (4096.0 + 200_000.0 * pulse * pulse) as u64,
+                datagram_waiting: false,
+            },
+            2 => Queue {
+                unread: (1_000_000.0 * pulse.powi(3)) as u64,
+                datagram_waiting: false,
+            },
+            3 if i / 12 == 3 => Queue {
+                unread: 0,
+                datagram_waiting: true,
+            },
+            _ => Queue::default(),
+        };
+        queues.insert((reader, writer), queue);
+        queues.insert((writer, reader), Queue::default());
+    }
+    let mut pipes = Vec::new();
+    for (chain, length) in [4_usize, 3, 5].into_iter().enumerate() {
+        let first = chain * 41 + 7;
+        for stage in 0..length - 1 {
+            let (writer, reader) = (id(first + stage), id(first + stage + 1));
+            if writer == reader {
+                continue;
+            }
+            let pulse = ((time * 1.3 + (first + stage) as f64).sin() as f32) * 0.5 + 0.5;
+            pipes.push(Pipe {
+                reader,
+                writer,
+                two_way: false,
+                buffered: (chain == 1).then_some((65536.0 * pulse * pulse) as u64),
+                fifo: false,
+            });
+        }
+    }
+    let (a, b) = (id(count / 2), id(count / 2 + 13));
+    if a != b {
+        pipes.push(Pipe {
+            reader: a.min(b),
+            writer: a.max(b),
+            two_way: true,
+            buffered: None,
+            fifo: true,
+        });
+    }
+    pipes.sort_by_key(|pipe| (pipe.reader, pipe.writer, pipe.fifo));
+    (queues, pipes)
 }
 
 /// isotop itself in the demo, the observer `DemoOptions::observer` asks for: outside the
@@ -3201,6 +4183,149 @@ mod tests {
                 .iter()
                 .any(|p| p.core != snapshot.processes[0].core)
         );
+        // Threads come only when a row asks for them.
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|p| p.thread_list == Measured::Pending)
+        );
+        let threaded = demo_with(
+            30.0,
+            128,
+            DemoOptions {
+                threads: true,
+                ..DemoOptions::NONE
+            },
+        );
+        assert!(threaded.processes.iter().all(|p| {
+            p.thread_list
+                .known()
+                .is_some_and(|list| list.threads.len() == p.threads as usize)
+        }));
+        assert!(snapshot.sources.is_empty());
+        assert!(threaded.sources.contains(Source::Threads));
+    }
+
+    #[test]
+    fn thread_churn_makes_thread_pools_breathe_and_changes_nothing_else() {
+        let breathing = DemoOptions {
+            thread_churn: true,
+            threads: true,
+            ..DemoOptions::NONE
+        };
+        let plain = |time| {
+            demo_with(
+                time,
+                192,
+                DemoOptions {
+                    threads: true,
+                    ..DemoOptions::NONE
+                },
+            )
+        };
+        let mut distinct = HashSet::new();
+        let mut shed_and_regained = false;
+        for second in 0..60 {
+            let time = f64::from(second);
+            let (churned, base) = (demo_with(time, 192, breathing), plain(time));
+            for (index, (now, normal)) in churned.processes.iter().zip(&base.processes).enumerate()
+            {
+                assert_eq!(
+                    (now.id, now.cpu, now.memory),
+                    (normal.id, normal.cpu, normal.memory)
+                );
+                if normal.threads < 4 {
+                    assert_eq!(now.threads, normal.threads, "process {index}");
+                } else {
+                    assert!(
+                        now.threads <= normal.threads && now.threads * 5 >= normal.threads * 3,
+                        "process {index}: {} of {}",
+                        now.threads,
+                        normal.threads
+                    );
+                    distinct.insert((index, now.threads));
+                }
+                assert_eq!(
+                    now.thread_list.known().map(|list| list.threads.len()),
+                    Some(now.threads as usize),
+                    "the list follows the count"
+                );
+            }
+            shed_and_regained |= churned.processes[0].threads < base.processes[0].threads;
+        }
+        assert!(shed_and_regained, "the first pool sheds threads");
+        let by_process = |index: usize| distinct.iter().filter(|(i, _)| *i == index).count();
+        assert!(
+            by_process(0) >= 2 && by_process(5) >= 2,
+            "counts move over a minute"
+        );
+        // A thread that comes back is the same thread: ids depend on the process and the index.
+        let low = demo_with(0.0, 192, breathing);
+        let high = demo_with(
+            0.0,
+            192,
+            DemoOptions {
+                thread_churn: false,
+                ..breathing
+            },
+        );
+        let (few, many) = (
+            low.processes[0].thread_list.known().expect("threads"),
+            high.processes[0].thread_list.known().expect("threads"),
+        );
+        for (kept, thread) in few.threads.iter().zip(many.threads.iter()) {
+            assert_eq!((kept.tid, kept.start), (thread.tid, thread.start));
+        }
+    }
+
+    #[test]
+    fn an_unreadable_parent_is_a_shadow_that_its_children_still_name() {
+        let hiding = DemoOptions {
+            unreadable_parent: true,
+            ..DemoOptions::NONE
+        };
+        let plain = demo_with(12.0, 192, DemoOptions::NONE);
+        assert!(plain.shadows.is_empty() && plain.unreadable == 0);
+        for options in [
+            hiding,
+            DemoOptions {
+                oom_cycle: true,
+                ..hiding
+            },
+        ] {
+            let hidden = demo_with(12.0, 192, options);
+            assert_eq!(hidden.processes.len(), 191);
+            assert_eq!(hidden.unreadable, 1);
+            assert_eq!(
+                hidden.shadows,
+                [platform::Shadow {
+                    pid: 1016,
+                    parent: 1000,
+                    name: "init-16".into()
+                }]
+            );
+            assert!(hidden.processes.iter().all(|p| p.id.pid != 1016));
+            assert_eq!(
+                hidden.processes.iter().filter(|p| p.parent == 1016).count(),
+                15,
+                "its siblings still name it"
+            );
+        }
+        // Nothing but the one process and the shadow differs from the plain demo.
+        let hidden = demo_with(12.0, 192, hiding);
+        let kept: Vec<_> = plain
+            .processes
+            .iter()
+            .filter(|p| p.id.pid != 1016)
+            .map(|p| (p.id, p.cpu, p.memory))
+            .collect();
+        let same: Vec<_> = hidden
+            .processes
+            .iter()
+            .map(|p| (p.id, p.cpu, p.memory))
+            .collect();
+        assert_eq!(kept, same);
     }
 
     #[test]
@@ -4001,8 +5126,26 @@ mod tests {
                 links: HashMap::from([((7, 8), 1)]),
                 unix: HashSet::from([(7, 8)]),
                 outside: HashMap::from([(7, 2), (8, 1)]),
+                unix_queues: HashMap::from([
+                    (
+                        (7, 8),
+                        Queue {
+                            unread: 64,
+                            datagram_waiting: false,
+                        },
+                    ),
+                    ((8, 7), Queue::default()),
+                ]),
                 ..platform::Network::default()
             },
+            pipes: vec![Pipe {
+                reader: Identity { pid: 8, start: 8 },
+                writer: Identity { pid: 7, start: 70 },
+                two_way: false,
+                buffered: None,
+                fifo: false,
+            }],
+            pipes_partial: true,
             gpu: HashMap::from([(7, GpuMemory::Bytes(500)), (8, GpuMemory::Bytes(600))]),
             remotes: [7, 8]
                 .map(|pid| Remote {
@@ -4052,6 +5195,7 @@ mod tests {
         assert_eq!(survivor.blocked_on, None, "its lock's holder has exited");
         assert!(reused.links.is_empty() && reused.unix_links.is_empty());
         assert!(reused.link_traffic.is_empty());
+        assert!(reused.unix_queues.is_empty() && reused.pipes.is_empty());
         assert_eq!(
             reused.outside,
             HashMap::from([(survivor.id, 1)]),
@@ -4071,6 +5215,13 @@ mod tests {
         assert_eq!(same.links, [(scanned.id, other.id, 1)]);
         assert_eq!(same.link_traffic.len(), 1);
         assert_eq!(same.remotes.len(), 2);
+        assert_eq!(
+            same.unix_queues[&(scanned.id, other.id)].unread,
+            64,
+            "keyed by identity, reader first"
+        );
+        assert_eq!(same.unix_queues[&(other.id, scanned.id)], Queue::default());
+        assert_eq!((same.pipes.len(), same.pipes_partial), (1, true));
     }
 
     #[test]
@@ -4313,6 +5464,9 @@ mod tests {
                 syscall_io: Some(demo_syscall_io(i, io_rate, write_rate)),
                 major_faults: Some(demo_major_faults(i, phase)),
                 started: DEMO_BOOT_TIME + (i as u64 + 1) as f64 * DEMO_START_SPACING,
+                oom: Measured::Pending,
+                memory_detail: Measured::Pending,
+                thread_list: Measured::Pending,
             });
         }
         let id = |i: usize| processes[i % count].id;
@@ -4428,6 +5582,9 @@ mod tests {
             links,
             link_traffic,
             unix_links,
+            unix_queues: HashMap::new(),
+            pipes: Vec::new(),
+            pipes_partial: false,
             outside,
             cpus,
             units,
@@ -4453,6 +5610,10 @@ mod tests {
             }),
             geo: "demo locations".into(),
             observer: None,
+            interrupts: Measured::Pending,
+            softirqs: Measured::Pending,
+            oom_kills: None,
+            journal: crate::journal::Delivery::default(),
         }
     }
 
@@ -4471,6 +5632,9 @@ mod tests {
             links,
             link_traffic,
             unix_links,
+            unix_queues,
+            pipes,
+            pipes_partial,
             outside,
             cpus,
             units,
@@ -4487,41 +5651,251 @@ mod tests {
             life,
             life_dropped,
             observer,
+            interrupts,
+            softirqs,
+            oom_kills,
+            journal,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
         let unix_links: BTreeSet<_> = unix_links.iter().collect();
+        let unix_queues: BTreeMap<_, _> = unix_queues.iter().collect();
         let outside: BTreeMap<_, _> = outside.iter().collect();
         let units: BTreeMap<_, _> = units.iter().collect();
         format!(
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {wall:?} {pressure:?}\n\
-             {links:?}\n{link_traffic:?}\n{unix_links:?}\n{outside:?}\n{cpus:?}\n{units:?}\n\
+             {links:?}\n{link_traffic:?}\n{unix_links:?}\n{unix_queues:?}\n{pipes:?} {pipes_partial}\n\
+             {outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
-             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}"
+             {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
+             {interrupts:?}\n{softirqs:?} {oom_kills:?}\n{journal:?}"
         )
     }
 
     const CHURN: DemoOptions = DemoOptions {
         churn: true,
-        exact_cpu_time: false,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
     const EXACT: DemoOptions = DemoOptions {
-        churn: false,
         exact_cpu_time: true,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
     const BOTH: DemoOptions = DemoOptions {
         churn: true,
         exact_cpu_time: true,
-        observer: false,
-        mortality: false,
+        ..DemoOptions::NONE
     };
 
     /// The transients of `snapshot`, which come after the `count` base processes.
     fn transients(snapshot: &Snapshot, count: usize) -> &[Process] {
         &snapshot.processes[count..]
+    }
+
+    fn who(pid: u32) -> Identity {
+        Identity {
+            pid,
+            start: u64::from(pid),
+        }
+    }
+
+    fn end(id: PipeId, access: AccessMode) -> PipeEnd {
+        PipeEnd {
+            id,
+            access,
+            buffered: None,
+        }
+    }
+
+    #[test]
+    fn pipe_ends_pair_by_inode_across_processes() {
+        let (first, second, third) = (
+            PipeId::Anonymous(501),
+            PipeId::Anonymous(502),
+            PipeId::Anonymous(503),
+        );
+        // `producer | filter | consumer`, with the shell (4) holding no end and a reader of
+        // pipe 503 that nobody writes.
+        let producer = [end(first, AccessMode::Write)];
+        let filter = [end(first, AccessMode::Read), end(second, AccessMode::Write)];
+        let consumer = [end(second, AccessMode::Read), end(third, AccessMode::Read)];
+        // One process holding both ends of pipe 504 is no link, with two descriptors of it or
+        // with one, and a descriptor opened for neither does not exist.
+        let both_ends = [
+            end(PipeId::Anonymous(504), AccessMode::Read),
+            end(PipeId::Anonymous(504), AccessMode::Write),
+        ];
+        let (pipes, truncated) = pair_pipes([
+            (who(30), &consumer[..]),
+            (who(10), &producer[..]),
+            (who(20), &filter[..]),
+            (who(4), &[][..]),
+            (who(40), &both_ends[..]),
+        ]);
+        assert!(!truncated);
+        let pipe = |reader, writer| Pipe {
+            reader: who(reader),
+            writer: who(writer),
+            two_way: false,
+            buffered: None,
+            fifo: false,
+        };
+        assert_eq!(pipes, [pipe(20, 10), pipe(30, 20)]);
+        // The same descriptors in another order give the same list.
+        let (again, _) = pair_pipes([
+            (who(20), &filter[..]),
+            (who(10), &producer[..]),
+            (who(30), &consumer[..]),
+        ]);
+        assert_eq!(again, pipes);
+        // Several readers of one pipe each pair with its writer, and a forked child that holds
+        // the write end too is another writer, not a link to itself.
+        let reader = [end(first, AccessMode::Read)];
+        let writer = [end(first, AccessMode::Write)];
+        let (shared, _) = pair_pipes([
+            (who(1), &writer[..]),
+            (who(2), &reader[..]),
+            (who(3), &reader[..]),
+            (who(4), &writer[..]),
+        ]);
+        assert_eq!(shared, [pipe(2, 1), pipe(2, 4), pipe(3, 1), pipe(3, 4)]);
+    }
+
+    #[test]
+    fn a_fifo_opened_read_write_is_two_way() {
+        let fifo = PipeId::Fifo {
+            device: 0x0100_0004,
+            inode: 77,
+        };
+        let both = [end(fifo, AccessMode::Both)];
+        let (pipes, _) = pair_pipes([(who(9), &both[..]), (who(5), &both[..])]);
+        assert_eq!(
+            pipes,
+            [Pipe {
+                reader: who(5),
+                writer: who(9),
+                two_way: true,
+                buffered: None,
+                fifo: true,
+            }],
+            "listed once, the lower identity reading"
+        );
+        // One end opened only for writing makes the flow one way, whatever the other holds.
+        let writing = [end(fifo, AccessMode::Write)];
+        let (pipes, _) = pair_pipes([(who(9), &both[..]), (who(5), &writing[..])]);
+        assert_eq!(
+            pipes,
+            [Pipe {
+                reader: who(9),
+                writer: who(5),
+                two_way: false,
+                buffered: None,
+                fifo: true,
+            }]
+        );
+        // A named and an anonymous pipe with the same number are two pipes.
+        let anonymous = [end(PipeId::Anonymous(77), AccessMode::Write)];
+        let reading = [end(fifo, AccessMode::Read)];
+        assert!(
+            pair_pipes([(who(1), &anonymous[..]), (who(2), &reading[..])])
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn buffered_bytes_are_the_count_the_reader_saw() {
+        // Each process's descriptors are read at their own moment, so the two counts can differ;
+        // the reader's is the one a link to the reader shows.
+        let id = PipeId::Anonymous(9);
+        let reading = [PipeEnd {
+            id,
+            access: AccessMode::Read,
+            buffered: Some(512),
+        }];
+        let writing = [PipeEnd {
+            id,
+            access: AccessMode::Write,
+            buffered: Some(300),
+        }];
+        let (pipes, _) = pair_pipes([(who(1), &writing[..]), (who(2), &reading[..])]);
+        assert_eq!(pipes[0].buffered, Some(512));
+        assert_eq!(pipes[0].reader, who(2));
+    }
+
+    #[test]
+    fn a_pipe_shared_by_hundreds_of_processes_is_paired_to_a_fixed_fan_out() {
+        let id = PipeId::Anonymous(1);
+        let reading = [end(id, AccessMode::Read)];
+        let writing = [end(id, AccessMode::Write)];
+        let mut held = vec![(who(1), &writing[..])];
+        for pid in 2..2 + 2 * PIPE_FAN_OUT as u32 {
+            held.push((who(pid), &reading[..]));
+        }
+        let (pipes, truncated) = pair_pipes(held);
+        assert!(truncated);
+        assert_eq!(pipes.len(), PIPE_FAN_OUT, "the lowest identities");
+        assert_eq!(pipes.last().unwrap().reader, who(1 + PIPE_FAN_OUT as u32));
+    }
+
+    #[test]
+    fn a_pipe_to_a_child_process_is_found_in_both_directions() {
+        use std::process::{Command, Stdio};
+        // The child writes six bytes to a pipe nobody reads yet and then sleeps holding its end
+        // of that pipe and of the pipe from this process.
+        let mut child = Command::new("sh")
+            .args(["-c", "echo hello; exec sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sh starts");
+        let (parent, child_pid) = (std::process::id(), child.id());
+        let mut scan = platform::PipeScan::new();
+        let mut held: HashMap<u32, Vec<PipeEnd>> = HashMap::new();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let found = loop {
+            // A bounded pass may reach the two pids over several passes.
+            let sample = scan.sample().expect("the processes can be listed");
+            held.extend(sample.ends);
+            let ends = [parent, child_pid].map(|pid| held.get(&pid).cloned());
+            if let [Some(parent_ends), Some(child_ends)] = ends {
+                let (pipes, _) = pair_pipes([
+                    (who(parent), parent_ends.as_slice()),
+                    (who(child_pid), child_ends.as_slice()),
+                ]);
+                // macOS reports the bytes waiting: wait for the child's echo to have run.
+                if !cfg!(target_os = "macos") || pipes.iter().any(|p| p.buffered == Some(6)) {
+                    break pipes;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the pipes to the child were never found"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        // The parent writes the child's stdin and reads its stdout.
+        let to_child = found
+            .iter()
+            .find(|p| p.reader == who(child_pid))
+            .expect("stdin");
+        let from_child = found
+            .iter()
+            .find(|p| p.writer == who(child_pid))
+            .expect("stdout");
+        assert_eq!(to_child.writer, who(parent));
+        assert_eq!(from_child.reader, who(parent));
+        assert!(found.iter().all(|pipe| !pipe.two_way && !pipe.fifo));
+        // Linux exposes no count for a pipe another process holds.
+        assert_eq!(
+            from_child.buffered,
+            if cfg!(target_os = "macos") {
+                Some(6)
+            } else {
+                None
+            }
+        );
     }
 
     #[test]
@@ -4541,6 +5915,109 @@ mod tests {
                 );
             }
         }
+    }
+
+    const CHANNELS: DemoOptions = DemoOptions {
+        channels: true,
+        ..DemoOptions::NONE
+    };
+
+    #[test]
+    fn demo_synthesizes_queues_and_pipes_without_changing_existing_fields() {
+        for time in [-5.0, 0.0, 12.0, 61.7] {
+            let plain = demo_with(time, 192, DemoOptions::NONE);
+            assert!(plain.unix_queues.is_empty() && plain.pipes.is_empty());
+            assert!(!plain.pipes_partial);
+            let with = demo_with(time, 192, CHANNELS);
+            // Every other field, and so every frame of every view, is as without the option.
+            let mut rest = with.clone();
+            rest.unix_queues.clear();
+            rest.pipes.clear();
+            assert_eq!(fingerprint(&rest), fingerprint(&plain), "at {time}");
+            assert_eq!(
+                fingerprint(&demo_with(time, 192, CHANNELS)),
+                fingerprint(&with),
+                "a pure function of time"
+            );
+        }
+        let snapshot = demo_with(12.0, 192, CHANNELS);
+        let queues = &snapshot.unix_queues;
+        assert!(queues.values().filter(|queue| queue.unread > 0).count() >= 3);
+        assert_eq!(
+            queues
+                .values()
+                .filter(|queue| queue.datagram_waiting)
+                .count(),
+            1,
+            "one datagram pair is waiting"
+        );
+        assert!(
+            queues
+                .values()
+                .all(|queue| !queue.datagram_waiting || queue.unread == 0),
+            "a datagram is a flag, not a byte count"
+        );
+        assert!(
+            queues.values().any(|queue| *queue == Queue::default()),
+            "measured idle"
+        );
+        assert!(
+            queues.keys().all(|&(reader, writer)| {
+                snapshot.unix_links.contains(&(writer, reader))
+                    || snapshot.unix_links.contains(&(reader, writer))
+            }),
+            "the queues are between processes joined by a Unix socket"
+        );
+        let known: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+        let pipes = &snapshot.pipes;
+        assert!(
+            pipes
+                .iter()
+                .all(|p| known.contains(&p.reader) && known.contains(&p.writer))
+        );
+        let (named, anonymous): (Vec<&Pipe>, Vec<&Pipe>) = pipes.iter().partition(|p| p.fifo);
+        assert_eq!(
+            anonymous.len(),
+            3 + 2 + 4,
+            "three pipelines of four, three and five"
+        );
+        assert!(anonymous.iter().all(|p| !p.two_way));
+        assert!(anonymous.iter().any(|p| p.buffered.is_none()));
+        assert!(anonymous.iter().any(|p| p.buffered.is_some()));
+        assert_eq!(named.len(), 1);
+        assert!(named[0].two_way && named[0].reader < named[0].writer);
+        // What the demo lists is what `pair_pipes` makes of the descriptors that would give it.
+        let mut held: HashMap<Identity, Vec<PipeEnd>> = HashMap::new();
+        for (number, pipe) in pipes.iter().enumerate() {
+            let id = if pipe.fifo {
+                PipeId::Fifo {
+                    device: 1,
+                    inode: number as u64,
+                }
+            } else {
+                PipeId::Anonymous(number as u64)
+            };
+            let access = |access, buffered| PipeEnd {
+                id,
+                access,
+                buffered,
+            };
+            let (reading, writing) = if pipe.two_way {
+                (AccessMode::Both, AccessMode::Both)
+            } else {
+                (AccessMode::Read, AccessMode::Write)
+            };
+            held.entry(pipe.reader)
+                .or_default()
+                .push(access(reading, pipe.buffered));
+            held.entry(pipe.writer)
+                .or_default()
+                .push(access(writing, None));
+        }
+        let (paired, truncated) =
+            pair_pipes(held.iter().map(|(&who, ends)| (who, ends.as_slice())));
+        assert!(!truncated);
+        assert_eq!(&paired, pipes);
     }
 
     #[test]
@@ -4566,9 +6043,8 @@ mod tests {
     fn mortality_gives_a_graveyard_every_kind_of_death_and_reuses_only_the_victims_pid() {
         const MORTAL: DemoOptions = DemoOptions {
             churn: true,
-            exact_cpu_time: false,
-            observer: false,
             mortality: true,
+            ..DemoOptions::NONE
         };
         let events = demo_events(-600.0, 0.0, 192, MORTAL);
         let exits: Vec<(Identity, &Cause, bool, f64)> = events
@@ -5089,7 +6565,7 @@ mod tests {
         let mut reads = Reads::new(Demand::default());
         assert!(Demand::default().is_empty());
         let mut calls = 0;
-        for source in Source::ALL {
+        for &source in Source::ALL {
             assert_eq!(
                 Demand::default().read_if(source, || {
                     calls += 1;
@@ -5113,6 +6589,8 @@ mod tests {
             Arc::new(Mutex::new(HashSet::new())),
             Arc::new(Mutex::new(Demand::default())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .expect("the sampler thread starts");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -5122,6 +6600,15 @@ mod tests {
         let extras = thread.extras();
         assert!(extras.finished.is_some(), "the first cycle finished");
         assert!(extras.sources.is_empty());
+        assert_eq!(
+            (
+                &extras.kernel.interrupts,
+                &extras.kernel.softirqs,
+                extras.kernel.oom_kills
+            ),
+            (&Measured::Pending, &Measured::Pending, None),
+            "no kernel counter was read"
+        );
         assert_eq!(
             extras.geo, "loading the GeoIP database",
             "no lookup, so the database was never opened"
@@ -5133,6 +6620,220 @@ mod tests {
                 .all(|(source, _)| *source != Source::Locations),
             "no location scan ran"
         );
+        assert!(
+            extras.latency.iter().all(|(source, _)| ![
+                Source::Interrupts,
+                Source::Softirqs,
+                Source::IrqAffinity,
+                Source::OomKills
+            ]
+            .contains(source)),
+            "no kernel counter file was opened"
+        );
+        assert!(
+            extras
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::Pipes)
+                && extras.pipes.is_empty()
+                && !extras.pipes_partial,
+            "no pipe scan ran"
+        );
+    }
+
+    /// Lists one thread per process, leader first, and remembers which pids it was asked about.
+    #[derive(Default)]
+    struct CountingReader {
+        listed: Vec<u32>,
+        ticks: u64,
+    }
+
+    impl threads::ThreadReader for CountingReader {
+        fn ticks_per_second(&self) -> f64 {
+            100.0
+        }
+
+        fn list(&mut self, target: &Target, _: usize) -> threads::Listing {
+            self.listed.push(target.id.pid);
+            threads::Listing::Found {
+                threads: vec![threads::RawThread {
+                    tid: target.id.pid,
+                    start: target.id.start,
+                    name: target.name.clone(),
+                    ticks: self.ticks,
+                    state: 'S',
+                    leader: true,
+                }],
+                complete: true,
+            }
+        }
+    }
+
+    fn own_identity() -> Identity {
+        platform::Sampler::new()
+            .processes()
+            .unwrap()
+            .into_iter()
+            .find(|raw| raw.process.id.pid == std::process::id())
+            .expect("the sampler lists this process")
+            .process
+            .id
+    }
+
+    #[test]
+    fn threads_are_read_only_when_a_view_asks() {
+        let process = |pid: u32| Target {
+            id: Identity { pid, start: 1 },
+            name: format!("p{pid}"),
+        };
+        let targets = [process(7), process(8)];
+        let mut scan = ThreadScan::default();
+        let mut reader = CountingReader::default();
+        let mut latency = Vec::new();
+
+        // Not demanded: the reader is never asked, nothing is timed, and the source is neither
+        // active nor missing.
+        let mut idle = Reads::new(Demand::default());
+        let found = read_threads(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(found.is_empty() && reader.listed.is_empty() && latency.is_empty());
+        assert!(idle.active.is_empty() && idle.missing.is_empty());
+
+        // Demanded: every target is read, in the order given, and the source is active.
+        let mut demand = Demand::default();
+        demand.insert(Source::Threads);
+        let mut asked = Reads::new(demand);
+        let found = read_threads(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        assert_eq!(reader.listed, [7, 8]);
+        assert_eq!(found.len(), 2);
+        assert!(asked.active.contains(Source::Threads) && asked.missing.is_empty());
+        assert_eq!(latency.len(), 1);
+        assert_eq!(latency[0].0, Source::Threads);
+
+        // A cycle that read none drops what the scan tracked, so the next reading has no CPU
+        // rather than an average over the gap.
+        reader.ticks = 100;
+        let found = read_threads(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        let cpu = |found: &HashMap<Identity, Measured<ThreadList>>| {
+            found[&targets[0].id].known().unwrap().threads[0].cpu
+        };
+        assert!(
+            cpu(&found).is_some(),
+            "the second consecutive pass has a delta"
+        );
+        read_threads(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        reader.ticks = 200;
+        let found = read_threads(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        assert_eq!(cpu(&found), None);
+
+        // The real thread, started with nothing demanded, reads nothing and reports no threads.
+        let own = own_identity();
+        let start = |demand: Demand| {
+            let targets = Arc::new(Mutex::new(vec![Target {
+                id: own,
+                name: "isotop".into(),
+            }]));
+            background(
+                None,
+                Arc::new(Mutex::new(HashSet::new())),
+                Arc::new(Mutex::new(demand)),
+                Arc::new(Mutex::new(HashMap::from([(own.pid, own)]))),
+                Arc::new(Mutex::new(Vec::new())),
+                targets,
+            )
+            .expect("the sampler thread starts")
+        };
+        let wait = |thread: &Background| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while thread.extras().finished.is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                thread.extras().finished.is_some(),
+                "the first cycle finished"
+            );
+        };
+        let quiet = start(Demand::default());
+        wait(&quiet);
+        assert!(quiet.extras().threads.is_empty());
+        assert!(!quiet.extras().sources.contains(Source::Threads));
+        assert!(
+            quiet
+                .extras()
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::Threads)
+        );
+        // Demanded, it lists this process's own threads, leader first.
+        let busy = start(demand);
+        wait(&busy);
+        let extras = busy.extras();
+        let list = extras.threads[&own].known().expect("this process is read");
+        assert!(list.threads[0].leader && list.complete);
+        assert!(extras.sources.contains(Source::Threads));
+        assert!(!extras.missing.contains(Source::Threads));
+    }
+
+    #[test]
+    fn a_process_takes_only_the_threads_read_for_its_own_identity() {
+        let current = Identity { pid: 5, start: 10 };
+        let reused = Identity { pid: 5, start: 99 };
+        let listed = Measured::Known(ThreadList {
+            threads: Arc::from([]),
+            complete: true,
+        });
+        let extras = Extras {
+            identities: HashMap::from([(5, current)]),
+            threads: HashMap::from([(current, listed.clone())]),
+            ..Extras::default()
+        };
+        let mut snapshot = Snapshot {
+            processes: vec![
+                Process {
+                    id: current,
+                    ..testing::process(5, 1)
+                },
+                Process {
+                    id: reused,
+                    ..testing::process(5, 1)
+                },
+                testing::process(6, 1),
+            ],
+            ..Snapshot::default()
+        };
+        merge(&mut snapshot, &extras);
+        assert_eq!(snapshot.processes[0].thread_list, listed);
+        assert_eq!(snapshot.processes[1].thread_list, Measured::Pending);
+        assert_eq!(snapshot.processes[2].thread_list, Measured::Pending);
+    }
+
+    #[test]
+    fn a_demanded_pipe_scan_runs_and_is_reported_active() {
+        let thread = background(
+            None,
+            Arc::new(Mutex::new(HashSet::new())),
+            Arc::new(Mutex::new(Demand::from(Sources::from(Source::Pipes)))),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .expect("the sampler thread starts");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while thread.extras().finished.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let extras = thread.extras();
+        assert!(extras.finished.is_some(), "the first cycle finished");
+        assert_eq!(extras.sources, Sources::from(Source::Pipes));
+        assert!(!extras.missing.contains(Source::Pipes));
+        assert!(
+            extras
+                .latency
+                .iter()
+                .any(|(source, _)| *source == Source::Pipes),
+            "the scan was timed"
+        );
+        // No process was named to the cycle, so none of what it read joins.
+        assert!(extras.pipes.is_empty());
     }
 
     #[test]
@@ -6042,5 +7743,655 @@ mod tests {
         collector.demand(Demand::default());
         collector.sample().expect("sampled");
         assert_eq!(settled((0, 0)), (0, 0), "gone once the demand is");
+    }
+
+    /// A rollup of `rss` bytes with the split present or not.
+    fn rollup_of(rss: u64, split: bool) -> Rollup {
+        Rollup {
+            rss,
+            pss: rss / 2,
+            pss_anon: split.then_some(rss / 4),
+            pss_file: split.then_some(rss / 8),
+            pss_shmem: split.then_some(rss / 8),
+            shared_clean: rss / 2,
+            shared_dirty: 0,
+            private_clean: 0,
+            private_dirty: rss / 2,
+            swap: 0,
+            swap_pss: 0,
+        }
+    }
+
+    /// Processes 1 to `count` with sizes that grow with the pid.
+    fn sized(count: u32) -> Vec<Process> {
+        (1..=count)
+            .map(|pid| Process {
+                memory: u64::from(pid) << 20,
+                ..testing::process(pid, 0)
+            })
+            .collect()
+    }
+
+    fn by_pid(processes: &[Process]) -> HashMap<u32, Identity> {
+        processes.iter().map(|p| (p.id.pid, p.id)).collect()
+    }
+
+    /// The `Extras` a cycle that found `found` would publish for `processes`.
+    fn extras_with(processes: &[Process], found: MemoryFound, missing: Sources) -> Extras {
+        Extras {
+            identities: by_pid(processes),
+            oom: found.oom,
+            rollups: found.rollups,
+            missing,
+            ..Extras::default()
+        }
+    }
+
+    /// A pass that reads rollups whatever the platform says.
+    fn reading_memory() -> MemoryReads {
+        MemoryReads {
+            detail: true,
+            ..MemoryReads::new()
+        }
+    }
+
+    fn ranked(badness: i32) -> Option<Oom> {
+        Some(Oom {
+            badness,
+            adjust: Some(0),
+            exempt: false,
+        })
+    }
+
+    #[test]
+    fn a_kernel_thread_is_never_chosen_for_a_rollup() {
+        let kernel = Process {
+            kind: Kind::Kernel,
+            memory: 1 << 30,
+            ..testing::process(2, 0)
+        };
+        let user = Process {
+            memory: 1 << 20,
+            ..testing::process(3, 1)
+        };
+        assert_eq!(rollup_pids(&[kernel, user]), [3]);
+    }
+
+    #[test]
+    fn memory_detail_goes_to_the_largest_processes_by_rss_only() {
+        let processes = sized(100);
+        let chosen = rollup_pids(&processes);
+        assert_eq!(chosen.len(), ROLLUP_PROCESSES);
+        assert_eq!(chosen[0], 100, "largest first");
+        assert!(
+            chosen
+                .iter()
+                .all(|&pid| pid > 100 - ROLLUP_PROCESSES as u32)
+        );
+        // Equal sizes go to the smaller identity, and a process without resident memory has
+        // nothing to roll up.
+        let mut equal = sized(100);
+        for process in &mut equal {
+            process.memory = 5 << 20;
+        }
+        equal[0].memory = 0;
+        let chosen = rollup_pids(&equal);
+        assert_eq!(chosen, (2..=65).collect::<Vec<u32>>());
+        // The scan merges only what it read: the rest stay pending.
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| Taken::Value(rollup_of(u64::from(pid) << 20, true)),
+        );
+        let extras = extras_with(&processes, found, Sources::default());
+        let mut merged = processes.clone();
+        for process in &mut merged {
+            merge_memory(process, &extras, true);
+        }
+        let known = merged
+            .iter()
+            .filter(|p| matches!(p.memory_detail, Measured::Known(_)))
+            .count();
+        assert_eq!(known, ROLLUP_PROCESSES);
+        assert_eq!(merged[0].memory_detail, Measured::Pending, "pid 1 is small");
+        assert_eq!(
+            merged[99].memory_detail,
+            Measured::Known(rollup_of(100 << 20, true))
+        );
+    }
+
+    #[test]
+    fn oom_and_rollups_are_read_only_while_demanded() {
+        let processes = sized(10);
+        let selected = rollup_pids(&processes);
+        let mut memory = reading_memory();
+        let (mut oom_calls, mut rollup_calls) = (0, 0);
+        let mut cycle = |memory: &mut MemoryReads, demand: Sources| {
+            let mut reads = Reads::new(Demand::from(demand));
+            let found = memory.read(
+                &mut reads,
+                &mut Vec::new(),
+                &by_pid(&processes),
+                &selected,
+                |pids| {
+                    oom_calls += 1;
+                    Some(pids.iter().map(|&pid| (pid, ranked(7))).collect())
+                },
+                |pid| {
+                    rollup_calls += 1;
+                    Taken::Value(rollup_of(u64::from(pid), true))
+                },
+            );
+            (found, reads)
+        };
+        let (found, reads) = cycle(&mut memory, Sources::default());
+        assert!(found.oom.is_empty() && found.rollups.is_empty());
+        assert!(reads.active.is_empty() && reads.missing.is_empty());
+        let (found, reads) = cycle(&mut memory, Source::Oom.into());
+        assert_eq!((found.oom.len(), found.rollups.len()), (10, 0));
+        assert_eq!(reads.active, Sources::from(Source::Oom));
+        let (found, reads) = cycle(&mut memory, Source::MemoryDetail.into());
+        assert_eq!((found.oom.len(), found.rollups.len()), (0, 10));
+        assert_eq!(reads.active, Sources::from(Source::MemoryDetail));
+        assert!(reads.missing.is_empty(), "the split is there");
+        // Dropping the demand drops what was kept, so the next demand starts from nothing.
+        let (found, _) = cycle(&mut memory, Sources::default());
+        assert!(found.rollups.is_empty());
+        assert_eq!((oom_calls, rollup_calls), (1, 10));
+    }
+
+    #[test]
+    fn a_platform_that_cannot_rank_makes_oom_missing_and_unreadable() {
+        let processes = sized(3);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::Oom)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &[],
+            |_| None,
+            |_| Taken::Gone,
+        );
+        assert_eq!(reads.missing, Sources::from(Source::Oom));
+        let extras = extras_with(&processes, found, reads.missing);
+        let mut process = processes[0].clone();
+        merge_memory(&mut process, &extras, true);
+        assert_eq!(process.oom, Measured::Unreadable, "a gap, not pending");
+        // Not demanded, it stays pending.
+        let extras = extras_with(&processes, MemoryFound::default(), Sources::default());
+        merge_memory(&mut process, &extras, true);
+        assert_eq!(process.oom, Measured::Pending);
+    }
+
+    #[test]
+    fn a_platform_without_rollups_makes_memory_detail_missing() {
+        let processes = sized(3);
+        let mut memory = MemoryReads {
+            detail: false,
+            ..MemoryReads::new()
+        };
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |_| panic!("nothing to read"),
+        );
+        assert_eq!(reads.missing, Sources::from(Source::MemoryDetail));
+        assert!(found.rollups.is_empty());
+    }
+
+    #[test]
+    fn unreadable_rollups_are_marked_unreadable_not_zero() {
+        let processes = sized(4);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| {
+                if pid == 2 {
+                    Taken::Unreadable
+                } else {
+                    Taken::Value(rollup_of(u64::from(pid) << 20, true))
+                }
+            },
+        );
+        let extras = extras_with(&processes, found, Sources::default());
+        let mut merged = processes.clone();
+        for process in &mut merged {
+            merge_memory(process, &extras, true);
+        }
+        assert_eq!(merged[1].memory_detail, Measured::Unreadable);
+        assert!(merged[2].memory_detail.known().is_some());
+        // A ranking that could not be read is the same.
+        let mut extras = extras;
+        extras.oom.insert(2, None);
+        merge_memory(&mut merged[1], &extras, true);
+        assert_eq!(merged[1].oom, Measured::Unreadable);
+    }
+
+    #[test]
+    fn exited_processes_are_dropped_not_zeroed() {
+        let processes = sized(3);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let found = memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| {
+                if pid == 3 {
+                    Taken::Gone
+                } else {
+                    Taken::Value(rollup_of(1 << 20, true))
+                }
+            },
+        );
+        assert!(!found.rollups.contains_key(&3), "gone is no reading");
+        // A process that exited since the scan, or whose pid another process took, gets
+        // nothing, not the old reading and not zeros.
+        let extras = extras_with(&processes, found, Sources::default());
+        let mut reused = processes[0].clone();
+        reused.id.start += 1;
+        merge_memory(&mut reused, &extras, false);
+        assert_eq!(reused.memory_detail, Measured::Pending);
+        let mut gone = processes[2].clone();
+        merge_memory(&mut gone, &extras, true);
+        assert_eq!(gone.memory_detail, Measured::Pending);
+        // Through `merge`, a pid the sample no longer lists is simply not there.
+        let mut snapshot = Snapshot {
+            processes: processes[..2].to_vec(),
+            ..Snapshot::default()
+        };
+        merge(&mut snapshot, &extras);
+        assert!(
+            snapshot.processes.iter().all(|process| {
+                process.memory_detail == Measured::Known(rollup_of(1 << 20, true))
+            })
+        );
+    }
+
+    #[test]
+    fn a_process_the_budget_did_not_reach_keeps_its_previous_rollup() {
+        let processes = sized(3);
+        let selected = [3, 2, 1];
+        let mut memory = reading_memory();
+        let reads = || Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        let mut generation = 0;
+        let mut cycle = |memory: &mut MemoryReads| {
+            generation += 1;
+            let tag = generation << 20;
+            let found = memory.read(
+                &mut reads(),
+                &mut Vec::new(),
+                &by_pid(&processes),
+                &selected,
+                |_| None,
+                |_| Taken::Value(rollup_of(tag, true)),
+            );
+            found.rollups
+        };
+        // The first cycle has time for all three.
+        let first = cycle(&mut memory);
+        assert_eq!(first.len(), 3);
+        // With no time left it still reads one, and the others keep what they had.
+        memory.budget = Duration::ZERO;
+        let tags = |rollups: &HashMap<u32, Option<Rollup>>| -> Vec<u64> {
+            selected
+                .iter()
+                .map(|pid| rollups[pid].unwrap().rss >> 20)
+                .collect()
+        };
+        assert_eq!(tags(&first), [1, 1, 1]);
+        let second = cycle(&mut memory);
+        assert_eq!(tags(&second), [2, 1, 1], "only the first was reached");
+        // The next pass resumes where the budget stopped it, so the last is not starved.
+        let third = cycle(&mut memory);
+        assert_eq!(tags(&third), [2, 3, 1]);
+        let fourth = cycle(&mut memory);
+        assert_eq!(tags(&fourth), [2, 3, 4]);
+        // Merged, the one the pass did not reach still shows its earlier reading.
+        let extras = extras_with(
+            &processes,
+            MemoryFound {
+                rollups: third,
+                ..MemoryFound::default()
+            },
+            Sources::default(),
+        );
+        let mut last = processes[0].clone();
+        merge_memory(&mut last, &extras, true);
+        assert_eq!(
+            last.memory_detail,
+            Measured::Known(rollup_of(1 << 20, true))
+        );
+    }
+
+    #[test]
+    fn a_rollup_without_the_split_makes_the_split_missing() {
+        let processes = sized(2);
+        let mut memory = reading_memory();
+        let mut reads = Reads::new(Demand::from(Sources::from(Source::MemoryDetail)));
+        memory.read(
+            &mut reads,
+            &mut Vec::new(),
+            &by_pid(&processes),
+            &rollup_pids(&processes),
+            |_| None,
+            |pid| Taken::Value(rollup_of(u64::from(pid), pid != 2)),
+        );
+        assert_eq!(reads.missing, Sources::from(Source::MemorySplit));
+        assert_eq!(reads.active, Sources::from(Source::MemoryDetail));
+    }
+
+    #[test]
+    fn demo_memory_detail_is_consistent_and_repeatable() {
+        let asking = DemoOptions {
+            oom_and_memory_detail: true,
+            ..DemoOptions::NONE
+        };
+        for options in [
+            asking,
+            DemoOptions {
+                churn: true,
+                ..asking
+            },
+        ] {
+            let snapshot = demo_with(12.0, 192, options);
+            assert_eq!(
+                fingerprint(&snapshot),
+                fingerprint(&demo_with(12.0, 192, options)),
+                "repeatable"
+            );
+            assert!(snapshot.processes.iter().all(|p| p.oom.known().is_some()));
+            let detailed: Vec<&Process> = snapshot
+                .processes
+                .iter()
+                .filter(|p| p.memory_detail != Measured::Pending)
+                .collect();
+            assert_eq!(detailed.len(), ROLLUP_PROCESSES);
+            let unreadable = detailed
+                .iter()
+                .filter(|p| p.memory_detail == Measured::Unreadable)
+                .count();
+            assert_eq!(unreadable, 1, "one of the 64 cannot be read");
+            let smallest = detailed.iter().map(|p| p.memory).min().unwrap();
+            assert!(
+                snapshot
+                    .processes
+                    .iter()
+                    .filter(|p| p.memory_detail == Measured::Pending && p.kind != Kind::Kernel)
+                    .all(|p| p.memory <= smallest),
+                "the rollups go to the largest processes that have an address space"
+            );
+            for process in detailed {
+                let Some(rollup) = process.memory_detail.known() else {
+                    continue;
+                };
+                assert_eq!(rollup.rss, process.memory);
+                assert_eq!(
+                    rollup.shared_clean
+                        + rollup.shared_dirty
+                        + rollup.private_clean
+                        + rollup.private_dirty,
+                    rollup.rss
+                );
+                let split =
+                    rollup.pss_anon.unwrap() + rollup.pss_file.unwrap() + rollup.pss_shmem.unwrap();
+                assert_eq!(split, rollup.pss);
+                assert!(rollup.pss <= rollup.rss);
+                assert!(rollup.pss >= rollup.private_clean + rollup.private_dirty);
+                assert!(rollup.swap_pss <= rollup.swap);
+            }
+        }
+    }
+
+    #[test]
+    fn demo_oom_scores_follow_memory_and_exempt_a_few_system_processes() {
+        let snapshot = demo_with(
+            12.0,
+            192,
+            DemoOptions {
+                oom_and_memory_detail: true,
+                ..DemoOptions::NONE
+            },
+        );
+        let total = snapshot.memory_total.unwrap();
+        let exempt: Vec<&Process> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.oom.known().is_some_and(|oom| oom.exempt))
+            .collect();
+        assert_eq!(exempt.len(), 3);
+        assert!(exempt.iter().all(|p| p.kind == Kind::System));
+        assert!(
+            exempt
+                .iter()
+                .all(|p| p.oom.known().is_some_and(|oom| oom.badness == 0))
+        );
+        let protected: Vec<&Process> = snapshot
+            .processes
+            .iter()
+            .filter(|p| p.oom.known().and_then(|oom| oom.adjust) == Some(-250))
+            .collect();
+        assert_eq!(protected.len(), 1);
+        for process in snapshot.processes.iter().filter(|p| {
+            p.kind != Kind::Kernel
+                && p.state != 'Z'
+                && p.oom.known().is_some_and(|o| o.adjust == Some(0))
+        }) {
+            let oom = process.oom.known().unwrap();
+            let share = (u128::from(process.memory) * 1000 / u128::from(total)) as i32;
+            assert!(
+                (share..share + 4).contains(&oom.badness),
+                "{oom:?} for {share}"
+            );
+        }
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .filter(|p| p.kind == Kind::Kernel)
+                .all(|p| p.oom.known().is_some_and(|oom| oom.badness == 0))
+        );
+    }
+
+    #[test]
+    fn the_plain_demo_has_no_ranking_and_no_rollups() {
+        let snapshot = demo(12.0, 192);
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|p| p.oom == Measured::Pending && p.memory_detail == Measured::Pending)
+        );
+    }
+
+    #[test]
+    #[ignore = "live: times the memory sources on this machine"]
+    #[cfg(target_os = "linux")]
+    fn live_memory_sources_are_timed_and_reach_the_largest_processes() {
+        let _serial = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut collector = Collector::new(None, None);
+        collector.demand(Demand::from(Sources::from([
+            Source::Oom,
+            Source::MemoryDetail,
+        ])));
+        let mut snapshot = collector.sample().expect("live sampling works");
+        for _ in 0..3 {
+            std::thread::sleep(BACKGROUND_PERIOD + Duration::from_millis(300));
+            snapshot = collector.sample().expect("live sampling works");
+        }
+        let count = snapshot.processes.len();
+        let known =
+            |read: fn(&Process) -> bool| snapshot.processes.iter().filter(|p| read(p)).count();
+        let ranked = known(|p| p.oom.known().is_some());
+        let detailed = known(|p| p.memory_detail.known().is_some());
+        let unreadable = known(|p| p.memory_detail == Measured::Unreadable);
+        println!(
+            "processes {count}: ranked {ranked}, rollups known {detailed}, unreadable {unreadable}; \
+             sources {:?}, missing {:?}",
+            snapshot.sources, snapshot.missing
+        );
+        for (source, took) in &snapshot.sampler.scan_latency {
+            if matches!(source, Source::Oom | Source::MemoryDetail) {
+                println!("{}: {:.2} ms", source.name(), took.as_secs_f64() * 1e3);
+            }
+        }
+        assert!(snapshot.sources.contains(Source::Oom));
+        assert!(snapshot.sources.contains(Source::MemoryDetail));
+        assert!(ranked > 0 && detailed > 0 && detailed + unreadable <= ROLLUP_PROCESSES);
+    }
+    #[test]
+    fn the_demo_kill_cycle_is_off_unless_a_row_asks_for_it() {
+        let asking = DemoOptions {
+            oom_and_memory_detail: true,
+            kernel_counters: true,
+            ..DemoOptions::NONE
+        };
+        for time in [0.0, 12.0, 20.5, 25.0, 26.5, 55.0] {
+            assert_eq!(
+                fingerprint(&demo_with(time, 192, DemoOptions::NONE)),
+                fingerprint(&demo(time, 192)),
+                "the options' empty value is the plain demo"
+            );
+            let plain = demo_with(time, 192, asking);
+            let victim = plain.processes.iter().find(|p| p.id.pid == 1134);
+            let victim = victim.expect("index 134 lives all the time without the cycle");
+            assert_eq!(victim.id.start, 135, "and keeps its identity");
+            assert_ne!(
+                victim.oom.known().map(|oom| oom.badness),
+                Some(DEMO_VICTIM_SCORE),
+                "and its own score"
+            );
+        }
+    }
+
+    #[test]
+    fn the_demo_kill_cycle_kills_replaces_and_counts_the_victim() {
+        let base = DemoOptions {
+            oom_and_memory_detail: true,
+            kernel_counters: true,
+            ..DemoOptions::NONE
+        };
+        let cycling = DemoOptions {
+            oom_cycle: true,
+            ..base
+        };
+        let victim = |snapshot: &Snapshot| snapshot.processes.iter().position(|p| p.id.pid == 1134);
+        let mut starts = Vec::new();
+        // (time, victim alive, kills so far)
+        for (time, alive, kills) in [
+            (-45.0, true, 0),
+            (12.0, true, 0),
+            (19.99, true, 0),
+            (20.0, false, 1),
+            (25.99, false, 1),
+            (26.0, true, 1),
+            (49.9, true, 1),
+            (50.0, false, 2),
+            (56.0, true, 2),
+            (110.5, false, 4),
+        ] {
+            let (plain, cycle) = (demo_with(time, 192, base), demo_with(time, 192, cycling));
+            assert_eq!(victim(&cycle).is_some(), alive, "alive at {time}");
+            assert_eq!(
+                cycle.oom_kills.unwrap() - plain.oom_kills.unwrap(),
+                kills,
+                "kills at {time}"
+            );
+            let family = "/system.slice/district-08.service";
+            let (unit, unit_plain) = (&cycle.units[family], &plain.units[family]);
+            assert_eq!(
+                unit.oom_kills.unwrap() - unit_plain.oom_kills.unwrap(),
+                kills
+            );
+            if let Some(index) = victim(&cycle) {
+                let process = &cycle.processes[index];
+                let oom = process.oom.known().expect("scored");
+                assert_eq!((oom.badness, oom.exempt), (DEMO_VICTIM_SCORE, false));
+                let share =
+                    (u128::from(process.memory) * 1000 / u128::from(DEMO_MEMORY_TOTAL)) as i32;
+                assert_eq!(i32::from(oom.adjust.unwrap()), DEMO_VICTIM_SCORE - share);
+                starts.push((time, process.id.start, process.started));
+                assert_eq!(unit.pids, unit_plain.pids);
+            } else {
+                assert_eq!(unit.pids.unwrap() + 1, unit_plain.pids.unwrap());
+                assert!(unit.memory < unit_plain.memory);
+            }
+            // The memory pressure builds until the kill and falls back after it; the others stand.
+            let phase = time.rem_euclid(30.0) as f32;
+            let expected = match phase {
+                p if p < 20.0 => 45.0 + 45.0 * (p / 20.0).powi(2),
+                p if p < 26.0 => {
+                    let freed = (p - 20.0) / 6.0;
+                    45.0 + 45.0 * (1.0 - freed * freed * (3.0 - 2.0 * freed))
+                }
+                _ => 45.0,
+            };
+            assert!(
+                (cycle.pressure[1] - expected).abs() < 1e-3,
+                "pressure at {time}"
+            );
+            assert_eq!(
+                (cycle.pressure[0], cycle.pressure[2]),
+                (plain.pressure[0], plain.pressure[2])
+            );
+            // Nothing else changes: every other process is what the plain demo draws.
+            let others = |snapshot: &Snapshot| {
+                snapshot
+                    .processes
+                    .iter()
+                    .filter(|p| p.id.pid != 1134)
+                    .map(|p| format!("{p:?}"))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(others(&cycle), others(&plain), "at {time}");
+            assert!(
+                cycle.links.iter().all(|(a, b, _)| {
+                    cycle.processes.iter().any(|p| p.id == *a)
+                        && cycle.processes.iter().any(|p| p.id == *b)
+                }),
+                "no link leads to a process that is gone, at {time}"
+            );
+        }
+        let start_of = |time: f64| starts.iter().find(|(at, ..)| *at == time).unwrap();
+        assert_eq!(start_of(12.0).1, 135, "the first incarnation");
+        assert_eq!(start_of(19.99).1, start_of(12.0).1);
+        assert_ne!(
+            start_of(26.0).1,
+            start_of(12.0).1,
+            "a new start after the kill"
+        );
+        assert_eq!(start_of(26.0).1, start_of(49.9).1);
+        assert_ne!(start_of(56.0).1, start_of(26.0).1);
+        assert!(start_of(26.0).2 > start_of(12.0).2 && start_of(56.0).2 > start_of(26.0).2);
+    }
+
+    #[test]
+    fn the_demo_kill_cycle_counts_in_cgroups_when_the_kernel_counters_are_off() {
+        let cycling = DemoOptions {
+            oom_and_memory_detail: true,
+            oom_cycle: true,
+            ..DemoOptions::NONE
+        };
+        let snapshot = demo_with(21.0, 192, cycling);
+        assert_eq!(snapshot.oom_kills, None, "vmstat is not read");
+        let family = &snapshot.units["/system.slice/district-08.service"];
+        assert_eq!(family.oom_kills, Some(1));
     }
 }

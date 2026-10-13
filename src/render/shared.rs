@@ -53,6 +53,7 @@ shared! {
     U32 BACKDROP_SPACE: u32 = 1;
     U32 BACKDROP_SEA: u32 = 2;
     U32 BACKDROP_VOID: u32 = 3;
+    U32 BACKDROP_TWILIGHT: u32 = 4;
 
     /// Sky colours in 0-255 units. Dusk and sea run a gradient: base plus (dusk) or minus (sea)
     /// slope times the screen height fraction.
@@ -61,6 +62,14 @@ shared! {
     Vec3 DUSK_SLOPE: [f32; 3] = [6.0, 7.0, 8.0];
     Vec3 SEA_BASE: [f32; 3] = [24.0, 72.0, 96.0];
     Vec3 SEA_SLOPE: [f32; 3] = [18.0, 50.0, 58.0];
+
+    /// Twilight runs three stops down the frame, in 0-255 units: the top colour at the top row,
+    /// the middle colour `TWILIGHT_KNEE` of the way down, and the horizon colour at the bottom,
+    /// each stop linear to the next.
+    Vec3 TWILIGHT_TOP: [f32; 3] = [28.0, 34.0, 70.0];
+    Vec3 TWILIGHT_MIDDLE: [f32; 3] = [120.0, 92.0, 138.0];
+    Vec3 TWILIGHT_HORIZON: [f32; 3] = [238.0, 150.0, 104.0];
+    F32 TWILIGHT_KNEE: f32 = 0.6;
 
     /// Haze density along one axis is 0.5 + 0.5 * sin(t * A + time * A_DRIFT + phase) *
     /// cos(t * B - time * B_DRIFT + phase * B_PHASE).
@@ -91,7 +100,18 @@ shared! {
     F32 GLYPH_WIDTH: f32 = glyphs::WIDTH as f32;
     F32 GLYPH_HEIGHT: f32 = glyphs::HEIGHT as f32;
     U32 GLYPH_COLUMNS: u32 = glyphs::WIDTH;
+
+    /// Words of header before a field's node colours in the GPU storage buffer: columns, rows,
+    /// whether an owner grid follows the colours, and one word of padding. The colours come next,
+    /// one packed RGBA word per node, then the owners, one word per node.
+    U32 FIELD_HEADER_WORDS: u32 = 4;
 }
+
+/// The one light every lit surface drawn on the CPU shares (tubes, and the relief of a field): a
+/// unit vector in world space, z up, pointing from the surface towards the light, the normalized
+/// `[-0.4, -0.5, 0.75]`. It is shaded in Rust, so the shader never sees it and it is not in
+/// `CONSTANTS`; a surface is `0.35 + 0.65 * max(normal . LIGHT, 0)` bright.
+pub const LIGHT: [f32; 3] = [-0.405_616_1, -0.507_020_1, 0.760_530_2];
 
 /// The WGSL declarations of every shared constant, placed before `shaders.wgsl`.
 pub fn prelude() -> String {

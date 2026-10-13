@@ -2792,6 +2792,7 @@ mod tests {
             lines: std::iter::once(card.title.clone())
                 .chain(card.lines.clone())
                 .collect(),
+            braille: Vec::new(),
         };
         let mut output = Vec::new();
         crate::terminal::draw_popup(&mut output, &popup).expect("drawn");

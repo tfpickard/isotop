@@ -2,21 +2,31 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
-use crate::geometry::{dot, normalize};
 use crate::history::History;
-use crate::layout::{spin, spiral, vacant};
-use crate::medium::{Flow, Grid, TRAIL, Wave, mix};
+use crate::medium::Grid;
 use crate::model::{Identity, Process, Snapshot, bounded};
-use crate::palette::{DISTRICTS, kind_color, process_color, tint};
-use crate::platform::Shadow;
+use crate::palette::tint;
 use crate::simulation::{growth, hash, smoothing};
-use crate::views::{BuiltIn, Hooks, LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
-use crate::{cells, coop, cores, globe, glyphs, matrix, reef, strata};
+use crate::views::systems::Orbit;
+use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
+use crate::{globe, glyphs};
 
+pub mod field;
 pub mod shared;
+pub(crate) mod strokes;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "first used by a view that draws a field")
+)]
+pub use field::{Field, Placement, Relief, Shading};
+#[cfg_attr(
+    not(test),
+    expect(unused_imports, reason = "first used by a view that draws a field")
+)]
+pub use shared::LIGHT;
 pub use shared::NONE;
 /// The pick-buffer bit that marks an index into `Frame::things` rather than `Frame::identities`.
 /// Process indices stay below it, and a thing index below `THING - 1`, so neither meets `NONE`.
@@ -39,12 +49,7 @@ pub(crate) const WARM: Color = [255, 190, 110];
 pub(crate) const NVIDIA: Color = [118, 214, 60];
 const LINK: Color = [80, 175, 235];
 const LINK_HOT: Color = [150, 232, 255];
-const OUTSIDE: Color = [255, 110, 200];
-/// The outline of a hub, a parent isotop cannot read.
-const HUB: Color = [168, 182, 210];
-/// `Identity::start` of a hub. No process starts at the end of time, so a hub's identity never
-/// equals a process's, even when it has the pid of the parent it stands for.
-pub const HUB_START: u64 = u64::MAX;
+pub(crate) const OUTSIDE: Color = [255, 110, 200];
 
 /// The sky behind a view. The GPU shader receives the discriminant as `globals.sky.x`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +58,8 @@ pub enum Backdrop {
     Space = shared::BACKDROP_SPACE as isize,
     Sea = shared::BACKDROP_SEA as isize,
     Void = shared::BACKDROP_VOID as isize,
+    /// A dusk sky in three stops, from deep blue through violet to an orange horizon.
+    Twilight = shared::BACKDROP_TWILIGHT as isize,
 }
 
 /// Which socket links to draw.
@@ -121,7 +128,7 @@ impl Camera {
     }
 
     /// Ground-plane offset that appears at a screen offset of (dx, dy) frame pixels.
-    fn ground(&self, dx: f32, dy: f32) -> [f32; 2] {
+    pub(crate) fn ground(&self, dx: f32, dy: f32) -> [f32; 2] {
         let across = dx / (SCALE * self.zoom);
         let along = dy / (SCALE * self.zoom * self.pitch.sin());
         let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
@@ -224,6 +231,22 @@ impl Sky {
                 std::array::from_fn(|i| shared::SEA_BASE[i] - y * shared::SEA_SLOPE[i])
             }
             Backdrop::Void => [0.0; 3],
+            Backdrop::Twilight => {
+                let (from, to, along) = if y < shared::TWILIGHT_KNEE {
+                    (
+                        shared::TWILIGHT_TOP,
+                        shared::TWILIGHT_MIDDLE,
+                        y / shared::TWILIGHT_KNEE,
+                    )
+                } else {
+                    (
+                        shared::TWILIGHT_MIDDLE,
+                        shared::TWILIGHT_HORIZON,
+                        (y - shared::TWILIGHT_KNEE) / (1.0 - shared::TWILIGHT_KNEE),
+                    )
+                };
+                std::array::from_fn(|i| from[i] + (to[i] - from[i]) * along)
+            }
         }
     }
 
@@ -290,6 +313,16 @@ pub enum Item {
         color: Color,
         strength: f32,
     },
+    /// A soft halo like `Glow`, blended with round-to-nearest, as the GPU's blend unit does, so
+    /// that any number of them can stack and the two rasterizers still agree to a level (a
+    /// `Glow` truncates on the CPU, and stacked ones drift apart). Strength is clamped to
+    /// [0, 1]. For content whose look is the density of many splats, such as a flock.
+    Puff {
+        center: [f32; 2],
+        radius: f32,
+        color: Color,
+        strength: f32,
+    },
     /// Translucent one-pixel line blended without depth or picking.
     Beam([f32; 2], [f32; 2], Color, f32),
     /// Background point behind everything.
@@ -306,12 +339,23 @@ pub enum Item {
     /// no colour and no depth, depth-tested at `depth` as a sphere is. `pick` names a process or
     /// a thing. Record it after the geometry it lies over: it writes no depth, so geometry
     /// recorded later covers it wherever that geometry passes the depth test.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     Pick {
         center: [f32; 2],
         radius: f32,
         depth: f32,
         pick: u32,
+    },
+    /// Depth-tested triangle whose colour and pick are sampled from field `field` (an index into
+    /// `Frame::fields`) at `uv`, in node units, interpolated linearly across the triangle. It
+    /// writes depth, the sampled colour and the owner of the nearest node (see `field`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first recorded by a view that draws a field")
+    )]
+    Field {
+        points: [Point; 3],
+        uv: [[f32; 2]; 3],
+        field: u32,
     },
 }
 
@@ -323,6 +367,9 @@ pub struct Buffers {
     pixels: Vec<u8>,
     depth: Vec<f32>,
     picks: Vec<u32>,
+    /// The fields the last frame drew, kept with their shaded colours so a field that has not
+    /// changed is not shaded again.
+    fields: Vec<field::ShadedField>,
 }
 
 pub struct Frame {
@@ -336,6 +383,11 @@ pub struct Frame {
     pub identities: Vec<Identity>,
     /// The things this frame's thing picks index, in `thing_pick` order.
     pub things: Vec<Thing>,
+    /// The fields this frame draws, in the order `Frame::field` recorded them: what an
+    /// `Item::Field` indexes.
+    pub fields: Vec<field::ShadedField>,
+    /// The previous frame's fields, which `Frame::field` takes back when one is unchanged.
+    earlier_fields: Vec<field::ShadedField>,
     /// Pixel position of the selected process, if it was drawn.
     pub anchor: Option<[f32; 2]>,
 }
@@ -347,6 +399,7 @@ impl Frame {
             pixels,
             depth,
             picks,
+            fields,
         } = buffers;
         items.clear();
         let mut frame = Self {
@@ -359,6 +412,8 @@ impl Frame {
             picks,
             identities: Vec::new(),
             things: Vec::new(),
+            fields: Vec::new(),
+            earlier_fields: fields,
             anchor: None,
         };
         if sky.backdrop == Backdrop::Space {
@@ -384,6 +439,7 @@ impl Frame {
             pixels: self.pixels,
             depth: self.depth,
             picks: self.picks,
+            fields: self.fields,
         }
     }
 
@@ -398,6 +454,7 @@ impl Frame {
         self.picks.resize(n, NONE);
         self.paint_sky();
         let items = std::mem::take(&mut self.items);
+        let fields = std::mem::take(&mut self.fields);
         for item in &items {
             match *item {
                 Item::Triangle([a, b, c], color, pick) => self.triangle(a, b, c, color, pick),
@@ -416,6 +473,12 @@ impl Frame {
                     color,
                     strength,
                 } => self.halo(center, radius, color, strength),
+                Item::Puff {
+                    center,
+                    radius,
+                    color,
+                    strength,
+                } => self.puff(center, radius, color, strength.clamp(0.0, 1.0)),
                 Item::Beam(a, b, color, weight) => self.ray(a, b, color, weight),
                 Item::Star([x, y], color) => {
                     self.pixel(x as i32, y as i32, BACKGROUND, color, NONE)
@@ -432,9 +495,13 @@ impl Frame {
                     depth,
                     pick,
                 } => self.splat(center, radius, depth, pick),
+                Item::Field { points, uv, field } => {
+                    self.field_triangle(points, uv, &fields[field as usize]);
+                }
             }
         }
         self.items = items;
+        self.fields = fields;
     }
 
     fn glyph(&mut self, origin: [f32; 2], scale: u32, bits: u128, color: Color) {
@@ -605,6 +672,17 @@ impl Frame {
         }
     }
 
+    /// `blend` rounded to the nearest level, as the GPU's blend unit rounds.
+    fn blend_rounded(&mut self, x: i32, y: i32, color: Color, weight: f32) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let i = (y as usize * self.width as usize + x as usize) * 3;
+        for (channel, &target) in self.pixels[i..i + 3].iter_mut().zip(&color) {
+            *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight + 0.5) as u8;
+        }
+    }
+
     fn pixel(&mut self, x: i32, y: i32, depth: f32, color: Color, pick: u32) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
@@ -711,6 +789,23 @@ impl Frame {
     }
 
     fn halo(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
+        self.disc(p, radius, color, strength, Self::blend);
+    }
+
+    fn puff(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
+        self.disc(p, radius, color, strength, Self::blend_rounded);
+    }
+
+    /// Blends `color` over the pixels within `radius` of `p` with weight `strength` times the
+    /// square of one minus the distance in radii, by `blend`.
+    fn disc(
+        &mut self,
+        p: [f32; 2],
+        radius: f32,
+        color: Color,
+        strength: f32,
+        blend: fn(&mut Self, i32, i32, Color, f32),
+    ) {
         let x0 = (p[0] - radius).floor() as i32;
         let x1 = (p[0] + radius).ceil() as i32;
         let y0 = (p[1] - radius).floor() as i32;
@@ -719,7 +814,7 @@ impl Frame {
             for x in x0..=x1 {
                 let d = (x as f32 + 0.5 - p[0]).hypot(y as f32 + 0.5 - p[1]) / radius;
                 if d < 1.0 {
-                    self.blend(x, y, color, strength * (1.0 - d) * (1.0 - d));
+                    blend(self, x, y, color, strength * (1.0 - d) * (1.0 - d));
                 }
             }
         }
@@ -770,7 +865,7 @@ impl Frame {
         }
     }
 
-    fn trace(&mut self, camera: &Camera, orbit: &Orbit, color: Color) {
+    pub(crate) fn trace(&mut self, camera: &Camera, orbit: &Orbit, color: Color) {
         let mut last = orbit.point(0.0);
         for segment in 1..=72 {
             let next = orbit.point(segment as f32 / 72.0 * TAU);
@@ -819,6 +914,12 @@ impl Frame {
     ) {
         let a = self.project(camera, a);
         let b = self.project(camera, b);
+        self.hairline_between(a, b, color, width);
+    }
+
+    /// `hairline` between two points already in frame space (x, y, depth), for a view that draws
+    /// in screen space, such as a lensed image, and sets the depth of its layers itself.
+    pub(crate) fn hairline_between(&mut self, a: Point, b: Point, color: Color, width: f32) {
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let length = dx.hypot(dy);
         if !(1e-3..=12000.0).contains(&length) {
@@ -986,6 +1087,10 @@ impl<'a> RenderInput<'a> {
     }
 }
 
+/// How many arrivals of processes absent from the shown sample the scene remembers, oldest
+/// forgotten first.
+const ARRIVALS_KEPT: usize = 4096;
+
 /// The longest step `Stage::dt` reports, in seconds. A longer gap (a stall, a slow frame) counts
 /// as this much, so a simulation never leaps.
 pub(crate) const MAX_DT: f32 = 0.5;
@@ -1024,6 +1129,19 @@ pub struct TourTarget {
     pub weight: f32,
 }
 
+/// The name of a system a view draws, which the app labels in bright text just under the system's
+/// outer edge (or at `at` when that edge is far below it): a `Title` for each system worth a
+/// label, in the order the labels are offered a place.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Title {
+    /// The system's centre, which the label is placed from.
+    pub at: Point,
+    /// How far the system reaches from `at` in world units.
+    pub reach: f32,
+    /// The label, already cut to fit (`label_name`).
+    pub text: String,
+}
+
 /// What a view draws with, and its only way to talk back to the app. A view reads only `Stage`,
 /// the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the
 /// platform could not measure is `snapshot.missing`; `Stage` does not copy it.
@@ -1039,10 +1157,20 @@ pub(crate) struct Stage<'a> {
     /// The root of the focused subtree, if one is focused: the process slice holds only that
     /// subtree, so a view leaves out what it draws besides the processes (exited ones).
     pub focus: Option<Identity>,
+    /// Which links the `c` key shows. A view whose row says `LinkRule::DrawnByView` draws its
+    /// own links and follows it: all of them, only those of the `highlight`, or none.
+    pub links: Links,
+    /// The processes whose links stand out: the selected, the hovered and the toured.
+    pub highlight: &'a [Identity],
     /// `--limit`, the most processes a frame draws. The slice is already cut to it; a view that
     /// draws more than the slice (exited processes) keeps within it.
     pub limit: usize,
     pub time: f32,
+    /// Frames the scene has rendered, this one included, whichever view was shown. A view that
+    /// must tell a frame that follows its own last frame from one after a gap (another view was
+    /// shown in between) compares it with the number it last drew at: the galaxy of Orbit
+    /// turns only across consecutive frames (Flow's is held still).
+    pub frames: u64,
     /// Seconds to advance a simulation by this frame, by the one policy for new code: 0 on the
     /// first frame, while paused, and when `time` went back (a rewind or a headless replay);
     /// otherwise the time since the last frame that moved forward, at most `MAX_DT`. The scene
@@ -1055,8 +1183,14 @@ pub(crate) struct Stage<'a> {
     /// from the shown snapshot's `elapsed`.
     pub history: &'a History,
     births: &'a HashMap<Identity, f32>,
+    arrivals: &'a HashMap<Identity, f32>,
     /// CPU and memory as eased for every sampled process, drawn or not.
     resources: &'a HashMap<Identity, (f32, f32)>,
+    /// Where processes that left were last drawn, as the scene found out about them in its
+    /// previous frame: the ground for a splash.
+    pub splashes: &'a [Point],
+    /// The processes that appeared in this frame's sample after the scene's first frame.
+    pub newborn: &'a [Identity],
     /// Where each drawn process is, for picking anchors, labels and the tour.
     pub positions: &'a mut HashMap<Identity, Point>,
     /// World-anchored text labels.
@@ -1065,6 +1199,11 @@ pub(crate) struct Stage<'a> {
     pub bounds: &'a mut Vec<Point>,
     /// Extra lines for a process's inspector popup, after its sockets.
     pub notes: &'a mut HashMap<Identity, Vec<String>>,
+    /// Braille sparkline lines for a process's inspector popup, right after its notes. Only
+    /// generated Braille Patterns (U+2800 to U+28FF) and spaces: the terminal draws them through
+    /// `terminal::clean_sparkline`, which turns everything else into `?`, so text from the system
+    /// never belongs here.
+    pub sparklines: &'a mut HashMap<Identity, Vec<String>>,
     /// Processes the tour should visit; a hub is passed over, since it has no callout.
     pub tour: &'a mut Vec<TourTarget>,
     /// Lines for a process's inspector popup, right after its own figures and in the order
@@ -1074,11 +1213,28 @@ pub(crate) struct Stage<'a> {
     /// Lines for the tour's callout of a process, after its own figures and in the order pushed:
     /// what the view makes of the visit, such as a frame it cannot enter.
     pub callout: &'a mut Vec<(Identity, String)>,
+    /// The names of the systems the view draws, labelled under their outer edges after
+    /// `places`, in the order pushed. Each system's centre (`Title::at`) is kept in the camera
+    /// fit with the `positions`, when the view gave no `bounds`.
+    pub titles: &'a mut Vec<Title>,
+    /// How far above the ground plane the view's content rises, in world units, for the camera
+    /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
+    /// nothing rises.
+    pub headroom: &'a mut f32,
 }
 
 impl Stage<'_> {
     pub fn growth(&self, id: Identity) -> f32 {
         growth(self.births, id, self.time)
+    }
+
+    /// Seconds since the scene first saw the process, or None for one that was there on the
+    /// scene's first frame (it did not start while anyone watched) and while `time` is before
+    /// that moment (a rewind). `growth` is an easing fraction that the app's intro also
+    /// animates for processes already running; this is the true age of one that arrived.
+    pub fn age(&self, id: Identity) -> Option<f32> {
+        let arrived = *self.arrivals.get(&id)?;
+        (self.time >= arrived).then_some(self.time - arrived)
     }
 
     /// A sampled process's CPU and memory as the scene eases them, whether it is drawn or not.
@@ -1133,134 +1289,84 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
     Cow::Owned(cut)
 }
 
-#[derive(Clone, Copy)]
-struct Plot {
-    district: usize,
-    slot: usize,
-}
-
-/// A Keplerian ellipse with its focus on the parent body.
-#[derive(Clone, Copy)]
-struct Orbit {
-    center: Point,
-    a: f32,
-    e: f32,
-    omega: f32,
-}
-
-impl Orbit {
-    fn point(&self, eccentric: f32) -> Point {
-        let (s, c) = eccentric.sin_cos();
-        let x = self.a * (c - self.e);
-        let y = self.a * (1.0 - self.e * self.e).sqrt() * s;
-        let (ws, wc) = self.omega.sin_cos();
-        [
-            self.center[0] + x * wc - y * ws,
-            self.center[1] + x * ws + y * wc,
-            self.center[2],
-        ]
-    }
-
-    fn at(&self, mean: f32) -> Point {
-        self.point(eccentric_anomaly(mean, self.e))
-    }
-}
-
-struct Path {
-    orbit: Orbit,
-    depth: usize,
-    id: Identity,
-    spoke: bool,
-    mean: f32,
-    position: Point,
-    cpu: f32,
-}
-
-struct Body {
-    index: usize,
-    position: Point,
-    grow: f32,
-}
-
-struct Tree<'a> {
-    processes: &'a [&'a Process],
-    children: Vec<Vec<usize>>,
-    extents: Vec<f32>,
-    /// Body radius from the memory of the whole subtree a body anchors.
-    radii: Vec<f32>,
-    /// Radius including thread rings, which neighbours must clear.
-    reach: Vec<f32>,
-    masses: Vec<f32>,
-}
-
+/// What persists between frames and belongs to the frame, not to any one view: the smoothing of
+/// the sampled processes, their births and deaths, the links and highlights, the outputs of the
+/// last frame the app reads back, the spare buffers, and the module of each view in its row's
+/// slot. A view keeps its own state in its module and reaches the scene only through `Stage`.
+/// Every field says in its doc comment why it is frame-wide (the lint below insists), and
+/// `scene_has_no_view_specific_fields` fails to compile until a new field is listed in it, which
+/// is the review: add one only if every view and the app share it.
+#[deny(clippy::missing_docs_in_private_items)]
 pub struct Scene {
-    plots: HashMap<Identity, Plot>,
-    groups: HashMap<String, Vec<usize>>,
-    occupancy: Vec<HashMap<usize, Identity>>,
+    /// Each process's CPU and memory as eased towards the samples. Frame-wide: the easing
+    /// belongs to the sample, so every view reads the same figures (`Stage::resources`) and a
+    /// view that is opened later finds them already settled.
     resources: HashMap<Identity, (f32, f32)>,
-    systems: HashMap<Identity, ([f32; 2], f32)>,
-    /// Point the orbit systems revolve about and the systems it was computed for, the motion
-    /// time they were last turned to, and each system's angular speed in radians per second.
-    galaxy: [f32; 2],
-    galaxy_members: Vec<Identity>,
-    galaxy_time: Option<f32>,
-    galaxy_speed: HashMap<Identity, f32>,
-    /// Frames rendered, and the frame the galaxy last turned in: it only turns across
-    /// consecutive frames, so switching to another view and back never spins it.
+    /// Frames rendered, whichever view was shown: `Stage::frames`.
     frames: u64,
-    galaxy_frame: u64,
+    /// The time of the previous frame, to tell a rewind or a gap from a step and drop `resources`.
     last_time: Option<f32>,
     /// The step every `Stage` gets as `dt`.
     clock: FrameClock,
+    /// When each process was first seen, for the growth every view eases new bodies in with.
     births: HashMap<Identity, f32>,
+    /// When each process that arrived after the first frame was first seen: `Stage::age`.
+    arrivals: HashMap<Identity, f32>,
+    /// Where the previous frame drew each process, so the exit flash and the splash of the media
+    /// know where a process that left stood, whichever view is shown.
     previous: HashMap<Identity, Point>,
+    /// The exit flashes still fading: the point and the time of a death. Frame-wide with
+    /// `previous`, drawn by the scene over any view whose row has the flash.
     deaths: Vec<(Point, f32)>,
-    /// Height of the tallest building in the last city frame, so fitting leaves it headroom.
-    tallest: f32,
-    /// Exits and births since the last frame, as disturbances for the ripple and flow media.
+    /// The last frame's `Stage::headroom`, so fitting leaves it room above the ground.
+    headroom: f32,
+    /// Where processes left since the last frame, as disturbances for the media of any view
+    /// (`Stage::splashes`).
     splashes: Vec<Point>,
+    /// The processes that arrived since the last frame (`Stage::newborn`).
     newborn: Vec<Identity>,
-    wave: Option<Wave>,
-    flow: Option<Flow>,
-    /// Ripple pebble clusters by cgroup, and each process's cluster and slot in it.
-    clusters: HashMap<String, Cluster>,
-    pebbles: HashMap<Identity, (String, usize)>,
+    /// Whether a frame has been drawn: processes present at the first one did not start while
+    /// anyone watched.
     started: bool,
     /// Animate the processes that are already running when the first frame is drawn.
     pub intro: bool,
-    /// Which socket links to draw, and which processes' links stand out.
+    /// Which socket links to draw: the `c` key, global to every view.
     pub links: Links,
+    /// The processes whose links stand out: selected, hovered or toured, set by the app for
+    /// whichever view is shown.
     pub highlight: Vec<Identity>,
+    /// The last frame's `Stage::positions`: where each drawn process is, which picking, labels,
+    /// the tour, the links and the exit flash all read.
     pub positions: HashMap<Identity, Point>,
-    /// Orbit system roots: identity, bodies drawn, and reach from the star in world units.
-    pub stars: Vec<(Identity, usize, f32)>,
-    /// For orbit bodies with children: memory of the subtree they anchor and its process count.
-    pub mass: HashMap<Identity, (u64, usize)>,
-    /// Names of the hubs drawn this frame: stand-ins for parents isotop cannot read (`hubs`).
-    pub hub_names: HashMap<Identity, String>,
+    /// The last frame's `Stage::places`.
     pub places: Vec<(Point, String)>,
+    /// The last frame's `Stage::titles`.
+    pub titles: Vec<Title>,
+    /// The last frame's `Stage::bounds`, which `fit` frames the camera to.
     bounds: Vec<Point>,
+    /// The last frame's `Stage::notes`: popup lines after the sockets.
     pub notes: HashMap<Identity, Vec<String>>,
-    /// The last frame's `Stage::tour`, `Stage::popup` and `Stage::callout`.
+    /// The last frame's `Stage::sparklines`.
+    pub sparklines: HashMap<Identity, Vec<String>>,
+    /// The last frame's `Stage::tour`: the stops the tour and the Space visits make.
     pub tour: Vec<TourTarget>,
+    /// The last frame's `Stage::popup`: lines the inspector popup carries for the shown view.
     pub popup: Vec<(Identity, String)>,
+    /// The last frame's `Stage::callout`: lines of the tour's callout.
     pub callout: Vec<(Identity, String)>,
-    pub(crate) cores: cores::Track,
-    cells: cells::Dishes,
-    pub(crate) strata: strata::Strata,
     /// Every process's CPU and memory over the last samples, recorded whichever view is shown.
     pub(crate) history: History,
-    globe: globe::Globe,
-    reef: reef::Reef,
-    pub coop: coop::Coop,
-    pub matrix: matrix::Rain,
     /// The views this scene draws, one row each: `REGISTRY`, unless a test brings its own.
     rows: &'static [ViewInfo],
-    /// The state of each module view, in its row's slot; built-in rows have None.
-    modules: Vec<Option<Box<dyn ViewModule>>>,
+    /// The module of each view, in its row's slot, made by the row's `build` when the scene is
+    /// created. Every module is built up front, not on first show, because `record` feeds every
+    /// sample to every view and a view built late would miss the samples before it opened.
+    modules: Vec<Box<dyn ViewModule>>,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
+    /// How many processes the shown view drew in the last frame: the status line's count.
     pub visible: usize,
+    /// How many of the processes admitted to the last frame the shown view left out.
     pub collapsed: usize,
 }
 
@@ -1272,59 +1378,33 @@ impl Scene {
     /// A scene that draws the views of `rows`, building each module view's state.
     pub(crate) fn with_rows(rows: &'static [ViewInfo]) -> Self {
         Self {
-            plots: HashMap::new(),
-            groups: HashMap::new(),
-            occupancy: Vec::new(),
             resources: HashMap::new(),
-            systems: HashMap::new(),
-            galaxy: [0.0; 2],
-            galaxy_members: Vec::new(),
-            galaxy_time: None,
-            galaxy_speed: HashMap::new(),
             frames: 0,
-            galaxy_frame: 0,
             last_time: None,
             clock: FrameClock::default(),
             births: HashMap::new(),
+            arrivals: HashMap::new(),
             previous: HashMap::new(),
             deaths: Vec::new(),
-            tallest: 0.0,
+            headroom: 0.0,
             splashes: Vec::new(),
             newborn: Vec::new(),
-            wave: None,
-            flow: None,
-            clusters: HashMap::new(),
-            pebbles: HashMap::new(),
             started: false,
             intro: false,
             links: Links::All,
             highlight: Vec::new(),
             positions: HashMap::new(),
-            stars: Vec::new(),
-            mass: HashMap::new(),
-            hub_names: HashMap::new(),
             places: Vec::new(),
+            titles: Vec::new(),
             bounds: Vec::new(),
             notes: HashMap::new(),
+            sparklines: HashMap::new(),
             tour: Vec::new(),
             popup: Vec::new(),
             callout: Vec::new(),
-            cores: cores::Track::default(),
-            cells: cells::Dishes::default(),
-            strata: strata::Strata::default(),
             history: History::default(),
-            globe: globe::Globe::default(),
-            reef: reef::Reef::default(),
-            coop: coop::Coop::default(),
-            matrix: matrix::Rain::default(),
             rows,
-            modules: rows
-                .iter()
-                .map(|row| match row.hooks {
-                    Hooks::BuiltIn { .. } => None,
-                    Hooks::Module(build) => Some(build()),
-                })
-                .collect(),
+            modules: rows.iter().map(|row| (row.build)()).collect(),
             spare: Buffers::default(),
             visible: 0,
             collapsed: 0,
@@ -1338,54 +1418,48 @@ impl Scene {
 
     /// The third status line for `view` while no process is inspected.
     pub fn legend(&self, view: View, snapshot: &Snapshot) -> String {
-        match self.row(view).hooks {
-            Hooks::BuiltIn { legend, .. } => legend(self, snapshot),
-            Hooks::Module(_) => self.modules[view.index()]
-                .as_ref()
-                .map(|module| module.legend(snapshot))
-                .unwrap_or_default(),
-        }
+        self.modules[view.index()].legend(snapshot)
     }
 
     /// The line `view` shows in place of the inspector, if it draws no processes to inspect.
     pub fn inspector_line(&self, view: View) -> Option<String> {
-        match self.row(view).hooks {
-            Hooks::BuiltIn { inspector_line, .. } => inspector_line.map(|line| line(self)),
-            Hooks::Module(_) => self.modules[view.index()]
-                .as_ref()
-                .and_then(|module| module.inspector_line()),
-        }
+        self.modules[view.index()].inspector_line()
     }
 
     /// The inspector card of `thing`, which `view`, the shown view, drew: built now from the
-    /// module's own state, or None once it no longer shows the thing. Built-in views draw no
-    /// things.
+    /// module's own state, or None once it no longer shows the thing.
     pub fn card(&self, view: View, thing: Thing, snapshot: &Snapshot) -> Option<Card> {
-        self.modules[view.index()]
-            .as_ref()
-            .and_then(|module| module.card(thing, snapshot))
+        self.modules[view.index()].card(thing, snapshot)
     }
 
-    /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means. No
-    /// built-in view takes keys.
+    /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means.
     pub fn key(&mut self, view: View, key: ViewKey) -> bool {
-        self.modules[view.index()]
-            .as_mut()
-            .is_some_and(|module| module.key(key))
+        self.modules[view.index()].key(key)
     }
 
-    /// Where the view harness looks for `view`'s processes after a frame: the row's anchors for
-    /// a built-in view, the module's own for a module view. None checks `positions`.
+    /// The state of the module view `view` draws, if it is a `T` and lets its tests see it
+    /// (`ViewModule::state`).
+    #[cfg(test)]
+    pub fn module<T: 'static>(&self, view: View) -> Option<&T> {
+        self.modules[view.index()].state()?.downcast_ref()
+    }
+
+    /// Where the view harness looks for `view`'s processes after a frame: the module's own
+    /// anchors. None checks `positions`.
     #[cfg(test)]
     pub fn anchors(&self, view: View) -> Option<HashMap<Identity, Point>> {
-        match self.row(view).hooks {
-            Hooks::BuiltIn { .. } => self.row(view).contract.anchors.map(|anchors| anchors(self)),
-            Hooks::Module(_) => self.modules[view.index()]
-                .as_ref()
-                .and_then(|module| module.anchors()),
-        }
+        self.modules[view.index()].anchors()
     }
 
+    /// Notes a splash at `at` as an exit would, for the next frame, for a test that stirs the
+    /// water.
+    #[cfg(test)]
+    pub(crate) fn splash(&mut self, at: Point) {
+        self.splashes.push(at);
+    }
+
+    /// The easing fraction `Stage::growth` hands a view, for the tests of the births.
+    #[cfg(test)]
     fn growth(&self, id: Identity, time: f32) -> f32 {
         growth(&self.births, id, time)
     }
@@ -1399,74 +1473,13 @@ impl Scene {
     /// shown, so views that keep their own history have it when they open.
     pub fn record(&mut self, snapshot: &Snapshot, time: f32) {
         self.history.record(snapshot, time);
-        let rows = self.rows;
-        for (index, row) in rows.iter().enumerate() {
-            match row.hooks {
-                Hooks::BuiltIn {
-                    record: Some(record),
-                    ..
-                } => record(self, snapshot, time),
-                Hooks::BuiltIn { record: None, .. } => {}
-                Hooks::Module(_) => {
-                    if let Some(module) = self.modules[index].as_mut() {
-                        module.record(snapshot, time);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn strata_rows(&self) -> Vec<Identity> {
-        self.strata.rows()
-    }
-
-    fn city_positions(&mut self, processes: &[&Process], snapshot: &Snapshot) {
-        let alive: HashSet<_> = snapshot.processes.iter().map(|p| p.id).collect();
-        self.plots.retain(|id, plot| {
-            if alive.contains(id) {
-                true
-            } else {
-                self.occupancy[plot.district].remove(&plot.slot);
-                false
-            }
-        });
-        self.positions.clear();
-        for process in processes {
-            if !self.plots.contains_key(&process.id) {
-                let districts = self.groups.entry(process.group.clone()).or_default();
-                let mut vacant = None;
-                for &district in districts.iter() {
-                    if let Some(slot) = (0..16).find(|s| !self.occupancy[district].contains_key(s))
-                    {
-                        vacant = Some(Plot { district, slot });
-                        break;
-                    }
-                }
-                let plot = vacant.unwrap_or_else(|| {
-                    let district = self.occupancy.len();
-                    self.occupancy.push(HashMap::new());
-                    districts.push(district);
-                    Plot { district, slot: 0 }
-                });
-                self.occupancy[plot.district].insert(plot.slot, process.id);
-                self.plots.insert(process.id, plot);
-            }
-            let plot = self.plots[&process.id];
-            let base = district_origin(plot.district);
-            self.positions.insert(
-                process.id,
-                [
-                    base[0] + (plot.slot % 4) as f32 * 4.0 + 2.0,
-                    base[1] + (plot.slot / 4) as f32 * 4.0 + 2.0,
-                    0.0,
-                ],
-            );
+        for module in &mut self.modules {
+            module.record(snapshot, time);
         }
     }
 
     pub fn fit(&self, camera: &mut Camera, width: u32, height: u32) {
-        if self.positions.is_empty() && self.bounds.is_empty() {
+        if self.positions.is_empty() && self.titles.is_empty() && self.bounds.is_empty() {
             return;
         }
         let probe = Camera {
@@ -1477,7 +1490,14 @@ impl Scene {
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
         let points: Vec<Point> = if self.bounds.is_empty() {
-            self.positions.values().map(|p| [p[0], p[1], 0.0]).collect()
+            // The drawn processes, and the systems' centres a hub stands at, which are no process.
+            let centres = self.titles.iter().map(|title| title.at);
+            self.positions
+                .values()
+                .copied()
+                .chain(centres)
+                .map(|p| [p[0], p[1], 0.0])
+                .collect()
         } else {
             self.bounds.clone()
         };
@@ -1497,8 +1517,8 @@ impl Scene {
             camera.center = probe.ground((min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5 + lift);
             return;
         }
-        // The vertical margin leaves headroom for the tallest building above the ground plane.
-        let headroom = 24.0_f32.max(self.tallest * camera.pitch.cos() * SCALE + 8.0);
+        // The vertical margin leaves room for the tallest thing above the ground plane.
+        let headroom = 24.0_f32.max(self.headroom * camera.pitch.cos() * SCALE + 8.0);
         camera.zoom = (width as f32 / (max[0] - min[0] + 12.0))
             .min(height as f32 / (max[1] - min[1] + headroom))
             * 0.8;
@@ -1553,18 +1573,19 @@ impl Scene {
         );
         self.visible = processes.len();
         self.collapsed = 0;
-        self.stars.clear();
-        self.mass.clear();
-        self.hub_names.clear();
         self.places.clear();
+        self.titles.clear();
         self.bounds.clear();
         self.notes.clear();
+        self.sparklines.clear();
         self.tour.clear();
         self.popup.clear();
         self.callout.clear();
-        // Only the city draws buildings, and it measures them again every frame it is shown.
-        self.tallest = 0.0;
-        let lift = self.draw_view(&mut frame, input, &processes, dt);
+        // A view that stands things on the ground reports their height again every frame it is
+        // shown.
+        self.headroom = 0.0;
+        self.draw_view(&mut frame, input, &processes, dt);
+        let lift = row.link_lift;
         self.splashes.clear();
         self.newborn.clear();
         match row.links {
@@ -1579,6 +1600,30 @@ impl Scene {
         frame
     }
 
+    /// Forgets the arrivals of processes that are gone, except the latest `ARRIVALS_KEPT`: a
+    /// rewind to before a process started also finds it absent, and jumping forward again must
+    /// give it back the age it had, not a new one.
+    fn keep_arrivals(&mut self, alive: &HashSet<Identity>) {
+        let absent =
+            self.arrivals.len() - self.arrivals.keys().filter(|id| alive.contains(id)).count();
+        let Some(excess) = absent
+            .checked_sub(ARRIVALS_KEPT)
+            .filter(|&excess| excess > 0)
+        else {
+            return;
+        };
+        let mut gone: Vec<(f32, Identity)> = self
+            .arrivals
+            .iter()
+            .filter(|(id, _)| !alive.contains(id))
+            .map(|(&id, &arrived)| (arrived, id))
+            .collect();
+        gone.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        for (_, id) in gone.into_iter().take(excess) {
+            self.arrivals.remove(&id);
+        }
+    }
+
     /// Takes in the frame's sample: notes births, and returns its processes with CPU and memory
     /// eased towards the sampled values.
     fn ease(&mut self, snapshot: &Snapshot, alive: &HashSet<Identity>, time: f32) -> Vec<Process> {
@@ -1590,6 +1635,7 @@ impl Scene {
         let alpha = smoothing(dt.max(0.0), 0.3);
         self.resources.retain(|id, _| alive.contains(id));
         self.births.retain(|id, _| alive.contains(id));
+        self.keep_arrivals(alive);
         let born = if self.started || self.intro {
             time
         } else {
@@ -1602,6 +1648,7 @@ impl Scene {
                 entry.insert(born);
                 if fresh {
                     self.newborn.push(p.id);
+                    self.arrivals.entry(p.id).or_insert(time);
                 }
             }
         }
@@ -1621,15 +1668,14 @@ impl Scene {
             .collect()
     }
 
-    /// Draws the shown view and returns how high its links rise: above the city's rooftops, on
-    /// the ground elsewhere.
+    /// Draws the shown view.
     fn draw_view(
         &mut self,
         frame: &mut Frame,
         input: &RenderInput,
         processes: &[&Process],
         dt: f32,
-    ) -> f32 {
+    ) {
         let RenderInput {
             snapshot,
             view,
@@ -1642,84 +1688,40 @@ impl Scene {
             toured,
             ..
         } = *input;
-        let [cpu, memory, io] = snapshot.pressure;
-        let arm = match self.row(view).hooks {
-            Hooks::BuiltIn { arm, .. } => Some(arm),
-            Hooks::Module(_) => None,
+        self.positions.clear();
+        let mut stage = Stage {
+            frame,
+            camera,
+            selected,
+            thing,
+            toured,
+            focus,
+            links: self.links,
+            highlight: &self.highlight,
+            limit,
+            time,
+            frames: self.frames,
+            dt,
+            history: &self.history,
+            births: &self.births,
+            arrivals: &self.arrivals,
+            resources: &self.resources,
+            splashes: &self.splashes,
+            newborn: &self.newborn,
+            positions: &mut self.positions,
+            places: &mut self.places,
+            bounds: &mut self.bounds,
+            notes: &mut self.notes,
+            sparklines: &mut self.sparklines,
+            tour: &mut self.tour,
+            popup: &mut self.popup,
+            callout: &mut self.callout,
+            titles: &mut self.titles,
+            headroom: &mut self.headroom,
         };
-        match arm {
-            Some(BuiltIn::City) => {
-                self.city_positions(processes, snapshot);
-                self.draw_city(frame, processes, camera, selected, time);
-                return 1.5;
-            }
-            Some(BuiltIn::Orbit) => {
-                let hubs = self.hubs(processes, snapshot, focus);
-                let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
-                self.draw_orbits(frame, &processes, camera, selected, time, snapshot);
-            }
-            Some(BuiltIn::Ripple) => {
-                self.draw_ripples(frame, processes, camera, selected, time, snapshot);
-            }
-            Some(BuiltIn::Flow) => {
-                let stir = bounded(cpu + memory + io, 25.0);
-                let hubs = self.hubs(processes, snapshot, focus);
-                let processes: Vec<&Process> = processes.iter().copied().chain(&hubs).collect();
-                self.draw_flow(frame, &processes, camera, selected, time, snapshot, stir);
-            }
-            Some(BuiltIn::Matrix) => {
-                self.positions.clear();
-                self.matrix.draw(frame, time);
-                self.visible = 0;
-            }
-            Some(
-                BuiltIn::Cores
-                | BuiltIn::Cells
-                | BuiltIn::Strata
-                | BuiltIn::Globe
-                | BuiltIn::Reef
-                | BuiltIn::Coop,
-            )
-            | None => {
-                self.positions.clear();
-                let mut stage = Stage {
-                    frame,
-                    camera,
-                    selected,
-                    thing,
-                    toured,
-                    focus,
-                    limit,
-                    time,
-                    dt,
-                    history: &self.history,
-                    births: &self.births,
-                    resources: &self.resources,
-                    positions: &mut self.positions,
-                    places: &mut self.places,
-                    bounds: &mut self.bounds,
-                    notes: &mut self.notes,
-                    tour: &mut self.tour,
-                    popup: &mut self.popup,
-                    callout: &mut self.callout,
-                };
-                let shown = match arm {
-                    Some(BuiltIn::Cores) => self.cores.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Cells) => self.cells.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Strata) => self.strata.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Globe) => self.globe.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Reef) => self.reef.draw(&mut stage, processes, snapshot),
-                    Some(BuiltIn::Coop) => self.coop.draw(&mut stage, processes, snapshot),
-                    Some(_) => unreachable!(),
-                    None => self.modules[view.index()]
-                        .as_mut()
-                        .map_or(0, |module| module.draw(&mut stage, processes, snapshot)),
-                };
-                self.visible = shown;
-                self.collapsed = processes.len().saturating_sub(shown);
-            }
-        }
-        0.0
+        let shown = self.modules[view.index()].draw(&mut stage, processes, snapshot);
+        self.visible = shown;
+        self.collapsed = processes.len().saturating_sub(shown);
     }
 
     /// Marks where processes that left were last drawn and, where the row has the flash, draws
@@ -1733,8 +1735,7 @@ impl Scene {
         flash: bool,
     ) {
         for (id, &point) in &self.previous {
-            // A hub is no process, so it neither dies nor splashes when it is no longer drawn.
-            if !alive.contains(id) && !is_hub(id) {
+            if !alive.contains(id) {
                 self.deaths.push((point, time));
                 self.splashes.push(point);
             }
@@ -1846,1419 +1847,10 @@ impl Scene {
             }
         }
     }
-
-    #[expect(clippy::too_many_lines, reason = "split in #73 (A14)")]
-    fn draw_city(
-        &mut self,
-        frame: &mut Frame,
-        processes: &[&Process],
-        camera: &Camera,
-        selected: Option<Identity>,
-        time: f32,
-    ) {
-        let districts: HashSet<_> = processes
-            .iter()
-            .map(|p| self.plots[&p.id].district)
-            .collect();
-        for district in districts {
-            let [x, y] = district_origin(district);
-            frame.quad(
-                camera,
-                [
-                    [x - 1.0, y - 1.0, -0.12],
-                    [x + 17.0, y - 1.0, -0.12],
-                    [x + 17.0, y + 17.0, -0.12],
-                    [x - 1.0, y + 17.0, -0.12],
-                ],
-                [18, 29, 43],
-                NONE,
-            );
-            let color = tint(DISTRICTS[district % 8], 0.35);
-            for i in 0..=4 {
-                let offset = i as f32 * 4.0;
-                frame.line(
-                    camera,
-                    [x + offset, y, 0.0],
-                    [x + offset, y + 16.0, 0.0],
-                    [29, 43, 57],
-                );
-                frame.line(
-                    camera,
-                    [x, y + offset, 0.0],
-                    [x + 16.0, y + offset, 0.0],
-                    [29, 43, 57],
-                );
-            }
-            frame.line(
-                camera,
-                [x - 0.5, y - 0.5, 0.0],
-                [x + 16.5, y - 0.5, 0.0],
-                color,
-            );
-            frame.line(
-                camera,
-                [x - 0.5, y - 0.5, 0.0],
-                [x - 0.5, y + 16.5, 0.0],
-                color,
-            );
-        }
-        let mut tallest = 0.0_f32;
-        for (index, process) in processes.iter().enumerate() {
-            let p = self.positions[&process.id];
-            let plot = self.plots[&process.id];
-            let grow = self.growth(process.id, time);
-            let half = (0.42 + 1.05 * bounded(process.memory as f32 / 1048576.0, 220.0).sqrt())
-                * (0.35 + 0.65 * grow);
-            // Idle processes stay low blocks; one busy core is a ~23-unit tower and multi-core
-            // work climbs towards 45, against 4-unit plots.
-            let height = (1.0 + 44.0 * bounded(process.cpu, 100.0)) * grow.max(0.05);
-            tallest = tallest.max(height);
-            let shadow = height.min(14.0);
-            let color = process_color(process, plot.district);
-            let [x, y, _] = p;
-            frame.quad(
-                camera,
-                [
-                    [x - half, y - half, 0.01],
-                    [x + half + shadow * 0.5, y - half + shadow * 0.3, 0.01],
-                    [x + half + shadow * 0.5, y + half + shadow * 0.3, 0.01],
-                    [x - half, y + half, 0.01],
-                ],
-                [10, 18, 29],
-                NONE,
-            );
-            let corners = [
-                [x - half, y - half, 0.05],
-                [x + half, y - half, 0.05],
-                [x + half, y + half, 0.05],
-                [x - half, y + half, 0.05],
-            ];
-            let top = corners.map(|mut p| {
-                p[2] = height;
-                p
-            });
-            for side in 0..4 {
-                let next = (side + 1) % 4;
-                frame.quad(
-                    camera,
-                    [corners[side], corners[next], top[next], top[side]],
-                    tint(color, [0.40, 0.66, 0.55, 0.30][side]),
-                    index as u32,
-                );
-                if camera.zoom > 3.0 {
-                    let levels = (height / 0.85) as usize;
-                    for level in 0..levels {
-                        for column in 0..3 {
-                            let a = 0.15 + column as f32 * 0.26;
-                            let b = a + 0.12;
-                            let z = 0.35 + level as f32 * 0.85;
-                            if z + 0.25 >= height {
-                                continue;
-                            }
-                            let point = |t: f32, z: f32| {
-                                [
-                                    corners[side][0] + (corners[next][0] - corners[side][0]) * t,
-                                    corners[side][1] + (corners[next][1] - corners[side][1]) * t,
-                                    z,
-                                ]
-                            };
-                            let lit = !(process.id.pid as usize + level * 7 + column * 11)
-                                .is_multiple_of(5);
-                            let window = if lit {
-                                tint([241, 206, 136], 0.55 + 0.35 * bounded(process.cpu, 50.0))
-                            } else {
-                                [28, 40, 53]
-                            };
-                            let mut points = [
-                                point(a, z),
-                                point(b, z),
-                                point(b, z + 0.25),
-                                point(a, z + 0.25),
-                            ];
-                            // Offset windows outward so the depth buffer doesn't z-fight with the wall.
-                            let normal =
-                                [[0.0, -0.015], [0.015, 0.0], [0.0, 0.015], [-0.015, 0.0]][side];
-                            for p in &mut points {
-                                p[0] += normal[0];
-                                p[1] += normal[1];
-                            }
-                            frame.quad(camera, points, window, index as u32);
-                        }
-                    }
-                }
-            }
-            frame.quad(camera, top, tint(color, 0.95), index as u32);
-            if process.cpu > 1.0 {
-                let brightness = 0.65 + 0.25 * (time * 2.0 + process.id.pid as f32).sin();
-                frame.sphere(
-                    camera,
-                    [x, y, height + 0.22],
-                    0.12,
-                    tint([255, 196, 104], brightness),
-                    index as u32,
-                    false,
-                );
-            }
-            if process.gpu_memory.is_some() {
-                let beacon = [x - half * 0.5, y - half * 0.5, height + 0.3];
-                frame.glow(camera, beacon, (1.4 * camera.zoom).max(8.0), NVIDIA, 0.7);
-                frame.sphere(camera, beacon, 0.16, NVIDIA, index as u32, false);
-            }
-            if selected == Some(process.id) {
-                for side in 0..4 {
-                    let next = (side + 1) % 4;
-                    frame.line(camera, top[side], top[next], [255, 235, 171]);
-                    frame.line(camera, corners[side], top[side], [255, 235, 171]);
-                }
-            }
-            if process.io_rate.is_some_and(|v| v > 1024.0) {
-                let t = (time * 0.7 + process.id.pid as f32 * 0.13).fract();
-                frame.sphere(
-                    camera,
-                    [x + half + 0.2, y - half + t * half * 2.0, 0.15],
-                    0.12,
-                    [105, 228, 216],
-                    index as u32,
-                    false,
-                );
-            }
-        }
-        self.tallest = tallest;
-    }
-
-    /// One hub per parent that isotop can see but not read (a shadow) with readable leaves
-    /// directly under it, so those leaves orbit one hollow star, as they would orbit the parent,
-    /// instead of each standing alone as a system of its own: without sudo on macOS, launchd is
-    /// such a parent to hundreds of daemons. A hub is a process of no CPU, memory or threads,
-    /// its own parent so it is always a root, in pid order. Branches under it become systems of
-    /// their own as under init, so a shadow with no leaves gets no hub, and neither does a
-    /// focused subtree, whose root stands alone by choice.
-    fn hubs(
-        &mut self,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-        focus: Option<Identity>,
-    ) -> Vec<Process> {
-        if snapshot.shadows.is_empty() || focus.is_some() {
-            return Vec::new();
-        }
-        let present: HashSet<u32> = processes.iter().map(|p| p.id.pid).collect();
-        let parents: HashSet<u32> = processes
-            .iter()
-            .filter(|p| p.parent != p.id.pid)
-            .map(|p| p.parent)
-            .collect();
-        let orphaned: HashSet<u32> = processes
-            .iter()
-            .filter(|p| !present.contains(&p.parent) && !parents.contains(&p.id.pid))
-            .map(|p| p.parent)
-            .collect();
-        let mut hubs: Vec<Process> = snapshot
-            .shadows
-            .iter()
-            .filter(|shadow| orphaned.contains(&shadow.pid) && !present.contains(&shadow.pid))
-            .map(hub)
-            .collect();
-        hubs.sort_by_key(|hub| hub.id);
-        hubs.dedup_by_key(|hub| hub.id);
-        for hub in &hubs {
-            self.hub_names.insert(hub.id, hub.name.clone());
-        }
-        hubs
-    }
-
-    /// Lays out the process tree as nested Keplerian systems. `time` drives spawn growth and
-    /// `motion` the orbital phase, so other views can reuse the layout with bodies held still.
-    fn layout<'a>(
-        &mut self,
-        processes: &'a [&'a Process],
-        snapshot: &Snapshot,
-        time: f32,
-        motion: f32,
-    ) -> (Tree<'a>, Vec<Path>, Vec<Body>) {
-        self.positions.clear();
-        let by_pid: HashMap<u32, usize> = processes
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.id.pid, i))
-            .collect();
-        let parents: Vec<Option<usize>> = processes
-            .iter()
-            .enumerate()
-            .map(|(i, p)| by_pid.get(&p.parent).copied().filter(|&parent| parent != i))
-            .collect();
-        let mut child_counts = vec![0; processes.len()];
-        for &parent in parents.iter().flatten() {
-            child_counts[parent] += 1;
-        }
-        let mut children = vec![Vec::new(); processes.len()];
-        let mut roots = Vec::new();
-        for (i, parent) in parents.iter().enumerate() {
-            match *parent {
-                // Branches hanging off a top-level process (init, kthreadd, a focused root) become
-                // their own systems; leaves stay in orbit so kernel threads form one belt.
-                Some(parent) if child_counts[i] == 0 || parents[parent].is_some() => {
-                    children[parent].push(i)
-                }
-                _ => roots.push(i),
-            }
-        }
-        for list in &mut children {
-            list.sort_by_key(|&child| (child_counts[child] == 0, processes[child].id));
-        }
-        let n = processes.len();
-        let mut masses = vec![0.0; n];
-        let mut members = vec![0; n];
-        let mut weighed = HashSet::new();
-        for &root in &roots {
-            weigh(
-                processes,
-                &children,
-                root,
-                &mut masses,
-                &mut members,
-                &mut weighed,
-            );
-        }
-        let radii: Vec<f32> = masses.iter().map(|&m| mass_radius(m)).collect();
-        let reach: Vec<f32> = radii
-            .iter()
-            .zip(processes)
-            .map(|(&r, p)| r * ring_scale(p.threads))
-            .collect();
-        for (i, kids) in children.iter().enumerate() {
-            if !kids.is_empty() {
-                self.mass
-                    .insert(processes[i].id, (masses[i] as u64, members[i]));
-            }
-        }
-        let mut extents = vec![0.0; n];
-        let mut measured = HashSet::new();
-        for &root in &roots {
-            measure(
-                &children,
-                &reach,
-                processes,
-                root,
-                0,
-                &mut extents,
-                &mut measured,
-            );
-        }
-        let tree = Tree {
-            processes,
-            children,
-            extents,
-            radii,
-            reach,
-            masses,
-        };
-        let centers = self.place_systems(
-            processes,
-            snapshot,
-            &roots,
-            &tree.extents,
-            &tree.masses,
-            motion,
-        );
-        let mut visited = HashSet::new();
-        let mut paths = Vec::new();
-        let mut bodies = Vec::new();
-        for (&root, center) in roots.iter().zip(centers) {
-            let before = visited.len();
-            let point = [center[0], center[1], 1.0];
-            let grow = self.growth(processes[root].id, time);
-            self.orbit_branch(
-                &tree,
-                root,
-                point,
-                point,
-                grow,
-                0,
-                [time, motion],
-                &mut visited,
-                &mut paths,
-                &mut bodies,
-            );
-            // A hub's members are the processes around it, not the hub itself.
-            let hub = usize::from(is_hub(&processes[root].id));
-            self.stars.push((
-                processes[root].id,
-                visited.len() - before - hub,
-                tree.extents[root],
-            ));
-        }
-        self.collapsed = processes.len().saturating_sub(visited.len());
-        let hubs = processes.iter().filter(|p| is_hub(&p.id)).count();
-        self.visible = visited.len().saturating_sub(hubs);
-        (tree, paths, bodies)
-    }
-
-    fn draw_orbits(
-        &mut self,
-        frame: &mut Frame,
-        processes: &[&Process],
-        camera: &Camera,
-        selected: Option<Identity>,
-        time: f32,
-        snapshot: &Snapshot,
-    ) {
-        let (tree, paths, bodies) = self.layout(processes, snapshot, time, time);
-        let mut drawn = HashSet::new();
-        for path in &paths {
-            let highlighted = selected == Some(path.id);
-            let ring = (
-                (path.orbit.center[0] * 8.0) as i32,
-                (path.orbit.center[1] * 8.0) as i32,
-                (path.orbit.a * 8.0) as i32,
-            );
-            let color = if highlighted {
-                [163, 147, 99]
-            } else {
-                tint([64, 90, 122], 1.0 / (1.0 + path.depth as f32 * 0.3))
-            };
-            if highlighted || drawn.insert(ring) {
-                frame.trace(camera, &path.orbit, color);
-            }
-            if path.spoke || highlighted {
-                frame.line(camera, path.orbit.center, path.position, tint(color, 0.6));
-            }
-        }
-        for path in paths.iter().filter(|path| path.cpu > 3.0) {
-            let length = 2 + (14.0 * bounded(path.cpu, 40.0)) as usize;
-            let step = (0.6 / path.orbit.a).min(0.25);
-            let mut last = path.position;
-            for k in 1..=length {
-                let point = path.orbit.at(path.mean - k as f32 * step);
-                let fade = 1.0 - k as f32 / (length + 1) as f32;
-                frame.line(camera, last, point, tint(WARM, 0.2 + 0.8 * fade));
-                last = point;
-            }
-        }
-        for body in &bodies {
-            let process = processes[body.index];
-            let core = (tree.radii[body.index] * camera.zoom).max(MIN_BODY_PX);
-            if process.cpu > 1.0 {
-                let radius = core * (2.2 + 2.0 * bounded(process.cpu, 50.0));
-                let strength = 0.3 + 0.6 * bounded(process.cpu, 40.0);
-                frame.glow(camera, body.position, radius, WARM, strength);
-            }
-            if let Some(gpu) = process.gpu_memory {
-                let mib = gpu.bytes() as f32 / 1048576.0;
-                let radius = core * (2.6 + 0.5 * (mib / 64.0).ln_1p());
-                frame.glow(camera, body.position, radius, NVIDIA, 0.6);
-            }
-        }
-        for body in &bodies {
-            let process = processes[body.index];
-            let radius = tree.radii[body.index] * body.grow;
-            if is_hub(&process.id) {
-                frame.outline(camera, body.position, radius, HUB);
-                continue;
-            }
-            frame.sphere(
-                camera,
-                body.position,
-                radius,
-                kind_color(process),
-                body.index as u32,
-                selected == Some(process.id),
-            );
-        }
-        for body in &bodies {
-            let process = processes[body.index];
-            let radius = tree.radii[body.index] * body.grow;
-            if process.gpu_memory.is_some() {
-                let halo = Orbit {
-                    center: body.position,
-                    a: radius * 1.9,
-                    e: 0.0,
-                    omega: 0.0,
-                };
-                frame.trace(camera, &halo, tint(NVIDIA, 0.8));
-            }
-            let count = rings(process.threads);
-            if count == 0 {
-                continue;
-            }
-            // Saturn-style rings in a plane tilted towards the viewer, so the front arc passes over
-            // the body while the depth buffer hides the back arc behind it.
-            // pid only: kept for pixel stability, see A33
-            let yaw = (hash::xxhash_prime2(process.id.pid) >> 20) as f32 / 4096.0 * TAU;
-            let (ys, yc) = yaw.sin_cos();
-            let (ts, tc) = 0.45_f32.sin_cos();
-            let across = [yc, ys, 0.0];
-            let up = [-ys * tc, yc * tc, ts];
-            let color = kind_color(process);
-            for k in 0..count {
-                let r = radius * (1.45 + 0.28 * k as f32);
-                let point = |angle: f32| {
-                    let (s, c) = angle.sin_cos();
-                    [0, 1, 2].map(|i| body.position[i] + r * (c * across[i] + s * up[i]))
-                };
-                let shade = tint(color, 1.25 - 0.15 * k as f32);
-                let mut last = point(0.0);
-                for segment in 1..=48 {
-                    let next = point(segment as f32 / 48.0 * TAU);
-                    frame.line(camera, last, next, shade);
-                    last = next;
-                }
-            }
-        }
-    }
-
-    /// The machine as a pond: each cgroup is a cluster of pebbles, and every busy process drives
-    /// ripples at its own pitch, so a cluster's rings interfere with each other and spread over
-    /// open water to the next. Buoys float on the surface sized by memory; every patch of water
-    /// belongs to its nearest process; births drip and exits splash. Pressure raises a swell.
-    fn draw_ripples(
-        &mut self,
-        frame: &mut Frame,
-        processes: &[&Process],
-        camera: &Camera,
-        selected: Option<Identity>,
-        time: f32,
-        snapshot: &Snapshot,
-    ) {
-        let [cpu, _, io] = snapshot.pressure;
-        let stir = bounded(cpu + io, 20.0);
-        let radii = self.scatter(processes, snapshot);
-        let bodies: Vec<Body> = processes
-            .iter()
-            .enumerate()
-            .map(|(index, process)| Body {
-                index,
-                position: self.positions[&process.id],
-                grow: self.growth(process.id, time),
-            })
-            .collect();
-        let Some((grid, located)) = self.footprint(processes, &bodies, 150) else {
-            return;
-        };
-        let mut wave = match self.wave.take() {
-            Some(wave) if similar(&wave.grid, &grid) => wave,
-            _ => Wave::new(grid, time),
-        };
-        let grid = wave.grid;
-        for &point in &self.splashes {
-            wave.drive([point[0], point[1]], -90.0);
-        }
-        for id in &self.newborn {
-            if let Some(p) = self.positions.get(id) {
-                wave.drive([p[0], p[1]], 30.0);
-            }
-        }
-        let sources: Vec<([f32; 2], f32, f32, f32)> = bodies
-            .iter()
-            .zip(&located)
-            .filter(|(body, _)| processes[body.index].cpu > 0.3)
-            .map(|(body, &at)| {
-                let process = processes[body.index];
-                // pid only: kept for pixel stability, see A33
-                let hash = hash::knuth(process.id.pid);
-                let frequency = 0.35 + 0.9 * (hash >> 24) as f32 / 255.0;
-                let phase = (hash >> 8 & 0xffff) as f32 / 65536.0 * TAU;
-                (
-                    at,
-                    900.0 * bounded(process.cpu, 40.0),
-                    TAU * frequency,
-                    phase,
-                )
-            })
-            .collect();
-        wave.advance(time, |wave, now, dt| {
-            for &(at, loudness, omega, phase) in &sources {
-                wave.drive(at, loudness * (omega * now + phase).sin() * dt);
-            }
-        });
-        let owners = territories(&grid, &bodies, &located, &radii);
-        let swell = 0.01 + 0.12 * stir;
-        let surface = |x: f32, y: f32, height: f32| {
-            height * 0.09
-                + swell
-                    * ((x * 0.21 + y * 0.08 + time * 0.9).sin()
-                        + 0.7 * (y * 0.17 - x * 0.11 - time * 0.7 + 1.3).sin()
-                        + 0.5 * ((x + y) * 0.13 + time * 1.3 + 2.1).sin())
-                    / 2.2
-        };
-        let (columns, rows) = (grid.columns, grid.rows);
-        let heights: Vec<f32> = (0..grid.len())
-            .map(|i| {
-                let [x, y] = grid.world((i % columns) as f32, (i / columns) as f32);
-                surface(x, y, wave.height[i])
-            })
-            .collect();
-        let viewer = camera.viewer();
-        // Light from the side of the view: calm water stays dark and only slopes catch glints.
-        let light = normalize([viewer[1] * 0.75, -viewer[0] * 0.75, 0.65]);
-        let half = normalize([
-            light[0] + viewer[0],
-            light[1] + viewer[1],
-            light[2] + viewer[2],
-        ]);
-        // Lit per node from the height field's gradient and averaged over each facet, so the two
-        // triangles of a cell shade alike. Highlights blend towards moonlight by at most
-        // RIPPLE_SHINE and never add up to white.
-        let shades: Vec<[f32; 3]> = (0..grid.len())
-            .map(|i| {
-                let (x, y) = (i % columns, i / columns);
-                let gradient = |a: usize, b: usize, cells: usize| {
-                    (heights[b] - heights[a]) / (cells.max(1) as f32 * grid.cell)
-                };
-                let (x0, x1) = (x.saturating_sub(1), (x + 1).min(columns - 1));
-                let (y0, y1) = (y.saturating_sub(1), (y + 1).min(rows - 1));
-                let normal = normalize([
-                    -gradient(y * columns + x0, y * columns + x1, x1 - x0),
-                    -gradient(y0 * columns + x, y1 * columns + x, y1 - y0),
-                    1.0,
-                ]);
-                let diffuse = dot(normal, light).max(0.0);
-                let glint = dot(normal, half).max(0.0).powi(48);
-                let crest = (heights[i] * 1.8).clamp(-0.5, 1.0);
-                let foam = (wave.velocity[i].abs() * 0.05).min(1.0);
-                let tint = processes
-                    .get(owners[i] as usize)
-                    .map_or(RIPPLE_DEEP, |p| kind_color(p).map(f32::from));
-                let shine = (glint * 0.75 + foam * 0.25).min(RIPPLE_SHINE);
-                [0, 1, 2].map(|k| {
-                    let water = (RIPPLE_DEEP[k] * 0.92 + tint[k] * 0.08) * (0.55 + 0.5 * diffuse)
-                        + RIPPLE_CREST[k] * crest;
-                    water + (RIPPLE_MOON[k] - water) * shine
-                })
-            })
-            .collect();
-        let corner = |node: usize| {
-            let [x, y] = grid.world((node % columns) as f32, (node / columns) as f32);
-            [x, y, heights[node]]
-        };
-        for y in 0..rows - 1 {
-            for x in 0..columns - 1 {
-                let a = y * columns + x;
-                let (b, c, d) = (a + 1, a + columns + 1, a + columns);
-                for nodes in [[a, b, c], [a, c, d]] {
-                    let color = [0, 1, 2].map(|k| {
-                        (nodes.iter().map(|&n| shades[n][k]).sum::<f32>() / 3.0).clamp(0.0, 255.0)
-                            as u8
-                    });
-                    frame.facet(camera, nodes.map(corner), color, owners[a]);
-                }
-            }
-        }
-        for (body, &at) in bodies.iter().zip(&located) {
-            let process = processes[body.index];
-            let radius = radii[body.index] * body.grow;
-            let z = grid.sample(&heights, at, mix) + radius * 0.35;
-            let position = [at[0], at[1], z];
-            self.positions.insert(process.id, position);
-            self.glows(frame, camera, process, position, radii[body.index]);
-            frame.sphere(
-                camera,
-                position,
-                radius,
-                kind_color(process),
-                body.index as u32,
-                selected == Some(process.id),
-            );
-        }
-        self.wave = Some(wave);
-    }
-
-    /// Spacetime weather: memory bends a sheet into gravity wells, CPU spins whirlpools, sockets
-    /// become two-lane rivers between the wells of processes that talk, and connections leaving
-    /// the machine send sparks up off the sheet. Particles in each emitter's colour trace it all.
-    #[expect(clippy::too_many_arguments, reason = "split in #74 (A15)")]
-    #[expect(clippy::too_many_lines, reason = "split in #74 (A15)")]
-    fn draw_flow(
-        &mut self,
-        frame: &mut Frame,
-        processes: &[&Process],
-        camera: &Camera,
-        selected: Option<Identity>,
-        time: f32,
-        snapshot: &Snapshot,
-        stir: f32,
-    ) {
-        let (tree, _, bodies) = self.layout(processes, snapshot, time, 0.0);
-        let Some((grid, located)) = self.footprint(processes, &bodies, 140) else {
-            return;
-        };
-        let mut flow = match self.flow.take() {
-            Some(flow) if similar(&flow.grid, &grid) => flow,
-            _ => Flow::new(grid, time),
-        };
-        let grid = flow.grid;
-        let dt = (time - flow.time).clamp(0.0, 0.1);
-        flow.time = time;
-        if !(0.0..0.25).contains(&(time - flow.field_time)) {
-            self.weather(
-                &mut flow,
-                processes,
-                &bodies,
-                &located,
-                &tree.radii,
-                snapshot,
-            );
-            flow.field_time = time;
-        }
-        let room = |flow: &Flow| flow.particles.len() < 6000;
-        let mut background = dt * 400.0;
-        while background > flow.random() && room(&flow) {
-            background -= 1.0;
-            let p = grid.world(
-                flow.random() * (grid.columns - 1) as f32,
-                flow.random() * (grid.rows - 1) as f32,
-            );
-            let life = 5.0 + 3.0 * flow.random();
-            flow.spawn(p, [90, 130, 190], life, false, false, [0.0; 2]);
-        }
-        for (body, &at) in bodies.iter().zip(&located) {
-            let process = processes[body.index];
-            let mut expected = if process.cpu > 0.5 {
-                dt * (1.0 + 30.0 * bounded(process.cpu, 40.0))
-            } else {
-                0.0
-            };
-            let reach = tree.radii[body.index] * 1.5 + 0.5;
-            while expected > flow.random() && room(&flow) {
-                expected -= 1.0;
-                let angle = flow.random() * TAU;
-                let distance = reach * flow.random().sqrt();
-                let p = [
-                    at[0] + distance * angle.cos(),
-                    at[1] + distance * angle.sin(),
-                ];
-                let life = 4.0 + 3.0 * flow.random();
-                flow.spawn(p, kind_color(process), life, true, false, [0.0; 2]);
-            }
-        }
-        let place: HashMap<Identity, (usize, [f32; 2])> = bodies
-            .iter()
-            .zip(&located)
-            .map(|(body, &at)| (processes[body.index].id, (body.index, at)))
-            .collect();
-        for &(a, b, count) in &snapshot.links {
-            let (Some(&(ia, pa)), Some(&(ib, pb))) = (place.get(&a), place.get(&b)) else {
-                continue;
-            };
-            let length = (pb[0] - pa[0]).hypot(pb[1] - pa[1]);
-            if length < 0.5 {
-                continue;
-            }
-            let direction = [(pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length];
-            let lane = 0.6 * (2.5 + 0.8 * (count as f32).ln_1p());
-            let normal = [-direction[1] * lane, direction[0] * lane];
-            let busy = processes[ia].cpu + processes[ib].cpu;
-            // Traffic enters the lane that leads away from each end, so rivers carry it across.
-            for (from, side, color) in [
-                (pa, 1.0, kind_color(processes[ia])),
-                (pb, -1.0, kind_color(processes[ib])),
-            ] {
-                let mut expected =
-                    dt * (0.4 + 0.3 * count as f32) * (0.5 + 2.0 * bounded(busy, 30.0));
-                while expected > flow.random() && room(&flow) {
-                    expected -= 1.0;
-                    let start = [from[0] + normal[0] * side, from[1] + normal[1] * side];
-                    flow.spawn(start, color, length / 4.0 + 2.0, true, false, [0.0; 2]);
-                }
-            }
-        }
-        // A `HashMap` iterates in a different order every run; the particles draw from one random
-        // stream, so a fixed order keeps the frame repeatable.
-        let mut outside: Vec<_> = snapshot.outside.iter().collect();
-        outside.sort_unstable_by_key(|&(id, _)| *id);
-        for (id, &count) in outside {
-            if let Some(index) = processes.iter().position(|p| p.id == *id)
-                && let Some(slot) = bodies.iter().position(|b| b.index == index)
-            {
-                let mut expected = dt * 2.0 * count as f32;
-                while expected > flow.random() && room(&flow) {
-                    expected -= 1.0;
-                    flow.spawn(located[slot], OUTSIDE, 2.5, true, true, [0.0; 2]);
-                }
-            }
-        }
-        for point in self.splashes.clone() {
-            for k in 0..40 {
-                let angle = k as f32 / 40.0 * TAU;
-                let kick = [9.0 * angle.cos(), 9.0 * angle.sin()];
-                flow.spawn(
-                    [point[0], point[1]],
-                    [255, 226, 186],
-                    1.6,
-                    true,
-                    false,
-                    kick,
-                );
-            }
-        }
-        for id in &self.newborn {
-            if let Some(p) = self.positions.get(id) {
-                for k in 0..12 {
-                    let angle = k as f32 / 12.0 * TAU;
-                    let kick = [3.0 * angle.cos(), 3.0 * angle.sin()];
-                    flow.spawn([p[0], p[1]], [220, 240, 255], 1.2, true, false, kick);
-                }
-            }
-        }
-        let turbulence = 0.4 + 6.0 * stir;
-        flow.advance(dt, |q| {
-            [
-                turbulence * (q[1] * 0.31 + time * 0.8).sin(),
-                turbulence * (q[0] * 0.29 - time * 0.6).cos(),
-            ]
-        });
-        // The fabric brightens and turns violet with depth, so wells read even from above.
-        let deepest = flow.depth.iter().fold(-1.0_f32, |a, &b| a.min(b));
-        let fabric = |depth: f32| {
-            let t = (depth / deepest).clamp(0.0, 1.0);
-            [
-                (28.0 + 70.0 * t) as u8,
-                (42.0 + 40.0 * t) as u8,
-                (72.0 + 120.0 * t) as u8,
-            ]
-        };
-        let node = |x: usize, y: usize| {
-            let [wx, wy] = grid.world(x as f32, y as f32);
-            [wx, wy, flow.depth[y * grid.columns + x]]
-        };
-        for y in (0..grid.rows).step_by(3) {
-            for x in 1..grid.columns {
-                let (a, b) = (node(x - 1, y), node(x, y));
-                frame.line(camera, a, b, fabric(b[2]));
-            }
-        }
-        for x in (0..grid.columns).step_by(3) {
-            for y in 1..grid.rows {
-                let (a, b) = (node(x, y - 1), node(x, y));
-                frame.line(camera, a, b, fabric(b[2]));
-            }
-        }
-        for (body, &at) in bodies.iter().zip(&located) {
-            let process = processes[body.index];
-            let radius = tree.radii[body.index] * 0.7 * body.grow;
-            let position = [at[0], at[1], flow.depth_at(at) + radius * 0.6];
-            self.positions.insert(process.id, position);
-            if is_hub(&process.id) {
-                frame.outline(camera, position, radius, HUB);
-                continue;
-            }
-            self.glows(frame, camera, process, position, radius);
-            frame.sphere(
-                camera,
-                position,
-                radius,
-                kind_color(process),
-                body.index as u32,
-                selected == Some(process.id),
-            );
-        }
-        for particle in &flow.particles {
-            let fade = (particle.age / 0.3).min(1.0)
-                * (1.0 - particle.age / particle.life).max(0.0).sqrt();
-            let strength = if particle.bright { 0.9 } else { 0.6 } * fade;
-            for k in 0..TRAIL - 1 {
-                let (a, b) = (particle.trail[k], particle.trail[k + 1]);
-                if a != b {
-                    let weight = strength * (1.0 - k as f32 / TRAIL as f32);
-                    frame.beam(camera, a, b, particle.color, weight);
-                }
-            }
-            if particle.bright {
-                frame.glow(camera, particle.trail[0], 3.0, particle.color, 0.6 * fade);
-            }
-        }
-        self.flow = Some(flow);
-    }
-
-    /// Recomputes the flow's velocity field and well depths from the current processes.
-    fn weather(
-        &self,
-        flow: &mut Flow,
-        processes: &[&Process],
-        bodies: &[Body],
-        located: &[[f32; 2]],
-        radii: &[f32],
-        snapshot: &Snapshot,
-    ) {
-        let at: HashMap<Identity, [f32; 2]> = bodies
-            .iter()
-            .zip(located)
-            .map(|(body, &p)| (processes[body.index].id, p))
-            .collect();
-        // Each solar system bends a bowl as wide as the system, deeper for more memory; heavy
-        // processes add their own dimples. (centre, depth, width, inflow)
-        let mut wells: Vec<([f32; 2], f32, f32, f32)> = self
-            .stars
-            .iter()
-            .filter_map(|&(id, _, extent)| {
-                let bytes = self.mass.get(&id).map_or_else(
-                    || {
-                        processes
-                            .iter()
-                            .find(|p| p.id == id)
-                            .map_or(0, |p| p.memory)
-                    },
-                    |&(bytes, _)| bytes,
-                );
-                let depth = 2.0 + 14.0 * bounded(bytes as f32 / 1048576.0, 2048.0);
-                Some((*at.get(&id)?, depth, (extent * 0.5).max(4.0), 0.0))
-            })
-            .collect();
-        wells.extend(
-            bodies
-                .iter()
-                .zip(located)
-                .filter(|(body, _)| radii[body.index] > 0.9)
-                .map(|(body, &p)| {
-                    let r = radii[body.index];
-                    (p, 0.4 * r, 1.0 + 2.0 * r, 0.6 * r * r * r)
-                }),
-        );
-        let vortices: Vec<([f32; 2], f32, f32)> = bodies
-            .iter()
-            .zip(located)
-            .filter(|(body, _)| processes[body.index].cpu > 0.5)
-            .map(|(body, &at)| {
-                let process = processes[body.index];
-                let spin = if process.id.pid.is_multiple_of(2) {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let strength = (6.0 + 60.0 * bounded(process.cpu, 40.0)) * spin;
-                (at, strength, (1.0 + 2.0 * radii[body.index]).powi(2))
-            })
-            .collect();
-        let place: HashMap<Identity, ([f32; 2], f32)> = bodies
-            .iter()
-            .zip(located)
-            .map(|(body, &at)| (processes[body.index].id, (at, processes[body.index].cpu)))
-            .collect();
-        let jets: Vec<Lane> = snapshot
-            .links
-            .iter()
-            .filter_map(|(a, b, count)| {
-                let (&(pa, ca), &(pb, cb)) = (place.get(a)?, place.get(b)?);
-                let length = (pb[0] - pa[0]).hypot(pb[1] - pa[1]);
-                (length > 0.5).then(|| {
-                    let direction = [(pb[0] - pa[0]) / length, (pb[1] - pa[1]) / length];
-                    let width = 2.5 + 0.8 * (*count as f32).ln_1p();
-                    let speed = (8.0 + 3.0 * (*count as f32).ln_1p())
-                        * (0.6 + 1.4 * bounded(ca + cb, 30.0));
-                    Lane {
-                        start: pa,
-                        direction,
-                        length,
-                        width,
-                        speed,
-                    }
-                })
-            })
-            .collect();
-        let grid = flow.grid;
-        flow.velocity.fill([0.0; 2]);
-        flow.depth.fill(0.0);
-        // Every influence fades with distance, so each one only visits the cells within its reach.
-        let around = |center: [f32; 2], reach: f32, apply: &mut dyn FnMut([f32; 2], usize)| {
-            let low = grid.locate([center[0] - reach, center[1] - reach]);
-            let high = grid.locate([center[0] + reach, center[1] + reach]);
-            let span = |a: f32, b: f32, limit: usize| {
-                (a.floor().max(0.0) as usize)..((b.ceil() + 1.0).max(0.0) as usize).min(limit)
-            };
-            for j in span(low[1], high[1], grid.rows) {
-                for i in span(low[0], high[0], grid.columns) {
-                    apply(grid.world(i as f32, j as f32), j * grid.columns + i);
-                }
-            }
-        };
-        let (velocity, depth) = (&mut flow.velocity, &mut flow.depth);
-        for &(c, deep, width, inflow) in &wells {
-            around(c, width * 3.0, &mut |p, cell| {
-                let d = [p[0] - c[0], p[1] - c[1]];
-                let distance2 = d[0] * d[0] + d[1] * d[1];
-                // Gaussian bowls stay local, so the sheet is flat between systems.
-                depth[cell] -= deep * (-distance2 / (width * width)).exp();
-                let r2 = distance2 + width * width;
-                let pull = inflow / r2 / r2.sqrt();
-                velocity[cell][0] -= d[0] * pull;
-                velocity[cell][1] -= d[1] * pull;
-            });
-        }
-        for &(c, strength, core) in &vortices {
-            // Beyond this radius the swirl is below 0.1 units per second.
-            let reach = (strength.abs() * 10.0).sqrt().max(core.sqrt() * 3.0);
-            around(c, reach, &mut |p, cell| {
-                let d = [p[0] - c[0], p[1] - c[1]];
-                let swirl = strength / (d[0] * d[0] + d[1] * d[1] + core);
-                velocity[cell][0] -= d[1] * swirl;
-                velocity[cell][1] += d[0] * swirl;
-            });
-        }
-        for &Lane {
-            start: a,
-            direction,
-            length,
-            width,
-            speed,
-        } in &jets
-        {
-            let middle = [
-                a[0] + direction[0] * length * 0.5,
-                a[1] + direction[1] * length * 0.5,
-            ];
-            around(middle, length * 0.5 + width * 2.0, &mut |p, cell| {
-                let d = [p[0] - a[0], p[1] - a[1]];
-                let along = d[0] * direction[0] + d[1] * direction[1];
-                if !(0.0..length).contains(&along) {
-                    return;
-                }
-                // Two lanes, one each way: the side of the line decides the direction.
-                let side = direction[0] * d[1] - direction[1] * d[0];
-                let lane = (side.abs() - width * 0.6) / (width * 0.5);
-                let weight = (-lane * lane).exp() * (PI * along / length).sin().sqrt();
-                let sign = if side > 0.0 { 1.0 } else { -1.0 };
-                velocity[cell][0] += direction[0] * speed * weight * sign;
-                velocity[cell][1] += direction[1] * speed * weight * sign;
-            });
-        }
-        for v in velocity.iter_mut() {
-            let speed = v[0].hypot(v[1]);
-            if speed > 20.0 {
-                *v = v.map(|c| c * 20.0 / speed);
-            }
-        }
-        for d in depth.iter_mut() {
-            *d = d.max(-20.0);
-        }
-    }
-
-    /// The ground-plane grid covering the layout with a margin, and each body's ground position.
-    fn footprint(
-        &self,
-        processes: &[&Process],
-        bodies: &[Body],
-        cells: usize,
-    ) -> Option<(Grid, Vec<[f32; 2]>)> {
-        let located: Vec<[f32; 2]> = bodies
-            .iter()
-            .map(|body| {
-                let p = self.positions[&processes[body.index].id];
-                [p[0], p[1]]
-            })
-            .collect();
-        let mut min = [f32::INFINITY; 2];
-        let mut max = [f32::NEG_INFINITY; 2];
-        for p in &located {
-            for k in 0..2 {
-                min[k] = min[k].min(p[k]);
-                max[k] = max[k].max(p[k]);
-            }
-        }
-        if located.is_empty() {
-            return None;
-        }
-        let margin = 8.0 + 0.08 * (max[0] - min[0]).max(max[1] - min[1]);
-        let grid = Grid::covering(
-            [min[0] - margin, min[1] - margin],
-            [max[0] + margin, max[1] + margin],
-            cells,
-        );
-        Some((grid, located))
-    }
-
-    /// Ripple layout: places every process as a pebble in its cgroup's cluster and records the
-    /// positions of the drawn ones. A process keeps its slot while it lives, drawn or not; a
-    /// cluster spreads out or moves only when it outgrows the water reserved for it. Returns
-    /// each drawn process's pebble radius.
-    fn scatter(&mut self, processes: &[&Process], snapshot: &Snapshot) -> Vec<f32> {
-        let radii: Vec<f32> = processes
-            .iter()
-            .map(|p| mass_radius(p.memory as f32))
-            .collect();
-        // Slots and clusters are reserved for every sampled process, drawn or not, so focusing a
-        // subtree, or the process limit (and a selection swapped across it) hiding some, frees
-        // neither their slots nor their cluster's water: clearing it brings everyone back to
-        // where they were. Drawn processes are measured as drawn, hidden ones as sampled.
-        let mut members: HashMap<Identity, (&str, f32, u64)> = snapshot
-            .processes
-            .iter()
-            .map(|p| {
-                let radius = mass_radius(p.memory as f32);
-                (p.id, (p.group.as_str(), radius, p.memory))
-            })
-            .collect();
-        members.extend(
-            processes
-                .iter()
-                .zip(&radii)
-                .map(|(p, &r)| (p.id, (p.group.as_str(), r, p.memory))),
-        );
-        let drawn: HashSet<Identity> = processes.iter().map(|p| p.id).collect();
-        self.pebbles.retain(|id, (group, slot)| {
-            let stays = members.get(id).is_some_and(|m| m.0 == group);
-            if !stays && let Some(cluster) = self.clusters.get_mut(group) {
-                cluster.slots.remove(slot);
-            }
-            stays
-        });
-        self.clusters.retain(|_, cluster| !cluster.slots.is_empty());
-        let mut newcomers: Vec<(Identity, &str)> = members
-            .iter()
-            .filter(|(id, _)| !self.pebbles.contains_key(id))
-            .map(|(&id, &(group, _, _))| (id, group))
-            .collect();
-        newcomers.sort();
-        for (id, group) in newcomers {
-            let cluster = self.clusters.entry(group.to_owned()).or_default();
-            let slot = (0..=cluster.slots.len())
-                .find(|slot| !cluster.slots.contains_key(slot))
-                .expect("one of len + 1 slots is free");
-            cluster.slots.insert(slot, id);
-            self.pebbles.insert(id, (group.to_owned(), slot));
-        }
-        let mut pending = Vec::new();
-        for (name, cluster) in &mut self.clusters {
-            let largest = cluster
-                .slots
-                .values()
-                .map(|id| members[id].1)
-                .fold(0.0, f32::max);
-            // Spiral neighbours sit at least ~1.6 spacings apart; jitter takes up to 0.2 of that.
-            let needed = (2.0 * largest + PEBBLE_GAP) / 1.4;
-            if needed > cluster.spacing {
-                cluster.spacing = needed * 1.15;
-            }
-            let outermost = cluster.slots.keys().max().copied().unwrap_or(0);
-            cluster.extent = cluster.spacing * (outermost as f32 + 1.0).sqrt() + largest;
-            let reach = cluster.extent + POND_GAP;
-            if reach > cluster.reserved {
-                cluster.reserved = 0.0;
-                pending.push((name.clone(), reach));
-            }
-        }
-        pending.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        for (name, reach) in pending {
-            let placed: Vec<_> = self
-                .clusters
-                .values()
-                .filter(|c| c.reserved > 0.0)
-                .map(|c| (c.center, c.reserved))
-                .collect();
-            let reserved = reach * 1.1;
-            let center = vacant(&placed, reserved);
-            if let Some(cluster) = self.clusters.get_mut(&name) {
-                cluster.center = center;
-                cluster.reserved = reserved;
-            }
-        }
-        self.positions.clear();
-        for process in processes {
-            let (group, slot) = &self.pebbles[&process.id];
-            let cluster = &self.clusters[group];
-            let k = *slot as f32;
-            let (distance, angle) = spiral(cluster.spacing, 0.5, k, spin(group));
-            // pid only: kept for pixel stability, see A33
-            let hash = hash::knuth(process.id.pid);
-            let jitter = cluster.spacing * 0.1 * (hash & 0xffff) as f32 / 65536.0;
-            let toss = (hash >> 16) as f32 / 65536.0 * TAU;
-            self.positions.insert(
-                process.id,
-                [
-                    cluster.center[0] + distance * angle.cos() + jitter * toss.cos(),
-                    cluster.center[1] + distance * angle.sin() + jitter * toss.sin(),
-                    0.0,
-                ],
-            );
-        }
-        // Only the drawn pebbles of a cluster make it a system to label and tour.
-        for cluster in self.clusters.values() {
-            let shown: Vec<(usize, Identity)> = cluster
-                .slots
-                .iter()
-                .filter(|(_, id)| drawn.contains(id))
-                .map(|(&slot, &id)| (slot, id))
-                .collect();
-            if let Some(&(_, anchor)) = shown.iter().min_by_key(|(slot, _)| *slot)
-                && shown.len() > 1
-            {
-                let count = shown.len();
-                let memory = shown.iter().map(|(_, id)| members[id].2).sum();
-                self.stars.push((anchor, count, cluster.extent));
-                self.mass.insert(anchor, (memory, count));
-            }
-        }
-        self.stars
-            .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        radii
-    }
-
-    /// Warm CPU glow and green NVIDIA glow around a body, as in the orbit view.
-    fn glows(&self, frame: &mut Frame, camera: &Camera, process: &Process, at: Point, radius: f32) {
-        let core = (radius * camera.zoom).max(MIN_BODY_PX);
-        if process.cpu > 1.0 {
-            let glow = core * (2.2 + 2.0 * bounded(process.cpu, 50.0));
-            frame.glow(
-                camera,
-                at,
-                glow,
-                WARM,
-                0.3 + 0.6 * bounded(process.cpu, 40.0),
-            );
-        }
-        if let Some(gpu) = process.gpu_memory {
-            let mib = gpu.bytes() as f32 / 1048576.0;
-            frame.glow(
-                camera,
-                at,
-                core * (2.6 + 0.5 * (mib / 64.0).ln_1p()),
-                NVIDIA,
-                0.6,
-            );
-        }
-    }
-
-    fn place_systems(
-        &mut self,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-        roots: &[usize],
-        extents: &[f32],
-        masses: &[f32],
-        motion: f32,
-    ) -> Vec<[f32; 2]> {
-        let needed: HashMap<Identity, f32> = roots
-            .iter()
-            .map(|&root| (processes[root].id, extents[root] + SYSTEM_GAP))
-            .collect();
-        // A system whose root focus or the process limit hides keeps its place and turns on with
-        // the others, so clearing the focus brings it back where it was, but only if its root
-        // would head a system with every sampled process drawn (a hub counts, as long as a leaf
-        // still orbits it). A system that only a focus, or a selection swapped across the limit,
-        // made, or whose root left the snapshot, gives its place up.
-        let whole = if self.systems.keys().all(|id| needed.contains_key(id)) {
-            HashSet::new()
-        } else {
-            whole_roots(snapshot)
-        };
-        let before = self.systems.len();
-        self.systems
-            .retain(|id, (_, reserved)| match needed.get(id) {
-                Some(&need) => need <= *reserved,
-                None => whole.contains(id),
-            });
-        let mut pending: Vec<_> = needed
-            .iter()
-            .filter(|(id, _)| !self.systems.contains_key(id))
-            .map(|(&id, &need)| (id, need))
-            .collect();
-        if self.systems.len() != before || !pending.is_empty() {
-            // A system left, arrived or was re-placed: the pivot has to be found again.
-            self.galaxy_members.clear();
-        }
-        pending.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-        for (id, need) in pending {
-            // Headroom absorbs memory drift so systems are only re-placed when their structure grows.
-            let reserved = need * 1.08;
-            let placed: Vec<_> = self.systems.values().copied().collect();
-            let center = vacant(&placed, reserved);
-            self.systems.insert(id, (center, reserved));
-        }
-        let weights: HashMap<Identity, f32> = roots
-            .iter()
-            .map(|&root| (processes[root].id, masses[root]))
-            .collect();
-        self.revolve(&weights, motion);
-        roots
-            .iter()
-            .map(|&root| self.systems[&processes[root].id].0)
-            .collect()
-    }
-
-    /// Turns the systems about the memory-weighted barycenter of the drawn ones (those in
-    /// `masses`, or all while none is) by the motion time elapsed since the last call, so a
-    /// focused subtree turns about itself rather than about the hidden rest of the galaxy. The
-    /// barycenter is taken when systems come or go or are shown or hidden, so the pivot stays
-    /// put while they turn. Systems whose distances from it, give or take their reserved radius,
-    /// overlap form a band that turns rigidly; bands occupy disjoint annuli, so whatever their
-    /// speeds no two systems can collide. Each band turns at its own Kepler rate, outer bands
-    /// slower, and phase accumulates, so a band changing speed never makes a system jump.
-    fn revolve(&mut self, masses: &HashMap<Identity, f32>, motion: f32) {
-        let dt = self.galaxy_time.map_or(0.0, |last| motion - last);
-        self.galaxy_time = Some(motion);
-        let continuous = self.galaxy_frame + 1 == self.frames;
-        self.galaxy_frame = self.frames;
-        let weight = |id: &Identity| masses.get(id).copied().unwrap_or(0.0).max(1.0);
-        let mut members: Vec<Identity> = self
-            .systems
-            .keys()
-            .filter(|id| masses.contains_key(id))
-            .copied()
-            .collect();
-        if members.is_empty() {
-            members = self.systems.keys().copied().collect();
-        }
-        members.sort();
-        if members != self.galaxy_members {
-            let total: f32 = members.iter().map(weight).sum();
-            let mut center = [0.0_f32; 2];
-            for id in &members {
-                let at = self.systems[id].0;
-                for k in 0..2 {
-                    center[k] += at[k] * weight(id) / total.max(1.0);
-                }
-            }
-            self.galaxy = center;
-            self.galaxy_members = members;
-        }
-        let center = self.galaxy;
-        let mut rings: Vec<(Identity, f32, f32)> = self
-            .systems
-            .iter()
-            .map(|(&id, &(at, reserved))| {
-                let distance = (at[0] - center[0]).hypot(at[1] - center[1]);
-                (id, distance, reserved)
-            })
-            .collect();
-        rings.sort_by(|a, b| (a.1 - a.2).total_cmp(&(b.1 - b.2)).then(a.0.cmp(&b.0)));
-        let mut bands: Vec<(f32, Vec<(Identity, f32)>)> = Vec::new();
-        for (id, distance, reserved) in rings {
-            match bands.last_mut() {
-                Some((outer, members)) if distance - reserved < *outer => {
-                    *outer = outer.max(distance + reserved);
-                    members.push((id, distance));
-                }
-                _ => bands.push((distance + reserved, vec![(id, distance)])),
-            }
-        }
-        self.galaxy_speed.clear();
-        let mut enclosed = 0.0;
-        let mut inner = f32::INFINITY;
-        for (_, members) in &bands {
-            let mass: f32 = members.iter().map(|(id, _)| weight(id)).sum();
-            enclosed += mass;
-            let radius = members.iter().map(|(id, d)| d * weight(id)).sum::<f32>() / mass;
-            // A heavy band outside a light one would otherwise outpace it; outer never turns faster.
-            let speed = (TAU / galactic_period(radius, enclosed)).min(inner);
-            inner = speed;
-            for (id, _) in members {
-                self.galaxy_speed.insert(*id, speed);
-            }
-        }
-        // Turn only between consecutive frames and by at most MAX_TURN_STEP (above the 1 s frame
-        // interval of --fps 1), so pauses, rewinds and view switches don't spin the galaxy.
-        if !(continuous && dt > 0.0 && dt <= MAX_TURN_STEP) {
-            return;
-        }
-        for (id, (at, _)) in &mut self.systems {
-            let (s, c) = (self.galaxy_speed[id] * dt).sin_cos();
-            let [x, y] = [at[0] - center[0], at[1] - center[1]];
-            *at = [center[0] + x * c - y * s, center[1] + x * s + y * c];
-        }
-    }
-
-    /// Places a body and its descendants. `target` is the settled position used for layout,
-    /// picking and labels; `drawn` includes the spawn animation that flies bodies out of parents.
-    #[expect(clippy::too_many_arguments, reason = "split in #74 (A15)")]
-    fn orbit_branch(
-        &mut self,
-        tree: &Tree,
-        index: usize,
-        target: Point,
-        drawn: Point,
-        grow: f32,
-        depth: usize,
-        [time, motion]: [f32; 2],
-        visited: &mut HashSet<usize>,
-        paths: &mut Vec<Path>,
-        bodies: &mut Vec<Body>,
-    ) {
-        if depth > MAX_DEPTH || !visited.insert(index) {
-            return;
-        }
-        let process = tree.processes[index];
-        self.positions.insert(process.id, target);
-        bodies.push(Body {
-            index,
-            position: drawn,
-            grow,
-        });
-        let kids = &tree.children[index];
-        if depth == MAX_DEPTH || kids.is_empty() {
-            return;
-        }
-        let (e, omega) = elements(process.id.pid);
-        let sizes: Vec<f32> = kids.iter().map(|&child| tree.extents[child]).collect();
-        let (slots, _) = shells(tree.reach[index], &sizes, e);
-        for (&child, (a, phase)) in kids.iter().zip(slots) {
-            let orbit = Orbit {
-                center: target,
-                a,
-                e,
-                omega,
-            };
-            let mean = phase + TAU * motion / period(a, tree.masses[index]);
-            let mut settled = orbit.at(mean);
-            settled[2] = target[2] + 0.2;
-            let child_process = tree.processes[child];
-            let child_grow = self.growth(child_process.id, time);
-            let position = [
-                drawn[0] + (settled[0] - target[0]) * child_grow,
-                drawn[1] + (settled[1] - target[1]) * child_grow,
-                drawn[2] + 0.2,
-            ];
-            paths.push(Path {
-                orbit: Orbit {
-                    center: drawn,
-                    ..orbit
-                },
-                depth,
-                id: child_process.id,
-                spoke: depth + 1 < MAX_DEPTH && !tree.children[child].is_empty(),
-                mean,
-                position,
-                cpu: child_process.cpu,
-            });
-            self.orbit_branch(
-                tree,
-                child,
-                settled,
-                position,
-                child_grow,
-                depth + 1,
-                [time, motion],
-                visited,
-                paths,
-                bodies,
-            );
-        }
-    }
-}
-
-/// One cgroup's processes on the ripple pond: pebbles on a sunflower spiral around the centre,
-/// slot k at sqrt(k + 1/2) spacings out and k golden angles round.
-#[derive(Default)]
-struct Cluster {
-    center: [f32; 2],
-    spacing: f32,
-    /// Centre to the far edge of the outermost pebble.
-    extent: f32,
-    /// Radius of open water reserved around the centre; zero until placed.
-    reserved: f32,
-    slots: HashMap<usize, Identity>,
-}
-
-/// A socket link as a two-lane river in the flow field.
-#[derive(Clone, Copy)]
-struct Lane {
-    start: [f32; 2],
-    direction: [f32; 2],
-    length: f32,
-    width: f32,
-    speed: f32,
 }
 
 /// Media survive small layout changes; a different footprint starts a fresh simulation.
-fn similar(a: &Grid, b: &Grid) -> bool {
+pub(crate) fn similar(a: &Grid, b: &Grid) -> bool {
     a.columns == b.columns
         && a.rows == b.rows
         && (a.cell / b.cell - 1.0).abs() < 0.05
@@ -3266,291 +1858,57 @@ fn similar(a: &Grid, b: &Grid) -> bool {
         && (a.origin[1] - b.origin[1]).abs() < a.cell * 2.0
 }
 
-/// Assigns every grid node to its nearest body by a multi-source breadth-first flood, larger
-/// bodies claiming shared cells first. Returns body indices into the process list, or NONE.
-fn territories(grid: &Grid, bodies: &[Body], located: &[[f32; 2]], radii: &[f32]) -> Vec<u32> {
-    let mut owners = vec![NONE; grid.len()];
-    let mut order: Vec<usize> = (0..bodies.len()).collect();
-    order.sort_by(|&a, &b| radii[bodies[b].index].total_cmp(&radii[bodies[a].index]));
-    let mut queue = std::collections::VecDeque::new();
-    for slot in order {
-        let [x, y] = grid.locate(located[slot]);
-        let (x, y) = (x.round() as usize, y.round() as usize);
-        if x < grid.columns && y < grid.rows && owners[y * grid.columns + x] == NONE {
-            owners[y * grid.columns + x] = bodies[slot].index as u32;
-            queue.push_back(y * grid.columns + x);
+/// The ground-plane grid covering points with a margin and about `cells` cells along the longer
+/// side, or None for no points: the water of Ripple and the sheet of Flow.
+pub(crate) fn cover(located: &[[f32; 2]], cells: usize) -> Option<Grid> {
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for p in located {
+        for k in 0..2 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
         }
     }
-    while let Some(i) = queue.pop_front() {
-        let (x, y) = (i % grid.columns, i / grid.columns);
-        let neighbours = [
-            (x > 0).then(|| i - 1),
-            (x + 1 < grid.columns).then(|| i + 1),
-            (y > 0).then(|| i - grid.columns),
-            (y + 1 < grid.rows).then(|| i + grid.columns),
-        ];
-        for j in neighbours.into_iter().flatten() {
-            if owners[j] == NONE {
-                owners[j] = owners[i];
-                queue.push_back(j);
-            }
-        }
+    if located.is_empty() {
+        return None;
     }
-    owners
+    let margin = 8.0 + 0.08 * (max[0] - min[0]).max(max[1] - min[1]);
+    Some(Grid::covering(
+        [min[0] - margin, min[1] - margin],
+        [max[0] + margin, max[1] + margin],
+        cells,
+    ))
 }
 
-const MAX_DEPTH: usize = 3;
-const ORBIT_GAP: f32 = 0.6;
-const SYSTEM_GAP: f32 = 2.5;
-/// Clearance between neighbouring ripple pebbles, and open water around each cluster.
-const PEBBLE_GAP: f32 = 1.0;
-const POND_GAP: f32 = 3.0;
-const RIPPLE_DEEP: [f32; 3] = [10.0, 30.0, 46.0];
-const RIPPLE_CREST: [f32; 3] = [14.0, 34.0, 40.0];
-const RIPPLE_MOON: [f32; 3] = [150.0, 190.0, 210.0];
-const RIPPLE_SHINE: f32 = 0.6;
+/// Warm CPU glow and green NVIDIA glow around a body, as in the orbit view.
+pub(crate) fn glows(frame: &mut Frame, camera: &Camera, process: &Process, at: Point, radius: f32) {
+    let core = (radius * camera.zoom).max(MIN_BODY_PX);
+    if process.cpu > 1.0 {
+        let glow = core * (2.2 + 2.0 * bounded(process.cpu, 50.0));
+        frame.glow(
+            camera,
+            at,
+            glow,
+            WARM,
+            0.3 + 0.6 * bounded(process.cpu, 40.0),
+        );
+    }
+    if let Some(gpu) = process.gpu_memory {
+        let mib = gpu.bytes() as f32 / 1048576.0;
+        frame.glow(
+            camera,
+            at,
+            core * (2.6 + 0.5 * (mib / 64.0).ln_1p()),
+            NVIDIA,
+            0.6,
+        );
+    }
+}
 
 /// Body radius from memory in bytes: volume proportional to memory, so a 1 GiB process is about
 /// five times as wide as a 6 MiB one and idle kernel threads stay specks.
 pub(crate) fn mass_radius(bytes: f32) -> f32 {
     (0.24 * (bytes / 1048576.0).max(0.0).cbrt()).clamp(0.25, 4.5)
-}
-
-/// The roots of the systems the Orbit and Flow layouts would make with every sampled process
-/// drawn and nothing focused, hubs included, by the rules of `Scene::layout` and `Scene::hubs`.
-fn whole_roots(snapshot: &Snapshot) -> HashSet<Identity> {
-    let processes = &snapshot.processes;
-    let by_pid: HashMap<u32, usize> = processes
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (p.id.pid, i))
-        .collect();
-    let parents: Vec<Option<usize>> = processes
-        .iter()
-        .enumerate()
-        .map(|(i, p)| by_pid.get(&p.parent).copied().filter(|&parent| parent != i))
-        .collect();
-    let mut child_counts = vec![0; processes.len()];
-    for &parent in parents.iter().flatten() {
-        child_counts[parent] += 1;
-    }
-    let shadows: HashSet<u32> = snapshot
-        .shadows
-        .iter()
-        .map(|shadow| shadow.pid)
-        .filter(|pid| !by_pid.contains_key(pid))
-        .collect();
-    let mut roots = HashSet::new();
-    for (i, process) in processes.iter().enumerate() {
-        let leaf = child_counts[i] == 0;
-        match parents[i] {
-            Some(parent) if leaf || parents[parent].is_some() => {}
-            // A leaf under a shadow orbits the shadow's hub, which is the root instead.
-            None if leaf
-                && process.parent != process.id.pid
-                && shadows.contains(&process.parent) =>
-            {
-                roots.insert(Identity {
-                    pid: process.parent,
-                    start: HUB_START,
-                });
-            }
-            _ => {
-                roots.insert(process.id);
-            }
-        }
-    }
-    roots
-}
-
-/// Whether an identity is a hub's rather than a process's.
-pub fn is_hub(id: &Identity) -> bool {
-    id.start == HUB_START
-}
-
-/// The stand-in for a parent isotop cannot read, with nothing measured.
-fn hub(shadow: &Shadow) -> Process {
-    Process {
-        parent: shadow.pid,
-        name: shadow.name.clone(),
-        ..Process::placeholder(Identity {
-            pid: shadow.pid,
-            start: HUB_START,
-        })
-    }
-}
-
-/// Thread rings: none below 4 threads, then one more ring per fourfold increase, up to four.
-fn rings(threads: u32) -> usize {
-    match threads {
-        0..=3 => 0,
-        4..=15 => 1,
-        16..=63 => 2,
-        64..=255 => 3,
-        _ => 4,
-    }
-}
-
-fn ring_scale(threads: u32) -> f32 {
-    match rings(threads) {
-        0 => 1.0,
-        count => 1.55 + 0.28 * (count - 1) as f32,
-    }
-}
-
-/// Total memory and process count of each subtree, over every depth including collapsed ones.
-fn weigh(
-    processes: &[&Process],
-    children: &[Vec<usize>],
-    index: usize,
-    masses: &mut [f32],
-    members: &mut [usize],
-    weighed: &mut HashSet<usize>,
-) -> (f32, usize) {
-    if !weighed.insert(index) {
-        return (0.0, 0);
-    }
-    let mut total = (processes[index].memory as f32, 1);
-    for &child in &children[index] {
-        let (mass, count) = weigh(processes, children, child, masses, members, weighed);
-        total.0 += mass;
-        total.1 += count;
-    }
-    masses[index] = total.0;
-    members[index] = total.1;
-    total
-}
-
-fn arc(extent: f32) -> f32 {
-    2.0 * extent + ORBIT_GAP
-}
-
-/// Eccentricity and periapsis direction shared by all of one parent's shells. Confocal ellipses
-/// with the same shape are scaled copies of each other, so neighbouring shells never cross.
-fn elements(pid: u32) -> (f32, f32) {
-    // pid only: kept for pixel stability, see A33
-    let hash = hash::knuth(pid);
-    let e = 0.06 + 0.16 * (hash >> 24) as f32 / 255.0;
-    let omega = TAU * ((hash >> 8) & 0xffff) as f32 / 65536.0;
-    (e, omega)
-}
-
-/// Orbital period in seconds from Kepler's third law, T ~ sqrt(a^3 / M): wider orbits are slower
-/// and heavier parents (more memory in their tree) pull their children round faster. Normalised
-/// to 30 s at a = 3 around 512 MiB and clamped to a watchable range.
-fn period(a: f32, parent_bytes: f32) -> f32 {
-    let mass = (parent_bytes / (512.0 * 1048576.0)).max(1.0 / 512.0);
-    (30.0 * (a / 3.0).powf(1.5) / mass.sqrt()).clamp(8.0, 600.0)
-}
-
-/// Longest motion step, in seconds, that the galaxy turns through between two frames.
-const MAX_TURN_STEP: f32 = 2.0;
-
-/// Seconds for a system to circle the galaxy once at `radius` world units with `enclosed` bytes
-/// of systems inside its band: Kepler's T ~ sqrt(r^3 / M), normalised to four minutes at 30
-/// units around 4 GiB and clamped so the galaxy always turns slowly next to its planets.
-fn galactic_period(radius: f32, enclosed: f32) -> f32 {
-    let mass = (enclosed / (4.0 * 1073741824.0)).max(1.0 / 4096.0);
-    (240.0 * (radius.max(1.0) / 30.0).powf(1.5) / mass.sqrt()).clamp(120.0, 900.0)
-}
-
-/// Solves Kepler's equation M = E - e sin E for the eccentric anomaly E by Newton's method.
-fn eccentric_anomaly(mean: f32, e: f32) -> f32 {
-    let mean = mean.rem_euclid(TAU);
-    let mut anomaly = mean;
-    for _ in 0..6 {
-        anomaly -= (anomaly - e * anomaly.sin() - mean) / (1.0 - e * anomaly.cos());
-    }
-    anomaly
-}
-
-/// Packs siblings into concentric confocal shells. Bodies on a shell share one ellipse and are
-/// spaced evenly in mean anomaly, so they keep their order as Kepler motion bunches them near
-/// apoapsis; capacity uses that slowest stretch. Returns (semi-major axis, starting mean anomaly)
-/// per sibling and how far the system reaches from its centre.
-fn shells(body: f32, sizes: &[f32], e: f32) -> (Vec<(f32, f32)>, f32) {
-    let squeeze = ((1.0 - e) / (1.0 + e)).sqrt();
-    let mut widest_after = vec![0.0_f32; sizes.len() + 1];
-    for i in (0..sizes.len()).rev() {
-        widest_after[i] = widest_after[i + 1].max(sizes[i]);
-    }
-    let mut slots = Vec::with_capacity(sizes.len());
-    let mut a = (body + widest_after[0] + ORBIT_GAP + 1.0) / (1.0 - e);
-    let mut reach = 0.0_f32;
-    let mut start = 0;
-    let mut shell = 0;
-    while start < sizes.len() {
-        let capacity = TAU * a * squeeze;
-        let mut end = start;
-        let mut used = 0.0;
-        while end < sizes.len() && (end == start || used + arc(sizes[end]) <= capacity) {
-            used += arc(sizes[end]);
-            end += 1;
-        }
-        let slack = (capacity - used).max(0.0) / (end - start) as f32;
-        let mut mean = shell as f32 * 0.5;
-        let mut widest = 0.0_f32;
-        for &size in &sizes[start..end] {
-            let share = (arc(size) + slack) / (a * squeeze);
-            slots.push((a, mean + share * 0.5));
-            mean += share;
-            widest = widest.max(size);
-        }
-        reach = reach.max(a * (1.0 + e) + widest);
-        start = end;
-        if start < sizes.len() {
-            a += (widest + widest_after[start] + ORBIT_GAP) / (1.0 - e);
-        }
-        shell += 1;
-    }
-    (slots, reach)
-}
-
-fn measure(
-    children: &[Vec<usize>],
-    reach: &[f32],
-    processes: &[&Process],
-    index: usize,
-    depth: usize,
-    extents: &mut [f32],
-    measured: &mut HashSet<usize>,
-) -> f32 {
-    if !measured.insert(index) {
-        return 0.0;
-    }
-    let extent = if depth >= MAX_DEPTH || children[index].is_empty() {
-        reach[index]
-    } else {
-        let sizes: Vec<f32> = children[index]
-            .iter()
-            .map(|&child| {
-                measure(
-                    children,
-                    reach,
-                    processes,
-                    child,
-                    depth + 1,
-                    extents,
-                    measured,
-                )
-            })
-            .collect();
-        shells(reach[index], &sizes, elements(processes[index].id.pid).0).1
-    };
-    extents[index] = extent;
-    extent
-}
-
-fn district_origin(index: usize) -> [f32; 2] {
-    // Grow square shells without relocating any previously allocated district.
-    let shell = (index as f32).sqrt() as usize;
-    let offset = index - shell * shell;
-    let (x, y) = if offset <= shell {
-        (shell, offset)
-    } else {
-        (2 * shell - offset, shell)
-    };
-    [x as f32 * 23.0, y as f32 * 23.0]
 }
 
 /// The processes a frame draws, in PID order: the focused subtree, or every process, cut to
@@ -3762,6 +2120,26 @@ pub(crate) mod hiding {
         assert_eq!(scene.bounds, whole, "limited");
     }
 
+    /// Cuts the population in half with the limit and lifts it again, comparing places by
+    /// `by`. A selection swapped in across the limit without its parent is drawn as a system
+    /// of its own, so it has no place to keep and is left out.
+    pub fn limit_and_lift_without_selection(view: View, by: fn(Point) -> Point) {
+        let sample = crate::model::demo(30.0, 160);
+        let measure = |places: HashMap<Identity, Point>| -> HashMap<Identity, Point> {
+            places
+                .into_iter()
+                .map(|(id, point)| (id, by(point)))
+                .collect()
+        };
+        let (mut scene, time, before) = settled(view, &sample);
+        let before = measure(before);
+        let limited = measure(place(&mut scene, &sample, view, time, 80, None, None));
+        assert!(!limited.is_empty() && limited.len() < before.len());
+        in_place(&limited, &before);
+        let lifted = measure(place(&mut scene, &sample, view, time, 4096, None, None));
+        assert_eq!(lifted, before);
+    }
+
     /// A position on the ground plane, without what a medium lifts it by.
     pub fn ground([x, y, _]: Point) -> Point {
         [x, y, 0.0]
@@ -3771,8 +2149,7 @@ pub(crate) mod hiding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::testing::process;
-    use crate::model::{Kind, demo};
+    use crate::model::demo;
     use crate::simulation::GROW_SECONDS;
     use crate::views::{testing, view};
 
@@ -3860,56 +2237,6 @@ mod tests {
                 "{g:?}"
             );
         }
-    }
-
-    #[test]
-    fn kepler_solution_and_shells_keep_bodies_apart() {
-        for &(mean, e) in &[(0.3_f32, 0.1_f32), (2.5, 0.22), (5.9, 0.06)] {
-            let anomaly = eccentric_anomaly(mean, e);
-            assert!((anomaly - e * anomaly.sin() - mean).abs() < 1e-4);
-        }
-        let orbit = Orbit {
-            center: [0.0; 3],
-            a: 10.0,
-            e: 0.2,
-            omega: 0.0,
-        };
-        assert!(
-            (orbit.at(0.0)[0] - 8.0).abs() < 1e-3,
-            "periapsis is a(1 - e)"
-        );
-        let (slots, reach) = shells(0.5, &[0.3; 200], 0.2);
-        assert_eq!(slots.len(), 200);
-        let mut axes: Vec<f32> = slots.iter().map(|s| s.0).collect();
-        axes.dedup();
-        assert!(axes.len() > 1, "200 siblings overflow into outer shells");
-        assert!(axes[0] * 0.8 >= 0.5 + 0.3 + ORBIT_GAP + 1.0 - 1e-4);
-        for pair in axes.windows(2) {
-            assert!((pair[1] - pair[0]) * 0.8 >= 0.6 + ORBIT_GAP - 1e-4);
-        }
-        assert!(reach >= axes[axes.len() - 1] * 1.2);
-        assert!(period(6.0, 8.0 * 1073741824.0) < period(6.0, 64.0 * 1048576.0));
-    }
-
-    #[test]
-    fn sizes_span_memory_and_stars_carry_their_systems_mass() {
-        let mib = |m: f32| m * 1048576.0;
-        let small = mass_radius(mib(6.0));
-        let large = mass_radius(mib(1024.0));
-        assert!(large / small > 5.0, "{small} -> {large}");
-        assert_eq!(mass_radius(0.0), 0.25);
-        assert_eq!((rings(3), rings(4), rings(16), rings(1000)), (0, 1, 2, 4));
-        let mut processes = vec![process(1, 0), process(10, 1)];
-        processes[1].memory = 2 << 30;
-        processes.push(process(11, 10));
-        let snapshot = Snapshot {
-            processes,
-            ..Default::default()
-        };
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("orbit"), 0.0);
-        let id = snapshot.processes[1].id;
-        assert_eq!(scene.mass[&id], ((2 << 30) + (1 << 20), 2));
     }
 
     #[test]
@@ -4004,6 +2331,137 @@ mod tests {
         );
     }
 
+    fn sky_of(backdrop: Backdrop) -> Sky {
+        Sky {
+            backdrop,
+            haze: [0.0; 3],
+            time: 0.0,
+        }
+    }
+
+    #[test]
+    fn twilight_does_not_change_existing_backdrops() {
+        let discriminants = [
+            Backdrop::Dusk,
+            Backdrop::Space,
+            Backdrop::Sea,
+            Backdrop::Void,
+            Backdrop::Twilight,
+        ]
+        .map(|backdrop| backdrop as u32);
+        assert_eq!(discriminants, [0, 1, 2, 3, 4], "new backdrops come last");
+        for y in [0.0_f32, 0.25, 0.5, 0.9, 0.999] {
+            assert_eq!(
+                sky_of(Backdrop::Dusk).base(y),
+                [8.0 + y * 6.0, 13.0 + y * 7.0, 25.0 + y * 8.0]
+            );
+            assert_eq!(sky_of(Backdrop::Space).base(y), [5.0, 8.0, 18.0]);
+            assert_eq!(
+                sky_of(Backdrop::Sea).base(y),
+                [24.0 - y * 18.0, 72.0 - y * 50.0, 96.0 - y * 58.0]
+            );
+            assert_eq!(sky_of(Backdrop::Void).base(y), [0.0; 3]);
+        }
+        // The rows a rasterized frame paints are the same formulas, truncated to bytes. Space is
+        // left out: its stars are drawn over it.
+        for (backdrop, first, last) in [
+            (Backdrop::Dusk, [8, 13, 25], [13, 19, 32]),
+            (Backdrop::Sea, [24, 72, 96], [6, 22, 38]),
+            (Backdrop::Void, [0; 3], [0; 3]),
+        ] {
+            let mut frame = Frame::new(4, 100, sky_of(backdrop), Buffers::default());
+            frame.rasterize();
+            let row = |y: usize| frame.pixels[y * 12..y * 12 + 3].to_vec();
+            assert_eq!(row(0), first, "{backdrop:?} top");
+            assert_eq!(row(99), last, "{backdrop:?} bottom");
+        }
+    }
+
+    #[test]
+    fn twilight_runs_three_stops_down_the_frame() {
+        let mut frame = Frame::new(4, 100, sky_of(Backdrop::Twilight), Buffers::default());
+        frame.rasterize();
+        let row = |y: usize| -> [u8; 3] { frame.pixels[y * 12..y * 12 + 3].try_into().unwrap() };
+        assert_eq!(row(0), [28, 34, 70], "the top stop");
+        assert_eq!(
+            row(60),
+            [120, 92, 138],
+            "the middle stop, 60% of the way down"
+        );
+        let bottom = row(99);
+        assert!(
+            bottom[0] > 230 && (148..=150).contains(&bottom[1]) && (104..=108).contains(&bottom[2]),
+            "just short of the horizon stop at the last row: {bottom:?}"
+        );
+        for y in 1..100 {
+            let (above, here) = (row(y - 1), row(y));
+            assert!(
+                here[0] >= above[0],
+                "red only rises down the frame at row {y}"
+            );
+            if y <= 60 {
+                assert!(here[2] >= above[2], "blue rises towards the middle stop");
+            } else {
+                assert!(here[2] <= above[2], "blue falls towards the horizon stop");
+            }
+        }
+        // The pressure haze adds on top of the gradient, as it does on every backdrop.
+        let mut hazy = sky_of(Backdrop::Twilight);
+        hazy.haze = [60.0, 0.0, 0.0];
+        let mut tinted = Frame::new(4, 100, hazy, Buffers::default());
+        tinted.rasterize();
+        assert!(
+            tinted
+                .pixels
+                .iter()
+                .step_by(3)
+                .map(|&r| u64::from(r))
+                .sum::<u64>()
+                > frame
+                    .pixels
+                    .iter()
+                    .step_by(3)
+                    .map(|&r| u64::from(r))
+                    .sum::<u64>()
+        );
+    }
+
+    #[test]
+    fn stacked_puffs_round_to_the_nearest_level_where_glows_truncate() {
+        // Over black, a centred half-strength disc of 255 blends to 127.5, then 191.5, then 223.5.
+        let mut puffs = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        let mut glows = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        puffs.pixels = vec![0; 48];
+        glows.pixels = vec![0; 48];
+        let (mut rounded, mut truncated) = ([0u8; 3], [0u8; 3]);
+        for k in 0..3 {
+            puffs.puff([1.5, 1.5], 2.0, [255; 3], 0.5);
+            glows.halo([1.5, 1.5], 2.0, [255; 3], 0.5);
+            rounded[k] = puffs.pixels[(4 + 1) * 3];
+            truncated[k] = glows.pixels[(4 + 1) * 3];
+        }
+        assert_eq!(
+            rounded,
+            [128, 192, 224],
+            "a puff rounds to the nearest level"
+        );
+        assert_eq!(
+            truncated,
+            [127, 191, 223],
+            "a glow truncates, as it always has"
+        );
+        // A strength above one is a full blend, never an overshoot.
+        let mut frame = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
+        frame.items = vec![Item::Puff {
+            center: [1.5, 1.5],
+            radius: 2.0,
+            color: [90; 3],
+            strength: 3.0,
+        }];
+        frame.rasterize();
+        assert_eq!(frame.pixels[(4 + 1) * 3], 90);
+    }
+
     #[test]
     fn pressure_tints_the_sky() {
         let mut snapshot = demo(1.0, 16);
@@ -4020,253 +2478,6 @@ mod tests {
                 .sum::<u64>()
         };
         assert!(red(&stressed) > red(&calm) * 2);
-    }
-
-    #[test]
-    fn ripples_and_flow_answer_to_activity() {
-        let mut snapshot = demo(2.0, 64);
-        for p in &mut snapshot.processes {
-            p.cpu = 0.0;
-        }
-        let run = |snapshot: &Snapshot, view: View| {
-            let mut scene = Scene::new();
-            for k in 0..40 {
-                render(&mut scene, snapshot, view, k as f32 * 0.05);
-            }
-            scene
-        };
-        let calm = run(&snapshot, view("ripple"));
-        assert_eq!(calm.wave.as_ref().unwrap().energy(), 0.0);
-        snapshot.processes[1].cpu = 80.0;
-        let busy = run(&snapshot, view("ripple"));
-        assert!(busy.wave.as_ref().unwrap().energy() > 1.0);
-        assert_eq!(busy.positions.len(), busy.visible);
-        let flow = run(&snapshot, view("flow"));
-        let particles = &flow.flow.as_ref().unwrap().particles;
-        assert!(
-            particles.iter().any(|p| p.bright),
-            "busy process and links emit"
-        );
-        assert!(
-            particles.iter().any(|p| !p.bright),
-            "background reveals the field"
-        );
-    }
-
-    #[test]
-    fn focusing_and_clearing_focus_keeps_every_ripple_cluster_in_place() {
-        hiding::focus_and_clear_by(view("ripple"), &demo(30.0, 160), hiding::ground);
-    }
-
-    #[test]
-    fn processes_beyond_the_limit_keep_their_ripple_place() {
-        hiding::limit_and_lift_by(view("ripple"), &demo(30.0, 160), hiding::ground);
-    }
-
-    #[test]
-    fn focusing_and_clearing_focus_keeps_every_orbit_system_in_place() {
-        hiding::focus_and_clear(view("orbit"), &demo(30.0, 160));
-    }
-
-    /// The systems of `scene` after each hiding in `hides` (limit, selection, focus), which
-    /// must be exactly the whole tree's plus those the hiding itself makes drawn systems, as a
-    /// fresh scene shows; lifting the hiding leaves the whole tree's and puts them back.
-    fn systems_follow_the_hiding(
-        view: View,
-        hides: impl Fn(
-            &Snapshot,
-            &HashMap<Identity, Point>,
-        ) -> Vec<(usize, Option<Identity>, Option<Identity>)>,
-    ) {
-        let sample = demo(30.0, 160);
-        let keys = |scene: &Scene| -> std::collections::BTreeSet<Identity> {
-            scene.systems.keys().copied().collect()
-        };
-        let (mut scene, time, before) = hiding::settled(view, &sample);
-        let whole = keys(&scene);
-        for (limit, selected, focus) in hides(&sample, &before) {
-            hiding::place(&mut scene, &sample, view, time, limit, selected, focus);
-            let mut fresh = Scene::new();
-            hiding::place(&mut fresh, &sample, view, time, limit, selected, focus);
-            let expected: std::collections::BTreeSet<Identity> =
-                whole.union(&keys(&fresh)).copied().collect();
-            assert_eq!(
-                keys(&scene),
-                expected,
-                "{view:?} {limit} {selected:?} {focus:?}"
-            );
-        }
-        let lifted = hiding::place(&mut scene, &sample, view, time, 4096, None, None);
-        assert_eq!(lifted, before, "{view:?}");
-        assert_eq!(keys(&scene), whole, "{view:?}");
-    }
-
-    /// Fails if a hidden system is kept merely because its root is sampled: focusing each
-    /// process in turn leaves one system behind for every root a focus made.
-    #[test]
-    fn focusing_one_process_after_another_leaves_no_orbit_or_flow_system_behind() {
-        for view in [view("orbit"), view("flow")] {
-            systems_follow_the_hiding(view, |sample, _| {
-                sample
-                    .processes
-                    .iter()
-                    .map(|process| (4096, None, Some(process.id)))
-                    .collect()
-            });
-        }
-    }
-
-    /// Fails if a hidden system is kept merely because its root is sampled: a selection
-    /// swapped across the limit is drawn as a system of its own, which it gives up on
-    /// deselection, when it is beyond the limit and not a root of the whole tree.
-    #[test]
-    fn a_selection_swapped_across_the_limit_leaves_no_orbit_or_flow_system_behind() {
-        for view in [view("orbit"), view("flow")] {
-            systems_follow_the_hiding(view, |_, before| {
-                let mut selected: Vec<_> = before.keys().filter(|id| id.pid >= 1080).collect();
-                selected.sort();
-                selected
-                    .into_iter()
-                    .flat_map(|&id| [(80, Some(id), None), (80, None, None)])
-                    .collect()
-            });
-        }
-    }
-
-    #[test]
-    fn a_focused_system_turns_about_what_is_drawn_not_the_hidden_galaxy() {
-        let sample = demo(30.0, 160);
-        let (mut scene, mut time, _) = hiding::settled(view("orbit"), &sample);
-        let root = sample.processes[16].id;
-        assert!(
-            scene.systems.contains_key(&root),
-            "the family's root is a system"
-        );
-        let mut place = |time| {
-            hiding::place(
-                &mut scene,
-                &sample,
-                view("orbit"),
-                time,
-                4096,
-                None,
-                Some(root),
-            )[&root]
-        };
-        let start = place(time);
-        for _ in 0..300 {
-            time += 0.1;
-            let now = place(time);
-            let moved = (now[0] - start[0]).hypot(now[1] - start[1]);
-            assert!(moved < 0.5, "the focused system drifted {moved} at {time}");
-        }
-    }
-
-    #[test]
-    fn focusing_and_clearing_focus_keeps_every_flow_system_in_place() {
-        hiding::focus_and_clear_by(view("flow"), &demo(30.0, 160), hiding::ground);
-    }
-
-    /// Cuts the population in half with the limit and lifts it again, comparing places by
-    /// `by`. A selection swapped in across the limit without its parent is drawn as a system
-    /// of its own, so it has no place to keep and is left out.
-    fn limit_and_lift_without_selection(view: View, by: fn(Point) -> Point) {
-        let sample = demo(30.0, 160);
-        let measure = |places: HashMap<Identity, Point>| -> HashMap<Identity, Point> {
-            places
-                .into_iter()
-                .map(|(id, point)| (id, by(point)))
-                .collect()
-        };
-        let (mut scene, time, before) = hiding::settled(view, &sample);
-        let before = measure(before);
-        let limited = measure(hiding::place(
-            &mut scene, &sample, view, time, 80, None, None,
-        ));
-        assert!(!limited.is_empty() && limited.len() < before.len());
-        hiding::in_place(&limited, &before);
-        let lifted = measure(hiding::place(
-            &mut scene, &sample, view, time, 4096, None, None,
-        ));
-        assert_eq!(lifted, before);
-    }
-
-    #[test]
-    fn processes_beyond_the_limit_keep_their_orbit_system_place() {
-        limit_and_lift_without_selection(view("orbit"), |point| point);
-    }
-
-    #[test]
-    fn processes_beyond_the_limit_keep_their_flow_system_place() {
-        limit_and_lift_without_selection(view("flow"), hiding::ground);
-    }
-
-    #[test]
-    fn pebbles_cluster_by_cgroup_without_touching_and_stay_put() {
-        let mut snapshot = demo(1.0, 64);
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("ripple"), 1.0);
-        assert_eq!(scene.clusters.len(), 4);
-        let flat = |scene: &Scene, id: &Identity| {
-            let p = scene.positions[id];
-            [p[0], p[1]]
-        };
-        for (i, a) in snapshot.processes.iter().enumerate() {
-            let at = flat(&scene, &a.id);
-            let home = scene.clusters[&a.group].center;
-            for (name, cluster) in &scene.clusters {
-                let d = |c: [f32; 2]| (at[0] - c[0]).hypot(at[1] - c[1]);
-                assert!(*name == a.group || d(home) < d(cluster.center));
-            }
-            for b in snapshot.processes[i + 1..]
-                .iter()
-                .filter(|b| b.group == a.group)
-            {
-                let gap = (at[0] - flat(&scene, &b.id)[0]).hypot(at[1] - flat(&scene, &b.id)[1]);
-                let touching = mass_radius(a.memory as f32) + mass_radius(b.memory as f32);
-                assert!(gap >= touching, "{} and {} overlap", a.name, b.name);
-            }
-        }
-        let before: HashMap<Identity, [f32; 2]> = snapshot
-            .processes
-            .iter()
-            .map(|p| (p.id, flat(&scene, &p.id)))
-            .collect();
-        snapshot.processes.remove(20);
-        snapshot.processes[30].memory += snapshot.processes[30].memory / 20;
-        snapshot.processes[31].cpu = 400.0;
-        render(&mut scene, &snapshot, view("ripple"), 1.1);
-        for p in &snapshot.processes {
-            assert_eq!(flat(&scene, &p.id), before[&p.id], "{} moved", p.name);
-        }
-    }
-
-    #[test]
-    fn ripple_water_stays_dim_however_hard_it_is_stirred() {
-        let mut snapshot = demo(2.0, 64);
-        snapshot.pressure = [90.0; 3];
-        for p in &mut snapshot.processes {
-            p.cpu = 400.0;
-        }
-        let mut scene = Scene::new();
-        let mut frame = render(&mut scene, &snapshot, view("ripple"), 0.0);
-        for k in 1..80 {
-            if k % 10 == 0 {
-                scene.splashes.push([0.0; 3]);
-            }
-            frame = render(&mut scene, &snapshot, view("ripple"), k as f32 * 0.05);
-        }
-        assert!(scene.wave.as_ref().unwrap().energy() > 1.0);
-        let brightest = frame
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Triangle(_, color, _) => color.iter().max().copied(),
-                _ => None,
-            })
-            .max()
-            .unwrap();
-        assert!(brightest < 190, "water reached {brightest}");
     }
 
     #[test]
@@ -4329,6 +2540,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_modules_tests_can_read_its_state_by_type() {
+        let snapshot = demo(12.0, 16);
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::ROWS);
+        let (probe, quiet) = (View::at(0), View::at(1));
+        scene.render(&RenderInput::small(&snapshot, probe, &camera, 1.0));
+        assert!(scene.module::<testing::Probe>(probe).is_some());
+        assert!(
+            scene.module::<testing::Quiet>(probe).is_none(),
+            "the wrong type"
+        );
+        assert!(
+            scene.module::<testing::Probe>(quiet).is_none(),
+            "a view that shows nothing of itself"
+        );
+    }
+
+    #[test]
+    fn a_view_that_draws_its_own_links_learns_the_link_mode_and_the_highlighted() {
+        let snapshot = demo(12.0, 16);
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::LINKER);
+        let view = View::at(0);
+        let legend = |scene: &mut Scene, links: Links, highlight: Vec<Identity>| {
+            scene.links = links;
+            scene.highlight = highlight;
+            scene.render(&RenderInput::small(&snapshot, view, &camera, 1.0));
+            scene.legend(view, &snapshot)
+        };
+        assert_eq!(
+            legend(&mut scene, Links::All, Vec::new()),
+            " linker: links All | highlight []"
+        );
+        let pids: Vec<u32> = snapshot
+            .processes
+            .iter()
+            .take(2)
+            .map(|p| p.id.pid)
+            .collect();
+        let hot = snapshot.processes.iter().take(2).map(|p| p.id).collect();
+        assert_eq!(
+            legend(&mut scene, Links::Focused, hot),
+            format!(" linker: links Focused | highlight {pids:?}")
+        );
+        assert_eq!(
+            legend(&mut scene, Links::Off, Vec::new()),
+            " linker: links Off | highlight []"
+        );
+    }
+
     /// A scene over `testing::GUIDED`, and a function that draws its `view` at `time`, paused or
     /// not.
     fn guided() -> (Scene, impl Fn(&mut Scene, View, f32, bool)) {
@@ -4358,6 +2620,43 @@ mod tests {
         assert_eq!(
             scene.legend(guide, &Snapshot::default()),
             " guide: dt [0.00 0.10 0.00 0.00 0.10 0.00 0.25]"
+        );
+    }
+
+    #[test]
+    fn the_stage_counts_frames_and_hands_over_the_splashes_and_the_newborn() {
+        let (mut scene, draw) = guided();
+        let (guide, probe) = (View::at(0), View::at(1));
+        draw(&mut scene, guide, 10.0, false);
+        draw(&mut scene, probe, 10.1, false);
+        draw(&mut scene, guide, 10.2, false);
+        let sample = demo(10.0, 8);
+        let mut fewer = sample.clone();
+        let gone = fewer.processes.remove(3);
+        let render = |scene: &mut Scene, snapshot: &Snapshot, time: f32| {
+            scene.render(&RenderInput::small(
+                snapshot,
+                guide,
+                &Camera::default(),
+                time,
+            ));
+        };
+        render(&mut scene, &fewer, 10.3);
+        // The exit is noticed after the frame it left, so the next frame has its splash.
+        render(&mut scene, &fewer, 10.4);
+        let mut more = fewer.clone();
+        let mut arrival = more.processes[0].clone();
+        arrival.id.pid += 10_000;
+        more.processes.push(arrival);
+        render(&mut scene, &more, 10.5);
+        let seen = scene
+            .module::<testing::Guide>(guide)
+            .expect("the guide's state");
+        assert_eq!(seen.frames, [1, 3, 4, 5, 6], "the probe's frame is counted");
+        assert_eq!(
+            seen.disturbances,
+            [(0, 0), (0, 0), (0, 0), (1, 0), (0, 1)],
+            "{gone:?} splashed once and one process arrived"
         );
     }
 
@@ -4421,6 +2720,51 @@ mod tests {
         assert_eq!(draw(View::at(1)), ([0.0; 3], 0, 0));
     }
 
+    /// A view's state lives in its module, so `Scene` holds only frame-wide state, and a field
+    /// added to it is a decision someone reviews. The pattern below names every field of `Scene`
+    /// and has no `..`: a new field does not compile until it is listed here, and it belongs
+    /// here only if it is frame-wide (see the doc of `Scene`). The compiler reads the struct, so
+    /// this holds for any layout of it (multi-line types, attributes, comments), unlike a scan
+    /// of the source for field names, which a field named after no view slips past. The doc
+    /// comment each field needs, which is where the struct says why it is frame-wide, is the
+    /// `missing_docs_in_private_items` lint denied on `Scene`.
+    #[test]
+    fn scene_has_no_view_specific_fields() {
+        let scene = Scene::new();
+        let Scene {
+            resources: _,
+            frames: _,
+            last_time: _,
+            clock: _,
+            births: _,
+            arrivals: _,
+            previous: _,
+            deaths: _,
+            headroom: _,
+            splashes: _,
+            newborn: _,
+            started: _,
+            intro: _,
+            links: _,
+            highlight: _,
+            positions: _,
+            places: _,
+            titles: _,
+            bounds: _,
+            notes: _,
+            sparklines: _,
+            tour: _,
+            popup: _,
+            callout: _,
+            history: _,
+            rows: _,
+            modules: _,
+            spare: _,
+            visible: _,
+            collapsed: _,
+        } = scene;
+    }
+
     #[test]
     fn record_hooks_run_for_every_view_whichever_is_shown() {
         let (probe, quiet) = (View::at(0), View::at(1));
@@ -4440,49 +2784,6 @@ mod tests {
             " probe: 0 draws | 3 records | keys []",
             "a hidden view records too"
         );
-        // The built-in hooks: Strata keeps a history while the city is shown.
-        let mut scene = Scene::new();
-        for step in 0..=10 {
-            let snapshot = demo(step as f64, 64);
-            scene.record(&snapshot, step as f32);
-            render(&mut scene, &snapshot, view("city"), step as f32);
-        }
-        render(&mut scene, &demo(10.0, 64), view("strata"), 10.0);
-        assert!(
-            scene
-                .notes
-                .values()
-                .any(|notes| notes[0].ends_with("over the last 10 s")),
-            "{:?}",
-            scene.notes.values().next()
-        );
-    }
-
-    #[test]
-    fn marbles_hop_lanes_when_the_scheduler_moves_them() {
-        let mut snapshot = demo(1.0, 16);
-        for p in &mut snapshot.processes {
-            p.cpu = 0.0;
-            p.state = 'S';
-        }
-        snapshot.processes[3].cpu = 60.0;
-        snapshot.processes[3].core = Some(0);
-        let id = snapshot.processes[3].id;
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("cores"), 1.0);
-        let resting = scene.positions[&id][2];
-        snapshot.processes[3].core = Some(12);
-        render(&mut scene, &snapshot, view("cores"), 1.1);
-        render(&mut scene, &snapshot, view("cores"), 1.4);
-        assert!(scene.positions[&id][2] > resting + 0.5, "airborne mid-hop");
-        assert!(scene.notes[&id][0].contains("cpu12") && scene.notes[&id][0].contains("1 hop "));
-        render(&mut scene, &snapshot, view("cores"), 2.0);
-        let landed = scene.positions[&id];
-        assert!(
-            landed[0].hypot(landed[1]) > 20.0,
-            "efficiency lanes are outside"
-        );
-        assert_eq!(scene.visible, 1, "idle processes stay off the track");
     }
 
     #[test]
@@ -4507,119 +2808,6 @@ mod tests {
     }
 
     #[test]
-    fn strata_ridges_follow_busy_processes_in_kind_order() {
-        let mut scene = Scene::new();
-        let mut snapshot = demo(0.0, 64);
-        for step in 0..30 {
-            snapshot.elapsed = step as f64;
-            for (i, p) in snapshot.processes.iter_mut().enumerate() {
-                p.cpu = if i % 4 == 0 { 30.0 + step as f32 } else { 0.0 };
-            }
-            // History builds up while another view is shown.
-            scene.record(&snapshot, step as f32);
-            render(&mut scene, &snapshot, view("city"), step as f32);
-        }
-        render(&mut scene, &snapshot, view("strata"), 29.0);
-        assert_eq!(scene.visible, 16);
-        let first = snapshot.processes[0].id;
-        assert!(
-            scene.notes[&first][0].ends_with("over the last 29 s"),
-            "{:?}",
-            scene.notes[&first]
-        );
-        let rows: HashMap<Identity, f32> =
-            scene.positions.iter().map(|(id, p)| (*id, p[1])).collect();
-        snapshot.elapsed = 30.0;
-        snapshot.processes[33].cpu = 50.0;
-        render(&mut scene, &snapshot, view("strata"), 30.0);
-        assert_eq!(scene.visible, 17, "a newly busy process earns a ridge");
-        for (id, y) in &rows {
-            assert_eq!(scene.positions[id][1], *y, "an existing ridge moved row");
-        }
-        let order: Vec<u8> = scene
-            .strata_rows()
-            .iter()
-            .map(|id| {
-                let kind = snapshot
-                    .processes
-                    .iter()
-                    .find(|p| p.id == *id)
-                    .unwrap()
-                    .kind;
-                [Kind::Kernel, Kind::System, Kind::Session, Kind::Container]
-                    .iter()
-                    .position(|&k| k == kind)
-                    .unwrap() as u8
-            })
-            .collect();
-        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "{order:?}");
-    }
-
-    #[test]
-    fn dishes_and_globe_talkers_keep_their_places() {
-        let mut snapshot = demo(10.0, 128);
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("cells"), 10.0);
-        let containers: Vec<(Identity, Point)> = snapshot
-            .processes
-            .iter()
-            .filter(|p| p.kind == Kind::Container)
-            .map(|p| (p.id, scene.positions[&p.id]))
-            .collect();
-        let session = snapshot
-            .processes
-            .iter()
-            .find(|p| p.kind == Kind::Session)
-            .unwrap()
-            .cgroup
-            .clone();
-        snapshot.units.get_mut(&session).unwrap().memory *= 400;
-        render(&mut scene, &snapshot, view("cells"), 10.1);
-        render(&mut scene, &snapshot, view("cells"), 10.2);
-        for (id, at) in &containers {
-            assert_eq!(scene.positions[id], *at, "the container dish moved");
-        }
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("globe"), 0.0);
-        let mut talkers: Vec<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
-        talkers.sort();
-        let before: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
-        snapshot.remotes.retain(|r| r.id != talkers[0]);
-        render(&mut scene, &snapshot, view("globe"), 0.0);
-        let after: Vec<Point> = talkers[1..].iter().map(|id| scene.positions[id]).collect();
-        assert_eq!(
-            before, after,
-            "a process closing its connections reshuffled the others"
-        );
-    }
-
-    #[test]
-    fn globe_shows_only_processes_with_remote_connections() {
-        let snapshot = demo(10.0, 128);
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("globe"), 10.0);
-        let talkers: HashSet<Identity> = snapshot.remotes.iter().map(|r| r.id).collect();
-        assert_eq!(scene.visible, talkers.len());
-        assert!(scene.positions.keys().all(|id| talkers.contains(id)));
-        let id = snapshot.remotes[0].id;
-        assert!(scene.notes[&id][0].contains(&snapshot.remotes[0].address.to_string()));
-    }
-
-    #[test]
-    fn city_does_not_relocate_when_resources_or_population_change() {
-        let mut scene = Scene::new();
-        let mut snapshot = demo(0.0, 32);
-        render(&mut scene, &snapshot, view("city"), 0.0);
-        let id = snapshot.processes[10].id;
-        let position = scene.positions[&id];
-        snapshot.processes.remove(5);
-        snapshot.processes[9].cpu = 1600.0;
-        snapshot.processes[9].memory *= 100;
-        render(&mut scene, &snapshot, view("city"), 0.0);
-        assert_eq!(scene.positions[&id], position);
-    }
-
-    #[test]
     fn depth_buffer_picks_the_frontmost_object() {
         let mut frame = blank(10, 10);
         let a = Identity { pid: 1, start: 1 };
@@ -4629,6 +2817,35 @@ mod tests {
         frame.pixel(5, 5, 2.0, [30, 20, 10], 0);
         assert_eq!(frame.pick_near(5.5, 5.5, 0.5), Some(b));
         assert_eq!(frame.pick_near(20.5, 5.5, 0.5), None);
+    }
+
+    #[test]
+    fn a_screen_space_hairline_draws_the_same_ribbon_as_a_world_one() {
+        let camera = Camera::default();
+        let (a, b) = ([0.0, 0.0, 0.0], [4.0, 1.0, 0.0]);
+        let mut world = blank(100, 100);
+        world.hairline(&camera, a, b, [200, 100, 50], 2.0);
+        let mut screen = blank(100, 100);
+        let (a, b) = (screen.project(&camera, a), screen.project(&camera, b));
+        screen.hairline_between(a, b, [200, 100, 50], 2.0);
+        assert!(!world.items.is_empty());
+        assert_eq!(format!("{:?}", world.items), format!("{:?}", screen.items));
+    }
+
+    #[test]
+    fn the_ground_offset_of_a_screen_offset_projects_back_to_it() {
+        let camera = Camera {
+            rotation: 0.7,
+            pitch: 0.9,
+            zoom: 3.0,
+            ..Camera::default()
+        };
+        let frame = blank(200, 120);
+        let origin = frame.project(&camera, [camera.center[0], camera.center[1], 0.0]);
+        let [x, y] = camera.ground(40.0, -25.0);
+        let back = frame.project(&camera, [camera.center[0] + x, camera.center[1] + y, 0.0]);
+        assert!((back[0] - origin[0] - 40.0).abs() < 1e-3);
+        assert!((back[1] - origin[1] + 25.0).abs() < 1e-3);
     }
 
     /// A sphere item with `pick` at pixel (x, y), at depth 0.
@@ -4844,221 +3061,6 @@ mod tests {
         assert_eq!(frame.pick_near(20.5, 20.5, 9.0), Some(near));
         assert_eq!(frame.pick_near(14.5, 20.5, 9.0), Some(far));
         assert_eq!(frame.pick_near(20.5, 5.5, 9.0), None);
-    }
-
-    #[test]
-    fn an_unreadable_parent_becomes_one_hollow_hub_instead_of_many_systems() {
-        let launchd = Shadow {
-            pid: 1,
-            parent: 0,
-            name: "launchd".into(),
-        };
-        let leaves = Snapshot {
-            processes: (10..30).map(|pid| process(pid, 1)).collect(),
-            cores: 4,
-            ..Default::default()
-        };
-        let mut scene = Scene::new();
-        render(&mut scene, &leaves, view("orbit"), 0.0);
-        assert_eq!(
-            scene.stars.len(),
-            20,
-            "without a shadow each leaf stands alone"
-        );
-        assert!(scene.hub_names.is_empty());
-        let shadowed = Snapshot {
-            shadows: vec![launchd],
-            ..leaves.clone()
-        };
-        for view in [view("orbit"), view("flow")] {
-            let mut scene = Scene::new();
-            render(&mut scene, &shadowed, view, 0.0);
-            let &[(star, members, _)] = scene.stars.as_slice() else {
-                panic!("{view:?}: {:?}", scene.stars);
-            };
-            assert_eq!(
-                (star.pid, star.start, members),
-                (1, u64::MAX, 20),
-                "{view:?}"
-            );
-            assert_eq!(scene.hub_names[&star], "launchd");
-            assert_eq!(scene.visible, 20, "{view:?}: the hub is not a process");
-            assert_eq!(scene.mass[&star], (20 << 20, 21), "{view:?}");
-            let mut camera = Camera::default();
-            scene.fit(&mut camera, 320, 180);
-            let mut frame = scene.render(&RenderInput::small(&shadowed, view, &camera, 1.0));
-            frame.rasterize();
-            assert_eq!(frame.identities.len(), 20);
-            assert!(
-                frame
-                    .picks
-                    .iter()
-                    .all(|&p| p == NONE || frame.target(p).is_some())
-            );
-            let [x, y] = frame
-                .locate(&camera, scene.positions[&star])
-                .expect("the hub is on screen");
-            let at = y as usize * 320 + x as usize;
-            assert_eq!(frame.picks[at], NONE, "{view:?}: the hub is hollow");
-            assert_eq!(frame.pick_near(x, y, 2.0), None, "{view:?}");
-        }
-        let mut focused = Scene::new();
-        focused.render(&RenderInput {
-            focus: Some(shadowed.processes[0].id),
-            ..RenderInput::small(&shadowed, view("orbit"), &Camera::default(), 0.0)
-        });
-        assert!(focused.hub_names.is_empty(), "a focused root stands alone");
-    }
-
-    #[test]
-    fn leaves_stay_in_orbit_and_systems_keep_clear_of_each_other() {
-        let mut processes = vec![process(1, 0), process(2, 0)];
-        processes.extend((10..60).map(|pid| process(pid, 2)));
-        processes.extend((200..220).map(|pid| process(pid, 1)));
-        for service in (100..160).step_by(10) {
-            processes.push(process(service, 1));
-            processes.extend((1..4).map(|k| process(service + k, service)));
-        }
-        let mut snapshot = Snapshot {
-            processes,
-            cores: 4,
-            ..Default::default()
-        };
-        let mut scene = Scene::new();
-        render(&mut scene, &snapshot, view("orbit"), 0.0);
-        // init, kthreadd and the six services with children; kernel threads and leaf services orbit.
-        assert_eq!(scene.systems.len(), 8);
-        assert_eq!(scene.stars.len(), 8);
-        assert_eq!(scene.visible, snapshot.processes.len());
-        let systems: Vec<_> = scene.systems.values().copied().collect();
-        for (i, (a, ra)) in systems.iter().enumerate() {
-            for (b, rb) in &systems[i + 1..] {
-                assert!((a[0] - b[0]).hypot(a[1] - b[1]) >= ra + rb - 1e-3);
-            }
-        }
-        snapshot.processes[5].cpu = 800.0;
-        let center = scene.galaxy;
-        let reach = |placement: &([f32; 2], f32)| {
-            (placement.0[0] - center[0]).hypot(placement.0[1] - center[1])
-        };
-        let before = scene.systems.clone();
-        for step in 1..=240 {
-            render(&mut scene, &snapshot, view("orbit"), step as f32 * 0.5);
-        }
-        assert_eq!(scene.systems.len(), 8, "turning never re-places a system");
-        assert_eq!(
-            scene.galaxy, center,
-            "the pivot stays put while membership is stable"
-        );
-        let mut turned = 0;
-        for (id, placement) in &scene.systems {
-            assert!(
-                (reach(placement) - reach(&before[id])).abs() < 0.01,
-                "{id:?} left its orbit"
-            );
-            assert_eq!(placement.1, before[id].1);
-            turned += usize::from(placement.0 != before[id].0);
-        }
-        assert!(turned >= 7, "only {turned} systems revolved");
-        let service = snapshot
-            .processes
-            .iter()
-            .find(|p| p.id.pid == 100)
-            .unwrap()
-            .id;
-        let reserved = scene.systems[&service].1;
-        snapshot
-            .processes
-            .extend((1000..1040).map(|pid| process(pid, 100)));
-        render(&mut scene, &snapshot, view("orbit"), 121.0);
-        assert!(
-            scene.systems[&service].1 > reserved,
-            "the grown system was re-placed"
-        );
-        assert_ne!(scene.galaxy, center, "re-placing a system moves the pivot");
-        let systems: Vec<_> = scene.systems.values().copied().collect();
-        for (i, (a, ra)) in systems.iter().enumerate() {
-            for (b, rb) in &systems[i + 1..] {
-                assert!((a[0] - b[0]).hypot(a[1] - b[1]) >= ra + rb - 1e-2);
-            }
-        }
-    }
-
-    #[test]
-    fn overlapping_rings_turn_together_and_detached_systems_turn_slower() {
-        let id = |pid: u32| Identity { pid, start: 1 };
-        let mut scene = Scene::new();
-        scene.systems = HashMap::from([
-            (id(1), ([0.0, 0.0], 5.0)),
-            (id(2), ([8.5, 0.0], 3.0)),
-            (id(3), ([60.0, 0.0], 3.0)),
-        ]);
-        let masses = HashMap::from([(id(1), 4e9), (id(2), 1e9), (id(3), 1e8)]);
-        scene.frames += 1;
-        scene.revolve(&masses, 0.0);
-        let speed = |scene: &Scene, pid| scene.galaxy_speed[&id(pid)];
-        assert_eq!(
-            speed(&scene, 1),
-            speed(&scene, 2),
-            "touching rings share a band"
-        );
-        assert!(
-            speed(&scene, 3) < speed(&scene, 2),
-            "outer bands turn slower"
-        );
-        assert!(TAU / speed(&scene, 3) <= 900.0 && TAU / speed(&scene, 1) >= 120.0);
-        for step in 1..=2000 {
-            scene.frames += 1;
-            scene.revolve(&masses, step as f32 * 0.5);
-        }
-        let [(a, ra), (b, rb), (c, rc)] = [1, 2, 3].map(|pid| scene.systems[&id(pid)]);
-        let gap = |p: [f32; 2], q: [f32; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
-        assert!((gap(a, b) - 8.5).abs() < 0.01, "a band turns rigidly");
-        assert!(gap(a, c) >= ra + rc && gap(b, c) >= rb + rc);
-        assert!(c[1].abs() > 1.0, "the detached system moved round");
-        scene.frames += 1;
-        scene.revolve(&masses, 5000.0);
-        assert_eq!(
-            scene.systems[&id(3)].0,
-            c,
-            "a jump in time does not spin the galaxy"
-        );
-    }
-
-    #[test]
-    fn the_galaxy_turns_at_one_frame_per_second_but_not_across_view_switches() {
-        let id = |pid: u32| Identity { pid, start: 1 };
-        let mut scene = Scene::new();
-        scene.systems = HashMap::from([(id(1), ([0.0, 0.0], 5.0)), (id(2), ([40.0, 0.0], 3.0))]);
-        let masses = HashMap::from([(id(1), 4e9), (id(2), 1e8)]);
-        let mut motion = 0.0;
-        let mut turn = |scene: &mut Scene, frames: u64, seconds: f32| {
-            scene.frames += frames;
-            motion += seconds;
-            scene.revolve(&masses, motion);
-            scene.systems[&id(2)].0
-        };
-        turn(&mut scene, 1, 0.0);
-        let start = turn(&mut scene, 1, 1.0);
-        let next = turn(&mut scene, 1, 1.0);
-        assert_ne!(
-            start, next,
-            "--fps 1 frames are a second apart and still turn it"
-        );
-        let away = turn(&mut scene, 3, 0.3);
-        assert_eq!(
-            away, next,
-            "frames drawn in another view are skipped, however short"
-        );
-        // A light band close in and a heavy one further out, about a pivot that stays put.
-        let mut scene = Scene::new();
-        scene.systems = HashMap::from([(id(1), ([20.0, 0.0], 3.0)), (id(2), ([60.0, 0.0], 3.0))]);
-        scene.galaxy_members = vec![id(1), id(2)];
-        scene.revolve(&HashMap::from([(id(1), 1e6), (id(2), 64e9)]), 0.0);
-        assert!(
-            scene.galaxy_speed[&id(2)] <= scene.galaxy_speed[&id(1)],
-            "outer bands never outpace inner ones"
-        );
     }
 
     #[test]
