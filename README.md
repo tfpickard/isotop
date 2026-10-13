@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in eighteen views: a process
+A living picture of your machine inside the terminal, in nineteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, the system log (the systemd
@@ -8,8 +8,9 @@ journal, or the unified log on macOS) as Matrix rain, a chicken yard, a geocentr
 cosmos of Fourier epicycles, a minute of process worldlines in a tesseract whose fourth
 axis is time, a moonlit cemetery of the processes that exited, a slice of cortex
 whose neurons fire with CPU, a black hole whose orbits rank the processes the OOM
-killer will take next, a murmuration of starlings with one bird for each thread, and
-the process tree as a tree. Written in
+killer will take next, a murmuration of starlings with one bird for each thread,
+the process tree as a tree, and an anthill whose ants carry the bytes of read and write
+calls between nests and files. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -23,6 +24,7 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 | ![Matrix](docs/media/matrix.webp)<br>**10 Matrix** | ![Coop](docs/media/coop.webp)<br>**11 Coop** | ![Ptolemy](docs/media/ptolemy.webp)<br>**12 Ptolemy** |
 | ![Tesseract](docs/media/tesseract.webp)<br>**13 Tesseract** | ![Necropolis](docs/media/necropolis.webp)<br>**14 Necropolis** | ![Cortex](docs/media/cortex.webp)<br>**15 Cortex** |
 | ![Horizon](docs/media/horizon.webp)<br>**16 Horizon** | ![Murmuration](docs/media/murmuration.webp)<br>**17 Murmuration** | ![Arbor](docs/media/arbor.webp)<br>**18 Arbor** |
+| ![Anthill](docs/media/anthill.webp)<br>**19 Anthill** | | |
 
 The numbers are the views' places in the Tab order (the registry's, which
 `isotop --list-views` prints); the keys 1 to 9 and 0 jump to the first ten.
@@ -42,7 +44,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, anthill
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -185,6 +187,7 @@ cache is stale.
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| Syscall counts in the anthill | Anthill is never skipped. Without the read and write counts an ant is K KiB moved instead of K calls, the direction of an ant is the open flags', and a crumb has one size, unsized; its legend says "no syscall io: ant = K KiB moved, crumbs unsized". With no remainder to tell (the next row) tunnels show no rate and no ants go to a blanket, which the legend says as "no unattributed io: tunnels show no rate, nothing goes to a blanket" |
 | Unattributed I/O (per-file I/O detail) | Without `rchar` and `wchar` there is nothing to hold a file's claim to and nothing to take it from, so the remainder is never told (`IoDetail::unattributed` is None, and the platform reports "unattributed io" as missing) and a claim is held only to the size of its file: an `lseek` can make a descriptor claim bytes nothing read, and a descriptor inherited across `fork` shows the position either process moved. The 24 processes are ranked by disk I/O per second rather than by syscalls, so I/O that the page cache absorbed ranks low. Other users' processes are unreadable without root, and a vnode whose path the kernel refuses to build (the `fsgetpath` check of a security policy) counts as another kind of descriptor and marks the reading partial. No view draws it yet |
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
@@ -228,8 +231,8 @@ The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. The view registry
 (`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
 truth for the list of views, their Tab order and their digits: Tab cycles
-the eighteen views in that order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the nineteen views in that order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor and anthill are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -819,6 +822,40 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Anthill
+
+![Anthill: a sandy slab at dusk with a heap of dark mounds in a clearing, piles of pebbles in the regions round it and streams of ants carrying pale and coral crumbs between them, over glowing trails](docs/media/anthill.webp)
+
+Syscalls as foraging ants: every process is a nest, every open regular file a pile of pebbles on a map of the filesystem, and one ant walks for every K read and write calls, carrying a crumb as big as the bytes in one call.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Mound (nest) | A process, and its memory (RSS; the physical footprint on macOS) | Radius 0.9 + 0.38 log2(max(MiB, 8) / 8) world units; a paraboloid 0.95 of its radius high, of 24 segments (12 under 8 px of radius) |
+| Where a nest stands | The first sample that had the process | The first place along a golden-angle spiral from the middle where the room it reserved fits: 1.15 times the radius it would have at twice its memory. It keeps the place until it outgrows that room, whatever its CPU, its memory below that, or the population do |
+| Mound colour, crater and entrances | The process's kind (kernel, system, session, container) and whether its descriptors were read | The kind's colour lights the crater and up to four entrances, one for each distinct destination (a file, a blanket, the nest at the other end of a tunnel), busiest first, each on the slope that faces it. A nest not read this sample sleeps: darker, with no crater glow and no entrances |
+| Pile | An open regular file (`IoDetail::files`, one pile for a device and inode however many processes hold it) | Radius 0.45 + 0.12 log2(size / 4096), from 0.45 to 3 world units, of 6 to 24 pebbles by its radius. At most 256 piles, the ones with the most attributed bytes a second first. A file deleted while it is open has cooler, greyer stone. A file that opens grows in over 1.5 s and one that closes fades over 1.5 s |
+| Where a pile stands | The file's path | A fixed pinwheel round the clearing: `/usr` (and `/lib`, `/bin`, `/sbin`, macOS `/System`, `/Library`, `/Applications`), `/var`, `/tmp` (and `/dev/shm`), `/home` (and `/Users`, `/root`) and everything else. Each second-level directory (`usr/lib`, `home/tom`) takes one 8-unit cell of its region, the first free one from where its name hashes to, and keeps it; the file stands at a spot its whole path hashes to (FNV-1a) inside the cell |
+| Ant | K read and write calls (`syscr` and `syscw`) | K is the smallest of 1, 2, 5, 10, 20, 50, ... for which the sum over streams of calls a second times seconds a round trip takes, over K, is at most 3,000. The first sample with anything to carry sets K; after that K changes only when three samples in a row ask for the same one. At most 3,750 ants, and the legend counts the ants the cap refused |
+| Ants sent to a file | The calls the process made, and the bytes its positions credit to each file | A read-only file gets the share of the process's read calls that its bytes are of all the bytes it read (`rchar`, which is the files' bytes plus what no file explains); a write-only file the same of its write calls; what is left of the calls is shared by the read-write files and what nothing explains, in proportion to their bytes. The shares add up to the calls the process made and never to more |
+| Ant direction and crumb colour | The descriptor's open flags | Pale (255, 238, 196): the ant comes home carrying what it read. Coral (255, 118, 92): it carries a write out. The colour between the two, carried both ways: a read-write file, whose direction is never split |
+| Crumb size | Bytes per call: `read_chars / reads`, `write_chars / writes`, or for a read-write file the mean over all of the process's calls | Radius 0.55 + 0.27 log2(bytes / 64) px, from 0.42 to 3.6, at a frame 1600 wide with the slab fitted to it, scaled with the zoom, and never under 1 px |
+| Tunnel | Pipes and FIFOs (`Snapshot::pipes`), Unix sockets and loopback TCP (`Snapshot::links`) between two drawn nests | An arch of dashes between the nests; the `c` key shows all of them, those of the highlighted processes or none. A pipe is one lane from its writer to its reader, sockets two lanes, one each way. The dashes slide at 1.2 log10(1 + calls a second) world units a second, scaled with the slab, where the calls are those of the bytes no file explains, shared over the process's tunnels by their measured traffic when every one has some and equally otherwise. A tunnel whose ends were not read is dotted, thin and still: unknown, not idle |
+| Blanket | A process that holds a terminal, has no tunnel at all and has unattributed I/O | A gingham blanket 5.4 units across in a corner of the clearing (four at most, to the processes with the most unattributed bytes, kept while they live). Its ants carry the read and write calls no file explains; their direction is the counters' when no read-write file took any bytes, otherwise unknown |
+| Labels | The paths of the piles, and the crumbs | The names of the regions, the file names of the 12 piles with the most attributed bytes a second, and the biggest and the smallest crumb among the streams (`128 KiB/read`, `64 B/write`) |
+| Pheromone glow | The ants' own deposits | Three channels, the colour of each nest's kind, four cells to the world unit and at most 256 along a side. An ant lays 1.0 a second while it carries a crumb and 0.45 while it does not; the grid evaporates as exp(-dt / 2.2) and then spreads with a three-tap blur; the glow saturates as 1 - exp(-2.2 x amount) |
+
+**Decorative:** the sand (its dunes, ripples, specks and the darkening of the rim), the tint and string outline of each region, the cut sides of the slab and their strata, the dusk sky, the facets, soil colour and crater of a mound, which pebble lies where in a pile and its shade, the bend of each route and the arch of each tunnel, the side a mound's ants leave by, the speed jitter (13 %), wander and heading of each ant and how it follows the pheromone, the ant's own shape, and the gingham. The routes are the colony's, the endpoints and the rates are the machine's: two runs with the same data show the same ants going to the same places by different paths.
+
+**Layout.** A square slab, 64 world units across to begin with: a clearing at the middle for the nests, with the five regions round it as a pinwheel (each of `/usr`, `/var` and `/tmp` an arm that reaches a corner, `/home` the arm between two corners of the clearing and `other` the square in the one corner of the slab the pinwheel leaves), the arms 16 units deep. Every sampled process has a place, drawn or not, so `--limit` and a focus move nothing. Only a clearing too small for its nests grows, in steps of 1.25 (the arms, the piles and the trails move then), and `Stage::bounds` is the slab's four corners.
+
+**Simulation.** The colony steps at a fixed 0.05 s (at most 10 steps a frame, a gap of more than 0.5 s counted as 0.5 s), whatever the frame rate, and holds still while paused; ants move 12 world units a second, between steps interpolated. An ant steers toward a carrot on a quadratic Bezier with a hashed bend for its stream, leans toward the side of its heading (plus or minus 0.5 rad) that smells stronger, and adds noise of order the square root of dt. Each ant is seeded from its nest, its goal and how many its stream had sent. A sample is taken in once, not each frame; demo anthill plays the ten seconds before `--time` as a live run would have drawn them, so the trails are laid.
+
+**Caps.** 256 piles, 24 pebbles to a pile, 3,750 ants, 4 entrances to a nest, 4 blankets and 512 tunnels; a thousand nests are placed in one walk along the spiral by a spatial index.
+
+**What cannot be measured.** A file's bytes are the growth of its descriptors' positions, so they are a lower bound: `pread`, `pwrite`, memory-mapped I/O, `io_uring`, and a file opened and closed between two background passes (about 2 s) are not seen, and a file opened for append says nothing of bytes (it is a pile with no ants). A file with no earlier reading of its descriptor is a pile with no ants too: unknown is not zero, and its card says so. What no file explains stays unattributed: it goes to the tunnels or the blanket or is counted in the legend, and is never given to a file. Which terminal a descriptor is cannot be told, only that a process holds one, so a blanket is a process's, not a terminal's. Only the 24 busiest processes (by syscalls a second) have their descriptors read: the rest sleep, and a process whose descriptors the platform refuses (another user's) sleeps too, counted as `fdinfo unreadable for N`. A process that has descriptors but no read and write counts on a platform that has them sends no ants and is counted as `syscall counts unreadable for N`. Until the first pass has read the descriptors (up to two seconds after the view opens) the legend says `reading open files`.
+
+**Platform.** On Linux everything above. On macOS the read and write calls are not counted (`Source::SyscallIo` is missing): an ant is K KiB moved, the direction is the open flags', the crumbs have one size and are unsized, nothing says what a process's files leave of its bytes (`Source::UnattributedIo` is missing), so tunnels show no rate and nothing goes to a blanket, and the processes read are the ones with the most disk I/O. The legend says `no syscall io: ant = K KiB moved, crumbs unsized` and `no unattributed io: tunnels show no rate, nothing goes to a blanket`. See [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it). Anthill has no keys of its own.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -850,7 +887,7 @@ read appear. In orbit, ripple and city they are cyan arcs with travelling pulses
 pink beams. Links of the selected, hovered or toured process glow. The tesseract
 draws every link too; flow, cores, cells, strata, globe, reef, the coop, ptolemy
 and arbor draw only the glowing ones; the necropolis, cortex, horizon and murmuration
-leave links to the view.
+leave links to the view, and so does the anthill, whose tunnels follow `c` too.
 
 The scene draws these over the views, and the table gives the transforms:
 
@@ -1072,7 +1109,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo anthill plays the ten seconds before `--time` the same way (a frame every 0.05 s), so its trails are laid and its ants are on their way. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
