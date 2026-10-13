@@ -37,7 +37,7 @@ use crate::render::{
 };
 use crate::simulation::Rng;
 use crate::status::missing_note;
-use crate::stellar::{Flash, Halo, exit_flash, flash, magnitude, spread};
+use crate::stellar::{Flash, exit_flash, flash, magnitude, spread};
 use crate::views::{ViewKey, ViewModule, ViewOptions};
 
 /// The sky window in sky units: the part of the dome the camera frames.
@@ -1682,14 +1682,13 @@ impl Hr {
             let centre = plot.screen(stage.frame, at);
             if state.opacity > 0.0 {
                 let shown = magnitude + state.magnitude_offset - 2.5 * state.opacity.log10();
-                stage.frame.star_with(
+                stage.frame.star(
                     plot.camera,
                     plot.world(at),
-                    &spread(shown, height),
+                    &spread(shown, height).puffed(),
                     blackbody::color(kelvin, 1.0),
                     NONE,
                     false,
-                    Halo::Puff,
                 );
             }
             if kind == Flash::Supernova && age < SUPERNOVA_GLOW_SECONDS * 4.0 {
@@ -1782,7 +1781,7 @@ impl Hr {
                     strength: (1.6 * (-age / 0.35).exp()).min(1.0),
                 });
             }
-            let point = spread(star.shown, height);
+            let point = spread(star.shown, height).puffed();
             let flux = 10.0_f32.powf(-0.4 * (star.shown - FLUX_REFERENCE));
             if flux > BLOOM_FLUX {
                 let radius = (plot.scale * (10.0 + 4.0 * flux.powf(0.2)))
@@ -1795,14 +1794,13 @@ impl Hr {
                 });
             }
             let chosen = selected == Some(star.process.id) || toured == Some(star.process.id);
-            stage.frame.star_with(
+            stage.frame.star(
                 plot.camera,
                 star.world,
                 &point,
                 star.color,
                 star.pick,
                 chosen,
-                Halo::Puff,
             );
             if point.core_px < PICK_RADIUS {
                 stage

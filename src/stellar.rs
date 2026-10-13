@@ -56,6 +56,19 @@ pub struct Spread {
     pub halo_px: f32,
     /// Strength of the halo, 0 to 0.95; 0 when the star has none.
     pub halo: f32,
+    /// How the halo blends into the frame.
+    pub blend: Halo,
+}
+
+impl Spread {
+    /// This spread with its halo blended as a `Puff`, which rounds on both rasterizers: for a
+    /// sky of many stars, whose halos overlap.
+    pub fn puffed(self) -> Self {
+        Self {
+            blend: Halo::Puff,
+            ..self
+        }
+    }
 }
 
 /// The point-spread of a star of `magnitude` in a frame `frame_height` pixels high. With flux
@@ -82,6 +95,7 @@ pub fn spread(magnitude: f32, frame_height: u32) -> Spread {
         core,
         halo_px,
         halo,
+        blend: Halo::Glow,
     }
 }
 
@@ -97,8 +111,8 @@ pub enum Halo {
 
 impl Frame {
     /// Draws a star at `position`: one pickable sphere sized in pixels, so zoom does not change
-    /// it, with a whitened and brightened `color`, and one glow in `color` when the spread has a
-    /// halo.
+    /// it, with a whitened and brightened `color`, and one halo in `color` when the spread has
+    /// one, blended as `Spread::blend` says.
     pub(crate) fn star(
         &mut self,
         camera: &Camera,
@@ -107,24 +121,6 @@ impl Frame {
         color: Color,
         pick: u32,
         selected: bool,
-    ) {
-        self.star_with(camera, position, spread, color, pick, selected, Halo::Glow);
-    }
-
-    /// `star` with the halo blended as `halo` says.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a star's place, size, colour, pick and halo"
-    )]
-    pub(crate) fn star_with(
-        &mut self,
-        camera: &Camera,
-        position: Point,
-        spread: &Spread,
-        color: Color,
-        pick: u32,
-        selected: bool,
-        halo: Halo,
     ) {
         let center = self.project(camera, position);
         self.items.push(Item::Sphere {
@@ -137,7 +133,7 @@ impl Frame {
         });
         if spread.halo > 0.0 {
             let center = [center[0], center[1]];
-            self.items.push(match halo {
+            self.items.push(match spread.blend {
                 Halo::Glow => Item::Glow {
                     center,
                     radius: spread.halo_px,
@@ -370,15 +366,7 @@ mod tests {
         frame.star(&camera, position, &star, [200, 220, 255], 3, false);
         let glow = frame.items.clone();
         frame.items.clear();
-        frame.star_with(
-            &camera,
-            position,
-            &star,
-            [200, 220, 255],
-            3,
-            false,
-            Halo::Puff,
-        );
+        frame.star(&camera, position, &star.puffed(), [200, 220, 255], 3, false);
         assert_eq!(frame.items.len(), 2);
         match (glow[0], frame.items[0]) {
             (
@@ -421,14 +409,13 @@ mod tests {
         }
         // A faint star has no halo to blend.
         frame.items.clear();
-        frame.star_with(
+        frame.star(
             &camera,
             position,
-            &spread(7.5, 540),
+            &spread(7.5, 540).puffed(),
             [255; 3],
             3,
             false,
-            Halo::Puff,
         );
         assert_eq!(frame.items.len(), 1);
     }
