@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in seventeen views: a process
+A living picture of your machine inside the terminal, in twenty-one views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
@@ -33,13 +33,14 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux)
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
+./target/release/isotop --view hr --hr-diagram # hr starts on its Hertzsprung-Russell diagram; `m` flies between it and the sky
 ```
 
 Each view knows whether it runs on the platform; every view runs on Linux and macOS
-today. Tab, Shift+Tab and the number keys pass over a view that does not. `--view`
+today except the switchboard, which is Linux only. Tab, Shift+Tab and the number keys pass over a view that does not. `--view`
 with such a view starts on the first view that does instead, except in a headless
 `--output` or `--benchmark` run, which exits with status 1 and says why.
 `--list-views` prints the supported views in Tab order and exits, and `--verbose`
@@ -171,6 +172,7 @@ cache is stale.
 | CPU clock | There is no clock per core. Each cluster's average clock is the cycles its cores ran divided by the CPU time they ran them in, summed over every process isotop can read between two samples, and every lane of that kind shows it, so a cluster's chevrons move together and the legend says "cluster clock". A cluster with less than 0.05 s of CPU time in the interval has no reading, and its chevrons pause. Virtual machines count no cycles; there the legend says "no clock readings" and the chevrons stay still. Without sudo the clocks come from your own processes only |
 | Run queue | There is no run queue per CPU, so no red marbles at the start line. Each process's waiting threads come instead from its runnable time, which counts running as well, minus its CPU time: red beads trail its marble, one per thread waiting on average, with a faint red glow when any wait. The kernel brings runnable time up to date only when a thread is switched onto a core or blocks, so isotop counts only growth beyond the highest value it has seen; waiting can show a sample late. A process first seen while a thread had run for a long time without a switch can show that run as waiting once, so each reading is held to the process's thread count. After exec, whose new task keeps only one thread's counters, waiting starts over |
 | cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group, and no fox comes for an OOM kill; its legend says so |
+| cgroups and socket traffic (hr) | Hr is never skipped. Without cgroups its constellations are the app groups, one disc each, and its legend says "constellations = app groups"; loopback links have no byte counters, so a stick figure with no traffic is drawn at one brightness and the legend says "lines at one brightness". The Milky Way holds `kernel_task` |
 | Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy. In the cortex a synapse weighs the sockets of its link instead of the traffic, min(0.25 ln(1 + sockets), 2), and the legend says "no socket traffic: weight = socket count" |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
@@ -179,11 +181,13 @@ cache is stale.
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
 | Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
+| Interrupt table (switchboard) | The switchboard is unavailable: macOS exposes no unprivileged per-IRQ or per-CPU interrupt counters (`powermetrics` needs root, and IOReport is private). Tab, Shift+Tab and the number keys pass over it, the `v` picker and `--list-views` do not list it, `--verbose` prints `skipping view switchboard: not supported on this platform`, and there is no "not supported" screen. The module still compiles there |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
+| Memory detail (hive) | Hive is never skipped. `memory detail` is always missing, so every frame is unsplit: one pale-nectar kind counted from the physical footprint, never sealed, and the legend says `no memory detail: cells = memory footprint`. Hives are apps instead of cgroups (`hive = app`). Brood still comes from the growth of the footprint, and threads and their CPU are read as on Linux, but another user's processes are unreadable without sudo: their bees stand in the idle cluster and the legend counts them (`N without thread CPU`) |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -216,8 +220,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the twenty-one views in order (twenty on macOS), the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive and (on Linux) the switchboard are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -724,6 +728,132 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Hr
+
+![Hr: processes as stars on a plum planetarium dome, in blackbody colours from deep red to blue-white, grouped into dashed cgroup constellations with stick figures along their sockets, a Milky Way band of kernel threads across the sky](docs/media/hr.webp)
+
+A Hertzsprung-Russell sky of the machine: every process is a star on a planetarium dome, coloured by the blackbody its CPU would make, as bright as its memory, and sorted into the cgroup constellation it belongs to. `m` sends every star to its place on a Hertzsprung-Russell diagram of the machine and classifies it against the machine's own main sequence, such as `K3 III`.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Star | A process that is not a kernel thread (`Process::kind`), alive | One pickable star each. Zombies are not stars. A star's place on the dome is fixed when it is born and kept until it exits |
+| Colour | CPU, percent of one core | A blackbody at T = 2400 K x (1 + cpu / 5)^0.47, at most 40,000 K, so idle is 2,400 K (class M), one core about 10,000 K and twenty cores 40,000 K. The colour is `blackbody::color(T, 1.0)`; the core of the star is mixed 60 % towards white |
+| Brightness and size | Memory (RSS; the physical footprint on macOS) | The magnitude m = -2.5 log10(memory / 1 GiB) (`stellar::magnitude`), clamped to -6 .. +9; a process with no memory is +9. The point-spread star (`stellar::spread`) scales with the frame height over 720 px, not with zoom; a star whose flux is over 60 (a magnitude under 2.55) gets a bloom up to 48 px at 1080p |
+| Twinkle | The coefficient of variation CV of the shared CPU history over the last 10 s | Amplitude min(0.8, 0.45 CV), as the sum of three sines at 0.9 to 3.5 Hz with phases from the identity hash. A star with fewer than 3 samples, or a mean CPU under a thousandth of a percent, does not twinkle. A steady process shines steadily |
+| Spectral class | The temperature | O from 30,000 K, B from 10,000 K, A from 7,500 K, F from 6,000 K, G from 5,200 K, K from 3,700 K, M below. The subclass 0 to 9 is the position of log10 T within the class, 0 at its hot edge: 4,500 K is K4 |
+| Luminosity class | The star's residual from the main sequence: its m less the fitted line's m at its temperature | See the thresholds below. `K3 III` is a class K3 giant; a white dwarf of class A is `DA`. With fewer than 3 points there is no fit and the label is the spectral class alone |
+| Constellation | `Process::cgroup` (`Process::group` where the platform has no cgroups) | One disc each from `layout::Discs`, sized by sqrt(members + 3) in buckets of 12 members and 1.5 times more, so a disc is re-placed rarely. The name is the cgroup's group label, written in the clearest part of the disc. A star sits inside 0.85 of the radius at a place from its identity hash, nudged once clear of the others at its birth and kept |
+| Dashed boundary | The constellation discs | The edges between cells of a fixed 64 by 36 grid that belong to different constellations (each cell goes to the disc nearest by power distance). Recomputed only when a disc is placed, grows or the layout's scale changes. 5 px on and 4 off at 720p |
+| Stick figure | A socket link (`Snapshot::links`) between two stars of one constellation | A line with a gap of 4.5 + 1.6 max(0, 3.5 - m) px at each star, drawn at brightness 0.35 + 0.65 min(1, log10(1 + B) / 6) with B the link's bytes a second, blended toward the sky; 0.65 where the platform has no traffic. A link between two constellations is a faint dashed line, up to 360 px long. `c` chooses all, highlighted or none |
+| Milky Way | Kernel threads (`Kind::Kernel`) | A band across the dome whose brightness is 1 - exp(-count / 40) of the number of kernel threads, and a faint point of dust for each, along it. The dust is not pickable; its place is kept for search and the tour. Kernel threads never appear on the diagram |
+| Nova | A process born after the first frame | A ramp over the first 0.5 s and a burst ring over 1.5 s |
+| Fade and supernova | A process that exits | A star that held under 1 GiB when last seen fades out. One that held more goes supernova: a flash and an expanding blue-to-red shell. A zombie counts as exited, with the memory it last had alive |
+| Labels | The six most luminous stars | `name K3 III` beside the star, in both modes |
+| Inspector lines | The selected or toured star | `class K3 III \| T 4600 K \| m +1.23`, the main sequence's m at that temperature with the residual, and the CV over 10 s with the twinkle it makes |
+
+**Luminosity classes.** The residual is how far above (positive: fainter) the fitted line the star stands. The class is the first of these whose bound the residual is under:
+
+| Class | Residual under (magnitudes) |
+| --- | --- |
+| Ia | -6 |
+| Ib | -4.5 |
+| II | -3.25 |
+| III | -1.75 |
+| IV | -0.9 |
+| V | 1.5 |
+| VI | 2.75 |
+| D (white dwarf) | 2.75 or more, if T is at least 7,500 K (a cooler star stays VI) |
+
+**The main sequence** is the Theil-Sen line of m on log10 T: the median of the slopes of all pairs of stars, then the median intercept, so a few giants and a few dwarfs do not drag it. It leaves out kernel threads, processes with no memory, stars clamped at either end of the magnitude scale and pairs whose log10 T differs by 0.01 or less, and above 400 stars it uses every k-th star by identity. It is computed once for each new sample, never for each frame. With a demo's narrow range of memory the line is nearly flat; on a real machine, where memory runs over six orders of magnitude, giants and dwarfs spread above and below it.
+
+**Diagram mode.** `m` flies the stars in 1.5 s (cubic in and out, each star waiting up to 0.28 of the flight and bending its path by up to 0.25 of its length, both from its identity hash, driven by the animation clock), the dome fades and the axes come up: temperature on x from 45,000 K at the left to 2,250 K at the right, hot on the left, with O B A F G K M along the top and under each tick the CPU that makes it; magnitude on y from -6 at the top to +9 at the bottom, with the memory each stands for; the fitted main sequence dashed; and the regions (main sequence, giants, supergiants, white dwarfs) named where the fit puts them. A star's place on the diagram depends on its own CPU and memory and on nothing else. `m` again flies the stars home. The labels of the six brightest and the constellation names wait for a flight to land.
+
+**Keys and flags.** `m` toggles between the sky and the diagram, and appears on the help line while hr is shown. `--hr-diagram` starts hr in the diagram, for headless renders: `isotop --demo --view hr --hr-diagram --output hr-diagram.png`. Pan and zoom apply to both; rotate and tilt leave the dome upright, since it always faces the viewer. Click a star for its inspector; the tour and Space visit the twelve brightest.
+
+**Demo.** `--demo --view hr` turns on births and exits, with a process that held more than 1 GiB exiting within the first seconds, so novae, fades and a supernova appear by `--time 12`. A headless demo run replays 12 seconds of samples first, as a live run takes them, so the twinkle and the main sequence are settled.
+
+**Caps.** Each star adds about three items to the frame, for each process the scene admits; one cached colour field of 288 by 162 nodes for the dome, rebuilt only when the kernel-thread count changes or a flight is running.
+
+**What cannot be measured.** Without cgroups (macOS) the constellations are app groups and the legend says `constellations = app groups`; without socket traffic the stick figures are drawn at one brightness and the legend says `lines at one brightness`. The Milky Way on macOS holds `kernel_task`.
+
+**Platform.** On Linux everything above. On macOS the stars, the classes and the diagram are as on Linux; see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
+### Hive
+
+![Hive: eight wooden beehives on a meadow at dusk, each with three honeycomb frames lifted out behind it, amber honey arching over a ring of brood and orange pollen, pale green frames where the memory is not split, and a few bees crawling on the combs](docs/media/hive.webp)
+
+Memory as honeycomb: each cgroup is a wooden hive, each of its three largest processes is a frame of 64 by 32 cells counted by kind of memory, and each thread is a bee.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Hive | A cgroup (the cgroup path on Linux, the app on macOS), as Cells groups processes | One per group, ranked by the sum of `Process::memory` (RSS; the physical footprint on macOS) over every process in it, whatever its rollup. At most 8 are shown, and a shown hive is replaced only by a hive that outweighs it by 25% |
+| Hive label | The group's name and its processes | The short name, then `+N more` for the N processes of the hive that are not among its 3 frames |
+| Hive trim | `Process::kind` of the hive's largest process | The kind colour (kernel, system, session) |
+| Frame | A process: the 3 largest in its hive by `Process::memory`, ties by identity | Frame j stands back 0.5 + 0.4 j and aside 0.1 j hive units from its hive, lifted 0.78 j above the first, and is 12% darker for each slot back. A process keeps the lowest free slot while it stays among the three |
+| Frame tag | `Process::kind` | The kind colour on the frame's top bar |
+| One cell | A unit of memory, the same for every frame | A power of two of bytes, at least 64 KiB: the smallest for which the largest frame has at most 2,000 cells. It holds while 700 units <= the largest frame <= 2,000 units (or while it is 64 KiB and the largest frame is under 700 cells), so the scale does not change at every sample. The legend gives it: `1 cell = 4 MiB` |
+| Honey (amber) | `Pss_Anon` from `smaps_rollup` (`Process::memory_detail`, the 64 largest processes by RSS) | round(Pss_Anon / unit) cells. Every kind is rounded to the nearest cell on its own, a half up |
+| Pollen (red and orange) | `Pss_File` | round(Pss_File / unit) cells |
+| Royal jelly (white) | `Pss_Shmem` | round(Pss_Shmem / unit) cells |
+| Capped honey (wax-capped gold) | `SwapPss` | round(SwapPss / unit) cells |
+| Brood (pearl larvae) | The growth of `Process::memory` since the sample before | max(0, RSS now - RSS before) in cells, carved out of the honey and never more than it. When the growth stops the cells go back to honey |
+| Pale nectar (pale green) | `Process::memory` of a process whose rollup is `Pending` (not among the 64 largest, or not reached yet) or missing; `Pss` where the kernel does not split it (before 5.3) | One kind in the same cells, with the capped honey of `SwapPss` beside it on a kernel without the split. The brood is carved out of it |
+| Sealed frame | A rollup that could not be read (`Measured::Unreadable`) | A uniform wax cap, no cells and no bees, labelled `sealed: smaps_rollup unreadable`. It does not count toward the largest frame |
+| Bee | One thread (`Process::thread_list`, read while hive is shown) | At most 200 a frame: listed threads first, then bees with no reading for threads the list does not hold. The rest are a label, `+N bees` |
+| Bee speed | The thread's CPU, percent of one core (`Thread::cpu`) | 0.25 + 9 sqrt(CPU / 100) cells a second. A thread under 3% is idle and stands still in a cluster beside the brood |
+| Queen | The thread that leads its process (`Thread::leader`: the thread whose tid is the pid on Linux, the oldest thread on macOS) | 1.37 times the size, the colour of the process's kind on her back, at most 0.6 cells a second. She stands in the brood when idle |
+| Bee with no reading | A thread whose CPU was not measured (a first observation, a thread beyond an incomplete list, a list not read) | Never given a speed: it stands in the idle cluster, and the legend counts it |
+
+**Decorative:** the dusk sky, the meadow slab and the shade of each of its tiles, the hive's box, stand, lid, landing board, entrance slot and shadow, the faint column of the trim colour between a lid and its frames, the wood of the frames, bars and lugs, the wax walls and glosses of the cells, the six colours of pollen (a cell keeps the one it was given, seeded by process and cell), the pearly curl of each larva and its turn, its size in four stages (the innermost quarter of the brood largest, the outermost smallest), the colours and stripe of a bee and its wings (two triangles, drawn only when a bee is at least 6 px long, flapping while it walks), where a busy bee starts and the wandering path it follows (seeded by process and thread), where an idle bee stands in the cluster, and the arrangement of the kinds on the comb.
+
+**Arrangement.** The order of the cells is a convention, not a measurement; only the number of cells of each kind is measured. The brood takes the cells nearest the nest, a point in the middle of the comb at 58% of its height, in order of distance with x scaled by 1/1.55. Pollen packs round it, royal jelly lies below it, and honey arches over the nest (a cell above it counts as nearer than one below), with capped honey and pale nectar taking the cells after the honey in the same arch. Each kind takes the free cells nearest its centre in its own order, ties by cell index, so the same counts always make the same comb. The cells are drawn as one field (8 texels to a cell, `render::field`) and repainted only when the counts change.
+
+**Layout.** A hive's place depends on its name and the other shown hives and nothing else; a frame's slot depends on its process and the hive. CPU, memory and population never move a hive or a frame, and a hive keeps its place until it is replaced. The camera fits the box round the shown hives, recomputed only when the shown set changes.
+
+**Simulation.** The bees step at a fixed H = 0.05 s (20 Hz, at most 10 steps a frame, a gap of more than 0.5 s counted as 0.5 s), whatever the frame rate, and are drawn interpolated between steps. A busy bee walks a wandering path at its speed and turns back at the edge of the comb, and an idle one walks home. A bee keeps its random stream and its place while its thread lives (a thread is told apart by its tid and start time).
+
+**Caps.** At most 8 hives, 3 frames to a hive and 200 bees to a frame, so at most 4,800 bees, whatever `--processes` is. The legend counts what a cap hides: hives not shown `(+X)`, the processes of shown hives that have no frame (`C counted`), and the bees a frame's cap leaves out are a `+N bees` label on it.
+
+**What cannot be measured.** `smaps_rollup` is read for the 64 largest processes only, in a 50 ms pass that resumes where it stopped, so the frame of any other process, and one the pass has not reached yet, is unsplit: its whole resident set in the pale-nectar colour, with no invented split of it, and the legend counts them (`U unsplit`). A rollup the process does not allow to be read is sealed. A kernel before 5.3 has no `Pss_` split, so Pss is drawn in one kind and the legend says `no memory split: cells = Pss and SwapPss`. Another user's threads are unreadable without privileges, and a pass reads only so many threads, so some bees have no CPU: they stand in the cluster and the legend counts them (`S without thread CPU`). If threads cannot be read at all every bee does.
+
+**Platform.** On Linux everything above. On macOS hives are apps, there is no `smaps_rollup` (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)), and every frame is unsplit. Hive has no keys of its own.
+
+### Switchboard
+
+![Switchboard: sixteen operators in chairs at a wooden cord switchboard, forty-eight interrupt lines as jacks with amber lamps, coloured cords hanging in catenaries from each jack to the operator's keyshelf, a clock and two inter-office lamps on each operator's rail and a softirq board of ten rows to the right](docs/media/switchboard.webp)
+
+Hardware interrupts as a cord telephone exchange, on Linux. Every IRQ line is a jack with a lamp, every CPU is an operator, and the cord of a line runs to the operator whose CPU serviced most of its interrupts in the last interval. No process is drawn; the view reads only `/proc/interrupts` (with each line's `effective_affinity_list`) and `/proc/softirqs`, through the per-CPU rates the sampler works out from the change of each count between two passes, so a paused or rewound frame shows the sample it was.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Jack | A numbered row of `/proc/interrupts` (an IRQ line) | The device is the first action name with a trailing queue suffix removed (`[-:_]?(q\|rx-\|tx-\|TxRx-)?\d+$`), so `nvme0q0` to `nvme0q8` are the device `nvme0`; devices stand together in rows ordered by their lowest IRQ number, with a divider between them and one label each (a device of one line is labelled with the line's name). The board has clamp(ceil(sqrt(3 n)), 12, 16) columns for the n lines it first sees and grows rows, never columns. A line keeps its seat for as long as it exists, and a freed seat goes to the next newcomer, lowest first |
+| Jack lamp brightness | The line's rate: the per-CPU rates of the interval, summed | log10(rate + 1) / log10(8000), at most 1, in amber. A rate that is not measured yet (a first pass, a new CPU, a count that went backwards) lights nothing and is never read as zero |
+| Lamp flicker | The same rate | Event k flashes at (k + jitter(irq, k)) / f, with f = min(rate, 0.9 x `--fps`) and the jitter a hash of the line and k, so a lamp never flickers faster than a frame shows, and the same frame is drawn at the same time. A flash decays with a time constant of 50 ms. The inspector shows the true rate and says how far the flicker is capped |
+| Cord's operator | The per-CPU rates of the line, **not the cumulative counts** | The CPU with the largest rate in the interval (the lowest CPU on a tie; with more than 64 CPUs a seat adds the CPUs it covers). A line with no events keeps its cord where it was; a line never seen to be serviced has none |
+| Cord swing | The line's `effective_affinity_list` and its servicing CPU | The cord swings the moment the effective affinity changes, and after a new servicing CPU has persisted for 2 samples in a row. The plug lifts for 0.35 s, swings over on an arced smoothstep for 1.05 s and seats for 0.25 s, on the wall clock; the cord's colour crossfades from the old operator's to the new one's and the lamp flutters while it is out. A frame after a gap (another view, a rewind) puts every cord where the sample says and swings none |
+| Cord shape | The line's number | A true catenary of 24 segments, solved by bisection (`switchboard::cord::catenary`) for a cord of length chord x slack, with slack from 1.02 to 1.07 hashed from the IRQ number, and hung again only when an end moves. Where the sag would hang more than 3 design pixels below both ends the slack is cut |
+| Cord width | The line's rate | (0.6 + 0.5 log10(rate + 1), 0.6 to 3.0 design pixels) x 1.6, which reads thin beside the lamps otherwise |
+| Cord colour | The operator's CPU kind and number | A warm cloth dye for performance cores, a cool one for efficiency cores and cores of unknown kind, the same table for every cord that runs to an operator |
+| Operator | A CPU | Seated performance cores first, then efficiency cores, then unknown, by CPU number within each, labelled `cpu3 P`; at most 64 seats, above that each covers ceil(n / 64) CPUs and the legend says so. Her head and arm sway and reach with the CPU's busy share |
+| Operator's clock | `LOC` (on arm64 the `arch_timer` row) | The hand makes one turn per 6,000 counts, ticking in sixtieths of a turn and interpolated between samples from the rate. Without a timer row the clocks stop at twelve and the legend says so |
+| Operator's telephone | `RES` (on arm64 the `Rescheduling` IPI row) | Rattles while the CPU's rate is at least 1 a second |
+| Operator's green lamp | `CAL` and `TLB` (arm64 `Function call` and TLB rows), summed | log10(rate + 1) / log10(1000), at most 1 |
+| Operator's red lamp | `NMI` | Lit for 2 s by an increase of the count |
+| Softirq board | `/proc/softirqs`, ten rows | One lamp per operator per softirq, in the kernel's order, the rate being the change in count per second: log10(rate + 1) / log10(5000), at most 1, dark under half an event a second. A rate that is not known (the first pass) is a darker lamp than a measured zero |
+| Picking and inspector | The line | A jack, its lamp, its socket and its cord pick the line: name, IRQ, chip, rate, servicing CPU, affinity and effective affinity, the last move and how long ago, and the three CPUs with the most of its events as shares. Operators and softirq lamps are not pickable |
+
+**Decorative:** the wood of the board, the cornice, the ivory strips and the bakelite panels they sit on, the keyshelf and the cabinet under it, the floor, the operators' figures, hair, dresses and chairs, the telephones' bodies, the brass of the sockets, plugs and rails, the cords' dark edges and the room's lighting. **The wood, the chairs and the figures carry no data.**
+
+**Named rows that are not drawn.** `/proc/interrupts` has rows that are not lines: of those, only `LOC`, `RES`, `CAL`, `TLB` and `NMI` (and their arm64 counterparts) are shown, on the operators. The others are not drawn: `SPU` (spurious), `PMI` (performance monitoring), `IWI` (IRQ work), `RTR` (APIC ICR read retries), `TRM` and `THR` (thermal and threshold events), `DFR`, `MCE` and `MCP` (machine checks), `HYP`, `HRE` and `HVS` (hypervisor), `PIN`, `NPI` and `PIW` (posted interrupts), `ERR` and `MIS`, and on arm64 the other `IPI` rows (timer broadcast, CPU stop, IRQ work, CPU backtrace, wake-up). Interrupts between CPUs have no known sender, so **nothing is ever drawn between two operators**.
+
+**Caps.** 128 jacks. Above that, lines whose count has not changed since the view began watching go first, then each device of more than 8 lines folds into one jack named like `nvme0q* (33)` that sums its rates; the legend says how many lines were folded. At most 64 operators. At most 128 cords of 24 segments (a board of up to 64 cords also has a dark edge on each, which costs a second ribbon), and lamp glows of at most 12 pixels at 1080 lines.
+
+**What cannot be measured.** Each missing source is named in the legend. Without `/proc/interrupts` the board stays dark (no jack, no cord) and the header says so; without the effective affinities only a change of servicing CPU swings a cord (`no irq affinity`); without `/proc/softirqs` the softirq board stays dark; without a timer row the clocks stop. A kernel that routes a line to several CPUs shows the one that serviced it, and a line whose CPUs are all unmeasured has no cord.
+
+**Platform.** Linux only. On macOS the view is unavailable (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)). The switchboard has no keys of its own, and no tour: `l` hides the labels.
+
+The header reads like `48 lines | 41,203 irq/s | RES 2,114/s | 16 operators: 8 P, 8 E`.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -824,7 +954,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux) |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -859,6 +989,7 @@ visit the next or a random process in the tour's own order and let it go on from
 | `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
 | `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
 | `b` | Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame |
+| `m` | Hr: fly the stars to the Hertzsprung-Russell diagram, and back to the sky |
 | `?` | Toggle help; the second line leads with the shown view's own keys |
 | `q` / Ctrl-C | Quit |
 
@@ -921,7 +1052,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo switchboard plays the three seconds before `--time` as a live run would have drawn them (a sample a second, a frame every 0.1 s, none of them rasterized), so at `--time 12` the line irqbalance moved at 10.2 s is a second into its swing and the red lamp of cpu0 is lit; its table is a synthetic one of 48 lines on 16 CPUs. Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo hive plays the ten seconds before `--time` the same way (a frame every 0.05 s, none of them rasterized), so its bees are spread over the combs and its brood is measured against the sample before. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -933,7 +1064,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-64,170 lines of Rust (36,937 production, 27,233 test) in 66 files, 868 tests, 18 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+74,243 lines of Rust (42,981 production, 31,262 test) in 75 files, 975 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

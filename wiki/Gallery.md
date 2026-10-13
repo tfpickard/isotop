@@ -6,7 +6,7 @@ one exception, the mockups of planned views, is labelled. The renders come from
 which regenerates them from the release binary, and the figures from `docs/figures/*.py`
 (stdlib-only, deterministic). Nothing is retouched.
 
-![All eighteen views](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/contact-sheet.webp)
+![The first eighteen views](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/contact-sheet.webp)
 
 ## History
 
@@ -31,7 +31,7 @@ The gallery contains hens, fish, crabs and starlings. It contains no horse.
   and slow views (Ptolemy, Coop) barely move in five seconds.
 * There is no Necropolis loop on purpose: a headless Necropolis frame is static apart from drifting fog.
 
-## The eighteen views
+## The views
 
 ### [City](View-City)
 
@@ -161,6 +161,26 @@ Demo render at `--time 60`.
 
 Demo render at `--time 60`.
 
+### [HR](View-HR)
+
+![HR](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/hr.webp)
+
+![HR in diagram mode](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/hr-diagram.webp)
+
+Demo render at `--time 12`, in the sky and with `--hr-diagram`.
+
+### [Hive](View-Hive)
+
+![Hive](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/hive.webp)
+
+Demo render at `--time 12`.
+
+### [Switchboard](View-Switchboard)
+
+![Switchboard](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/switchboard.webp)
+
+Demo render at `--time 12` (Linux only).
+
 ## Screenshots from a terminal
 
 The README's gallery uses captures of Ghostty running `isotop --demo`; the animations below are from those
@@ -240,21 +260,9 @@ specification asks for. Each page links the mockup beside its theory.
 
 ![Chamber mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/chamber.jpg)
 
-### [HR](Planned-HR)
-
-![HR mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hr.jpg)
-
-### [Hive](Planned-Hive)
-
-![Hive mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hive.jpg)
-
 ### [Anthill](Planned-Anthill)
 
 ![Anthill mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/anthill.jpg)
-
-### [Switchboard](Planned-Switchboard)
-
-![Switchboard mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/switchboard.jpg)
 
 ### [Plumbing](Planned-Plumbing)
 
@@ -278,7 +286,7 @@ specification asks for. Each page links the mockup beside its theory.
 
 ## Mockups of views since implemented
 
-These four were mockups when this wiki was begun and are real views now. The mockups are kept because the look they fixed is the look the views were built to; compare each with its render above.
+These seven were mockups when this wiki was begun and are real views now. The mockups are kept because the look they fixed is the look the views were built to; compare each with its render above.
 
 ### [Horizon](View-Horizon)
 
@@ -295,3 +303,15 @@ These four were mockups when this wiki was begun and are real views now. The moc
 ### [Arbor](View-Arbor)
 
 ![Arbor mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/arbor.jpg)
+
+### [HR](View-HR)
+
+![HR mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hr.jpg)
+
+### [Hive](View-Hive)
+
+![Hive mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hive.jpg)
+
+### [Switchboard](View-Switchboard)
+
+![Switchboard mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/switchboard.jpg)

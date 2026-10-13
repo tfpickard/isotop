@@ -12,7 +12,9 @@ mod gpu;
 #[cfg(test)]
 mod harness;
 mod history;
+mod hive;
 mod horizon;
+mod hr;
 mod journal;
 mod layout;
 mod matrix;
@@ -32,6 +34,7 @@ mod simulation;
 mod status;
 mod stellar;
 mod strata;
+mod switchboard;
 mod terminal;
 mod tesseract;
 mod threads;
@@ -56,12 +59,12 @@ use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, de
 use picker::{Entry, Picker, Toggle};
 use platform::Source;
 use render::{
-    Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target,
-    Thing, label_name,
+    Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Side,
+    Target, Thing, label_name,
 };
 use simulation::Rng;
 use terminal::{Label, Popup, Terminal, Tone};
-use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
+use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, ViewOptions, Warmup, When};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
 /// How long the journal follower keeps running after the demand last contained
@@ -160,6 +163,9 @@ struct Options {
     /// This machine's location as LAT,LON for the globe; defaults to the system time zone's city
     #[arg(long, value_parser = parse_home, allow_hyphen_values = true)]
     home: Option<(f32, f32)>,
+    /// Start the hr view as a Hertzsprung-Russell diagram instead of the sky (m toggles)
+    #[arg(long)]
+    hr_diagram: bool,
 }
 
 impl Options {
@@ -176,6 +182,13 @@ impl Options {
     /// `--sample-ms` in seconds: how far back the sample before the first one is.
     fn sample_seconds(&self) -> f64 {
         f64::from(self.sample_ms) / 1000.0
+    }
+
+    /// The settings the view modules read, taken once at startup.
+    fn view_options(&self) -> ViewOptions {
+        ViewOptions {
+            hr_diagram: self.hr_diagram,
+        }
     }
 }
 
@@ -1184,6 +1197,39 @@ impl App {
         })
     }
 
+    /// The labels for `Stage::tags`, each beside its point on the side it asked for if that fits
+    /// on screen and on the other side if not, in the cells `board` has free.
+    fn tag_labels(&self, frame: &Frame, layout: &Layout, board: &mut Board) -> Vec<Label> {
+        let mut labels = Vec::new();
+        for tag in &self.scene.tags {
+            let Some(at) = frame.locate(&self.camera, tag.at) else {
+                continue;
+            };
+            let width = tag.text.chars().count() as u16;
+            let (column, row) = layout.cell_of(at);
+            // The left side must end before the point's own cell: a point near the left edge has
+            // no left side, and the text is never written over it.
+            let (right, left) = (Some(column + 2), column.checked_sub(width + 1));
+            let sides = match tag.side {
+                Side::Right => [right, left],
+                Side::Left => [left, right],
+            };
+            let fits = |column: u16| column + width <= layout.columns;
+            if row < layout.rows
+                && let Some(column) = sides.into_iter().flatten().find(|&column| fits(column))
+                && board.claim(column, row, width, 1)
+            {
+                labels.push(Label {
+                    column,
+                    row,
+                    text: tag.text.clone(),
+                    tone: Tone::Bright,
+                });
+            }
+        }
+        labels
+    }
+
     /// Text drawn over the scene, highest priority first: the inspector popup, the tour
     /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
     fn overlay(&self, frame: &mut Frame, layout: &Layout, radius: f32) -> (Vec<Label>, Vec<Popup>) {
@@ -1279,6 +1325,7 @@ impl App {
         if !self.labels {
             return (labels, panels);
         }
+        labels.extend(self.tag_labels(frame, layout, &mut board));
         for (point, text) in &self.scene.places {
             if let Some(at) = frame.locate(&self.camera, *point) {
                 let width = text.chars().count() as u16;
@@ -1881,6 +1928,8 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     }
     let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
+    app.scene.configure(&options.view_options());
+    app.scene.fps = options.fps;
     app.playlist = playlist;
     app.choose_renderer(options.renderer, options.gpu_power)?;
     let limit = options.limit as usize;
@@ -3295,6 +3344,12 @@ mod tests {
         Options::parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
     }
 
+    #[test]
+    fn view_options_come_from_the_command_line_and_default_to_off() {
+        assert_eq!(options(&[]).view_options(), ViewOptions::default());
+        assert!(options(&["--hr-diagram"]).view_options().hr_diagram);
+    }
+
     /// What `preflight` returns and writes to standard output and error for `arguments`, with
     /// the views named in `missing` unavailable.
     fn preflight_with(arguments: &[&str], missing: &[&str]) -> (Preflight, String, String) {
@@ -3813,6 +3868,114 @@ mod tests {
         app.labels = false;
         let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
         assert!(labels.is_empty(), "labels off hides titles too");
+    }
+
+    #[test]
+    fn tags_from_the_stage_are_written_beside_their_point_on_the_side_that_fits() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 512);
+        frame.rasterize();
+        let seat = frame
+            .locate(&app.camera, app.scene.positions[&last])
+            .expect("the seat is on screen");
+        let (column, row) = layout.cell_of(seat);
+        let tag = |app: &App, frame: &mut Frame| -> Option<Label> {
+            let (labels, _) = app.overlay(frame, &layout, layout.pick_radius(false));
+            labels
+                .into_iter()
+                .find(|label| label.text == views::testing::GUIDE_TAG)
+        };
+        let width = views::testing::GUIDE_TAG.chars().count() as u16;
+        let label = tag(&app, &mut frame).expect("the tag fits");
+        assert_eq!(
+            (label.column, label.row),
+            (column + 2, row),
+            "beside the point, on its own row, on the preferred side"
+        );
+        assert!(matches!(label.tone, Tone::Bright));
+        // Asking for the left puts it left of the point.
+        app.scene.tags[0].side = Side::Left;
+        let label = tag(&app, &mut frame).expect("the left side fits");
+        assert_eq!(
+            (label.column, label.row),
+            (column.saturating_sub(width + 1), row)
+        );
+        app.scene.tags[0].side = Side::Right;
+        // Moved to the right edge, where it no longer fits, it flips to the left of the point.
+        let [across, along] = app.camera.ground(
+            layout.width as f32 * 0.5 - 4.0,
+            seat[1] - layout.height as f32 * ORIGIN_Y,
+        );
+        app.scene.tags[0].at = [
+            app.camera.center[0] + across,
+            app.camera.center[1] + along,
+            0.0,
+        ];
+        let label = tag(&app, &mut frame).expect("it fits on the other side");
+        assert!(label.column + width < layout.columns, "{}", label.column);
+        assert_eq!(label.row, row);
+        app.labels = false;
+        assert!(tag(&app, &mut frame).is_none(), "labels off hides tags too");
+    }
+
+    #[test]
+    fn a_tag_at_the_left_edge_is_never_written_over_its_own_point() {
+        let (mut app, last) = guided_app();
+        let mut layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 512);
+        frame.rasterize();
+        let seat = frame
+            .locate(&app.camera, app.scene.positions[&last])
+            .expect("the seat is on screen");
+        let [across, along] = app.camera.ground(
+            -(layout.width as f32) * 0.5 + 2.0,
+            seat[1] - layout.height as f32 * ORIGIN_Y,
+        );
+        app.scene.tags[0].at = [
+            app.camera.center[0] + across,
+            app.camera.center[1] + along,
+            0.0,
+        ];
+        app.scene.tags[0].side = Side::Left;
+        let width = views::testing::GUIDE_TAG.chars().count() as u16;
+        let tag = |app: &App, frame: &mut Frame, layout: &Layout| -> Option<Label> {
+            let (labels, _) = app.overlay(frame, layout, layout.pick_radius(false));
+            labels
+                .into_iter()
+                .find(|label| label.text == views::testing::GUIDE_TAG)
+        };
+        let at = frame
+            .locate(&app.camera, app.scene.tags[0].at)
+            .expect("the point is on screen");
+        let (column, _) = layout.cell_of(at);
+        assert!(
+            column < width + 1,
+            "the point is too near the edge for a left side"
+        );
+        let label = tag(&app, &mut frame, &layout).expect("the right side fits");
+        assert_eq!(
+            label.column,
+            column + 2,
+            "it goes to the right of the point"
+        );
+        // With no room on the right either it is not drawn, rather than drawn over the point.
+        layout.columns = column + 1 + width;
+        let (narrow, _) = layout.cell_of(at);
+        assert!(narrow + 2 + width > layout.columns);
+        assert!(tag(&app, &mut frame, &layout).is_none());
     }
 
     #[test]
@@ -5410,5 +5573,58 @@ mod tests {
         city.show_help = true;
         assert!(line(&globe, 4).starts_with(" Scroll turn/tilt | drag pan | Ctrl-scroll zoom"));
         assert!(line(&city, 4).starts_with(" Scroll pan | Ctrl-scroll zoom"));
+    }
+
+    #[test]
+    fn the_m_key_toggles_mode_only_while_hr_is_shown() {
+        let hr = view("hr");
+        let diagram = |app: &App| {
+            app.scene
+                .module::<hr::Hr>(hr)
+                .expect("the hr module")
+                .in_diagram()
+        };
+        let mut app = App::new(view("city"), model::demo(12.0, 64), all_available());
+        app.render(320, 180, 512);
+        press(&mut app, KeyCode::Char('m'));
+        app.switch(hr);
+        app.render(320, 180, 512);
+        assert!(
+            !diagram(&app),
+            "an `m` pressed in another view did not reach hr"
+        );
+        app.show_help = true;
+        let help = app.text(1.0, "test", 10, 512)[3].clone();
+        assert!(
+            help.starts_with(" m diagram or sky | Arrows/WASD pan"),
+            "{help}"
+        );
+        press(&mut app, KeyCode::Char('m'));
+        app.render(320, 180, 512);
+        assert!(diagram(&app), "`m` sends the stars to the diagram");
+        assert!(
+            app.scene.legend(hr, app.snapshot()).contains("m sky"),
+            "and the legend says how to come back"
+        );
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        app.render(320, 180, 512);
+        assert!(diagram(&app), "a search takes the letter instead");
+        press(&mut app, KeyCode::Char('m'));
+        app.render(320, 180, 512);
+        assert!(!diagram(&app), "`m` again returns to the sky");
+        app.switch(view("city"));
+        press(&mut app, KeyCode::Char('m'));
+        app.switch(hr);
+        app.render(320, 180, 512);
+        assert!(!diagram(&app), "nor does it while another view is shown");
+        // `--hr-diagram` starts in the diagram.
+        let mut started = App::new(hr, model::demo(12.0, 64), all_available());
+        started
+            .scene
+            .configure(&options(&["--hr-diagram"]).view_options());
+        started.render(320, 180, 512);
+        assert!(diagram(&started));
     }
 }

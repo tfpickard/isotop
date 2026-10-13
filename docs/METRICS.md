@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 66 | 64,155 | 1,465 | 3,702 |
-| SVG | 89 | 39,904 | 9 | 0 |
-| Python | 121 | 22,902 | 830 | 3,069 |
+| Rust | 75 | 74,225 | 1,681 | 4,278 |
+| SVG | 89 | 39,920 | 9 | 0 |
+| Python | 121 | 22,916 | 832 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 13,855 | 4,928 |
-| Plain Text | 7 | 0 | 303 | 0 |
-| **Total** | **370** | **127,282** | **16,490** | **11,750** |
+| Markdown | 82 | 0 | 14,011 | 4,981 |
+| Plain Text | 7 | 0 | 306 | 0 |
+| **Total** | **379** | **137,382** | **16,867** | **12,383** |
 
 ## Rust by module
 
@@ -23,12 +23,14 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/model.rs` | 3,129 | 4,017 |
+| `src/model.rs` | 3,167 | 4,095 |
 | `src/coop.rs` | 2,716 | 1,367 |
+| `src/main.rs` | 2,010 | 3,093 |
 | `src/necropolis.rs` | 1,995 | 610 |
-| `src/main.rs` | 1,969 | 2,934 |
-| `src/render.rs` | 1,708 | 938 |
+| `src/render.rs` | 1,749 | 987 |
+| `src/hr.rs` | 1,725 | 1,158 |
 | `src/arbor.rs` | 1,668 | 1,198 |
+| `src/hive.rs` | 1,539 | 1,066 |
 | `src/cortex.rs` | 1,220 | 540 |
 | `src/platform/macos/mod.rs` | 1,197 | 609 |
 | `src/tesseract.rs` | 1,053 | 561 |
@@ -36,6 +38,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/ptolemy.rs` | 983 | 421 |
 | `src/murmuration.rs` | 925 | 782 |
 | `src/horizon/disk.rs` | 796 | 274 |
+| `src/switchboard/lines.rs` | 694 | 621 |
+| `src/switchboard.rs` | 692 | 352 |
 | `src/views/systems.rs` | 680 | 416 |
 | `src/simulation.rs` | 647 | 762 |
 | `src/platform/linux/mod.rs` | 609 | 370 |
@@ -43,26 +47,29 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/reef.rs` | 588 | 147 |
 | `src/platform/macos/logic.rs` | 587 | 807 |
 | `src/platform/linux/events.rs` | 581 | 317 |
-| `src/render/field.rs` | 572 | 719 |
+| `src/render/field.rs` | 575 | 719 |
+| `src/views.rs` | 572 | 705 |
 | `src/neurons.rs` | 569 | 333 |
 | `src/horizon.rs` | 565 | 630 |
 | `src/cells.rs` | 523 | 540 |
 | `src/cores.rs` | 500 | 318 |
 | `src/platform/mod.rs` | 500 | 106 |
-| `src/views.rs` | 495 | 631 |
-| `src/model/kernel.rs` | 492 | 474 |
+| `src/model/kernel.rs` | 492 | 485 |
 | `src/globe.rs` | 483 | 500 |
 | `src/views/flow.rs` | 475 | 43 |
 | `src/terminal.rs` | 473 | 185 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
 | `src/render/strokes.rs` | 386 | 317 |
+| `src/switchboard/scenery.rs` | 382 | 0 |
 | `src/views/ripple.rs` | 374 | 286 |
 | `src/matrix.rs` | 341 | 236 |
 | `src/platform/linux/net.rs` | 320 | 278 |
+| `src/switchboard/figures.rs` | 298 | 0 |
 | `src/blackbody.rs` | 292 | 146 |
 | `src/views/city.rs` | 285 | 86 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
+| `src/model/exchange.rs` | 274 | 228 |
 | `src/places.rs` | 270 | 0 |
 | `src/threads.rs` | 252 | 256 |
 | `src/medium.rs` | 240 | 66 |
@@ -71,10 +78,11 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/strata.rs` | 210 | 128 |
 | `src/platform/linux/files.rs` | 201 | 187 |
 | `src/picker.rs` | 195 | 44 |
+| `src/stellar.rs` | 172 | 222 |
 | `src/platform/linux/counters.rs` | 170 | 279 |
 | `src/views/orbit.rs` | 169 | 141 |
+| `src/switchboard/cord.rs` | 167 | 92 |
 | `src/history.rs` | 150 | 157 |
-| `src/stellar.rs` | 149 | 161 |
 | `src/platform/linux/pipes.rs` | 130 | 111 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
 | `src/glyphs.rs` | 107 | 0 |
@@ -85,11 +93,12 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/memory.rs` | 86 | 121 |
 | `src/palette.rs` | 75 | 58 |
 | `src/render/shared.rs` | 75 | 47 |
+| `src/switchboard/lamp.rs` | 54 | 80 |
 | `src/geometry.rs` | 50 | 15 |
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
-| `src/status.rs` | 19 | 51 |
+| `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 570 |
-| **Total** | **36,937** | **27,233** |
+| **Total** | **42,981** | **31,262** |
 
 ## Largest files
 
@@ -97,16 +106,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 8,397 | over limit |
-| `src/main.rs` | 5,414 | over limit |
+| `src/model.rs` | 8,541 | over limit |
+| `src/main.rs` | 5,630 | over limit |
 | `src/coop.rs` | 4,489 | over limit |
+| `src/hr.rs` | 3,365 | over limit |
+| `src/render.rs` | 3,275 | over limit |
 | `src/arbor.rs` | 3,230 | over limit |
-| `src/render.rs` | 3,152 | over limit |
+| `src/hive.rs` | 3,040 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
 | `src/platform/macos/mod.rs` | 2,223 | over limit |
 | `src/murmuration.rs` | 1,966 | over limit |
-| `src/cortex.rs` | 1,965 | over limit |
-| `src/tesseract.rs` | 1,849 | over limit |
 
 ## Debt counters
 
@@ -118,7 +127,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 | `#[expect(clippy::too_many_arguments` | 7 |
 | `unsafe` blocks | 115 |
 | `unwrap_or(0` sites | 30 |
-| `unwrap_or(0.0` sites | 16 |
+| `unwrap_or(0.0` sites | 19 |
 | `known_unstable` harness entries | 0 |
 
 ## Health counters
@@ -127,10 +136,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 868 |
-| Views in the registry | 18 |
-| Views with a README mapping table | 8 of 18 |
+| `#[test]` functions | 975 |
+| Views in the registry | 21 |
+| Views with a README mapping table | 11 of 21 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`.
