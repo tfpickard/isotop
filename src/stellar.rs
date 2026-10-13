@@ -85,6 +85,20 @@ pub fn spread(magnitude: f32, frame_height: u32) -> Spread {
     }
 }
 
+/// How the soft layer of a star blends into the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Halo {
+    /// An `Item::Glow`, which the CPU blends with truncation and the GPU with rounding, so
+    /// halos that overlap drift apart by a level or two between the rasterizers.
+    Glow,
+    /// An `Item::Puff`, which rounds on both: for a sky of many stars, whose halos overlap.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first used by a view that draws a sky of stars")
+    )]
+    Puff,
+}
+
 impl Frame {
     /// Draws a star at `position`: one pickable sphere sized in pixels, so zoom does not change
     /// it, with a whitened and brightened `color`, and one glow in `color` when the spread has a
@@ -98,6 +112,24 @@ impl Frame {
         pick: u32,
         selected: bool,
     ) {
+        self.star_with(camera, position, spread, color, pick, selected, Halo::Glow);
+    }
+
+    /// `star` with the halo blended as `halo` says.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a star's place, size, colour, pick and halo"
+    )]
+    pub(crate) fn star_with(
+        &mut self,
+        camera: &Camera,
+        position: Point,
+        spread: &Spread,
+        color: Color,
+        pick: u32,
+        selected: bool,
+        halo: Halo,
+    ) {
         let center = self.project(camera, position);
         self.items.push(Item::Sphere {
             center,
@@ -108,11 +140,20 @@ impl Frame {
             selected,
         });
         if spread.halo > 0.0 {
-            self.items.push(Item::Glow {
-                center: [center[0], center[1]],
-                radius: spread.halo_px,
-                color,
-                strength: spread.halo,
+            let center = [center[0], center[1]];
+            self.items.push(match halo {
+                Halo::Glow => Item::Glow {
+                    center,
+                    radius: spread.halo_px,
+                    color,
+                    strength: spread.halo,
+                },
+                Halo::Puff => Item::Puff {
+                    center,
+                    radius: spread.halo_px,
+                    color,
+                    strength: spread.halo,
+                },
             });
         }
     }
@@ -324,6 +365,78 @@ mod tests {
             frame.items[0],
             Item::Sphere { radius, pick: NONE, .. } if radius == star.core_px
         ));
+    }
+
+    #[test]
+    fn a_puffed_star_draws_its_halo_as_a_puff_and_the_core_as_before() {
+        let mut frame = frame();
+        let camera = Camera::default();
+        let star = spread(0.0, 540);
+        let position = [1.0, 2.0, 0.0];
+        frame.star(&camera, position, &star, [200, 220, 255], 3, false);
+        let glow = frame.items.clone();
+        frame.items.clear();
+        frame.star_with(
+            &camera,
+            position,
+            &star,
+            [200, 220, 255],
+            3,
+            false,
+            Halo::Puff,
+        );
+        assert_eq!(frame.items.len(), 2);
+        match (glow[0], frame.items[0]) {
+            (
+                Item::Sphere {
+                    center: a,
+                    color: x,
+                    ..
+                },
+                Item::Sphere {
+                    center: b,
+                    color: y,
+                    ..
+                },
+            ) => {
+                assert_eq!((a, x), (b, y), "the core is the same");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(glow[1], Item::Glow { .. }));
+        match (glow[1], frame.items[1]) {
+            (
+                Item::Glow {
+                    center: a,
+                    radius: r,
+                    color: c,
+                    strength: s,
+                },
+                Item::Puff {
+                    center: b,
+                    radius: q,
+                    color: d,
+                    strength: t,
+                },
+            ) => assert_eq!(
+                (a, r, c, s),
+                (b, q, d, t),
+                "the halo is the same, blended alike"
+            ),
+            other => panic!("{other:?}"),
+        }
+        // A faint star has no halo to blend.
+        frame.items.clear();
+        frame.star_with(
+            &camera,
+            position,
+            &spread(7.5, 540),
+            [255; 3],
+            3,
+            false,
+            Halo::Puff,
+        );
+        assert_eq!(frame.items.len(), 1);
     }
 
     #[test]
