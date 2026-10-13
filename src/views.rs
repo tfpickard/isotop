@@ -973,6 +973,8 @@ pub mod testing {
         seen: String,
         /// The `Stage::age` of every process of the last frame, by pid.
         pub ages: HashMap<u32, Option<f32>>,
+        /// The `Stage::fps` of the last frame.
+        pub fps: u32,
     }
 
     impl ViewModule for Witness {
@@ -992,6 +994,7 @@ pub mod testing {
                 stage.focus.map(|id| id.pid),
                 stage.limit
             );
+            self.fps = stage.fps;
             self.ages = processes
                 .iter()
                 .map(|process| (process.id.pid, stage.age(process.id)))
@@ -1424,6 +1427,24 @@ mod tests {
         assert_eq!(third[&11], None);
         let rewound = ages(&later, 5.0);
         assert_eq!(rewound[&12], None, "before it arrived");
+    }
+
+    #[test]
+    fn the_stage_carries_the_target_frame_rate_the_app_set() {
+        use crate::render::{Camera, RenderInput};
+        let snapshot = Snapshot::default();
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::WITNESSED);
+        let fps = |scene: &mut Scene| {
+            scene.render(&RenderInput::small(&snapshot, View::at(0), &camera, 1.0));
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .fps
+        };
+        assert_eq!(fps(&mut scene), 10, "--fps defaults to 10");
+        scene.fps = 24;
+        assert_eq!(fps(&mut scene), 24);
     }
 
     #[test]
