@@ -16,6 +16,7 @@ mod harness;
 mod headless;
 mod history;
 mod horizon;
+mod interactive;
 mod journal;
 mod layout;
 mod matrix;
@@ -42,22 +43,27 @@ mod views;
 
 use std::error::Error;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyEventKind};
 
-use app::{App, Layout, Renderer, typed};
+use app::{App, Renderer};
 use cli::{Options, Preflight, preflight};
+#[cfg(test)]
 use headless::warm_up;
 use journal::Journal;
 use model::{Collector, Demand, Snapshot};
 use platform::Source;
-use terminal::Terminal;
-use views::ViewInfo;
+use views::{View, ViewInfo};
+
+/// Everything a run is set up with before it splits into the headless and the interactive one.
+struct Startup {
+    app: App,
+    collector: Collector,
+    journal: Option<Journal>,
+}
 
 /// Runs isotop and returns the exit status for `main`.
-#[expect(clippy::too_many_lines, reason = "split in #79 (A20)")]
 fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     let available = views::availability();
     let view = match preflight(&options, &available, &mut io::stdout(), &mut io::stderr()) {
@@ -70,198 +76,55 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     if options.duration.is_some_and(|v| !v.is_finite() || v <= 0.0) {
         return Err("--duration must be finite and positive".into());
     }
+    let Startup {
+        mut app,
+        collector,
+        journal,
+    } = start(&options, view, available)?;
+    if options.headless() {
+        headless::run(&mut app, &options, journal.as_ref())?;
+    } else {
+        interactive::run(app, collector, journal, &options)?;
+    }
+    Ok(0)
+}
+
+/// The first sample and the app that shows it, on `view`: the demo's or the collector's, the
+/// latter taken twice, a `--sample-ms` apart, in a headless run so that rates are known.
+fn start(options: &Options, view: View, available: Vec<bool>) -> Result<Startup, Box<dyn Error>> {
     let demand = Demand::from(view.info().sources);
     let mut collector = Collector::new(options.geoip.clone(), options.home);
     collector.demand(demand);
-    let mut journal = (demand.contains(Source::Journal) && !options.demo).then(Journal::start);
-    // The demo's clock: the time of its latest sample.
-    let mut demo_time = if options.headless() {
-        options.time
-    } else {
-        0.0
-    };
+    let journal = (demand.contains(Source::Journal) && !options.demo).then(Journal::start);
     let mut snapshot = if options.demo {
+        // The demo's clock starts at --time in a headless run and at 0 in a live one.
+        let time = if options.headless() {
+            options.time
+        } else {
+            0.0
+        };
         demo_snapshot(
             view.info(),
-            demo_time - options.sample_seconds(),
-            demo_time,
+            time - options.sample_seconds(),
+            time,
             options.processes as usize,
         )
     } else {
         collector.sample()?
     };
     if !options.demo && options.headless() {
-        std::thread::sleep(Duration::from_millis(options.sample_ms as u64));
+        std::thread::sleep(Duration::from_millis(u64::from(options.sample_ms)));
         snapshot = collector.sample()?;
     }
     let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
     app.playlist = playlist;
     app.set_renderer(Renderer::choose(options.renderer, options.gpu_power)?);
-    let limit = options.limit as usize;
-    if options.headless() {
-        let height = options.headless_height();
-        warm_up(&mut app, &options, journal.as_ref());
-        app.animation = options.time as f32;
-        let mut frame = app.render(options.width, height, limit);
-        if let Some(count) = options.benchmark {
-            let start = Instant::now();
-            for i in 0..count {
-                app.animation = options.time as f32 + i as f32 / options.fps as f32;
-                app.scene.spare = frame.release();
-                frame = app.render(options.width, height, limit);
-                std::hint::black_box(&frame.pixels);
-            }
-            let elapsed = start.elapsed().as_secs_f64();
-            println!(
-                "{} frames | {}x{} | {} visible | {:.2} ms/frame | {:.1} renderer fps on {} (excludes terminal transport)",
-                count,
-                frame.width,
-                frame.height,
-                app.scene.visible,
-                elapsed * 1000.0 / count as f64,
-                count as f64 / elapsed,
-                app.renderer.kind()
-            );
-        }
-        if let Some(path) = options.output {
-            frame.write_png(&path)?;
-            println!(
-                "Wrote {} ({}x{}, {} visible)",
-                path.display(),
-                frame.width,
-                frame.height,
-                app.scene.visible
-            );
-        }
-        return Ok(0);
-    }
-    let mut terminal = Terminal::enter(options.force_graphics, options.direct)?;
-    app.scene.intro = true;
-    app.keyboard = terminal.keyboard;
-    let mut layout = Layout::measure(options.width, app.panel_shown())?;
-    let tour_after = (options.tour > 0).then(|| Duration::from_secs(options.tour as u64));
-    let origin = Instant::now();
-    let mut last_sample = Instant::now();
-    let mut last_frame = Instant::now();
-    let frame_interval = Duration::from_secs_f64(1.0 / options.fps as f64);
-    let mut wire = 0;
-    let mut quit = false;
-    let mut frames = 0_u64;
-    let mut total_wire = 0_u64;
-    let mut fed = 0.0;
-    let mut demanded = app.demand();
-    while !quit {
-        let frame_start = Instant::now();
-        let elapsed = last_frame.elapsed().as_secs_f32();
-        last_frame = Instant::now();
-        if !app.history.is_paused() {
-            app.animation += elapsed;
-            if last_sample.elapsed() >= Duration::from_millis(options.sample_ms as u64) {
-                let snapshot = if options.demo {
-                    let previous = demo_time;
-                    demo_time = origin.elapsed().as_secs_f64();
-                    demo_snapshot(app.row(), previous, demo_time, options.processes as usize)
-                } else {
-                    collector.sample()?
-                };
-                app.push_sample(snapshot, options.history as usize);
-                last_sample = Instant::now();
-                if app.camera.is_framed() && app.tour.is_none() && app.scene.bounded() {
-                    app.camera.refit();
-                }
-            }
-        }
-        if !options.demo {
-            if !app.journal_wanted(Instant::now()) {
-                // Dropping it stops the follower and its reader.
-                journal = None;
-            } else if journal.is_none() {
-                journal = Some(Journal::start());
-            }
-        }
-        if app.demand().contains(Source::Journal) {
-            let now = origin.elapsed().as_secs_f64();
-            // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
-            if !app.history.is_paused() {
-                fed = f64::max(fed, now - 2.0);
-                app.feed_journal(journal.as_ref(), options.demo, fed, now);
-                fed = now;
-            }
-        }
-        app.camera.approach(elapsed);
-        app.update_tour(tour_after);
-        let mut frame = app.render(layout.width, layout.height, limit);
-        let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
-        let pixels = terminal.pixel_mouse && layout.cell.is_some();
-        app.pointer.hover_over(&frame, layout.pick_radius(pixels));
-        let (labels, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(pixels));
-        let transport = if terminal.shared_memory {
-            "shared memory".to_owned()
-        } else {
-            format!("{:.1} KiB/frame inline", wire as f32 / 1024.0)
-        };
-        let text = if app.panel_shown() {
-            app.text(render_ms, &transport, options.fps, limit)
-        } else {
-            Vec::new()
-        };
-        wire = terminal.present(&frame, layout.columns, layout.rows, &labels, &panels, &text)?;
-        frames += 1;
-        total_wire += wire as u64;
-        let deadline = frame_start + frame_interval;
-        loop {
-            let wait = deadline.saturating_duration_since(Instant::now());
-            if !event::poll(wait)? {
-                break;
-            }
-            match event::read()? {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    let shown = app.panel_shown();
-                    let (code, modifiers) = typed(&key);
-                    quit = app.key(code, modifiers, layout.width as f32 * 0.04);
-                    if app.panel_shown() != shown {
-                        layout = Layout::measure(options.width, app.panel_shown())?;
-                        terminal.clear()?;
-                    }
-                }
-                Event::Resize(_, _) => {
-                    layout = Layout::measure(options.width, app.panel_shown())?;
-                    terminal.clear()?;
-                }
-                Event::Mouse(mouse) => {
-                    app.touch();
-                    app.mouse(mouse, &layout, &frame, &panels, pixels);
-                }
-                _ => {}
-            }
-            // Past the deadline, poll(0) keeps draining queued input; motion floods must not delay keys.
-            if quit {
-                break;
-            }
-        }
-        if app.demand() != demanded {
-            demanded = app.demand();
-            collector.demand(demanded);
-        }
-        if options
-            .duration
-            .is_some_and(|duration| origin.elapsed().as_secs_f64() >= duration)
-        {
-            quit = true;
-        }
-        app.scene.spare = frame.release();
-    }
-    drop(terminal);
-    if options.duration.is_some() {
-        let seconds = origin.elapsed().as_secs_f64();
-        eprintln!(
-            "isotop: {frames} frames in {seconds:.2}s | {:.1} presented fps | {:.2} MiB/s inline graphics (display latency not measured)",
-            frames as f64 / seconds,
-            total_wire as f64 / 1048576.0 / seconds
-        );
-    }
-    Ok(0)
+    Ok(Startup {
+        app,
+        collector,
+        journal,
+    })
 }
 
 /// The demo workload at `time` for `count` processes, with what `row`, the shown view's registry

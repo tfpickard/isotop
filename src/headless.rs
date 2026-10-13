@@ -1,11 +1,106 @@
-//! Headless runs: the warm-up that settles a frame before it is captured.
+//! Headless runs, `--output` and `--benchmark`: the warm-up that settles a frame before it is
+//! captured, the benchmark loop and the PNG.
+
+use std::error::Error;
+use std::time::Instant;
 
 use crate::app::App;
 use crate::cli::Options;
 use crate::demo_snapshot;
 use crate::history;
 use crate::journal::Journal;
+use crate::render::Frame;
 use crate::views::{Phase, Warmup, When};
+
+/// Draws the frame of a headless run, after the warm-up. With `--benchmark` it first times that
+/// many more frames and reports how long recording and rasterizing each took; with `--output` it
+/// writes the last frame as a PNG.
+pub(crate) fn run(
+    app: &mut App,
+    options: &Options,
+    journal: Option<&Journal>,
+) -> Result<(), Box<dyn Error>> {
+    warm_up(app, options, journal);
+    app.animation = options.time as f32;
+    let mut frame = app.render(
+        options.width,
+        options.headless_height(),
+        options.limit as usize,
+    );
+    if let Some(count) = options.benchmark {
+        let timing;
+        (frame, timing) = benchmark(app, options, frame, count);
+        println!(
+            "{}",
+            timing.report(
+                count,
+                (frame.width, frame.height),
+                app.scene.visible,
+                app.renderer.kind()
+            )
+        );
+    }
+    if let Some(path) = &options.output {
+        frame.write_png(path)?;
+        println!(
+            "Wrote {} ({}x{}, {} visible)",
+            path.display(),
+            frame.width,
+            frame.height,
+            app.scene.visible
+        );
+    }
+    Ok(())
+}
+
+/// Seconds a benchmark spent, in all and in each of the two halves of drawing a frame.
+#[derive(Debug, Default, PartialEq)]
+struct Timing {
+    /// The whole loop.
+    total: f64,
+    /// Recording the display list (`App::draw`): everything that moves a view's state.
+    record: f64,
+    /// Turning it into pixels (`App::rasterize`), on the CPU or the GPU.
+    raster: f64,
+}
+
+impl Timing {
+    /// The benchmark's line: frames, size, visible processes, milliseconds per frame split into
+    /// recording and rasterizing, and the frame rate those add up to.
+    fn report(&self, frames: u32, size: (u32, u32), visible: usize, renderer: &str) -> String {
+        let frames = f64::from(frames);
+        format!(
+            "{frames} frames | {}x{} | {visible} visible | {:.2} ms/frame (record {:.2} + raster {:.2}) | {:.1} renderer fps on {renderer} (excludes terminal transport)",
+            size.0,
+            size.1,
+            self.total * 1000.0 / frames,
+            self.record * 1000.0 / frames,
+            self.raster * 1000.0 / frames,
+            frames / self.total,
+        )
+    }
+}
+
+/// Draws `count` frames after `frame`, a second of animation apart at `--fps`, timing the
+/// recording and the rasterizing of each separately, and returns the last.
+fn benchmark(app: &mut App, options: &Options, mut frame: Frame, count: u32) -> (Frame, Timing) {
+    let (height, limit) = (options.headless_height(), options.limit as usize);
+    let mut timing = Timing::default();
+    let start = Instant::now();
+    for i in 0..count {
+        app.animation = options.time as f32 + i as f32 / options.fps as f32;
+        app.scene.spare = frame.release();
+        let recording = Instant::now();
+        frame = app.draw(options.width, height, limit);
+        let rasterizing = Instant::now();
+        app.rasterize(&mut frame);
+        std::hint::black_box(&frame.pixels);
+        timing.record += (rasterizing - recording).as_secs_f64();
+        timing.raster += rasterizing.elapsed().as_secs_f64();
+    }
+    timing.total = start.elapsed().as_secs_f64();
+    (frame, timing)
+}
 
 /// Settles what a headless `--output` or `--benchmark` frame depends on before it is captured:
 /// the shared history, then the shown view's warm-up phases (`ViewInfo::warmup`) whose condition
@@ -157,6 +252,49 @@ mod tests {
     use crate::app::fixtures::*;
     use crate::model::DemoOptions;
     use crate::simulation::hash::fnv1a_64_bytes as fnv1a;
+
+    #[test]
+    fn the_benchmark_line_reports_record_and_raster_times_apart() {
+        let timing = Timing {
+            total: 1.2,
+            record: 0.3,
+            raster: 0.9,
+        };
+        assert_eq!(
+            timing.report(120, (1920, 1080), 192, "cpu"),
+            "120 frames | 1920x1080 | 192 visible | 10.00 ms/frame (record 2.50 + raster 7.50) | 100.0 renderer fps on cpu (excludes terminal transport)"
+        );
+    }
+
+    #[test]
+    fn a_benchmark_draws_the_frames_it_counts_and_times_both_halves() {
+        let options = options(&[
+            "--demo",
+            "--time",
+            "12",
+            "--processes",
+            "16",
+            "--width",
+            "160",
+            "--renderer",
+            "cpu",
+            "--benchmark",
+            "3",
+        ]);
+        let view = View::at(0);
+        let snapshot = demo_snapshot(view.info(), 11.0, 12.0, 16);
+        let mut app = App::new(view, snapshot, all_available());
+        warm_up(&mut app, &options, None);
+        let first = app.render(160, options.headless_height(), options.limit as usize);
+        let (frame, timing) = benchmark(&mut app, &options, first, 3);
+        assert_eq!(
+            (frame.width, frame.height),
+            (160, options.headless_height())
+        );
+        assert!(!frame.pixels.is_empty(), "the last frame is rasterized");
+        assert!(timing.record > 0.0 && timing.raster > 0.0);
+        assert!(timing.record + timing.raster <= timing.total);
+    }
 
     #[test]
     fn demo_snapshots_follow_the_shown_views_options() {

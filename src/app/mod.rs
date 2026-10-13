@@ -13,7 +13,7 @@ mod status;
 mod switcher;
 mod tour;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::model::{Demand, Identity, Snapshot};
 use crate::picker::{self, Picker};
@@ -116,6 +116,22 @@ impl App {
     pub(super) fn push_sample(&mut self, snapshot: Snapshot, capacity: usize) {
         self.scene.record(&snapshot, self.animation);
         self.history.push(snapshot, capacity);
+    }
+
+    /// Takes in a sample the live loop collected. A camera that still frames the whole view,
+    /// with no tour under way, is refitted when the view grows by itself.
+    pub(crate) fn take_sample(&mut self, snapshot: Snapshot, capacity: usize) {
+        self.push_sample(snapshot, capacity);
+        if self.camera.is_framed() && self.tour.is_none() && self.scene.bounded() {
+            self.camera.refit();
+        }
+    }
+
+    /// Moves the camera on by `elapsed` seconds and takes the tour a step, which starts after
+    /// `tour_after` without input.
+    pub(crate) fn steer(&mut self, elapsed: f32, tour_after: Option<Duration>) {
+        self.camera.approach(elapsed);
+        self.update_tour(tour_after);
     }
 
     /// The optional sources the shown view reads.
