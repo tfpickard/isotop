@@ -8,7 +8,7 @@ Each process is a **worldline**: a curve through four axes over the last 60 seco
 
 | Axis | Measured quantity | Scale |
 |---|---|---|
-| $x$ | CPU-seconds the process has used since the window opened | 30 CPU-seconds per unit |
+| $x$ | CPU-seconds the process has used since the window opened (a child forked inside the window starts at its parent's $x$ at the moment of the fork, so only the slope $dx/dw$ is purely the child's own CPU use) | 30 CPU-seconds per unit |
 | $y$ | memory, on a bounded scale (`model::bounded`) | half-scale at 220 MiB |
 | $z$ | the process's seat: the band of its kind and its place in it | stable per process |
 | $w$ | time, from $-1$ a minute ago to $+1$ now | 30 seconds per unit |
@@ -24,7 +24,7 @@ The view then does three things to the picture: projects it from 4D to 3D, optio
 A tesseract (4-cube) has 16 vertices, 32 edges, 24 square faces and 8 cubical cells. We cannot see 4D, so we project, as we project a 3D cube onto a 2D screen. Two projections matter:
 
 - **Parallel:** drop one coordinate, yielding a cube whose edges are shifted copies of each other (what a shadow of a rotating cube looks like).
-- **Perspective (Schlegel):** put an eye on the fourth axis at $w = d$ and divide the other coordinates by the distance to it. The result is the familiar cube-within-a-cube, where the inner cube is the near cell and the outer cells are squashed around it.
+- **Perspective (Schlegel):** put an eye on the fourth axis at $w = d$ and divide the other coordinates by the distance to it. The result is the familiar cube-within-a-cube, where the cell nearest the eye is the large outer cube and the farthest cell is the small inner cube, with the other six cells squashed between them.
 
 isotop uses the perspective form. A point $(x, y, z, w)$ lands at
 
@@ -58,14 +58,14 @@ Applied here, with $w$ standing in for $ct$ and CPU-seconds for $x$:
 
 ### Cherenkov radiation
 
-A charged particle going faster than light *in a medium* radiates a cone of light at angle $\cos\theta = 1/(n\beta)$ (blue light in reactor water). The analogy here is $c$ equals one core: a process with slope $\beta > 1$ gets a cone at $\theta = \arccos(1/\beta)$, drawn in blue as 12 beams, and the inspector gives the angle. It is a metaphor with a formula attached, not a physical identity.
+A charged particle going faster than light *in a medium* radiates a cone of light at angle $\cos\theta = 1/(n\beta)$ (blue light in reactor water). The analogy here is $c$ equals one core: a process with slope $\beta$ above 1.05 (`SUPERLUMINAL`, a margin so that a single saturated thread reading 1.0 to 1.05 does not trigger it) gets a cone at $\theta = \arccos(1/\beta)$, drawn in blue as 12 beams, and the inspector gives the angle. Between 1.0 and 1.05 the worldline is lightlike and has no cone. It is a metaphor with a formula attached, not a physical identity.
 
 ## How isotop implements it
 
 1. **Recording.** `Worldlines` samples cumulative CPU time at most every 0.25 s and keeps 180 s, in every view, so switching to Tesseract does not start with an empty minute. Seats come from `Bands`: four bands (one per kind) share $z \in [-0.9, 0.9]$ in proportion to capacity. A newcomer takes the lowest free seat; a band that fills doubles and never shrinks. Exited processes hold their seat for a minute, so a respawn does not displace a live neighbour.
 2. **Drawing.** The drawn curve keeps one sample per second and merges consecutive segments whose slopes agree to within 0.02 and which share memory and seat (`merge`), so a flat process is one segment and not sixty. Forks curve from the parent's worldline to the child's seat over 2 s.
 3. **Marks.** Head glow, the recent slope (taken over 5 s), I/O ticks (up to 2,000 per frame) and the cone all come from the same worldline data.
-4. **Boost.** `steer` targets the rest frame of the selected process, or else the toured one, easing the rapidity over 0.4 s. The boost pivots on the head of the target, so it stays fixed on screen while the rest of the world shears around it.
+4. **Boost.** `steer` targets the rest frame of the process that was selected when you pressed `b` (selecting alone leaves the lab frame; `b` again or Escape drops the boost), or else the one the guided tour visits, easing the rapidity over 0.4 s. The boost pivots on the head of the target, so it stays fixed on screen while the rest of the world shears around it.
 
 ## Faithful, stylized, invented
 

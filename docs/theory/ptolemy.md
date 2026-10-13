@@ -7,10 +7,10 @@
 | On screen | Measured quantity |
 |---|---|
 | Earth at the centre | isotop itself |
-| Seven planets | the seven processes whose CPU and memory *varied most* over the last minute |
-| A planet's deferent (big circle) | its sphere, assigned by rank. Radius and period are decoration; the busiest wanderer takes the innermost sphere |
+| Seven planets | the seven processes whose CPU and memory *varied most* over their last 60 samples (a minute at the default 1 s sample interval; `--sample-ms` stretches or shrinks the window) |
+| A planet's deferent (big circle) | its sphere, assigned by rank. Radius and period are decoration; when the set of planets changes the busiest takes the innermost sphere, and otherwise spheres are kept (see the implementation notes) |
 | A planet's chain of epicycles | the 12 largest Fourier terms of its last 60 samples of CPU and memory |
-| Where the chain's tip goes | the last minute of that process, replayed once per minute |
+| Where the chain's tip goes | the last 60 samples of that process, replayed once per 60 seconds whatever the sample interval |
 | Red stretches of a trail | the planet is in *retrograde* as seen from Earth |
 | Fixed stars on a ring that turns once a minute | every other process; brightness is memory |
 | A nova or a fade | a birth or an exit |
@@ -62,11 +62,11 @@ Inner planets really do go faster. The deferent period follows $T \propto r^{3/2
 ## How isotop implements it
 
 1. **The signal.** For each process, a complex series $z[n] = \text{CPU in cores} + i\log_2(\text{memory in MiB})$ over the last 60 samples (`history::SERIES`), minus its mean. The mean is the DC term and is left out; it would only offset the whole chain. Samples missing because the process was younger than the window are padded by holding its first reading; a gap holds its last.
-2. **Who is a planet.** The variance of cores plus the variance of memory in doublings, both over the window. A process needs 30 samples (`FORMING`) before it can rank. The top seven by variance get the seven spheres, named Moon, Mercury, Venus, Sun, Mars, Jupiter, Saturn from the inside out, busiest innermost. An incumbent keeps its sphere while it stays in the top 10, so ranks can shuffle without the planets jumping.
+2. **Who is a planet.** The variance of cores plus the variance of memory in doublings, both over the window. A process needs 30 samples (`FORMING`) before it can rank. The top seven by variance get the seven spheres, named Moon, Mercury, Venus, Sun, Mars, Jupiter, Saturn from the inside out. An incumbent keeps its sphere while it stays in the top 10 by variance, so the planets are not always the current top seven. When the membership changes, the planets are re-sorted busiest (by mean CPU) innermost; when it does not, they keep their spheres even if their CPU order has changed since, so an outer planet can become the busiest without moving inward.
 3. **The chain.** `epicycles` runs a direct $O(N^2)$ DFT (60 samples need no padding or radix games), sorts by magnitude, keeps 12, and rotates each coefficient back by its phase at the window's first sample. The back-rotation is the trick that makes the coefficients nearly constant when the window slides by one sample, so the epicycles drift smoothly instead of the whole chain reshuffling every second. Coefficients ease to each new sample over the measured sample interval.
 4. **Replay.** The chain plays the window once every 60 s (`REPLAY`), regardless of the sample rate.
 5. **Scale.** One global gain turns cores and doublings into world units, soft-clamped so the chain's reach never exceeds $L$: with $T = K\sum|c_k|$, the gain is $K L \tanh(T/L)/T$, which approaches $K$ for small chains and caps long ones at length $L$. A wild process cannot swallow the sky.
-6. **Stars.** Every non-planet is a fixed star at a hashed angle and radius on a ring that turns once per 60 s. Magnitude comes from memory, $m = -2.5\log_{10}(\text{mem}/1\,\text{GiB})$ (the same definition as the HR diagram view; `stellar.rs`). A new process is a nova; an exiting one fades.
+6. **Stars.** Every non-planet is a fixed star at a hashed angle and radius on a ring that turns once per 60 s. Magnitude comes from memory, $m = -2.5\log_{10}(\text{mem}/1\,\text{GiB})$ (`stellar::magnitude`, shared with the HR prototype in `docs/mockups/code/hr.py`, which is not a registered view). A new process is a nova; an exiting one fades.
 
 ## Faithful, stylized, invented
 

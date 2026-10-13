@@ -9,7 +9,8 @@
 | Orbital radius of a process | its rank by `oom_score` (rank 1 sits on the ISCO; memory footprint where the platform has no score) |
 | A band far out | processes with `oom_score_adj` = -1000, which the OOM killer will not touch |
 | A body that leaves the ISCO and plunges | the kernel's OOM kill counter rose and a process vanished |
-| Brightness and colour of the disk | decorative physics: the Page-Thorne flux, lensed and Doppler-shifted. It carries no process data. |
+| Overall brightness of the disk | memory pressure (`snapshot.pressure[1]`): the disk's gain runs from 0.45 to 1.35 as pressure goes from 0 to 100 |
+| The disk's pattern of colour and brightness | decorative physics: the Page-Thorne flux, lensed and Doppler-shifted. It carries no process data. |
 
 The shadow, the photon ring and the stars are scenery. The *ordering* of the bodies is the data.
 
@@ -71,7 +72,7 @@ This is the classical "frozen star" picture. The image never crosses, but it fad
 
 **Rank, not value, sets the radius.** `orbits::Ranking` orders processes by `oom_score` with a swap margin so near-ties do not flicker, and `rank_radius` spaces the top 28 ranks from the ISCO outward ($r = 6 + 17.5\,(k/27)^{0.8}$). A body's radius eases to its rank's with a 1.5 s time constant. Its orbital speed is the circular-orbit angular velocity $\Omega = r^{-3/2}$ (the same as Kepler's), run at 10 $M$ of coordinate time per second of wall clock, so inner bodies visibly outrun outer ones.
 
-**A kill needs corroboration.** A plunge starts when the kill counter (`/proc/vmstat` `oom_kill`, otherwise the sum over cgroups) *rises* and a process vanishes in the same sample window. The best-ranked ghost becomes the victim. A process that simply exits does not plunge.
+**A kill needs corroboration, and the victim is inferred.** A plunge starts when the kill counter (`/proc/vmstat` `oom_kill`, otherwise the sum over cgroups) *rises* and a process vanishes near it in time. The counter says that a kill happened, never whose. The counter comes from the background thread, so the exit and the rise need not land in the same sample: `Orbits::classify` keeps vanished processes as fading ghosts and matches a rise before or after an exit within `GHOST_WINDOW` (2.5 s) + `BACKGROUND_PERIOD` (2 s) + one sample interval. The best-ranked ghost in that window becomes the victim, so an unrelated exit close to a real kill can be the one shown plunging. A process that simply exits, with no rise, does not plunge.
 
 ## Faithful, stylized, invented
 
@@ -85,7 +86,7 @@ This is the classical "frozen star" picture. The image never crosses, but it fad
 - A bright, blue crescent on the left, dim and red on the right: the left side is approaching.
 - The disk wraps over the top of the shadow even at 80° inclination. That is the primary image of the far side, not a drawing error.
 - Bodies nearest the ISCO are the OOM killer's next choices. Bodies in the far band are exempt.
-- A plunging body that stretches, reddens and freezes before the shadow just before it disappears is a real OOM kill.
+- A plunging body that stretches, reddens and freezes before the shadow just before it disappears is the view's inferred victim of an OOM kill: the counter rose and this was the best-ranked process to vanish nearby.
 
 ## Further reading
 

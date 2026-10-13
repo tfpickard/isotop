@@ -9,7 +9,7 @@
 | A neuron per process | the process |
 | Which layer, and the firing pattern | the process kind (kernel, system, session, container) |
 | How often it fires | CPU use, through a calibrated current |
-| Dendrites | threads |
+| Dendrites | threads, one to twelve of them: the count is the process's thread count clamped to 1..12 (`MAX_PRIMARIES`), so a process with 500 threads draws 12 and a count of zero draws one |
 | An axon between two neurons | a socket or pipe link between the processes |
 | Synaptic weight of an axon | traffic on the link in bytes per second; the socket count when traffic is unmeasured |
 | The raster along the bottom | the last ten seconds of spikes |
@@ -78,9 +78,9 @@ $\chi = 0$ for neurons that never agree and $\chi = 1$ for neurons that always d
 
 An active neuron also gets a little Gaussian current noise per step (standard deviation 1.2), seeded from process identity, which keeps neurons from firing in lockstep when their inputs are equal.
 
-**Wiring.** Axons come from the sample's socket links and pipes, `weight_of_rate` gives each synapse $w = \min(2,\ \tfrac14 \ln(1 + \text{bytes/s} \,/\, 1000))$, and when traffic is not measured, `weight_of_sockets` gives the same log of the socket count. The legend says which is in use. Both directions are offered when a link is two-way.
+**Wiring.** Axons come from the sample's socket links and pipes. A socket link's `weight_of_rate` gives its synapse $w = \min(2,\ \tfrac14 \ln(1 + \text{bytes/s} \,/\, 1000))$, and when traffic is not measured, `weight_of_sockets` gives the same log of the socket count; the legend says which is in use. A pipe link is different: it always gets the fixed `PIPE_WEIGHT` of 1.0, so a pipe axon says that two processes are connected and nothing about how much flows through it. Both directions are offered when a link is two-way.
 
-**Layout.** A process's seat in its layer is fixed for its life (`layout::Seats`). A layer that outgrows the slice widens it by 1.25× and the slice never narrows again, so nothing moves when other processes come and go.
+**Layout.** A process's seat in its layer is fixed for its life (`layout::Seats`). A layer that outgrows the slice widens it by 1.25× and the slice never narrows again, so a seat never changes with the population. The one exception is structural growth: when an arriving process makes a layer exceed its capacity the slice widens, and every neuron's position is recomputed against the new width (seats stay the same, positions scale). Exits never shrink it.
 
 ## Faithful, stylized, invented
 
