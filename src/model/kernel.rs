@@ -33,6 +33,10 @@ pub struct KernelReadings {
     pub interrupts: Measured<Vec<Interrupt>>,
     pub softirqs: Measured<Vec<Softirq>>,
     pub oom_kills: Option<u64>,
+    /// The number of the pass that read these (1 for the first), None before any pass: the
+    /// collector hands the same readings to every foreground sample until the next pass, and
+    /// this is how a view tells a new reading from a repeat.
+    pub pass: Option<u64>,
 }
 
 /// The platform reads one pass makes; the tests replace them.
@@ -110,6 +114,7 @@ impl Previous {
 pub struct KernelScan {
     interrupts: Previous,
     softirqs: Previous,
+    passes: u64,
 }
 
 impl KernelScan {
@@ -167,10 +172,12 @@ impl KernelScan {
         let oom_kills = reads.read(Source::OomKills, || {
             timed(latency, Source::OomKills, readers.oom_kills)
         });
+        self.passes += 1;
         KernelReadings {
             interrupts,
             softirqs,
             oom_kills,
+            pass: Some(self.passes),
         }
     }
 }
@@ -740,6 +747,18 @@ mod tests {
             &OOM_READS,
         ]
         .map(|count| count.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn each_pass_numbers_its_readings_from_one() {
+        let mut scan = KernelScan::default();
+        let mut latency = Vec::new();
+        let mut idle = Reads::new(Demand::default());
+        let numbers: Vec<Option<u64>> = (0..3)
+            .map(|_| scan.scan(counting(), &mut idle, &mut latency).pass)
+            .collect();
+        assert_eq!(numbers, [Some(1), Some(2), Some(3)]);
+        assert_eq!(KernelReadings::default().pass, None, "before any pass");
     }
 
     #[test]

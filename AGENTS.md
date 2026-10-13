@@ -38,7 +38,7 @@ The README covers usage. This file covers how to work on the code.
    `--history` times that. The kernel counters (`Source::Interrupts`, `Softirqs`,
    `IrqAffinity` and `OomKills`; `platform/linux/counters.rs`, `model/kernel.rs`) go through it
    too: with none demanded no `/proc` counter file is opened, and `Snapshot.interrupts`,
-   `softirqs` and `oom_kills` stay Pending, Pending and None. Threads (`Source::Threads`) are read
+   `softirqs` and `oom_kills` stay Pending, Pending and None. The foreground samples between two passes carry the same readings, so `Snapshot::kernel_pass` numbers the pass (`KernelReadings::pass`; the demo uses the sample's time) and a view that differences or ages them takes each pass in once. Threads (`Source::Threads`) are read
    the same way: while they are demanded each sample hands the thread the processes busiest
    first (`threads::targets`, CPU descending, ties by `Identity`), and a pass
    (`threads::ThreadScan`) walks that list, reading at most `THREADS_PER_PASS` (8,192) threads

@@ -589,6 +589,12 @@ pub struct Snapshot {
     /// The kernel's count of OOM kills since boot (`Source::OomKills`): cumulative, so a view takes
     /// the difference between samples. None when it was not read or cannot be.
     pub oom_kills: Option<u64>,
+    /// Which pass of the background thread read `interrupts`, `softirqs` and `oom_kills`: the
+    /// foreground samples between two passes carry the same readings, so a view that differences
+    /// or ages them takes each pass in once, when this changes. None for a sample that carries no
+    /// pass (no cycle has finished yet); the demo numbers each sample by its time, since each
+    /// one is a new reading.
+    pub kernel_pass: Option<u64>,
     /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
     /// follower's, or the demo's. `main.rs` attaches them frame by frame, not the collector, which
     /// does not own the follower, so a collected or demo sample starts with none. A view takes in
@@ -1247,6 +1253,7 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
     snapshot.interrupts = extras.kernel.interrupts.clone();
     snapshot.softirqs = extras.kernel.softirqs.clone();
     snapshot.oom_kills = extras.kernel.oom_kills;
+    snapshot.kernel_pass = extras.kernel.pass;
     snapshot.missing = snapshot.missing.union(extras.missing);
     snapshot.sources = snapshot.sources.union(extras.sources);
 }
@@ -3749,6 +3756,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         interrupts,
         softirqs,
         oom_kills,
+        kernel_pass: Some(time.to_bits()),
         journal: crate::journal::Delivery::default(),
     };
     if options.oom_cycle {
@@ -5667,6 +5675,7 @@ mod tests {
             interrupts: Measured::Pending,
             softirqs: Measured::Pending,
             oom_kills: None,
+            kernel_pass: Some(time.to_bits()),
             journal: crate::journal::Delivery::default(),
         }
     }
@@ -5708,6 +5717,7 @@ mod tests {
             interrupts,
             softirqs,
             oom_kills,
+            kernel_pass,
             journal,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
@@ -5721,7 +5731,7 @@ mod tests {
              {outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
-             {interrupts:?}\n{softirqs:?} {oom_kills:?}\n{journal:?}"
+             {interrupts:?}\n{softirqs:?} {oom_kills:?} {kernel_pass:?}\n{journal:?}"
         )
     }
 
@@ -7023,6 +7033,42 @@ mod tests {
             demo(1.0, 16).sources,
             Sources::default(),
             "no thread in --demo"
+        );
+    }
+
+    #[test]
+    fn samples_between_two_passes_carry_the_pass_that_read_their_kernel_counters() {
+        let first = Extras {
+            kernel: KernelReadings {
+                pass: Some(1),
+                ..KernelReadings::default()
+            },
+            ..Extras::default()
+        };
+        let mut snapshots = [
+            Snapshot::default(),
+            Snapshot::default(),
+            Snapshot::default(),
+        ];
+        merge(&mut snapshots[0], &first);
+        merge(&mut snapshots[1], &first);
+        let second = Extras {
+            kernel: KernelReadings {
+                pass: Some(2),
+                ..KernelReadings::default()
+            },
+            ..Extras::default()
+        };
+        merge(&mut snapshots[2], &second);
+        assert_eq!(
+            snapshots.map(|snapshot| snapshot.kernel_pass),
+            [Some(1), Some(1), Some(2)]
+        );
+        assert_eq!(Snapshot::default().kernel_pass, None);
+        assert_ne!(
+            demo(1.0, 16).kernel_pass,
+            demo(2.0, 16).kernel_pass,
+            "each demo sample is a reading of its own"
         );
     }
 
