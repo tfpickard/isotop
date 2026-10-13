@@ -121,6 +121,59 @@ fn serves(index: usize, cpu: u32) -> bool {
     }
 }
 
+/// The sum of `cos(first + step j)` for `j` in `0..count`, in closed form.
+fn cosine_run(first: f64, step: f64, count: f64) -> f64 {
+    let half = step / 2.0;
+    if half.sin().abs() < 1e-9 {
+        return count * first.cos();
+    }
+    (count * half).sin() / half.sin() * (first + (count - 1.0) * half).cos()
+}
+
+/// The events the moving line raises, up to `time`, in the epochs it spends on `MOVE_TO` (when
+/// `on_to`) or on `MOVE_FROM`. Epochs alternate, so the complete ones between the first and the
+/// one `time` falls in are an arithmetic run of every second epoch whose wave integrals sum in
+/// closed form: the cost does not grow with `time`.
+fn moving_served(wave: Wave, on_to: bool, time: f64) -> f64 {
+    let first = epoch(0.0);
+    let last = epoch(time);
+    let matches = |k: i64| (k % 2 == 0) == on_to;
+    let partial = |k: i64| {
+        let start = (MOVE_AT + k as f64 * MOVE_EVERY).max(0.0);
+        let end = time.min(MOVE_AT + (k as f64 + 1.0) * MOVE_EVERY);
+        if end > start {
+            wave.between(start, end)
+        } else {
+            0.0
+        }
+    };
+    let mut served = 0.0;
+    if matches(first) {
+        served += partial(first);
+    }
+    if last > first && matches(last) {
+        served += partial(last);
+    }
+    // Complete epochs: first + 1 .. last, every second one from the first that matches.
+    let begin = if matches(first + 1) {
+        first + 1
+    } else {
+        first + 2
+    };
+    if begin < last {
+        let count = ((last - begin - 1) / 2 + 1) as f64;
+        let start = MOVE_AT + begin as f64 * MOVE_EVERY;
+        let angle = wave.speed * start + wave.phase;
+        let width = wave.speed * MOVE_EVERY;
+        let step = 2.0 * width;
+        served += wave.base
+            * (wave.mean * MOVE_EVERY * count
+                + wave.swing / wave.speed
+                    * (cosine_run(angle, step, count) - cosine_run(angle + width, step, count)));
+    }
+    served
+}
+
 /// The count of line `index` on `cpu` at `time`: a day of uptime's share, plus every event since
 /// 0 that `cpu` served. The moving line adds the events of the epochs it spent on `cpu`.
 fn line_count(index: usize, cpu: u32, time: f64) -> u64 {
@@ -133,19 +186,7 @@ fn line_count(index: usize, cpu: u32, time: f64) -> u64 {
         return wave.count(time, 1.0);
     }
     let boot = wave.base * wave.mean * DEMO_UPTIME * 0.5;
-    let mut served = 0.0;
-    let mut k = epoch(0.0);
-    while MOVE_AT + k as f64 * MOVE_EVERY < time {
-        let on_to = k % 2 == 0;
-        if on_to == (cpu == MOVE_TO) {
-            let start = (MOVE_AT + k as f64 * MOVE_EVERY).max(0.0);
-            let end = time.min(MOVE_AT + (k + 1) as f64 * MOVE_EVERY);
-            if end > start {
-                served += wave.between(start, end);
-            }
-        }
-        k += 1;
-    }
+    let served = moving_served(wave, cpu == MOVE_TO, time);
     (boot + served).max(0.0) as u64
 }
 
@@ -473,5 +514,62 @@ mod tests {
         assert_eq!(rows.iter().filter(|row| row.is_numbered()).count(), 13);
         let off = demo_with(12.0, 16, DemoOptions::NONE);
         assert!(matches!(off.interrupts, Measured::Pending));
+    }
+
+    /// The count the epoch-by-epoch walk gives, which the closed form replaced.
+    fn walked(index: usize, cpu: u32, time: f64) -> u64 {
+        let wave = wave(index);
+        let boot = wave.base * wave.mean * DEMO_UPTIME * 0.5;
+        let mut served = 0.0;
+        let mut k = epoch(0.0);
+        while MOVE_AT + k as f64 * MOVE_EVERY < time {
+            if (k % 2 == 0) == (cpu == MOVE_TO) {
+                let start = (MOVE_AT + k as f64 * MOVE_EVERY).max(0.0);
+                let end = time.min(MOVE_AT + (k as f64 + 1.0) * MOVE_EVERY);
+                if end > start {
+                    served += wave.between(start, end);
+                }
+            }
+            k += 1;
+        }
+        (boot + served).max(0.0) as u64
+    }
+
+    #[test]
+    fn the_moving_lines_count_in_closed_form_matches_walking_its_epochs() {
+        let index = LINES
+            .iter()
+            .position(|line| line.1 == MOVING)
+            .expect("line");
+        for time in [
+            0.0, 1.0, 10.0, 10.2, 11.0, 12.0, 40.2, 40.3, 55.0, 70.2, 100.0, 333.3, 1000.0, 1e4,
+            1e5,
+        ] {
+            for cpu in [MOVE_FROM, MOVE_TO] {
+                let (closed, reference) = (line_count(index, cpu, time), walked(index, cpu, time));
+                assert!(
+                    closed.abs_diff(reference) <= 1 + reference / 100_000_000,
+                    "cpu {cpu} at {time}: {closed} against {reference}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_moving_lines_count_costs_the_same_at_any_time_even_at_infinity() {
+        let index = LINES
+            .iter()
+            .position(|line| line.1 == MOVING)
+            .expect("line");
+        let started = std::time::Instant::now();
+        for time in [1e9, 1e12, 1e15, f64::MAX, f64::INFINITY, f64::NAN, -5.0] {
+            for cpu in [MOVE_FROM, MOVE_TO] {
+                let _ = line_count(index, cpu, time);
+            }
+        }
+        assert!(
+            started.elapsed().as_secs() < 1,
+            "the count walked the epochs"
+        );
     }
 }
