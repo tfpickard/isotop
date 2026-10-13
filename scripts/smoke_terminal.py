@@ -33,6 +33,7 @@ PICKER_VISITS = [
     "murmuration",
     "arbor",
     "hr",
+    "hive",
 ]
 
 # A view's own keys, sent right after the picker shows it, each with what the terminal must show

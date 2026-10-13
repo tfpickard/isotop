@@ -17,10 +17,6 @@ pub(crate) mod strokes;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
-#[cfg_attr(
-    not(test),
-    expect(unused_imports, reason = "first used by a view that draws a field")
-)]
 pub use field::{Field, Placement, Relief, Shading};
 #[cfg_attr(
     not(test),
