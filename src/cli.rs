@@ -11,7 +11,7 @@ use crate::picker;
 use crate::views::{REGISTRY, View};
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub(crate) enum Renderer {
+pub(crate) enum RendererChoice {
     Auto,
     Gpu,
     Cpu,
@@ -84,8 +84,8 @@ pub(crate) struct Options {
     #[arg(long)]
     pub(crate) direct: bool,
     /// Rasterizer: the GPU when one is available, falling back to the CPU
-    #[arg(long, value_enum, default_value_t = Renderer::Auto)]
-    pub(crate) renderer: Renderer,
+    #[arg(long, value_enum, default_value_t = RendererChoice::Auto)]
+    pub(crate) renderer: RendererChoice,
     /// Which GPU to prefer on machines with more than one
     #[arg(long, value_enum, default_value_t = Power::High)]
     pub(crate) gpu_power: Power,

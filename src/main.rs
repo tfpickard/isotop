@@ -47,8 +47,8 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
 
-use app::{App, Layout, feed, typed};
-use cli::{Options, Power, Preflight, Renderer, preflight};
+use app::{App, Layout, Renderer, feed, typed};
+use cli::{Options, Preflight, preflight};
 use headless::warm_up;
 use journal::Journal;
 use model::{Collector, Demand, Snapshot};
@@ -97,7 +97,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
     app.playlist = playlist;
-    app.choose_renderer(options.renderer, options.gpu_power)?;
+    app.set_renderer(Renderer::choose(options.renderer, options.gpu_power)?);
     let limit = options.limit as usize;
     if options.headless() {
         let height = options.headless_height();
@@ -121,7 +121,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                 app.scene.visible,
                 elapsed * 1000.0 / count as f64,
                 count as f64 / elapsed,
-                app.renderer
+                app.renderer.kind()
             );
         }
         if let Some(path) = options.output {

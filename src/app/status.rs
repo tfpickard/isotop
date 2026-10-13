@@ -110,7 +110,7 @@ impl App {
             };
             format!(" {scroll} | Ctrl-scroll zoom | Alt-scroll or right-drag rotate/tilt | n next match | [/] rewind | r reset | Ctrl-C quit")
         } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | {}{links}{}",
-            self.renderer, self.history.len(), s.elapsed, pressure_text(s),
+            self.renderer.kind(), self.history.len(), s.elapsed, pressure_text(s),
             if self.focus.is_some() { " | SUBTREE FOCUS" } else { "" }) });
         lines
     }

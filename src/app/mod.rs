@@ -4,6 +4,7 @@ pub(crate) mod fixtures;
 mod input;
 mod overlay;
 mod pointer;
+mod renderer;
 mod screen;
 mod search;
 mod status;
@@ -22,10 +23,10 @@ use crate::platform::Source;
 use crate::render::{Camera, Frame, RenderInput, Scene, Thing};
 use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
-use crate::{Power, Renderer, gpu};
 
 pub(crate) use input::typed;
 use pointer::Pointer;
+pub(crate) use renderer::Renderer;
 pub(crate) use screen::Layout;
 use tour::{Cursor, Tour};
 
@@ -75,9 +76,7 @@ pub(crate) struct App {
     pub(crate) rng: Rng,
     /// The terminal reports Shift+Space apart from Space (the Kitty keyboard protocol is on).
     pub(crate) keyboard: bool,
-    pub(crate) gpu: Option<gpu::Gpu>,
-    /// Which rasterizer drew the last frame, for the status strip.
-    pub(crate) renderer: String,
+    pub(crate) renderer: Renderer,
     /// When the demand last contained `Source::Journal`; None while it has not.
     pub(crate) journal_demanded: Option<Instant>,
     /// What `feed` has attached to samples so far, which numbers the next lines.
@@ -135,8 +134,7 @@ impl App {
             cursor: None,
             rng: Rng::new(clock_seed()),
             keyboard: false,
-            gpu: None,
-            renderer: "cpu".into(),
+            renderer: Renderer::cpu(),
             journal_demanded: None,
             journal_totals: journal::Totals::default(),
             playlist: picker::playlist(&[], &available),
@@ -181,33 +179,6 @@ impl App {
         Demand::from(self.row().sources)
     }
 
-    pub(super) fn choose_renderer(
-        &mut self,
-        renderer: Renderer,
-        power: Power,
-    ) -> Result<(), String> {
-        if renderer == Renderer::Cpu {
-            self.renderer = "cpu".into();
-            return Ok(());
-        }
-        let preference = match power {
-            Power::Low => wgpu::PowerPreference::LowPower,
-            Power::High => wgpu::PowerPreference::HighPerformance,
-        };
-        match gpu::Gpu::new(preference) {
-            Ok(gpu) => {
-                self.renderer = format!("gpu {}", gpu.name);
-                self.gpu = Some(gpu);
-                Ok(())
-            }
-            Err(error) if renderer == Renderer::Auto => {
-                self.renderer = format!("cpu ({error})");
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
-    }
-
     pub(super) fn snapshot(&self) -> &Snapshot {
         &self.history[if self.paused {
             self.history_index
@@ -231,21 +202,22 @@ impl App {
         }
     }
 
-    pub(super) fn render(&mut self, width: u32, height: u32, limit: usize) -> Frame {
+    /// Draws one frame: records its display list, then rasterizes it.
+    pub(crate) fn render(&mut self, width: u32, height: u32, limit: usize) -> Frame {
         let mut frame = self.draw(width, height, limit);
-        let failure = match self.gpu.as_mut() {
-            Some(gpu) => gpu.render(&mut frame, self.hover.map(|h| h.frame)).err(),
-            None => {
-                frame.rasterize();
-                None
-            }
-        };
-        if let Some(error) = failure {
-            self.gpu = None;
-            self.renderer = format!("cpu (GPU failed: {error})");
-            frame.rasterize();
-        }
+        self.rasterize(&mut frame);
         frame
+    }
+
+    /// Rasterizes a frame `draw` recorded, on the GPU when there is one.
+    pub(crate) fn rasterize(&mut self, frame: &mut Frame) {
+        self.renderer
+            .rasterize(frame, self.hover.map(|hover| hover.frame));
+    }
+
+    /// Replaces the rasterizer, which starts as the CPU.
+    pub(crate) fn set_renderer(&mut self, renderer: Renderer) {
+        self.renderer = renderer;
     }
 
     /// Records the frame's display list, which `render` then rasterizes: everything that moves a
