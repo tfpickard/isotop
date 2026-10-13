@@ -240,7 +240,7 @@ specification asks for. Each page links the mockup beside its theory.
 
 ![Chamber mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/chamber.jpg)
 
-### [Hive](Planned-Hive)
+### [Hive](View-Hive)
 
 ![Hive mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hive.jpg)
 
