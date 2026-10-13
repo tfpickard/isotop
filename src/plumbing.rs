@@ -153,13 +153,14 @@ impl Plumbing {
             .linked
             .keys()
             .map(|id| {
-                let links = self.room.links.get(id).copied().unwrap_or(0);
+                let links = self.room.links.get(id).copied().unwrap_or_default();
+                // A flow that was not measured ranks below every measured one, zero included.
                 let traffic = self
                     .room
                     .outflows
                     .get(id)
                     .and_then(|outflow| outflow.rate())
-                    .unwrap_or(0.0);
+                    .unwrap_or(f32::NEG_INFINITY);
                 (links, traffic, *id)
             })
             .collect();

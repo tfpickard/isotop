@@ -5704,8 +5704,9 @@ mod tests {
             assert!(waits.is_empty());
             assert!(reads.missing.contains(Source::WaitChannel));
         } else {
-            // A running process's file reads `0`, which is unknown.
-            assert_eq!(waits.get(&me.pid), Some(&Wait::Unreadable));
+            // Whatever the kernel says of this process (`0` while it runs, the name of a kernel
+            // function while its main thread waits for the test threads) is a reading.
+            assert!(waits.contains_key(&me.pid), "{waits:?}");
             assert!(reads.active.contains(Source::WaitChannel));
         }
         // A holder that stopped holding pipes keeps no reading.

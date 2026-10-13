@@ -131,17 +131,12 @@ impl<'a> Ink<'a> {
             .sphere(self.camera, at, radius, color, pick, false);
     }
 
-    /// A flat disc of `radius` in the plane through `center` spanned by the unit vectors `right`
-    /// and `up`, as `steps` triangles of exactly `color` (the caller shades it).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a disc is a centre, a plane, a size, a look and a pick"
-    )]
+    /// A flat disc of `radius` in the plane through `center` spanned by the unit vectors
+    /// `[right, up]`, as `steps` triangles of exactly `color` (the caller shades it).
     pub fn disc(
         &mut self,
         center: Point,
-        right: Point,
-        up: Point,
+        [right, up]: [Point; 2],
         radius: f32,
         color: Color,
         pick: u32,

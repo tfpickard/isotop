@@ -177,19 +177,18 @@ fn gauge(ink: &mut Ink, tank: &Tank, reading: Reading) {
     let pick = tank.pick;
     ink.disc(
         at(0.0),
-        right,
-        up,
+        [right, up],
         face * 1.2,
         tint(BRASS, 0.55),
         pick,
         steps,
     );
-    ink.disc(at(0.03), right, up, face * 1.08, BRASS, pick, steps);
+    ink.disc(at(0.03), [right, up], face * 1.08, BRASS, pick, steps);
     let paper = match reading {
         Reading::Needle { .. } => [240, 234, 214],
         Reading::Missing => [150, 158, 172],
     };
-    ink.disc(at(0.06), right, up, face, paper, pick, steps);
+    ink.disc(at(0.06), [right, up], face, paper, pick, steps);
     // The needle's direction at `fill` and the direction across it: 225 degrees at 0, sweeping
     // clockwise through the top to -45 degrees at 1.
     let spoke = |fill: f32| {
@@ -255,7 +254,7 @@ fn gauge(ink: &mut Ink, tank: &Tank, reading: Reading) {
             );
         }
     }
-    ink.disc(at(0.12), right, up, face * 0.14, [60, 46, 30], pick, 8);
+    ink.disc(at(0.12), [right, up], face * 0.14, [60, 46, 30], pick, 8);
     if matches!(reading, Reading::Needle { blocked: true, .. }) {
         ink.halo(at(0.1), ink.pixels(face) * 2.6, [255, 60, 40], 0.32);
     }

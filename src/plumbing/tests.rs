@@ -500,7 +500,14 @@ fn the_tour_offers_the_tanks_with_the_most_links_first() {
     draw(&mut scene, &snapshot, 12.6);
     assert!(!scene.tour.is_empty() && scene.tour.len() <= 12);
     let first = scene.tour[0].id;
-    let links = |id: Identity| state(&scene).room.links.get(&id).copied().unwrap_or(0);
+    let links = |id: Identity| {
+        state(&scene)
+            .room
+            .links
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+    };
     for target in &scene.tour {
         assert!(
             scene.positions.contains_key(&target.id),

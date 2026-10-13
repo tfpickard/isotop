@@ -233,7 +233,11 @@ impl Room {
                 None => sockets.unmeasured_connection = true,
             }
         }
-        if snapshot.outside.get(&id).copied().unwrap_or(0) > remotes.len() as u32 {
+        if snapshot
+            .outside
+            .get(&id)
+            .is_some_and(|&outside| outside > remotes.len() as u32)
+        {
             sockets.unmeasured_connection = true;
         }
         let hold = snapshot.pipe_holds.get(&id).copied();

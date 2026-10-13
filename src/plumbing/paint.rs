@@ -241,19 +241,14 @@ impl Plumbing {
                 None
             };
             let units = |cells: f32| cells * CELL;
+            // Water that was not measured does not move, and nothing is added to its phase.
             let (ahead, behind) = self.phases.entry((run.writer, run.reader)).or_default();
-            *ahead = tubes::advanced(
-                *ahead,
-                units(forward.unwrap_or(0.0)),
-                pass.step,
-                pipes::DASH_PERIOD,
-            );
-            *behind = tubes::advanced(
-                *behind,
-                units(backward.unwrap_or(0.0)),
-                pass.step,
-                pipes::DASH_PERIOD,
-            );
+            for (travelled, speed) in [(&mut *ahead, forward), (&mut *behind, backward)] {
+                if let Some(speed) = speed {
+                    *travelled =
+                        tubes::advanced(*travelled, units(speed), pass.step, pipes::DASH_PERIOD);
+                }
+            }
             let (ahead, behind) = (*ahead, *behind);
             let water = if writer_wait == Some(Wait::PipeWrite) {
                 self.drawn.blocked += 1;
@@ -781,9 +776,10 @@ impl Plumbing {
                     .room
                     .outflows
                     .get(&tank.id)
-                    .and_then(|outflow| outflow.rate())
-                    .unwrap_or(0.0);
-                Some((links as f32 * 1.0e9 + rate, tank.id))
+                    .and_then(|outflow| outflow.rate());
+                // A flow that was not measured adds no weight to the tank's links.
+                let weight = links as f32 * 1.0e9 + rate.map_or(0.0, |rate| rate.max(0.0));
+                Some((weight, tank.id))
             })
             .collect();
         ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -850,7 +846,9 @@ fn tube_path(
         if peers.len() < 2 {
             return tank.at;
         }
-        let nth = peers.iter().position(|&p| p == peer).unwrap_or(0);
+        let Some(nth) = peers.iter().position(|&p| p == peer) else {
+            return tank.at;
+        };
         let angle = nth as f32 * 2.399_963;
         [
             tank.at[0] + RISER * angle.cos(),
