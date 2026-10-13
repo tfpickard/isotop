@@ -35,7 +35,7 @@ A view is one module plus one registry row, and there is no other way to write o
    - links rule: all, quiet, or drawn by the view, and whether the scene draws the links as hairlines (`link_strokes`) and how high it lifts them above the drawn positions (`link_lift`, 0 by default)
    - generic birth and death flash, on or off
    - pressure haze, on or off
-   - default pitch
+   - default pitch, and `billboard` for a plane that faces the viewer whatever the camera (a sky dome built from `Camera::ground`), whose `Stage::bounds` the fit then measures under the camera that drew them
    - tour participation
    - header-count override
    - `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27))

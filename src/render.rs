@@ -1376,6 +1376,9 @@ pub struct Scene {
     pub tags: Vec<Tag>,
     /// The last frame's `Stage::bounds`, which `fit` frames the camera to.
     bounds: Vec<Point>,
+    /// The rotation and pitch of the camera the last frame was drawn with, when the shown row is
+    /// a `billboard`: `fit` measures `bounds` under them.
+    billboard: Option<(f32, f32)>,
     /// The last frame's `Stage::notes`: popup lines after the sockets.
     pub notes: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::sparklines`.
@@ -1430,6 +1433,7 @@ impl Scene {
             titles: Vec::new(),
             tags: Vec::new(),
             bounds: Vec::new(),
+            billboard: None,
             notes: HashMap::new(),
             sparklines: HashMap::new(),
             tour: Vec::new(),
@@ -1527,6 +1531,16 @@ impl Scene {
             zoom: 1.0,
             ..camera.clone()
         };
+        // A billboard's bounds hold for the camera that drew them, which may not yet have turned
+        // to the goal; its extent on the screen is the same under every rotation and pitch.
+        let measure = match self.billboard {
+            Some((rotation, pitch)) if !self.bounds.is_empty() => Camera {
+                rotation,
+                pitch,
+                ..probe.clone()
+            },
+            _ => probe.clone(),
+        };
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
         let points: Vec<Point> = if self.bounds.is_empty() {
@@ -1542,7 +1556,7 @@ impl Scene {
             self.bounds.clone()
         };
         for &p in &points {
-            let q = probe.view(p);
+            let q = measure.view(p);
             for i in 0..2 {
                 min[i] = min[i].min(q[i]);
                 max[i] = max[i].max(q[i]);
@@ -1617,6 +1631,7 @@ impl Scene {
         self.titles.clear();
         self.tags.clear();
         self.bounds.clear();
+        self.billboard = row.billboard.then_some((camera.rotation, camera.pitch));
         self.notes.clear();
         self.sparklines.clear();
         self.tour.clear();
@@ -2747,6 +2762,43 @@ mod tests {
     }
 
     #[test]
+    fn a_billboard_is_framed_as_the_camera_that_drew_it_saw_it() {
+        let snapshot = demo(10.0, 16);
+        // Drawn under the default camera, while the goal has already turned and tilted.
+        let goal = Camera {
+            rotation: FRAC_PI_2,
+            pitch: FRAC_PI_2,
+            ..Camera::default()
+        };
+        let zoom = |view: View| {
+            let mut scene = Scene::with_rows(testing::PLANES);
+            render(&mut scene, &snapshot, view, 10.0);
+            let mut fitted = goal.clone();
+            scene.fit(&mut fitted, 1200, 600);
+            (fitted.zoom, fitted.center)
+        };
+        // 600 by 300 pixels fill 0.9 of a 1200 by 600 frame at zoom 1.8, whatever the pitch.
+        let (zoom_billboard, center) = zoom(View::at(0));
+        assert!((zoom_billboard - 1.8).abs() < 1e-3, "{zoom_billboard}");
+        // Centred, as the goal's rotation and pitch see the point ORIGIN_Y down the frame.
+        let lifted = Camera {
+            zoom: 1.0,
+            ..goal.clone()
+        }
+        .ground(0.0, (ORIGIN_Y - 0.5) * 600.0 / zoom_billboard);
+        assert!(
+            (center[0] - lifted[0]).abs() < 1e-3 && (center[1] - lifted[1]).abs() < 1e-3,
+            "{center:?} against {lifted:?}"
+        );
+        // An ordinary view's bounds are world points, framed as the goal will see them.
+        let (zoom_ordinary, _) = zoom(View::at(1));
+        assert!(
+            (zoom_ordinary - 1.8).abs() > 0.1,
+            "the bounds of an ordinary view are not corrected: {zoom_ordinary}"
+        );
+    }
+
+    #[test]
     fn rows_switch_the_haze_the_exit_flash_and_the_links_off() {
         let snapshot = demo(10.0, 32);
         let mut fewer = snapshot.clone();
@@ -2809,6 +2861,7 @@ mod tests {
             titles: _,
             tags: _,
             bounds: _,
+            billboard: _,
             notes: _,
             sparklines: _,
             tour: _,

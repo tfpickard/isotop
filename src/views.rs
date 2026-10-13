@@ -112,6 +112,12 @@ pub struct ViewInfo {
     /// The camera pitch set when the view is switched to and on `r`. Default: None, which leaves
     /// the pitch where it is.
     pub pitch: Option<f32>,
+    /// Whether the view draws a plane that faces the viewer whatever the camera's rotation and
+    /// pitch (a sky dome, built each frame from `Camera::ground`). Its `Stage::bounds` then hold
+    /// only for the camera that drew them, so the camera fit measures them under that camera's
+    /// rotation and pitch instead of the goal's, which a view switched to has not yet been
+    /// drawn under. Default: off.
+    pub billboard: bool,
     /// Whether `g` and the idle tour visit processes in this view; switching to a view without
     /// the tour ends a running one. Default: on.
     pub tour: bool,
@@ -182,6 +188,7 @@ impl ViewInfo {
             flash: true,
             haze: true,
             pitch: None,
+            billboard: false,
             tour: true,
             header: None,
             face: None,
@@ -961,6 +968,49 @@ pub mod testing {
         ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
             Box::new(Probe::default())
         }),
+    ];
+
+    /// A module view that draws nothing but a plane facing the viewer, 600 by 300 pixels at zoom
+    /// 1, whose corners it gives as `Stage::bounds`: the ground points that appear at those
+    /// offsets from the centre of the camera drawing it.
+    #[derive(Default)]
+    pub struct Plane;
+
+    impl ViewModule for Plane {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            _processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            let zoom = stage.camera.zoom;
+            stage.bounds.extend(
+                [
+                    (-300.0, -150.0),
+                    (300.0, -150.0),
+                    (300.0, 150.0),
+                    (-300.0, 150.0),
+                ]
+                .map(|(x, y)| {
+                    let [x, y] = stage.camera.ground(x * zoom, y * zoom);
+                    [x, y, 0.0]
+                }),
+            );
+            0
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            " plane".into()
+        }
+    }
+
+    /// `plane`, a view of a plane that faces the viewer, as a billboard and as an ordinary view.
+    pub static PLANES: &[ViewInfo] = &[
+        ViewInfo {
+            billboard: true,
+            ..ViewInfo::new("billboard", "BILLBOARD", Backdrop::Void, || Box::new(Plane))
+        },
+        ViewInfo::new("ordinary", "ORDINARY", Backdrop::Void, || Box::new(Plane)),
     ];
 
     /// A module view that seats each process by its rank in the frame's process order, so one

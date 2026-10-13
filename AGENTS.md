@@ -351,7 +351,7 @@ match your own shell.
     demo samples, such as `Phase::Replay` at `--sample-ms` or `Phase::Play`, which also draws the frames between them, under `When::DemoHeadless`), `links` (`Quiet`; or `All`,
     or `DrawnByView`), `link_strokes` (off: the scene's links are beams; a new view turns it on,
     so its links are hairlines that rasterize alike on the CPU and the GPU), `link_lift` (0: how
-    high the scene lifts its links above the drawn positions, 1.5 over City's rooftops), `flash` and `haze` (on), `pitch` (None: leave the camera's), `tour` (on),
+    high the scene lifts its links above the drawn positions, 1.5 over City's rooftops), `flash` and `haze` (on), `pitch` (None: leave the camera's), `billboard` (off: a plane that faces the viewer whatever the rotation and pitch, so the fit measures its `Stage::bounds` under the camera that drew them and not the goal's), `tour` (on),
     `header` (None: the scene's visible and collapsed counts), `face` (None), `turn` (None: the
     wheel pans), `keys` (none: the view's own keys, which lead the `?` help line while it is
     shown), `sources` (none), `demo` (`DemoOptions::NONE`; a row names only the options it turns on, `DemoOptions { churn: true, ..DemoOptions::NONE }`, so a new option leaves the other rows alone) and `contract`
