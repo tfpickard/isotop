@@ -50,7 +50,7 @@
 **Planned**
 
 [Mold](Planned-Mold) &middot; [Chamber](Planned-Chamber)<br>
-[HR](Planned-HR) &middot; [Hive](Planned-Hive)<br>
+[HR](Planned-HR) &middot; [Hive](View-Hive)<br>
 [Anthill](Planned-Anthill) &middot; [Switchboard](Planned-Switchboard)<br>
 [Plumbing](Planned-Plumbing) &middot; [Morph](Planned-Morph)<br>
 [Ouija](Planned-Ouija) &middot; [Canyon](Planned-Canyon)<br>
