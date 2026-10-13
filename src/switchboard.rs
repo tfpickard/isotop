@@ -26,7 +26,7 @@ use crate::terminal::clean_text;
 use crate::views::ViewModule;
 
 use cord::{MOVE, Spot};
-use lines::{CAP, Line, Lines, Reading, Table, sum_known};
+use lines::{CAP, Line, Lines, Reading, Seat, Table, sum_known};
 use scenery::{Pen, Plan};
 
 /// The kind of thing a jack, its lamp or its cord is, for picking and the inspector.
@@ -141,7 +141,7 @@ impl Switchboard {
             .roster
             .seats
             .iter()
-            .map(|seat| seat.busy.unwrap_or(0.0))
+            .map(Seat::drawn_busy)
             .collect();
         while self.phases.len() < busy.len() {
             let seat = self.phases.len() as f32;
@@ -218,7 +218,7 @@ impl Switchboard {
                 pen.disc([x, y, 0.8], 7.6, 10, [58, 34, 18], pick);
             }
             let brightness = jack.map_or(0.0, |jack| {
-                let rate = jack.rate().unwrap_or(0.0);
+                let rate = jack.drawn_rate();
                 let moving = self
                     .lines
                     .cords
@@ -308,7 +308,7 @@ impl Switchboard {
             kind: LINE,
             key: jack.key,
         });
-        let width = cord::width(jack.rate().unwrap_or(0.0)) * CORD_WEIGHT;
+        let width = cord::width(jack.drawn_rate()) * CORD_WEIGHT;
         let behind: Vec<Spot> = points.iter().map(|p| [p[0], p[1] - 0.5, p[2]]).collect();
         // The dark edge that sets a cord off from those it crosses costs a second ribbon, so only
         // a board of at most 64 cords has it: all cords together stay within 128 x 24 x 2
@@ -342,7 +342,7 @@ impl Switchboard {
     fn draw_operators(&mut self, pen: &mut Pen, plan: &Plan, reading: Option<&Reading>) {
         let time = self.now;
         for (index, seat) in self.lines.roster.seats.iter().enumerate() {
-            let busy = seat.busy.unwrap_or(0.0);
+            let busy = seat.drawn_busy();
             let (sway, reach) = self.phases.get(index).copied().unwrap_or((0.0, 0.0));
             figures::operator(pen, plan, index, &figures::Motion { busy, sway, reach });
             let sum = |rates: &BTreeMap<u32, Option<f32>>| {

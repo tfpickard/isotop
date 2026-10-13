@@ -103,6 +103,12 @@ pub struct Line {
 }
 
 impl Line {
+    /// `rate` as a lamp or a cord draws it: a line whose rate was not measured is drawn at rest,
+    /// as a quiet one is.
+    pub fn drawn_rate(&self) -> f32 {
+        self.rate().unwrap_or(0.0)
+    }
+
     /// Events per second over the interval, summed over the CPUs whose rate is known; None when
     /// none is.
     pub fn rate(&self) -> Option<f32> {
@@ -133,7 +139,9 @@ impl Line {
     /// The CPUs with the most of the line's events, as shares of its rate, largest first; at most
     /// `count`.
     pub fn shares(&self, count: usize) -> Vec<(u32, f32)> {
-        let total = self.rate().unwrap_or(0.0);
+        let Some(total) = self.rate() else {
+            return Vec::new();
+        };
         let mut known: Vec<(u32, f32)> = self
             .rates
             .iter()
@@ -442,6 +450,14 @@ pub struct Seat {
     pub ordinal: usize,
     /// The busy share of the seat's CPUs, None while none is known.
     pub busy: Option<f32>,
+}
+
+impl Seat {
+    /// `busy` as an operator moves to it: a seat whose CPUs are not measured sits still, as an
+    /// idle one does.
+    pub fn drawn_busy(&self) -> f32 {
+        self.busy.unwrap_or(0.0)
+    }
 }
 
 /// The operators: performance cores first, then efficiency cores, then cores of unknown kind,

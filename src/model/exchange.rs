@@ -269,8 +269,8 @@ fn softirqs(time: f64, cpus: &[Cpu]) -> Vec<Softirq> {
             let per_cpu = cpus
                 .iter()
                 .map(|cpu| {
-                    let (_, mut count, rate) = counted(on_cpu(own, cpu.id), cpu.id, time);
-                    let mut rate = rate.unwrap_or(0.0);
+                    let own = on_cpu(own, cpu.id);
+                    let (mut count, mut rate) = (own.count(time, 1.0), own.rate(time) as f32);
                     for (index, &(_, device, ..)) in LINES.iter().enumerate() {
                         let Some((raised, share)) = raises(device) else {
                             continue;
