@@ -16,6 +16,16 @@ The French entomologist Pierre-Paul Grassé named this kind of coordination **st
 
 Why it is a good metaphor for system calls. A process that reads and writes files makes a stream of requests to the kernel from a fixed home (the process) to destinations (files, pipes, sockets) that persist across requests, in numbers that can be counted but not individually followed: the machine tells us *how many* calls and *how many bytes*, not which call went where at what moment. A colony is the same kind of object: individually invisible workers, a countable flow, persistent destinations. The view makes each ant stand for K calls, the destinations the files, and lets routes emerge. The routes themselves are decorative; the endpoints and the rates are data.
 
+## History
+
+The system being modelled summarises the standard account. The details are less tidy than the summary.
+
+Grassé's 1959 paper in *Insectes Sociaux* coined the word for termites, not ants: its subject is the rebuilding of the nest of *Bellicositermes natalensis* and *Cubitermes* after damage. Dorigo, Bonabeau and Theraulaz, who quote his definition, give it as the stimulation of workers by the performance they have achieved.
+
+The chemistry of ant trails has its own line of work. E. O. Wilson's studies of the imported fire ant *Solenopsis saevissima* reported its trail substance in 1959, and his 1962 paper in *Animal Behaviour* 10, 137-147 treats the trail communication of its workers. In 1989 Goss, Aron, Deneubourg and Pasteels published the double-bridge result for the Argentine ant in *Naturwissenschaften*, and Deneubourg and colleagues followed in 1990. Marco Dorigo's doctoral thesis at the Politecnico di Milano (1992), *Optimization, learning and natural algorithms*, is where the first ant colony algorithm appears; the Ant System paper of Dorigo, Maniezzo and Colorni followed in 1996.
+
+The algorithms took the ants' rule and none of their biology: the pheromone of ant colony optimisation is a number on an edge of a graph, and the pheromone of this view is a colour on a grid.
+
 ## Theory
 
 ### Stigmergy and the double bridge
@@ -114,25 +124,27 @@ Only the 24 busiest processes by syscall rate are scanned (`IO_PROCESSES = 24`),
 
 Everything below is the specification of issue #47. None of it exists.
 
-**Module and registry.** `src/anthill.rs` with `Anthill: Default`, registered through the P1 registry with `Backdrop::Dusk`, drawing through `Stage` (`draw(&mut Stage, &[&Process], &Snapshot) -> usize`). It declares B8's source in the row's `sources` and warms up 10 s before a headless `--time` frame. No view-local keys. There is no plugin system.
+**Module and registry.** `src/anthill.rs` with `Anthill: Default`, registered as a row of `views::REGISTRY`, `ViewInfo::new("anthill", "ANTHILL", Backdrop::Dusk, build)` with `build` a `views::Build` closure, implementing `ViewModule` (`draw(&mut self, &mut Stage, &[&Process], &Snapshot) -> usize`); the scene builds the view from its row and owns its state. It would declare B8's source in the row's `sources` and warm up 10 s (`warmup`) before a headless `--time` frame. No view-local keys. There is no plugin system.
 
-**Dependencies.** Status at commit `192299b`:
+**Dependencies.** Status in the current source tree:
 
 | Item | Provides | Status |
 |---|---|---|
 | P1 (#17), P2 (#18), S1 (#22), S2 (#23), S6 (#27) | registry, picker, parity check, `FixedStep`, source demand | merged |
 | P5 (#21) | `Process.syscall_io` | merged |
 | B9 (#36) | `Thing` picks and `Card`s | merged |
-| B2 (#29) | pipe, Unix and loopback TCP links with traffic, for tunnels | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
-| B8 (#35) | `IoDetail` / `FileFlow` per-file attribution and tty counts | not implemented in any open pull request |
-| P3 (#19) | field primitive for the ground and the pheromone glow | not implemented in any open pull request |
-| S3 (#24) | `Frame::ribbon` with `Dash` for the tunnels | not implemented in any open pull request |
+| B2 (#29) | pipe, Unix and loopback TCP links with traffic, for tunnels (`Snapshot::unix_queues`, `Snapshot::pipes`, `Snapshot::link_traffic`) | merged |
+| B8 (#35) | `IoDetail` / `FileFlow` per-file attribution and tty counts | not in the source tree |
+| P3 (#19) | field primitive for the ground and the pheromone glow (`src/render/field.rs`) | merged |
+| S3 (#24) | `Frame::ribbon` with `Dash` for the tunnels (`src/render/strokes.rs`) | merged |
+
+B8 is the one missing prerequisite, and it is the one that carries the per-file attribution.
 
 **Simulation.** `FixedStep::new(0.05, 10, 0.5)` (20 Hz) with an interpolation alpha. The ants follow the prototype's `Colony.step`: steer toward a quadratic Bezier carrot with a hashed bend per flow, sense pheromone at plus and minus 0.5 rad, add noise of order $\sqrt{dt}$, deposit 1.0 while carrying and 0.45 otherwise. The pheromone grid is 3 channels by at most 256 cells a side. Each ant is seeded from (identity, destination hash, spawn sequence). Rates come from the sampled counters, not from the simulation, so the colony cannot invent traffic.
 
 **Layout (stable).** A square slab with a fixed pinwheel; nests move only when they outgrow their 1.15 times reservation; the slab grows in 1.25 times steps only when the clearing overflows. `stage.bounds` is the slab's corners. Nests and piles keep their places when CPU, memory or the population change (a named test).
 
-**Rendering.** The ground is one P3 field: static sand, region tint and the additive pheromone glow. Ants are two-triangle quads and are not pickable; nests are pickable by process index and piles and blankets by `thing_pick`. `places` labels the regions, the top 12 piles by traffic, and the top 2 crumb sizes (for example "128 KiB/read"). All file paths are untrusted text and pass through `terminal::clean_text` before display; the card of a pile shows the sanitized path, size, readers, writers and bytes per second.
+**Rendering.** The ground is one field (P3): static sand, region tint and the additive pheromone glow. Ants are two-triangle quads and are not pickable; nests are pickable by process index and piles and blankets by `thing_pick`. `places` labels the regions, the top 12 piles by traffic, and the top 2 crumb sizes (for example "128 KiB/read"). All file paths are untrusted text and pass through `terminal::clean_text` before display; the card of a pile shows the sanitized path, size, readers, writers and bytes per second.
 
 **Legend** (specified): `mound = process (size ~ memory) | pile = open file | ant = K syscalls (K = 50) | crumb = bytes per syscall | pale = read, coral = write | glow = pheromone | dashes = pipes, sockets`, with `fdinfo unreadable for N` appended when processes cannot be read.
 
@@ -171,7 +183,8 @@ The quantities the view will draw can be read by hand on a Linux machine: `cat /
 ## Where in the code
 
 * Existing: `src/model.rs` (`Process.syscall_io`, `SyscallIo`, `Process.files`, `Snapshot.link_traffic`, `Snapshot.links`), `src/platform/linux/files.rs` (`classify`, `Bounds`, `FileScan`: the open-file scan that B8 extends), `src/platform/mod.rs` (`Source::SyscallIo`, `Source::OpenFiles`), `src/views.rs`, `src/simulation.rs` (`FixedStep`, `Rng::for_identity`), `src/layout.rs` (`Seats`, `vacant`), `src/render.rs` (`Thing`, `Card`, `Frame::thing_pick`, `label_name`), `src/terminal.rs` (`clean_text`).
-* Planned: `src/anthill.rs`; B8 (`IoDetail`, `FileFlow`), P3, S3; B2 is in the open PR #134.
+* Also existing, which the design uses: `src/render/field.rs` (P3), `src/render/strokes.rs` (S3: `Frame::ribbon`, `Dash`), `Snapshot::unix_queues` and `Snapshot::pipes` (B2).
+* Planned: `src/anthill.rs`, a registry row, and B8 (`IoDetail`, `FileFlow`).
 * Prototype, reference only: `docs/mockups/code/anthill.py` (`Colony.step`, `crumb_px`, `flow_rate`, the treemap `REGIONS`).
 
 ## Variations and open questions
@@ -180,12 +193,13 @@ The quantities the view will draw can be read by hand on a Linux machine: `cat /
 * **Memory-mapped I/O.** Page faults of file-backed mappings (`major_faults` in `Process`, already measured) are the missing channel: a process reading through `mmap` moves no offset. Major faults per second, attributed to a mapping through `/proc/<pid>/maps` and `smaps`, could be a third kind of ant.
 * **Pheromone as a measurement.** The decay constant of 2.2 s is a design choice. A pheromone whose evaporation matched the sampling period would make the glow read directly as "bytes in the last N seconds".
 * **Latency.** Ants could slow down when the process's wait channel (`wchan`) says it is blocked in I/O, a thing the plumbing view considers for pipes.
+* **Termites.** The word stigmergy was coined for termites rebuilding a damaged nest. The isotop equivalent of a nest damaged and rebuilt is a service killed and restarted by its supervisor, and a view of that would show the work already done as the cue for the next worker, which is Grassé's definition.
 * **Alarm pheromone.** Real ants lay a different chemical when disturbed; a failed read (`EIO`, a `read` on a deleted file) has no counter in `/proc/<pid>/io`, so this needs another source.
 * **A truth check.** On a quiet machine, run a known program (`dd`, `cat` a file) and compare the view's attributed bytes with the file size and with `rchar`: the quickest test of the attribution rules.
 
 ## References
 
-* P.-P. Grassé, "La reconstruction du nid et les coordinations interindividuelles chez *Bellicositermes natalensis* et *Cubitermes* sp. La théorie de la stigmergie: essai d'interprétation du comportement des termites constructeurs", *Insectes Sociaux* 6, 41-80 (1959).
+* P.-P. Grassé, "La reconstruction du nid et les coordinations interindividuelles chez *Bellicositermes natalensis* et *Cubitermes* sp. La théorie de la stigmergie: essai d'interprétation du comportement des termites constructeurs", *Insectes Sociaux* 6, 41-83 (1959).
 * S. Goss, S. Aron, J. L. Deneubourg, J. M. Pasteels, "Self-organized shortcuts in the Argentine ant", *Naturwissenschaften* 76, 579-581 (1989).
 * J. L. Deneubourg, S. Aron, S. Goss, J. M. Pasteels, "The self-organizing exploratory pattern of the Argentine ant", *Journal of Insect Behavior* 3, 159-168 (1990).
 * M. Dorigo, V. Maniezzo, A. Colorni, "Ant system: optimization by a colony of cooperating agents", *IEEE Transactions on Systems, Man, and Cybernetics, Part B* 26(1), 29-41 (1996).

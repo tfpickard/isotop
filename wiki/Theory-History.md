@@ -8,6 +8,16 @@ structure: what a sample holds, the ring and its capacity, the four ways to read
 (open issues [#126](https://github.com/tfpickard/isotop/issues/126) and
 [#127](https://github.com/tfpickard/isotop/issues/127)) that this page states as it is.
 
+## History
+
+*The ring buffer.* A fixed-size buffer in which the newest entry overwrites the oldest is among the oldest data structures in computing; this page does not date it. The one that matters here is the round-robin database, `RRDtool`, which Tobias Oetiker presented at LISA '98 as the storage of the next Multi Router Traffic Grapher (MRTG) and released as version 1.0 on 16 July 1999. Its premise is the same as `History`'s: monitoring data has a fixed horizon, so the store should have a fixed size and no cleanup. It differs in keeping several resolutions of the same series (consolidation) where `History` keeps one, at the sample interval, and gives up the oldest.
+
+At the default interval the 240 samples of `CAPACITY` are four minutes, which is the length of a typical single.
+
+*In this project.* On 2026-10-08 the scene began recording each sample whichever view was shown, so that Strata opened a minute deep ("Record strata history in every view"), and the ring then lived inside Strata. The shared `History`, with `CAPACITY` = 240, arrived on 2026-10-11 with the first module views (#123). The cause of issue #127, that 240 samples is a count and not a duration, is inherited: Strata's own ring held 240 samples before the shared history existed.
+
+*What it is for.* The views that read it are the ones whose subject is time: Strata's ridges, Ptolemy's epicycles (a discrete Fourier transform needs a past before it has a spectrum) and Ptolemy's novae. Each is a different answer to the question RRDtool answered once: how much of the past is worth keeping, and at what resolution.
+
 ## Two histories, not one
 
 isotop has two things called history and they are unrelated:
@@ -105,7 +115,7 @@ A live run has its history by the time you press a key, because it has been reco
    them. A row that already fills history while it rasterizes (`Phase::History`, Strata) skips this.
 2. **The row's own phases**: `Phase::History { seconds }` renders frames at one-second steps; `Phase::Record` records
    one-second steps through `Scene::record`; `Phase::Replay` records at `--sample-ms` steps (`seconds / sample_seconds`
-   samples); `Phase::Settle` and `Phase::Journal` render frames to settle motion.
+   samples); `Phase::Play` plays the seconds before `time` for a view that builds its state inside `draw` and does not record what it plays; `Phase::Settle` and `Phase::Journal` render frames to settle motion.
 
 The captured frame's own sample is then recorded by the first `render`. The tests pin the counts: a Coop render has 61
 samples in `window(75, 60)` with the replay and 31 without.

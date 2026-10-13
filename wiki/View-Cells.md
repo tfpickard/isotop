@@ -4,7 +4,7 @@ Cells turns every cgroup into a living cell in a petri dish. Three dishes hold t
 session and your containers. A cell's area follows the memory the kernel charges to its cgroup, a dashed ring marks
 its memory limit, an arc around the membrane shows its CPU use against its quota, the membrane trembles with the
 pressure the kernel measures for that group, flashes red when the quota throttles it and bursts when the OOM killer
-strikes inside it. The processes of a cell are its organelles; the largest is the nucleus.
+strikes inside it. The processes of a cell are its organelles; the largest when the cell appears is the nucleus, and it keeps the centre until it exits.
 
 ![Cells: cgroups as cells in three petri dishes](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/cells.webp)
 
@@ -79,9 +79,20 @@ other organelles; a cgroup is a compartment with an accounting boundary and limi
 processes. The correspondence is the right *shape* of metaphor, and that is all it is. In a real eukaryotic cell the
 nucleus holds the genome and directs the rest, the nucleus is of the order of a tenth of the cell's volume, and the
 membrane is a lipid bilayer that fluctuates thermally; none of that is modelled. Here the nucleus is simply the
-member with the most memory, the membrane's tremble is a pair of sine modes, and the area scaling is a choice
+largest member when the cell appears (it then keeps the centre until it exits), the membrane's tremble is a pair of sine modes, and the area scaling is a choice
 of 2D drawing, not a biological law. (The standard reference for cell structure is Alberts et al., *Molecular
 Biology of the Cell*.)
+
+## History
+
+Cells joins two histories: the culture dish, and the kernel's control groups.
+
+* Robert Koch's laboratory in the early 1880s grew bacteria on solid media, first gelatin plates, so that a single cell could found a visible colony. Gelatin melts at body temperature and is eaten by some bacteria. The substitute, agar, is credited to Fanny Hesse, who used it in her kitchen and whose husband Walther worked in Koch's laboratory in 1881 to 1882; sources report that Koch's 1882 tuberculosis paper mentioned agar without crediting either Hesse.
+* Julius Petri, Koch's assistant, described his shallow lidded glass dish in 1887, in a short paper in the *Centralblatt fur Bakteriologie und Parasitenkunde*. The technique was at first called Koch's plate method; since the early twentieth century only Petri's name has stayed in common use.
+* Linux control groups began at Google in 2006 as "process containers", led mainly by Paul Menage and Rohit Seth, and were renamed control groups to avoid confusion with the general term container. They were merged in kernel 2.6.24 (released January 2008). Sources differ on the year of the merge (2007 or 2008), so the page above says 2008, the release.
+* The first interface, now called cgroup v1, had a separate hierarchy per controller. Tejun Heo found it could not be redesigned without breaking it and added a second, unified interface; cgroup v2 was declared non-experimental in Linux 4.5 (March 2016), after design work that sources date to 2012 or 2014.
+* Pressure stall information (Johannes Weiner, Linux 4.20) is newer still, and is what lets the membrane tremble for a measured reason.
+* Containers as most people meet them are cgroups plus namespaces. A dish was a compartment with an accounting boundary for most of a century before the kernel had one.
 
 ## Theory
 
@@ -134,8 +145,8 @@ unbounded quantity.
 | Organelle | A drawn process in the cell | One sphere |
 | Organelle size | `Process::memory` (eased) | $0.8\,\texttt{mass\_radius}$, at most $0.42\times$ spacing, times a sprout ease-in for births |
 | Organelle glow | `Process::cpu` above 1 % | Radius and strength grow with $\text{cpu}/(\text{cpu}+50)$ and $\text{cpu}/(\text{cpu}+40)$ |
-| Nucleus | The member with the most memory (ties go to the smaller identity) | At the centre, radius `mass_radius` clamped to $[0.45, 0.32\,r]$, with a soft glow |
-| Seat | Stable per member (`Seats`) | Golden-angle spiral, spacing $\max(0.8\,r/\sqrt{s+1}, 0.75)$ |
+| Nucleus | The cell's first nucleus is its largest member (ties go to the smaller identity); it keeps the centre until it exits, and a cell that has lost it gives it to the largest process that was not in the cell at the previous frame (`Dishes::elect`); if nobody new arrives the cell has none | At the centre, radius `mass_radius` clamped to $[0.45, 0.32\,r]$, with a soft glow |
+| Seat | Stable per member (`Seats`) | Golden-angle spiral of spacing $\max\big((0.7\,R - 0.4)\cdot 0.8/\sqrt{n+1},\ 0.75\big)$ where $R$ and $n$ are the radius and seat count of the cell's `Room`, the room it reserved (`SHRINK`, `MARGIN`, `SPREAD`, `SEAT`) |
 | Label | Cgroup leaf with `.service`/`.scope` and systemd escapes removed, at most 28 characters | Only the 12 largest cells of a dish are named |
 | Inspector | `Unit` fields | `cell memory X (limit Y) \| CPU Z% of a Q% quota \| tasks`, `pressure cpu a% mem b% io c% \| throttled \| n OOM kills` |
 | Dish disc, ring lines, cytoplasm shade, spiral stems | none | Decorative |
@@ -150,12 +161,13 @@ sample of `Unit::cpu` and `Unit::throttled` is therefore unknown, and a cell the
 hierarchy mounted at `/sys/fs/cgroup` with a `memory` controller, `Source::Cgroups` is missing: cells are formed by
 group name, sized by the members' own memory, and the legend says "no limits, quotas or pressure".
 
-**Placement.** `Dishes::draw` in `src/cells.rs` keeps `Seats` (a seat per process within its cell, for life), a
-`Discs` packing of cells within each dish and of the dishes themselves. A disc keeps its centre until it needs more
+**Placement.** Cells is a `ViewModule` in [`src/cells.rs`](https://github.com/tfpickard/isotop/blob/main/src/cells.rs): the state struct `Dishes` is built by its registry row in `views::REGISTRY` with a closure, and `Scene` holds none of it. `Dishes` keeps `Seats` (a seat per process within its cell, for life), a
+`Discs` packing of cells within each dish and of the dishes themselves, a `Room` per cell, and the nucleus of each cell. A disc keeps its centre until it needs more
 than it reserved (reservation is 1.15 times the need), then only it moves; a dish's drawn radius only grows
 (`radii`, with 5 % headroom). Seats, cell sizes and places are reserved for every *sampled* process, drawn or not, so
-focusing a subtree or lowering `--limit` frees nothing and clearing it puts everything back; each process is measured by the scene's eased
-copy so hiding one never changes the figures that size and rank the cells.
+focusing a subtree or lowering `--limit` frees nothing and clearing it puts everything back; each process is measured as the scene eases it (`Stage::eased`) so hiding one never changes the figures that size and rank the cells.
+
+**Rooms.** A cell's seats are not laid out for the membrane it has this frame but for a `Room` it reserved: the membrane radius and seat count at the time, with the seats spread over $0.8$ (`SPREAD`) of the smallest membrane the cell is expected to keep, $0.7$ (`SHRINK`) of the room's radius, less a margin of 0.4 (`MARGIN`). Memory can thus move the membrane between about half and double its memory without moving a seat. `Room::serves` keeps the room while the outermost seat stands inside the membrane and the membrane has not grown past `SPARSE` = 1.5 times the room's radius; otherwise `Dishes::reserve` lays it out again for the cell as it is.
 
 **Drawing.** Each cell is 64 cytoplasm facets (all pickable as the nucleus, so clicking the cell selects its largest
 process, unless the nucleus is hidden), two membrane lines (inset 0 and 0.07), the dashed ring (72 segments, every other
@@ -166,10 +178,7 @@ centre. Dish labels read `title: N cells, M processes`; a line counts the kernel
 cell in `kills` (count and when it last rose) for every sampled cell, shown or not, so a kill that happens while a cell is
 hidden does not burst when it comes back, and one recorded while another view is shown is not replayed.
 
-**Stable layout.** Seats and discs are stable. The harness nonetheless records two known failures (issue
-[#118](https://github.com/tfpickard/isotop/issues/118)): the nucleus is the member with the most memory, so a change
-in memory can swap it with a seated member (and a churning nucleus's successor moves to the centre), and organelle
-spacing follows the cell radius, which follows cgroup memory.
+**Stable layout.** The row waives no property. Seats, rooms and discs are stable, and the nucleus keeps the centre until it exits, so a change in memory neither swaps it with a seated member nor moves an organelle (tests `the_nucleus_keeps_the_centre_until_it_exits_and_the_next_arrival_takes_it` and `hiding_a_process_does_not_change_which_process_is_the_nucleus_while_memory_eases`). A cell whose nucleus exits and that gains nobody has none, and no seated organelle moves to the centre.
 
 **CPU and GPU.** Cells draws facets, lines, glows and sphere impostors with no new primitive, so the backends agree. Its row
 uses the `Dusk` backdrop and no warm-up.
@@ -193,7 +202,8 @@ uses the `Dusk` backdrop and no warm-up.
 * **Nothing is shown for a cgroup without processes isotop sampled.** Cells exist only for the cgroups of sampled
   processes.
 * **The metaphor's biology is decorative.** Nucleus and organelles carry no functional meaning: the nucleus is the
-  largest process, which is often, but not necessarily, the main process of the service.
+  largest process when the cell appeared (or the largest newcomer after the first nucleus exited), which is often, but
+  not necessarily, the main process of the service, and it need not be the largest now.
 * **macOS has no cgroups.** There Cells groups by app bundle and user and draws no limits, quotas, pressure or kills.
 
 ## Try it
@@ -211,18 +221,15 @@ leaves the cell where it was.
 
 ## Where in the code
 
-* [`src/cells.rs`](https://github.com/tfpickard/isotop/blob/main/src/cells.rs): `Dishes::draw`, `draw_cell`, `watch_kills`, `describe`, `legend`, `cell_name`, `short`; constants `DISHES`, `SEAT`, `LIMIT`, `NAMED`, `DISH_GAP`, `LYSIS_SECONDS`.
+* [`src/cells.rs`](https://github.com/tfpickard/isotop/blob/main/src/cells.rs): `Dishes`, `Dishes::draw`, `Dishes::draw_cell`, `Dishes::elect`, `Dishes::reserve`, `Dishes::watch_kills`, `Dishes::legend`, `Room`, `describe`, `cell_name`, `short`; constants `DISHES`, `SEAT`, `SPREAD`, `SHRINK`, `MARGIN`, `SPARSE`, `LIMIT`, `NAMED`, `DISH_GAP`, `LYSIS_SECONDS`.
 * [`src/platform/linux/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/mod.rs): `account`, `account_under`, `parse_pressure`, `classify`, `cgroup_path`, `cgroup_name`.
 * [`src/model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs): `Unit`, the `background` thread, `accounted`, `merge`.
 * [`src/layout.rs`](https://github.com/tfpickard/isotop/blob/main/src/layout.rs): `Seats`, `Discs`, `spiral`, `spin`, `GOLDEN_ANGLE`.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `cells` row (`known_unstable` for #118).
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `cells` row (no waived property, no warm-up).
 * Figures: `docs/figures/cells-psi.py`, `docs/figures/cells-transfer.py`.
-
-The AGENTS.md file table lists `cells.rs` among the module views; its registry row is `Hooks::BuiltIn` (`BuiltIn::Cells`).
 
 ## Variations and open questions
 
-* **A stable nucleus** (issue #118): keep the nucleus until it exits instead of re-choosing it by memory every frame.
 * **Nested cells.** The cgroup tree is a hierarchy; a service with child cgroups could be drawn as a cell holding
   cells (endosymbiosis is the obvious joke and the obvious geometry).
 * **Split the cytoplasm.** `memory.stat` separates `anon` from `file`; anonymous memory could be the cytoplasm and page

@@ -2,6 +2,15 @@
 
 Picking answers one question: what is under the pointer? isotop answers it the way many renderers do, by drawing it. Next to the colour image the rasterizer fills a second image of the same size, the *pick buffer*, in which every pixel holds not a colour but the identity of whatever won the depth test there. A click is then a lookup. This page covers that buffer's format (which carries two kinds of identity in one 32-bit word), the rules for which primitives write it, the search that turns an imprecise terminal pointer into a hit, and the places where the machinery and the picture can disagree.
 
+## History
+
+* **The pointing device.** Selecting by pointing needs a pointer. Douglas Engelbart's group at the Stanford Research Institute built the first mouse in the mid-1960s, a wooden shell with two wheels, and demonstrated it in 1968; the terminal mouse reports that isotop reads are descendants of that arrangement filtered through the X Window System.
+* **Selection by drawing.** Early graphics libraries answered "what is under the pointer" with a separate mode. OpenGL 1.0 (1992) offered `GL_SELECT` with a name stack: draw the scene in a special mode and read back the names of what fell in a small clipping region. It was deprecated with the rest of the fixed-function pipeline. The replacement that programmers reached for is the one on this page: render identifiers as colours into an off-screen image and read the pixel.
+* **The item buffer.** The technique has an older name. Hank Weghorst, Gary Hooper and Donald Greenberg, "Improved Computational Methods for Ray Tracing", *ACM Transactions on Graphics* 3(1), 1984, 52-69, introduced the *item buffer*: a pre-pass that records, per pixel, which object is visible, used to skip most of the ray tests. Picking by ID buffer is the same image put to a different use.
+* **Fitts.** Paul Fitts's 1954 paper treated the hand as a communication channel with a capacity in bits, and borrowed its form from Shannon's channel-capacity theorem; the movement time to a target grows with the logarithm of distance over width. Later work (MacKenzie, 1992, among others) adapted the formula for pointing devices, and it is the reason a hit zone larger than the visible target is a standard remedy. The experiments used a stylus tapping between metal plates.
+* **Mouse reports in terminals.** The cell-based mouse reports of xterm (X10 and X11 modes, then the SGR encoding, mode 1006) predate pixel reports; mode 1016 reports pixels and is the newest. Which terminal added it first is not established here (unverified).
+* On the page below the pointer is about 13 bits and the frame about 21. Fitts's subjects were not asked to supply the rest.
+
 ## Theory: object-ID buffers and an uncertain pointer
 
 There are two standard ways to hit-test a scene. *Ray casting* intersects a ray through the pointer with every object, which needs the scene's geometry in a queryable form and a depth-resolution rule. *ID buffering* instead renders the scene a second time, or in the same pass, with each object's identifier as its "colour"; the visible object at a pixel is, by construction, the one the viewer sees there, with occlusion, depth ties and silhouettes already resolved by the very code that drew them. Its costs are memory (here 4 bytes per pixel) and that the answer is quantised to the pixel grid and limited to what was rasterized as opaque. For isotop, where most bodies are impostors with no mesh to cast against, the second approach is the only reasonable one.
@@ -20,7 +29,7 @@ The pointer is the other half. A terminal reports the mouse in character cells u
 | $v < 2^{31}$ | a **process**: $v$ indexes `Frame::identities` |
 | $v \,\&\, \text{THING} \ne 0$, where `THING` $= 2^{31}$ | a **thing** (not a process): $v \,\&\, \lnot\text{THING}$ indexes `Frame::things` |
 
-`Scene::render` fills `identities` with the processes it admitted (in `Identity` order) before the view draws, and (in debug builds) asserts that their count stays below `THING`. A process item carries its index; a view that draws something that is not a process (an interrupt line, an open file, a grave, a core block) asks `Frame::thing_pick(Thing { kind, key })`, which pushes the thing onto `frame.things` and returns `(index) | THING`. Rules from `docs/VIEW_CONVENTIONS.md` and the source: call it once per thing per frame and give every item of the thing that value; `kind` is a short lowercase noun the inspector names it by; the key stays the same across frames; and *never mint a synthetic `Identity`*. The thing index space stays below `THING - 1`, so a thing value can never equal `NONE`. `Frame::target(pick)` resolves a value to a `Target::Process(Identity)` or `Target::Thing(Thing)`, or `None` for `NONE` or an index past the table.
+`Scene::render` fills `identities` with the processes it admitted (in `Identity` order) before the view draws, and (in debug builds) asserts that their count stays below `THING`. A process item carries its index; a view that draws something that is not a process (a grave in the Necropolis view is the shipped example; the interrupt lines, open files and core blocks that views could draw are others) asks `Frame::thing_pick(Thing { kind, key })`, which pushes the thing onto `frame.things` and returns `(index) | THING`. Rules from `docs/VIEW_CONVENTIONS.md` and the source: call it once per thing per frame and give every item of the thing that value; `kind` is a short lowercase noun the inspector names it by; the key stays the same across frames; and *never mint a synthetic `Identity`*. The thing index space stays below `THING - 1`, so a thing value can never equal `NONE`. `Frame::target(pick)` resolves a value to a `Target::Process(Identity)` or `Target::Thing(Thing)`, or `None` for `NONE` or an index past the table.
 
 Indices, not identities, are stored because a frame has at most a few thousand processes and a pick buffer is read and written per pixel; the table lookup happens once per query.
 
@@ -32,7 +41,8 @@ Indices, not identities, are stored because a frame has at most a few thousand p
 | `Sphere` | writes its `pick` over the disc *and* over the selection ring |
 | `Line` | writes **`NONE`** where it passes the depth test: lines clear picking |
 | `Star` | writes `NONE` |
-| `Beam`, `Glow`, `Glyph` | never touch the pick buffer |
+| `Field` | writes the owner of the nearest node of its field (`NONE` where the grid has no owner) |
+| `Beam`, `Glow`, `Puff`, `Glyph` | never touch the pick buffer |
 | `Pick` | writes only picks, over a disc, where its depth is at least the stored depth; no colour, no depth |
 
 The semantics are "what you see is what you pick": a line is opaque on screen and unpickable, so it masks whatever it covers; blended content is translucent, so what is underneath stays pickable. Two corollaries come straight from this table. A decorative one-pixel stroke drawn across a body makes those pixels unclickable, so decoration near bodies is drawn as `Beam`s (which never touch picks) or behind the body in depth. And translucent or splatted content that *should* be clickable needs an `Item::Pick`, recorded **after** the geometry it lies over: it writes no depth, so geometry recorded later covers it wherever that geometry passes the depth test, and it is depth-tested at its own `depth` like a sphere. The GPU rasterizer reproduces all of this with a second colour attachment of format `R32Uint` and per-pipeline write masks ([Theory GPU and Parity](Theory-GPU-and-Parity)); the `pick` attribute is flat-interpolated so a triangle writes a single value.
@@ -72,7 +82,7 @@ On the GPU only a window of the pick texture is read back, `PICK_WINDOW = 160` p
 
 ### Things and cards
 
-A selected thing opens a *card*, built on demand by `ViewModule::card(thing, snapshot)` from the view's own retained state, never one per thing per frame, and its text is untrusted like process text ([Theory Text Safety](Theory-Text-Safety)). A card returns `None` once the view no longer shows the thing, and the popup then says `<kind> no longer shown`. `Stage::thing` is the selected thing or, failing that, the hovered one, for the view to highlight. Built-in views draw no things.
+A selected thing opens a *card*, built on demand by `ViewModule::card(thing, snapshot)` from the view's own retained state, never one per thing per frame, and its text is untrusted like process text ([Theory Text Safety](Theory-Text-Safety)). A card returns `None` once the view no longer shows the thing, and the popup then says `<kind> no longer shown`. `Stage::thing` is the selected thing or, failing that, the hovered one, for the view to highlight. Of the shipped views, only Necropolis draws things so far (graves and their stones); the others pick processes.
 
 ## What the tests pin down
 
@@ -80,7 +90,7 @@ A selected thing opens a *card*, built on demand by `ViewModule::card(thing, sna
 
 ## Reading the picture
 
-* **You can pick what is opaque.** A glow, a beam, a haze or a trail is not pickable on its own; a view that wants it so draws an `Item::Pick` under it.
+* **You can pick what is opaque.** A glow, a beam, a haze or a trail is not pickable on its own; a view that wants it so draws an `Item::Pick` over its geometry (Murmuration does, under its splatted flock).
 * **A line can hide a body.** Where a line passes the depth test it replaces the pick with `NONE`; the radius search usually finds the body beside it, which is the practical reason the search exists.
 * **Radius makes the hit zone bigger than the body.** For a 3.5-pixel body (`MIN_BODY_PX`) the effective target is a disc of $3.5 + \rho$ pixels. Clicking near an empty region next to a body selects the body.
 * **Hover is a frame behind** and the GPU pick buffer is blind away from the pointer; neither is visible in use, both matter to anyone writing a test that picks elsewhere (such a test rasterizes on the CPU).

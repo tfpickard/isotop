@@ -302,15 +302,15 @@ def read_png(path):                     # 8-bit RGB, non-interlaced, as isotop w
 print('%016x' % fnv1a64(read_png(sys.argv[1])))
 ```
 
-Run on this machine (Linux x86_64, the platform the golden file is blessed on), for each of the views the golden file then listed:
+Run on this machine (Linux x86_64, the platform the golden file is blessed on), for each of the 18 views the golden file lists:
 
 ```sh
 ./target/release/isotop --demo --view $v --time 12 --renderer cpu --width 480 --output $v.png
 ```
 
-**All fourteen decoded-PNG hashes equal the `pixels` column of `tests/golden.txt`**, for example `city
-ed3a2fc287f6ccc8` and `coop 611d7af471cad992`; a second run of each view produced a byte-identical file (`cmp`).
-(Matrix greets `$USER`; it matched here, and the test pins the name to be machine-independent.) The picks and
+**All eighteen decoded-PNG hashes equal the `pixels` column of `tests/golden.txt`**, for example `city
+ed3a2fc287f6ccc8` and `coop 611d7af471cad992`; a second run of the city produced a byte-identical file (`cmp`).
+(Matrix greets `$USER`; it matched here, and the test build falls back to "Neo" to be machine-independent.) The picks and
 depth hashes cannot be reproduced from the PNG, which carries colour only.
 
 ### 6.2 Sensitivity
@@ -431,10 +431,13 @@ See [Headless and reproducible renders](Guide-Headless-and-Reproducible-Renders)
   every simulation view with an fps-independence test.
 * **A cryptographic golden.** Replace FNV-1a with a vendored SHA-256 and the $2^{-64}$ becomes a guarantee
   against adversarial change; the repository's "no new dependency" rule argues for the 40-line in-tree
-  version. Is the extra assurance worth the fourteen longer lines in `golden.txt`?
+  version. Is the extra assurance worth the eighteen longer lines in `golden.txt`?
 * **Perceptual golden.** Complement the equality hash with a tolerance metric (mean absolute difference, share
   of pixels off by more than two levels, as `compare_png.py` does for CPU/GPU) so a bless can say *how much*
   moved.
+* **A census of salts.** Every salt in the tree is a word in ASCII, in hex, so that nobody has to remember
+  which number belongs to whom. The Necropolis salt reads `necro!`, and the harness's reads `haress`. A new salt
+  should say what it is.
 * **Recording live sessions** (F4) would turn the non-determinism of section 7 into data that can be replayed
   through exactly the path in section 2.
 

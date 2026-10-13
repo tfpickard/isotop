@@ -22,8 +22,7 @@ stacked white lines on black are, as widely reported, a plot of successive radio
 (PSR B1919+21), the first pulsar found, discovered by Jocelyn Bell (later Bell Burnell) and Antony Hewish in 1967 and
 announced in *Nature* in 1968. The plot itself is generally credited to Harold Craft's 1970 Cornell thesis on pulse
 profiles, reproduced in the *Cambridge Encyclopaedia of Astronomy* (1977), from which Saville took it and inverted
-it to white on black. (The thesis title and the encyclopaedia route are as commonly stated; they are not checked
-against the sources here.) The relevance to isotop is the *construction*, not the astronomy: in the pulsar plot each
+it to white on black. (The thesis is Harold D. Craft Jr., "Radio Observations of the Pulse Profiles and Dispersion Measures of Twelve Pulsars", Cornell, September 1970; the route through the 1977 *Cambridge Encyclopaedia of Astronomy* is as Scientific American's account of the sleeve's origin gives it.) The relevance to isotop is the *construction*, not the astronomy: in the pulsar plot each
 row is one pulse at successive times with the horizontal axis the phase within the pulse period; in Strata each row
 is a different process with the horizontal axis time. A pulsar's pulses repeat; processes do not.
 
@@ -40,6 +39,16 @@ Showing only what is visible is the hidden-surface problem. Three classical solu
   far and draws only what rises above it.
 
 ![Building a ridgeline: lines, painter's algorithm, Strata's curtains](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/strata-ridgeline.svg)
+
+## History
+
+The thing Strata draws is the stacked-profile plot, and the long argument about how to hide the lines that lie behind other lines.
+
+* Pulsar CP 1919 was found by Jocelyn Bell and Antony Hewish in 1967 and announced in *Nature* in 1968 (see the section above). Craft's 1970 thesis plotted its successive pulses one above another; Scientific American's account puts the number at 80 consecutive pulses at 318 MHz. A few months later the plot appeared in Scientific American as white lines on cyan, in 1971, before the 1977 encyclopaedia and Saville's inversion to white on black. Strata stops at forty ridges, half of that.
+* The same construction is known by other names in other fields: the waterfall plot of vibration analysis and radio astronomy, and in statistics the ridgeline plot. The statistics community called it the *joyplot* for a few months: the name was proposed by Jenny Bryan in a tweet of 24 April 2017, and Claus Wilke renamed his package ggjoy as ggridges in September 2017 after learning where the band took its own name from.
+* Making such a plot readable is the hidden-line problem. Newell, Newell and Sancha described the painter's algorithm in 1972, and Catmull described the depth buffer in his 1974 thesis at Utah. Strata uses the second because the hardware does, and the first would give the same picture.
+* A third classical answer, the floating horizon, belongs to height fields specifically and is described above; its history is not given here.
+* The relevant detail for Strata is that the thing plotted has changed meaning along the way. The pulsar plot has pulses on one axis and phase on the other, and a pulsar repeats; the strata of this page have time on one axis and processes on the other, and processes do not.
 
 ## Theory
 
@@ -113,8 +122,8 @@ end, a long interval leaves few points: `--sample-ms 10000` gives a ridge of sev
 
 ## How isotop realises it
 
-**Recording.** `Scene` records the history on every sample whichever view is shown, so Strata reads `stage.history`
-and needs no record hook of its own. In `--demo --output` runs the row's warm-up (`Phase::History { seconds: 60 }`
+**Recording.** Strata is a `ViewModule` in [`src/strata.rs`](https://github.com/tfpickard/isotop/blob/main/src/strata.rs): the state struct `Strata` holds only the row assignments, and its registry row in `views::REGISTRY` builds it with a closure. `Scene::record` records the history on every sample whichever view is shown, so Strata reads `stage.history`
+and needs no `record` of its own. In `--demo --output` runs the row's warm-up (`Phase::History { seconds: 60 }`
 under `When::DemoOutput`) replays a minute of demo samples; a live headless run takes two samples to measure CPU, so
 live Strata then shows only its newest slice.
 
@@ -126,7 +135,7 @@ brings each ridge back to its row. When all 40 rows are taken a drawn process ta
 neighbours when its quarter is full; a ridge never moves between rows during its life.
 
 **Geometry.** Each ridge is a vertical curtain in the plane $y = 2.4\cdot\text{row}$. For each pair of consecutive
-profile points `Strata::draw` emits two quads, the lower band from the floor to 45 % of the height and the upper from
+profile points `Strata::draw` (the `ViewModule::draw` implementation) emits two quads, the lower band from the floor to 45 % of the height and the upper from
 there to the profile, and a line along the profile; the last point is repeated at $x = 0$ (the held value) and a ridge
 with a single sample point gets a leading point one interval earlier. Quads carry the process's pick index; lines
 leave nothing pickable. The camera is the usual orthographic isometric one, so a curtain's front face shows.
@@ -142,7 +151,7 @@ The front of each ridge, $(0, y, \text{top})$, is its pick anchor and `stage.pos
 **Time step.** Strata has no simulation and does not use `stage.dt`; its only time dependence is `scroll`, derived from
 `stage.time` and the time the history's newest sample arrived.
 
-**Stable layout.** Rows are stable by construction and the harness enforces it (no known failures). The profile of a
+**Stable layout.** Rows are stable by construction and the harness enforces it (the row waives nothing). The profile of a
 ridge changes only by new samples arriving at the front.
 
 **Sources.** CPU only (`Process::cpu`). No optional source is demanded, so nothing here appears in `Snapshot::missing`.
@@ -177,14 +186,12 @@ labels, which are terminal overlays.
 
 ## Where in the code
 
-* [`src/strata.rs`](https://github.com/tfpickard/isotop/blob/main/src/strata.rs): `Strata::draw`; constants `WINDOW`, `ROWS`, `SPAN`, `SPACING`, `PEAK`, `BUSY`.
-* [`src/history.rs`](https://github.com/tfpickard/isotop/blob/main/src/history.rs): `History::record`, `window`, `newest`, `arrived`; `CAPACITY`.
+* [`src/strata.rs`](https://github.com/tfpickard/isotop/blob/main/src/strata.rs): `Strata`, `Strata::draw`, `Strata::legend`; constants `WINDOW`, `ROWS`, `SPAN`, `SPACING`, `PEAK`, `BUSY`.
+* [`src/history.rs`](https://github.com/tfpickard/isotop/blob/main/src/history.rs): `History::record`, `window`, `newest`, `arrived`; `CAPACITY`, `SERIES`.
 * [`src/model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs): `measure` (the 1.5 s smoothing), `bounded`, `demo_cpu_integral` and the demo CPU shape.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): `strata_legend`, the `strata` row (`Phase::History { seconds: 60 }`).
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `strata` row (`Phase::History { seconds: 60 }` under `When::DemoOutput`); the legend is `Strata::legend`.
 * [`src/palette.rs`](https://github.com/tfpickard/isotop/blob/main/src/palette.rs): `kind_color`.
 * Figures: `docs/figures/strata-ridgeline.py`, `strata-window.py`, `strata-response.py`.
-
-AGENTS.md lists `strata.rs` among the module views; its row is `Hooks::BuiltIn` (`BuiltIn::Strata`).
 
 ## Variations and open questions
 

@@ -29,6 +29,14 @@ Almon Strowger patented an automatic step-by-step exchange in 1891 (the first pu
 
 The analogy is loose in three ways, which the design handles. A line lamp is a **level** (pending or not); the view's lamp shows the **rate**. A cord in a real exchange joins two parties; in the view a cord joins a line to the **CPU that handled it**, and nothing ever joins two CPUs, because **the sender of an inter-processor interrupt is not recorded** anywhere the kernel exposes. And a real operator serves one call at a time; a CPU services many.
 
+## History
+
+The first commercial telephone exchange opened on 28 January 1878 in New Haven, Connecticut, run by George W. Coy's District Telephone Company, with 21 subscribers. The first operators were boys, hired from the telegraph offices; they were found impatient with callers, given to pranks and to swearing, and in Boston on 1 September 1878 the Edwin Holmes company hired Emma Nutt, the first woman telephone operator, who was followed within hours by her sister Stella. By the end of the 1880s nearly all operators were women. Sources disagree on Nutt's birth year and on the length of her career (33 or 37 years), and the story that her voice was heard by nearly every Boston subscriber is a repeated one, not a documented one (unverified).
+
+Almon Strowger, a Kansas City undertaker, applied for a patent in 1889 for an automatic exchange; it was granted in 1891 (US 447918, March 1891). The first Strowger exchange, in La Porte, Indiana, opened in November 1892 with about 75 subscribers on a capacity of 99. The story that he set out to defeat an operator married to a rival undertaker is told in every account and is a legend, not an established fact.
+
+The mathematics of the board is Danish. A. K. Erlang, who worked for the Copenhagen Telephone Company, published his loss formula in 1917, and the unit of offered traffic, the erlang, is named for him. The programming language Erlang, written at Ericsson for telephone switches, is named, according to its own FAQ, after him; it is also read as a contraction of "Ericsson Language", and when this reading was put to Joe Armstrong in 1999 his reply was "no comment".
+
 ## 2. Theory: interrupts
 
 ### 2.1 From wires to messages
@@ -119,8 +127,8 @@ The realness contract: every element maps to a measurement or is declared decora
 
 ## 5. Design: how isotop will realise it
 
-* **Module and row.** `src/switchboard.rs`, `#[derive(Default)] struct Switchboard`, one `ViewInfo` row: `Backdrop::Dusk`, no view-local keys, no digit, opted out of the tour; `draw` returns 0 (no process is drawn; the header override reads like `48 lines | 41,203 irq/s | RES 2,114/s | 16 operators: 8 P, 8 E`). It reads only the B4 fields of `Snapshot`, so pause and rewind replay history.
-* **Sources.** B4 (issue [#31](https://github.com/tfpickard/isotop/issues/31)): `Snapshot.interrupts`, `Snapshot.softirqs` and `/proc/irq/<n>/effective_affinity_list`, read on the existing **2 s** background pass, and only while the view is shown (`Demand`). Rates are therefore 2-second averages, and with the "two consecutive samples" rule a change of servicing CPU shows after about 4 s (my derivation from the two numbers).
+* **Module and row.** `src/switchboard.rs`, `#[derive(Default)] struct Switchboard`, one `ViewInfo` row built as `ViewInfo::new("switchboard", "SWITCHBOARD", Backdrop::Dusk, build)` with `build` a `views::Build` closure (the scene builds the view from its row and owns its state), `available` returning false on macOS, no view-local keys, no digit, opted out of the tour; `draw` returns 0 (no process is drawn; the header override reads like `48 lines | 41,203 irq/s | RES 2,114/s | 16 operators: 8 P, 8 E`). It reads only the B4 fields of `Snapshot`, so pause and rewind replay history.
+* **Sources.** B4 (issue [#31](https://github.com/tfpickard/isotop/issues/31)): `Snapshot.interrupts`, `Snapshot.softirqs` and `/proc/irq/<n>/effective_affinity_list`, behind `Source::Interrupts`, `Source::Softirqs` and `Source::IrqAffinity` (the row's `sources` would list all three, since the affinity is joined onto the interrupt rows), read on the existing **2 s** background pass, and only while the view is shown (`Demand`). Rates are therefore 2-second averages, and with the "two consecutive samples" rule a change of servicing CPU shows after about 4 s (my derivation from the two numbers).
 * **Rates.** Per-CPU count delta divided by the interval; a counter that decreases reads 0 (never negative).
 * **Jacks.** Seats last for the line's lifetime and freed seats are reused lowest-first (as `layout::Seats`; if its `Identity` key does not fit B9's line id, a small local equivalent, never a fake `Identity`). Groups are ordered by lowest IRQ number; columns = clamp(ceil(sqrt(3n)), 12, 16); a cap of 128 jacks (rows whose count never changed are hidden first; above the cap each device group of more than 8 vectors folds into one jack labelled like `nvme0q* (33)`).
 * **Cords.** World-space ribbons (S3) with 24 segments on a true catenary solved by bisection in `switchboard::catenary(a, b, length, segments)` and cached until the endpoints move. Length = chord times a slack in 1.02 to 1.07 hashed from the IRQ id. For a cord between level endpoints a chord $h$ apart, the catenary $y = a\cosh(x/a)$ of length $L$ satisfies $2a\sinh(h/2a) = L$; bisecting on $a$ gives the sag, which is close to the parabolic estimate $h\sqrt{3(s-1)/8}$: for slack $s = 1.02, 1.045, 1.07$ the sag is $0.087h$, $0.132h$, $0.166h$ (computed). The cord colour crossfades and the lamp flutters while it is unplugged.
@@ -129,7 +137,7 @@ The realness contract: every element maps to a measurement or is declared decora
 * **Text.** All device text passes through `terminal::clean_text`; labels go through `stage.places`.
 * **Demo.** The prototype's 48 lines, 16 CPUs and softirq rates; `eth0-rx-2` moves between cpu3 and cpu9 at $t = 11.2 + 30k$ s; one NMI on cpu0 every 45 s; RES rate proportional to busy; a 3 s headless warm-up so `--time 12` shows a swing.
 * **Budget.** About 4k triangles for the board (axis-aligned grain quads only), cords within $128 \times 24 \times 2$ triangles, lamp glows within 12 px at 1080p.
-* **Dependencies** (ROADMAP index): P1, P2, S1, B4, B9, S2, S3, S6. In the tree at commit `192299b`: P1, P2, S1, S2, S6 and B9 are merged; B4 (no `Interrupt` type or `/proc/interrupts` reader) and S3 (no ribbons) are not.
+* **Dependencies** (ROADMAP index): P1, P2, S1, B4, B9, S2, S3, S6. In the current source tree every one of them is merged: B4 (`Interrupt` and `Softirq` in `src/model.rs`, `src/platform/linux/counters.rs`, `src/model/kernel.rs`) and S3 (`Frame::ribbon` and `Frame::tube` in `src/render/strokes.rs`) included. The view itself is what is missing.
 * **Platforms.** Linux: all sources are unprivileged; each missing one is named in the strip (unreadable `/proc/interrupts`: dark board; unreadable affinity: only servicing-CPU changes swing cords; unreadable softirqs: dark softirq board; no timer row: the clocks stop). macOS: **unavailable**, because macOS exposes no unprivileged per-IRQ or per-CPU interrupt counters (`powermetrics` needs root, IOReport is private). `available()` returns false: Tab and the picker skip it silently, `--verbose` prints `skipping view switchboard: not supported on this platform`, and there is never a "not supported" screen. The module still compiles there.
 * **No plugin system.** Compile-time module and `REGISTRY` row, like every view.
 
@@ -159,7 +167,7 @@ and to regenerate the queueing figure: `python3 docs/figures/switchboard-erlang.
 
 ## 8. Where in the code
 
-Existing infrastructure: `platform::Source` and `Sources` (`src/platform/mod.rs`), `status::missing_note` and `sources_note` (`src/status.rs`), `simulation::FixedStep` and `hash_identity` (`src/simulation.rs`), `layout::Seats` (`src/layout.rs`), `Thing`, `Card`, `Frame::thing_pick`, `Stage` (`src/render.rs`), `terminal::clean_text` (`src/terminal.rs`), `model::Cpu` with `busy` and `CoreKind` (`src/model.rs`, `src/palette.rs` for core colours). Planned: `src/switchboard.rs`, `src/platform/linux/counters.rs` (B4), the world-space ribbons of S3. The prototype is `docs/mockups/code/switchboard.py` (numpy, cv2, scipy; reference only).
+Existing infrastructure: `platform::Source` and `Sources` (`src/platform/mod.rs`), `status::missing_note` and `sources_note` (`src/status.rs`), `simulation::FixedStep` and `hash_identity` (`src/simulation.rs`), `layout::Seats` (`src/layout.rs`), `Thing`, `Card`, `Frame::thing_pick`, `Stage` (`src/render.rs`), `terminal::clean_text` (`src/terminal.rs`), `model::Cpu` with `busy` and `CoreKind` (`src/model.rs`, `src/palette.rs` for core colours). Also existing, which the design uses: B4 (`src/platform/linux/counters.rs`, `src/model/kernel.rs`, `Snapshot.interrupts`, `Snapshot.softirqs`) and the ribbons of S3 (`src/render/strokes.rs`). Planned: `src/switchboard.rs` and a registry row. The prototype is `docs/mockups/code/switchboard.py` (numpy, cv2, scipy; reference only).
 
 ## 9. Variations and open questions
 
@@ -168,6 +176,7 @@ Existing infrastructure: `platform::Source` and `Sources` (`src/platform/mod.rs`
 * Per-CPU `LOC` rate as a **tick-rate meter**: does a tickless idle CPU show a slower clock?
 * Measure how often irqbalance actually moves lines on a real desktop; the swing only shows it if the servicing CPU or effective affinity changes.
 * What happens to the board on a machine with 128 CPUs and 4000 vectors (the 128-jack cap and group folding)?
+* Offered load. One erlang is one server continuously busy, so the operators of the board carry, between them, the sum of their `Cpu.busy` fractions in erlangs; a sixteen-CPU machine at 50 % carries eight.
 * Show interrupt coalescing: lines whose rate tracks packet rate poorly.
 
 ## 10. References

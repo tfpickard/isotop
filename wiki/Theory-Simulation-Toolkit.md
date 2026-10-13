@@ -24,25 +24,35 @@ The rule that makes a toolkit necessary is in `AGENTS.md`: "Shared helpers live 
 second copy." A test (`no_hand_rolled_hashes_outside_simulation`) enforces it for the hash and random constants
 by scanning every other source file. It does not (yet) cover the easing helpers; see "Duplicates" in section 8.
 
+## History
+
+Most of this file is older than the computers it runs on. The fast Fourier transform is the clearest case. Cooley and Tukey published the algorithm in *Mathematics of Computation* in 1965, and it is usually told as the moment the discrete Fourier transform fell from $N^2$ operations to $N\log N$. Heideman, Johnson and Burrus (1985, *Archive for History of Exact Sciences* 34) found the same decomposition in an unpublished manuscript of Gauss, presumably written in 1805, before Fourier presented his harmonic analysis in 1807. Gauss was interpolating the orbits of the asteroids Pallas and Juno from a handful of observations. The manuscript appeared only in his collected works, in 1866 (volume 3).
+
+The Gaussian generator is from 1958, when Box and Muller (*Annals of Mathematical Statistics* 29(2)) showed that two uniform deviates become two independent normal ones through a logarithm and a rotation. Marsaglia and Bray's polar method (*SIAM Review* 6, 1964) removes the trigonometry at the price of a random, rejected number of uniform draws, which section 2 gives as the reason the code does not use it. The exponential smoother that `smoothing` discretises has a military origin. Robert G. Brown, an operations analyst for the US Navy, built a tracking filter of this kind for antisubmarine fire control in 1944; in the early 1950s he applied it to demand for spare parts, because it needed one stored number per item where a moving average needed a window, and presented the inventory work in 1956 (his book on inventory control is dated 1959; sources differ on which counts as the beginning). Charles Holt arrived at exponentially weighted averages independently in a 1957 Office of Naval Research report that was not formally published until 2004.
+
+Fixed-step simulation became a recognised idiom through game programming; Fiedler's "Fix Your Timestep!" (the reference list dates it 2004) is the usual citation, and the constants of `FixedStep`, a step, a cap on steps per frame and a cap on the gap, are that article's "semi-fixed" safeguards written as parameters. Uniform grids for neighbour queries are standard in collision detection (Ericson 2005); Bentley's k-d tree (1975) is the alternative the spatial-hashing page compares them with. The splitmix64 and xorshift generators, and the FNV hash, have their histories on [Determinism](Theory-Determinism).
+
 ## 1. Summary table
 
 | tool | what | cost | production callers |
 |---|---|---|---|
 | `SpatialHash` | uniform grid, radius query in 2-D | build $O(n\log n)$; query $\approx(2r/s+1)^2$ cells plus their points | Coop (`NEIGHBOURHOOD` = 4) |
-| `SpatialHash3` | the same in 3-D, plus exact $k$-nearest | build $O(n\log n)$; $k$-nearest one or two shells of cells | none yet (for the planned Murmuration) |
-| `Rng` | splitmix64; `unit`, `signed`, `normal` | one 64-bit add and finaliser per draw | Necropolis, Ptolemy, Coop, model (demo) |
+| `SpatialHash3` | the same in 3-D, plus exact $k$-nearest | build $O(n\log n)$; $k$-nearest one or two shells of cells | Murmuration (`nearest`) |
+| `Rng` | splitmix64; `unit`, `signed`, `normal` | one 64-bit add and finaliser per draw | Necropolis, Ptolemy, Coop, Murmuration, Arbor, Cortex, Horizon, model (demo) |
 | `hash_identity`, `Rng::for_identity` | seed from pid, start time, salt | three finaliser rounds | same |
 | `XorShift32` | Marsaglia xorshift, shifts (13, 17, 5) | three shifts and xors | Flow |
 | `hash::*` | legacy bit-exact hashes, FNV-1a | few ops | many views, golden test |
 | `Complex`, `dft` | direct DFT, any length | $O(N^2)$ in `f64` | Ptolemy (60 samples) |
 | `fft`, `inverse_fft` | radix-2 Cooley-Tukey | $\tfrac N2\log_2 N$ butterflies | none yet |
-| `FixedStep` | whole-step clock with interpolation fraction | $O(\text{steps})$ | Coop (0.05, 10, 0.5) |
+| `FixedStep` | whole-step clock with interpolation fraction | $O(\text{steps})$ | Coop (0.05, 10, 0.5), Arbor, Murmuration, Cortex |
 | `growth`, `sprout`, `smoothing`, `smoothstep` | easing | a few flops | most views |
 
-`SpatialHash3`, `fft`, `inverse_fft` and `Rng::normal` carry
-`#[cfg_attr(not(test), expect(dead_code, reason = "no caller until the first view that uses it"))]`. They were
-built ahead of the views that need them (building block P4, [#20](https://github.com/tfpickard/isotop/issues/20)),
-and are exercised by tests only.
+`fft` and `inverse_fft` (with their helpers `require_power_of_two` and `transform`) carry
+`#[cfg_attr(not(test), expect(dead_code, reason = "no caller until the first view that uses it"))]`, and
+`SpatialHash3::neighbours` the same with its own reason ("no caller until a view that needs a radius query").
+They were built ahead of the views that need them (building block P4,
+[#20](https://github.com/tfpickard/isotop/issues/20)) and are exercised by tests only. `SpatialHash3::nearest`
+and `Rng::normal`, which carried the marker until Murmuration and Horizon arrived, are in production use.
 
 ## 2. `Rng` and the hashes
 
@@ -308,7 +318,7 @@ $S(0)=0$, $S(1)=1$, $S'(0)=S'(1)=0$ ("no speed at either end"), $S(\tfrac12)=\tf
 $S(1-x)=1-S(x)$, and a maximum slope $S'(\tfrac12)=\tfrac32$. It is $C^1$ but not $C^2$ ($S''=\pm6$ at the
 ends), so the *acceleration* jumps at the start and end; the quintic $6x^5-15x^4+10x^3$ would remove that and
 is not in the tree. Used for fades and row openings (Necropolis `ROW_EASE`, the lift of a risen ghost),
-and for Ptolemy's re-sort ease, whose angle integrates the eased rate (see the comment on its `epoch`).
+for Arbor's blossoms and for Horizon's orbit easing, and for Ptolemy's re-sort ease, whose angle integrates the eased rate (see the comment on its `epoch`).
 
 ### 6.3 `smoothing`: the exact discretisation of a first-order low-pass
 
@@ -333,7 +343,8 @@ $\Delta t>2\tau$) but the exact flow, so:
 
 Uses in the tree: the collector's CPU smoothing (`smoothing(dt, 1.5)`, with $\Delta t$ the sample interval),
 `Scene::ease` for every process's CPU and memory (`smoothing(dt, 0.3)` with the frame gap, resetting the table
-if the gap is outside $[0,2]$ s), the camera (`smoothing(elapsed, 0.2)`, which `Camera::approach` applies to
+if the gap is outside $[0,2]$ s), Horizon's pressure and orbit easing, and
+the camera (`smoothing(elapsed, 0.2)` in `main.rs`, which `Camera::approach` applies to
 the centre, rotation and pitch additively and to the zoom as $\text{zoom}\leftarrow\text{zoom}\,
 (\text{goal}/\text{zoom})^{w}$, so the zoom eases exponentially in its logarithm).
 
@@ -358,13 +369,16 @@ All in [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/s
 `sprout`, `smoothing`, `smoothstep`, `Complex`, `dft`, `fft`, `inverse_fft`, `transform`,
 `SpatialHash`, `SpatialHash3` (`rebuild`, `neighbours`, `nearest`, `visit_shell`, `face_distance`),
 `Rng`, `hash_identity`, `FixedStep`, `XorShift32`, `hash`. Users: `coop.rs` (`YardClock`, `SpatialHash`),
+`murmuration.rs` (`SpatialHash3`, `FixedStep`, `Rng`), `arbor.rs` and `cortex.rs` (`FixedStep`),
 `ptolemy.rs` (`dft`, `smoothstep`), `necropolis.rs` (`smoothstep`), `render.rs` (`FrameClock`, `growth`,
 `smoothing`), `model.rs` (`smoothing`, demo `Rng`s).
 
 **Duplicates that contradict the rule.** `simulation::smoothstep` exists, yet the same polynomial is written
-out again in `tesseract.rs` (its own `fn smoothstep`), `cores.rs` (two inline `u * u * (3.0 - 2.0 * u)`) and
-`coop.rs` (a closure `ease`); and `1.0 - (-dt / TURN_EASE).exp()` is spelled out in `tesseract.rs` where
-`smoothing(dt, TURN_EASE)` would do. They are numerically identical today, so replacing them changes no pixels;
+out again in `tesseract.rs` (its own `fn smoothstep`), `cores.rs` (two inline `u * u * (3.0 - 2.0 * u)`),
+`coop.rs` (a closure `ease`), `horizon/disk.rs` (a closure `smooth`), `horizon/lens.rs` (the `taper` in the
+plunge brightness) and the demo workload in `model.rs`; and `1.0 - (-dt / TURN_EASE).exp()` is spelled out in
+`tesseract.rs` where `smoothing(dt, TURN_EASE)` would do, as is Arbor's wind easing
+(`1.0 - (-STEP / WIND_EASING).exp()`). They are numerically identical today, so replacing them changes no pixels;
 no test guards it.
 
 ## 9. Variations and open questions
@@ -375,6 +389,7 @@ no test guards it.
   $v\leftarrow v+a\,h,\ x\leftarrow x+v\,h$. A leapfrog or velocity-Verlet step with the same `h` would let
   `h` grow by a factor for the same energy drift.
 * **Real-input FFT.** Every use of the transform has real input; a packed real FFT halves the work.
+* **Waiting for a signal.** `fft` and `inverse_fft` have no production caller and a test for every power of two up to 1024. Which signal in a process table has a period worth finding is unanswered.
 * **Marsaglia versus Box-Muller.** Compare the cost per normal and the stream-alignment property of the polar
   method with a fixed-consumption rejection (always draw four uniforms).
 * **Quintic smoothstep.** Replace $3x^2-2x^3$ by the $C^2$ quintic in one view and compare the onset of motion by

@@ -1,10 +1,22 @@
 # Math: Spiking Neurons
 
-A neuron is a leaky capacitor with voltage-gated conductances in parallel, and a spike is what that circuit does when the conductances push back hard enough. In 1952 Alan Hodgkin and Andrew Huxley wrote the circuit down for the squid giant axon in four coupled differential equations; since then the field has spent seventy years deciding how much of it can be thrown away. This page walks that ladder: Hodgkin-Huxley, the leaky integrate-and-fire neuron, and Izhikevich's two-variable model with its table of firing classes, with every trace and number simulated in pure Python (`docs/figures/`). isotop does not run any of it yet; the Izhikevich model is the engine of the specified [Planned-Cortex](Planned-Cortex) view, and section 6 says exactly what that design takes from this page.
+A neuron is a leaky capacitor with voltage-gated conductances in parallel, and a spike is what that circuit does when the conductances push back hard enough. In 1952 Alan Hodgkin and Andrew Huxley wrote the circuit down for the squid giant axon in four coupled differential equations; since then the field has spent seventy years deciding how much of it can be thrown away. This page walks that ladder: Hodgkin-Huxley, the leaky integrate-and-fire neuron, and Izhikevich's two-variable model with its table of firing classes, with every trace and number simulated in pure Python (`docs/figures/`). The Izhikevich model is the engine of the [Cortex](Planned-Cortex) view, and section 6 says exactly what the code takes from this page.
 
 ![Hodgkin-Huxley and four Izhikevich firing classes, simulated](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/spiking-models.svg)
 
 *`docs/figures/spiking-models.py`. A: Hodgkin-Huxley with a 10 uA/cm^2 step, gating variables below. B to E: Izhikevich regular spiking, intrinsically bursting, chattering and fast spiking for a step of $I = 10$ at 50 ms. F: their noise-free f-I curves.*
+
+## History
+
+The longer account lives in the repository: [docs/theory/cortex.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/cortex.md).
+
+**The neuron.** In the 1880s and 1890s Camillo Golgi's silver stain showed nerve cells whole for the first time, and Santiago Ramon y Cajal used it to argue that the brain is made of separate cells that touch rather than a continuous net. Their opposed interpretations shared the 1906 Nobel Prize in Physiology or Medicine. Cajal's drawings of cortex, with its layers of pyramidal cells, are still reproduced.
+
+**The equations.** Louis Lapicque (1907) modelled the nerve as a leaky capacitor that fires on reaching a threshold: the integrate-and-fire neuron of section 2, crude and cheap and still in use. Warren McCulloch and Walter Pitts (1943) abstracted the neuron to a threshold logic gate, the root of artificial neural networks. In 1952 Alan Hodgkin and Andrew Huxley, working on the giant axon of the squid at Plymouth and Cambridge, wrote the ionic currents as four coupled equations; they shared the 1963 Nobel Prize in Physiology or Medicine with John Eccles. The numerical solution was done by hand: Huxley integrated the equations on a hand-operated Brunsviga calculator, and by Hodgkin's own account the propagated action potential took about three weeks. The script behind section 1 integrates one spike in about a second. Richard FitzHugh (1961) and Jinichi Nagumo (1962) found a two-variable reduction that exposes the geometry of the spike.
+
+**The compromise.** Eugene Izhikevich published his simple model in 2003 (*IEEE Transactions on Neural Networks* 14). It costs a few arithmetic operations per step, like integrate-and-fire, yet its four constants reproduce the firing patterns of many cortical cell types, and the paper's abstract claims that tens of thousands of such neurons can be simulated in real time, at 1 ms resolution, on a desktop PC. Wolfgang Maass (1997) had called spiking networks the third generation of neural network models, because they compute with when a spike occurs as well as how many.
+
+**The measure.** David Golomb and John Rinzel (1993) proposed the synchrony index of section 4 to quantify how far a population of coupled neurons fires together, in their study of globally coupled inhibitory neurons.
 
 ## 1. Theory: the membrane as a circuit
 
@@ -103,33 +115,38 @@ For $N$ independent neurons the variance of the mean is $1/N$ of the single-cell
 * The numbers in this page come from the stdlib scripts listed under "Try it", with fixed seeds where noise is used. They check the textbook behaviour; they are not a replication of the paper's figures.
 * Euler at 0.5 ms is accurate enough for a spike shape cartoon; it is not an accurate integrator of the quadratic through the upstroke, which is why the paper clamps $v$ at the 30 mV peak.
 
-## 6. What isotop does with this (design)
+## 6. What isotop does with this
 
-All of the following is the **specified design** of [Planned-Cortex](Planned-Cortex) (issue [#52](https://github.com/tfpickard/isotop/issues/52)); no `src/cortex.rs` exists yet.
+The [Cortex](Planned-Cortex) view is implemented. The simulation is `src/neurons.rs` (pure, no drawing) and the layout and drawing are `src/cortex.rs`.
 
-* Each process is an Izhikevich neuron integrated in 0.5 ms steps by `simulation::FixedStep` (a step of 0.5 ms with a 100 ms catch-up cap per frame).
-* Kind chooses the class: kernel threads FS, system services RS, session apps CH, containers IB (the same constants as the table above). The pairing is a convention; in real neocortex IB cells are mostly deep-layer (layer V) pyramidal cells (unverified detail), and the view's layer bands are by kind, not by anatomy.
-* The design has excitatory synapses only (socket links both ways, pipes writer to reader). There is no inhibitory population and no plasticity; weights are a function of measured traffic. The 80/20 balance, STDP and the balanced-network picture above are therefore background theory, not features.
-* Synchrony is reported with $\chi$, from exponential moving averages of $V$ over the "talking" neurons.
+* Each process is an Izhikevich neuron. `neurons::advance` takes one explicit Euler step of `STEP_MS = 0.5` ms, clamps $v$ at `PEAK = 30` mV and applies the reset when it sees $v \ge 30$ at the start of the next step (2,000 ticks per second, `TICKS_PER_SECOND`). The view steps its `Network` with `simulation::FixedStep::new(STEP_SECONDS, (CATCH_UP / STEP_SECONDS) as usize, CATCH_UP)` with `CATCH_UP = 0.1` s: at most 200 ticks, 100 ms, per frame.
+* Kind chooses the class (`Firing::of`): kernel threads FS, system services RS, session apps CH, containers IB, with the constants of the table in section 3. The pairing is a convention; in real neocortex IB cells are mostly deep-layer (layer V) pyramidal cells (unverified detail), and the view's layer bands are by kind, not by anatomy.
+* CPU becomes current through `neurons::calibration` and `neurons::current`. Each class is calibrated at startup, without noise, for the current that gives 1 spike per second (`rheobase`) and the one that gives 40 spikes per second (`forty_hertz`). Then 0 % CPU is 0, 0.5 % is 0.62 of the rheobase, 5 % is 0.98 of it, one core is the 40 Hz current, and three cores or more is twice as far above the 40 Hz current as that is above the rheobase, with straight lines between. An active neuron also receives Gaussian current noise of standard deviation `NOISE = 1.2` per step, seeded from the process identity (`simulation::Rng::normal`, Box-Muller of two uniform draws).
+* The network has excitatory synapses only: socket links (weight `weight_of_rate`, $\min(2, \tfrac14\ln(1 + B/1000))$ for $B$ bytes per second, or `weight_of_sockets` when traffic is unmeasured) and pipes (a fixed `PIPE_WEIGHT = 1.0`). Synaptic current decays with `SYNAPSE_TAU` = 5 ms, delays are whole ticks, and spikes in flight wait in one queue capped at `MAX_EVENTS` = 262,144. There is no inhibitory population and no plasticity; the 80/20 balance, STDP and the balanced-network picture of section 4 are background theory, not features.
+* Synchrony is Golomb's $\chi$ (`Network::synchrony`), computed from exponential running averages of $V$ and $V^2$ with a time constant of `VARIANCE_TAU` = 2 s, over the neurons that talk: those on a socket or pipe link with CPU at or above `TALKING_CPU` = 5 %. It reports nothing for fewer than two neurons or for neurons that hardly vary.
 
 ## 7. Try it
 
 ```sh
 python3 docs/figures/spiking-models.py   # about a second; prints spike counts and first intervals
+./target/release/isotop --demo --view cortex --width 1600 --output /tmp/cortex.png --renderer cpu
 ```
 
-Reusable simulators: `docs/figures/hh_w8.py` (RK4 Hodgkin-Huxley) and `docs/figures/izh_w8.py` (Euler Izhikevich, with the calibration routine used on the [Planned-Cortex](Planned-Cortex) page).
+Reusable simulators: `docs/figures/hh_w8.py` (RK4 Hodgkin-Huxley) and `docs/figures/izh_w8.py` (Euler Izhikevich, with the calibration routine used on the [Cortex](Planned-Cortex) page). The second command was not run for this page.
 
 ## 8. Where in the code
 
-Nothing in `src/` implements spiking neurons yet. Planned: `src/cortex.rs`. Existing helpers the design will use: `simulation::FixedStep`, `simulation::Rng` (with `normal`, Box-Muller of two `unit()` draws) in `src/simulation.rs`. The prototype is `docs/mockups/code/cortex.py` (numpy; reference only).
+* [`src/neurons.rs`](https://github.com/tfpickard/isotop/blob/main/src/neurons.rs): `Firing` (`of`, `params`), `advance`, `calibration`, `current`, `Network` (`step`, `synchrony`, `set_synapses`), `sparkline`; constants `STEP_MS`, `PEAK`, `SYNAPSE_TAU`, `NOISE`, `VARIANCE_TAU`, `MAX_EVENTS`.
+* [`src/cortex.rs`](https://github.com/tfpickard/isotop/blob/main/src/cortex.rs): the view (layers, axons from `Snapshot::links` and `pipes`, the raster panel); `weight_of_rate`, `weight_of_sockets`, `PIPE_WEIGHT`, `TALKING_CPU`, `CATCH_UP`.
+* `src/simulation.rs`: `FixedStep`, `Rng`. The prototype is `docs/mockups/code/cortex.py` (numpy; reference only).
 
 ## 9. Variations and open questions
 
 * Add an inhibitory population (kernel threads as FS interneurons with negative weights) and test whether the $\chi$ readout gets more informative.
 * Replace constant weights by STDP between talking processes and watch a "learned" circuit track recurring service graphs.
 * Investigate the hysteresis near the saddle-node onset of the $b = 0.2$ types (section 3.2): is there a genuine bistable range below $I = 4$?
-* Compare the cost and the f-I fidelity of LIF, adaptive exponential IF and Izhikevich for the 1000-neuron budget.
+* Compare the cost and the f-I fidelity of LIF, adaptive exponential IF and Izhikevich for the view's neuron budget.
+* Hodgkin and Huxley needed three weeks for one action potential. How many action potentials per second of wall-clock time does the machine that runs isotop spend on its own processes' neurons?
 
 ## References
 
