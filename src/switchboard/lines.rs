@@ -571,6 +571,9 @@ pub struct Lines {
     pub last: Option<f64>,
     /// The background pass whose counters were taken in last.
     pass: Option<u64>,
+    /// The board was not watching: the next sample with a known table plugs the cords where it
+    /// says, without a swing.
+    reseed: bool,
     /// When the sample was taken in, in scene time.
     pub taken: f32,
     pub columns: usize,
@@ -585,7 +588,9 @@ impl Lines {
 
     /// Takes in the sample `snapshot` that was drawn at scene time `time`. `reseed` means the
     /// board was not watching the sample before (another view was shown, or time went back): the
-    /// cords are plugged where the sample says and nothing swings.
+    /// cords are plugged where the sample says and nothing swings, as soon as a sample carries
+    /// the interrupt table: the first frames after the view comes back are Pending, and the
+    /// request waits for the first known table.
     ///
     /// The kernel counters are read once per background pass, but samples arrive faster, so a
     /// sample whose `kernel_pass` is the one already taken in changes only the operators' busy
@@ -594,9 +599,11 @@ impl Lines {
     pub fn take_in(&mut self, snapshot: &Snapshot, time: f32, reseed: bool) {
         let reading = Reading::new(snapshot);
         self.roster = Roster::new(&snapshot.cpus, &reading.cpu_ids);
-        let reseed = reseed || self.last.is_none_or(|last| snapshot.elapsed < last);
+        let rewound = self.last.is_none_or(|last| snapshot.elapsed < last);
+        self.reseed |= reseed || rewound;
         let new_pass = snapshot.kernel_pass.is_none() || snapshot.kernel_pass != self.pass;
-        if reading.table == Table::Known && (new_pass || reseed) {
+        if reading.table == Table::Known && (new_pass || self.reseed) {
+            let reseed = std::mem::take(&mut self.reseed);
             if reseed {
                 self.totals.clear();
             }
@@ -1054,6 +1061,43 @@ pub mod tests {
         lines.take_in(&busier, 2.0, false);
         assert_eq!(lines.roster.seats[0].busy, Some(0.9));
         assert_eq!(lines.last, Some(2.0));
+    }
+
+    #[test]
+    fn a_reseed_asked_for_on_a_pending_frame_waits_for_the_first_known_table() {
+        let mut lines = board(vec![row(44, "i915", 0, 100.0, None)]);
+        assert_eq!(plugged(&lines, 44), Some(0));
+        // The view comes back after a gap: the demand is on again but nothing is read yet.
+        let pending = Snapshot {
+            interrupts: Measured::Pending,
+            ..sample(Vec::new(), 8.0)
+        };
+        lines.take_in(&pending, 8.0, true);
+        assert_eq!(plugged(&lines, 44), Some(0), "nothing to reseed from yet");
+        // The first table is contiguous with the pending frame, so the caller asks for nothing,
+        // yet the line is on another CPU and another affinity than when the view was left.
+        lines.take_in(
+            &sample(vec![row(44, "i915", 3, 100.0, Some(3))], 9.0),
+            9.0,
+            false,
+        );
+        assert_eq!(plugged(&lines, 44), Some(3));
+        assert!(
+            lines.cords[&44].swing.is_none() && lines.cords[&44].moved.is_none(),
+            "what changed while the view was away is not a swing"
+        );
+        assert!(
+            lines.moved.is_empty(),
+            "nor is it a line that moved on watch"
+        );
+        // Once consumed, the next changes are watched again.
+        lines.take_in(
+            &sample(vec![row(44, "i915", 1, 100.0, Some(1))], 10.0),
+            10.0,
+            false,
+        );
+        assert_eq!(plugged(&lines, 44), Some(1));
+        assert!(lines.cords[&44].swing.is_some());
     }
 
     #[test]
