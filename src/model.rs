@@ -589,7 +589,7 @@ pub struct Snapshot {
     /// the difference between samples. None when it was not read or cannot be.
     pub oom_kills: Option<u64>,
     /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
-    /// follower's, or the demo's. `main.rs` attaches them frame by frame, not the collector, which
+    /// follower's, or the demo's. the app attaches them frame by frame, not the collector, which
     /// does not own the follower, so a collected or demo sample starts with none. A view takes in
     /// the ones it has not seen (`Delivery::unseen`). Only the newest sample keeps its lines
     /// (`Delivery::retire`).

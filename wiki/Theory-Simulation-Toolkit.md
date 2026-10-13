@@ -344,7 +344,7 @@ $\Delta t>2\tau$) but the exact flow, so:
 Uses in the tree: the collector's CPU smoothing (`smoothing(dt, 1.5)`, with $\Delta t$ the sample interval),
 `Scene::ease` for every process's CPU and memory (`smoothing(dt, 0.3)` with the frame gap, resetting the table
 if the gap is outside $[0,2]$ s), Horizon's pressure and orbit easing, and
-the camera (`smoothing(elapsed, 0.2)` in `main.rs`, which `Camera::approach` applies to
+the camera (`smoothing(elapsed, 0.2)` in `CameraController::approach`, which `Camera::approach` applies to
 the centre, rotation and pitch additively and to the zoom as $\text{zoom}\leftarrow\text{zoom}\,
 (\text{goal}/\text{zoom})^{w}$, so the zoom eases exponentially in its logarithm).
 

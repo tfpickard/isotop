@@ -41,7 +41,7 @@ impl Line {
 }
 
 /// The journal lines that arrived while one sample was the newest, which travel on that
-/// `Snapshot` (`Snapshot::journal`) to the view that draws them. `main.rs` attaches what the
+/// `Snapshot` (`Snapshot::journal`) to the view that draws them. the app attaches what the
 /// follower (or the demo) produced each frame to the newest sample; a view takes in the lines it
 /// has not seen yet (`unseen`), so drawing the same sample twice, or an older one after a rewind,
 /// adds nothing. Empty on a sample nothing was attached to.

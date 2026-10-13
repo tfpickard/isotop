@@ -22,15 +22,15 @@ The README covers usage. This file covers how to work on the code.
    processes it did not reach keep their last reading (`Kept`). A kernel before 5.3 reports
    `Source::MemorySplit` missing.
    Optional sources, the ones only some views draw, are read only while the shown view declares
-   them: `main.rs` hands `Collector::demand` the `sources` of the shown view's registry row at
-   startup and on every view change, the thread takes a copy of that `Demand` at the start of
+   them: `main.rs` (at startup) and `interactive.rs` (on every view change) hand `Collector::demand` the `sources`
+   of the shown view's registry row, the thread takes a copy of that `Demand` at the start of
    each cycle, and reads an optional source through `Demand::read_if` (or `Reads::read`, which
    also records it as active or, when it cannot be read, missing). Remote locations
    (`Source::Locations`, the GeoIP lookups the globe draws) and pipes (`Source::Pipes`, the
    descriptor walk and fdinfo reads behind `Snapshot.pipes`) go through it; the unread bytes of
    Unix sockets (`Snapshot.unix_queues`) ride the socket scan, which every view reads, and are not
-   demanded. The journal follower in `main.rs` runs while the demand contains `Source::Journal` and for
-   `JOURNAL_LINGER` (30 s) after; no view is special-cased. While the demand contains it, `feed` attaches
+   demanded. The journal follower (`interactive.rs`, scheduled by `app/feed.rs`) runs while the demand contains `Source::Journal` and for
+   `JOURNAL_LINGER` (30 s) after; no view is special-cased. While the demand contains it, `App::feed_journal` attaches
    each frame's new lines (the follower's, or the demo's) to the newest sample as `Snapshot.journal`
    (`journal::Delivery`, numbered so a view takes each line once), and the view that draws them reads
    them from its snapshot. A sample that stops being the newest (`App::push_sample`) lets go of its
@@ -52,7 +52,7 @@ The README covers usage. This file covers how to work on the code.
    and merges with sample diffing into `Snapshot.life`; dropping the queue when the demand ends
    stops it. On Linux the sampler caches each process's cmdline and cgroup per `Identity` and re-reads them after an
    exec or every few samples, so the frame loop reads only `stat` and `io` per process.
-   `main.rs` keeps a history ring of snapshots for pause and rewind.
+   `app/player.rs` (`HistoryPlayer`) keeps a history ring of snapshots for pause and rewind.
 2. **Record** (`render.rs`, `views.rs`). `Scene::render` turns a snapshot into a display list of
    screen-space `Item`s (triangles, field triangles, lines, sphere impostors, glows, beams, stars) on a `Frame`.
    It eases the sample, admits the processes, and hands the shown view's module (`ViewModule::draw`)
@@ -69,7 +69,24 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
-| `main.rs` | CLI (`Options`), `Layout`, `App` (input, camera easing, tour and the Space visits that share its cursor over `visit_cycle`, overlay text, when the journal follower runs), `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched), main loop, `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`, and the time of the sample before, for the life events in between), headless PNG and benchmark, and `warm_up`, which replays the shared history (headless demo runs, unless the row's `Phase::History` fills it) and runs the shown view's warm-up phases before a headless frame (the golden render test calls it too) |
+| `main.rs` | `main` and `run` (`preflight`, then a headless or an interactive run), `start` (the first sample, the collector, the journal follower and the `App` a run begins with) and `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`, and the time of the sample before, for the life events in between). It re-exports `App`, `Options` and `warm_up` for the test-only harness; the golden render test is in `headless.rs` |
+| `cli.rs` | `Options` (every flag), `RendererChoice` and `Power` (the values of `--renderer` and `--gpu-power`), and `preflight` (`--verbose`, `--list-views` and views this platform lacks, before the terminal is touched) |
+| `headless.rs` | `--output` and `--benchmark`: `run` draws the frame after `warm_up`, which replays the shared history (headless demo runs, unless the row's `Phase::History` fills it) and runs the shown view's warm-up phases before the frame (the golden render test calls it too); `benchmark` times `App::draw` (record) and `App::rasterize` (raster) apart and `Timing::report` prints both |
+| `interactive.rs` | The live run: `Live` owns the terminal, the layout and the clocks, and `Live::run` takes one turn per frame as `sample`, `follow_journal`, `render`, `present`, `input` and `finish` |
+| `app/mod.rs` | `App`, the interactive state (the scene, the shown view, the selection and focus, and the components below), `push_sample` and `take_sample`, `steer`, `render` (`draw`, which records the frame in two steps when the camera snaps to a fitted goal, then `rasterize`), `touch`, `panel_shown` and `demand` |
+| `app/camera.rs` | `CameraController`: the camera, its goal and the camera that drew the last positions (`rendered`), `approach` (the easing), the fit-on-growth flag and the `framed` flag (`fit_to`, `follow`, `refit`), `reset` and `zoom_to_visit`; `App::release_globe` and `App::face` |
+| `app/player.rs` | `HistoryPlayer`: the ring of snapshots, the pause and the shown sample (`shown`, `push`, `toggle_pause`, `rewind`, `forward`) |
+| `app/search.rs` | `Search`: the query, the matches and the current match, with the pure `matching` filter; `App::search_key` and `select_match` |
+| `app/pointer.rs` | `Spot` (a mouse report's frame position and cell) and `Pointer` (hover, hovered process and thing, drag, dismiss), `App::mouse` and `pointer_event` |
+| `app/tour.rs` | `Tour`, `Step` and `Cursor` (the Space visits share one cursor over `visit_cycle`), `Candidates` (the tour's targets, cycle and points as a pure function of the frame), `update_tour`, `visit`, `TOUR_STEP` |
+| `app/input.rs` | `App::key` and `command` (the global keys), `typed` (the key as legacy terminals would have typed it) and `view_key` (what the shown view's key hook is offered) |
+| `app/switcher.rs` | Changing views: `App::switch`, `cycle`, `entries`, and the picker's keys and popup (`picker_key`, `picker_popup`) |
+| `app/overlay.rs` | The text drawn over the scene: `App::overlay` (labels, titles, the hover tag, the tour callout), `popup` and `thing_popup` (the inspector) |
+| `app/status.rs` | The status panel's lines (`App::text`) and their helpers (`known_bytes`, `pressure_text`, `unreadable_text`, `sampler_text`) |
+| `app/screen.rs` | `Layout` (the frame and the terminal's cells), `Board` (cells already claimed by panels and labels), `place_panel` and `place_lines`, `PANEL_ROWS` |
+| `app/renderer.rs` | `Renderer { gpu, kind }`: the choice of rasterizer, `rasterize` for a recorded frame on the GPU or the CPU, and the fall back to the CPU when the GPU fails |
+| `app/feed.rs` | `JournalFeed`: when the journal follower runs (`JOURNAL_LINGER`) and the numbering of the lines `App::feed_journal` attaches to the newest sample |
+| `app/fixtures.rs` | Test only: the helpers (`all_available`, `press`, `probe_app`, `guided_app`, `globe_at`, `options`, ...) that the tests of the `app/` files share |
 | `model.rs` | `Process`, `Snapshot`, `Collector` (CPU smoothing, per-interval rates and shares from counter deltas, background thread, merge), `Demand` and `Reads` (which optional sources the background thread reads), `top_n` (the budgeted selection: largest key first, ties by `Identity`, NaN last), `Life` (merges the event thread's observations with sample diffing into `Snapshot.life`: one exit per `Identity`, never revised), `Oom`, `Rollup` and `ROLLUP_PROCESSES` (the 64 largest processes get `Process::memory_detail`, read in a 50 ms budget that resumes where it stopped), `MemoryReads` (the two memory sources of the background thread) and `Kept` (readings kept between cycles per `Identity`), demo workload (`demo_with` with the `DemoOptions` a view's row asks for: `churn` for deterministic births and exits, which `demo_life` lists and `demo_events` turns into life events, `exact_cpu_time`, `observer` for `Snapshot::observer`, isotop itself, `mortality`, which shapes the churn's deaths for a graveyard (every cause, a burst, a stopped unit, a reused pid), `oom_and_memory_detail`, which gives every process an `Oom` (three System processes exempt) and the 64 largest a consistent `Rollup`, one of them unreadable, and `kernel_counters`, which synthesizes `Snapshot.interrupts`, `softirqs` and `oom_kills`, the last the sum of the demo units' `oom_kills`, and `threads`, which gives every process the threads `threads::demo_list` synthesizes; plain `demo` leaves all of these unread; `channels`, which synthesizes `Snapshot::unix_queues` and `Snapshot::pipes`; `DEMO_EPOCH`, the wall clock of demo time 0; `demo` is the unoptioned test shorthand), `Queue` and `Pipe` with `pair_pipes` (pairs the pipe and FIFO descriptors of every process by `PipeId` into reader and writer links), `describe` |
 | `model/kernel.rs` | The kernel counters of the background thread: `KernelScan` (one pass: reads each demanded source through `Reads`, joins the affinity onto the interrupt rows, turns counts into per-CPU rates from the change since the previous pass, None on a first pass, a new row or CPU and a count that went backwards), `timer_row` (`LOC`, or the `arch_timer` row on arm64), `Interrupt::is_numbered`, and the demo's synthesized interrupts and softirqs (`demo`, pure functions of time) |
 | `platform/mod.rs` | The OS contract (`Sampler`, `RawProcess`, `network`, `account`, `FileScan`, `locks`, `Gpu`, `open_events`, `journal`, the kernel counters `interrupts`, `softirqs`, `irq_affinity` and `oom_kills`, and `oom_scores`, `rollup` and `Taken`, one reading of a process that may be gone or unreadable), the `Source` registry and `Sources` bit set that `Snapshot::missing` holds, the platform-neutral `Network` (with the Unix socket queues), `Files`, `Locks` and the pipe types (`PipeScan`'s `PipeSample` of `PipeEnd`s, `PipeId`, `AccessMode`), and the life event types (`LifeEvent`, `Cause`, `ExitRecord`, what an event source `Observed`, and the `LifeQueue` it fills); selects the implementation by `target_os` |
@@ -149,7 +166,8 @@ files by path relative to `src/` in the first column; a row may list several.
 ## Architecture
 
 Dependencies mostly run one way: `platform` and `model` (the data), then the shared helpers, then
-`render` with `views` and the view modules, then `gpu` and `terminal`, then `main`. Check with
+`render` with `views` and the view modules, then `gpu` and `terminal`, then `app`, then `cli`, `headless` and
+`interactive`, then `main`. Check with
 `grep -n 'use crate::' src/*.rs` before adding an import. Nothing imports `main.rs`, `model` and
 `platform` never import `render`, a view or `terminal`, and `gpu` and `terminal` import only
 `render`. The exceptions, so don't assume otherwise:
@@ -163,8 +181,9 @@ Dependencies mostly run one way: `platform` and `model` (the data), then the sha
   `render` for `Frame`, `Stage` and `Color`. `render` and `views` import each other: `Scene` draws the rows, and the rows name
   `Scene`, `Stage` and `Backdrop`. `palette`, `geometry` and `medium` import `render` too, for `Color`, `Point` and
   `Frame`. `simulation` and `layout` import only `model::Identity`.
-- The test-only `harness` imports `main` for `App`, `Options`, `demo_snapshot` and `warm_up`, so
-  it runs a view exactly as a headless `--output` run does.
+- The test-only `harness` imports `App`, `Options`, `demo_snapshot` and `warm_up` from the crate root,
+  which re-exports them from `app`, `cli`, `main` and `headless`, so it runs a view exactly as a headless
+  `--output` run does.
 - `render` and the views read `platform` types (`Shadow`, `Files`, `DeletedFile`, and `Source`
   and `Sources` from `Snapshot::missing`), and Cells and the coop its `GROUP_LABEL` and
   `WITHOUT_CGROUPS`.

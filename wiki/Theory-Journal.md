@@ -117,7 +117,7 @@ flowchart LR
 2. **Channel.** `mpsc::sync_channel(BACKLOG)` holds at most `BACKLOG = 2048` lines. This is the backlog "while the
    view is hidden or paused": the main loop only drains it while the demand contains `Source::Journal` and the app is
    not paused, so a flood during a pause fills it and the overflow is counted.
-3. **The sample.** Each frame that drains, `feed` in `main.rs` attaches the `drain()`ed lines and `Journal::dropped()`
+3. **The sample.** Each frame that drains, `App::feed_journal` in `app/feed.rs` attaches the `drain()`ed lines and `Journal::dropped()`
    (which `swap`s the counter back to 0) to the newest `Snapshot` through `journal::Delivery::add`. See section 4a.
 4. **The rain.** The Matrix view (`Rain`, a `ViewModule`) calls `Rain::take` on `snapshot.journal` when it draws, and
    `Rain::push` queues each unseen line. `Rain` keeps at most `max(rows, 16) · 2` pending lines, two
@@ -212,7 +212,8 @@ allocate more. The general rule and its test (`process_text_cannot_inject_termin
   `parse_line`, `scan`, `Cursor`, `severity`.
 * [`platform/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/mod.rs): `JournalParser`,
   `stop_journal` contract.
-* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `JOURNAL_LINGER`, `journal_wanted`, `feed`, `App::push_sample`;
+* [`app/feed.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/feed.rs): `JOURNAL_LINGER`, `JournalFeed`, `App::journal_wanted`, `App::feed_journal`;
+  [`app/player.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/player.rs): `HistoryPlayer::push`;
   [`matrix.rs`](https://github.com/tfpickard/isotop/blob/main/src/matrix.rs): `Rain`;
   [`glyphs.rs`](https://github.com/tfpickard/isotop/blob/main/src/glyphs.rs): `glyph`;
   [`terminal.rs`](https://github.com/tfpickard/isotop/blob/main/src/terminal.rs): `clean_text`.
