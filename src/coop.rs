@@ -17,6 +17,7 @@ use crate::platform::{DeletedFile, GROUP_LABEL, Source};
 use crate::render::{Camera, Color, Frame, NONE, Point, SCALE, Stage, without_apple_prefix};
 use crate::simulation::hash::unit_from as fraction;
 use crate::simulation::{FixedStep, Rng, SpatialHash, hash, sprout};
+use crate::views::ViewModule;
 
 /// Fixed simulation step in seconds. The yard advances on wall-clock time in whole steps, so
 /// every frame rate follows the same trajectory.
@@ -1038,8 +1039,8 @@ fn rate(value: f32) -> String {
 
 impl Coop {
     /// Takes in a new sample: CPU history, OOM kills and cgroup membership. Older or
-    /// repeated samples are ignored, so the scene and the view may both call it.
-    pub fn record(&mut self, snapshot: &Snapshot) {
+    /// repeated samples are ignored, so the scene's record hook and `draw` may both call it.
+    fn ingest(&mut self, snapshot: &Snapshot) {
         if self
             .recorded
             .is_some_and(|elapsed| snapshot.elapsed <= elapsed)
@@ -1141,26 +1142,17 @@ impl Coop {
         let excess = self.calls.len().saturating_sub(MAX_PENDING_CALLS);
         self.calls.drain(..excess);
     }
+}
 
-    /// Where each drawn chicken belongs, wherever it has walked to: its seat on its house's
-    /// perches, on the ground. The view harness checks layout stability here.
-    pub fn anchors(&self) -> HashMap<Identity, Point> {
-        self.yard
-            .chickens
-            .iter()
-            .filter_map(|chicken| {
-                let center = self.flocks.get(chicken.flock)?.center;
-                let (offset, _) = seat_offset(self.seats.seat(chicken.id)?);
-                Some((
-                    chicken.id,
-                    [center[0] + offset[0], center[1] + offset[1], 0.0],
-                ))
-            })
-            .collect()
+impl ViewModule for Coop {
+    /// Takes in each sample whichever view is shown, so the history, the OOM counts and the
+    /// cgroup members are there when the coop opens.
+    fn record(&mut self, snapshot: &Snapshot, _time: f32) {
+        self.ingest(snapshot);
     }
 
     /// The status legend, with the yard's order parameter and what could not be measured.
-    pub fn legend(&self) -> String {
+    fn legend(&self, _snapshot: &Snapshot) -> String {
         let phi = self
             .phi
             .map_or_else(|| "- (none foraging)".to_owned(), |phi| format!("{phi:.2}"));
@@ -1211,13 +1203,8 @@ impl Coop {
         line
     }
 
-    pub fn draw(
-        &mut self,
-        stage: &mut Stage,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-    ) -> usize {
-        self.record(snapshot);
+    fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
+        self.ingest(snapshot);
         let mut order: Vec<usize> = (0..processes.len()).collect();
         order.sort_by_key(|&i| processes[i].id);
         let ids: Vec<Identity> = order.iter().map(|&i| processes[i].id).collect();
@@ -1245,6 +1232,33 @@ impl Coop {
         self.paint(stage, processes, &order, snapshot, alpha)
     }
 
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    /// Where each drawn chicken belongs, wherever it has walked to: its seat on its house's
+    /// perches, on the ground. The view harness checks layout stability here.
+    #[cfg(test)]
+    fn anchors(&self) -> Option<HashMap<Identity, Point>> {
+        Some(
+            self.yard
+                .chickens
+                .iter()
+                .filter_map(|chicken| {
+                    let center = self.flocks.get(chicken.flock)?.center;
+                    let (offset, _) = seat_offset(self.seats.seat(chicken.id)?);
+                    Some((
+                        chicken.id,
+                        [center[0] + offset[0], center[1] + offset[1], 0.0],
+                    ))
+                })
+                .collect(),
+        )
+    }
+}
+
+impl Coop {
     /// Steps the yard on wall-clock time; returns how far the frame lies into the next step.
     fn advance(&mut self, time: f32) -> f32 {
         self.clock.0.advance(time, |step| self.yard.step(step))
@@ -3102,6 +3116,17 @@ mod tests {
         state
     }
 
+    /// The coop's own state, read through the trait from the scene that draws it.
+    fn coop_of(scene: &Scene) -> &Coop {
+        scene
+            .module::<Coop>(view("coop"))
+            .expect("the coop has been built")
+    }
+
+    fn legend_of(scene: &Scene) -> String {
+        scene.legend(view("coop"), &Snapshot::default())
+    }
+
     fn render(scene: &mut Scene, snapshot: &Snapshot, time: f32) {
         let frame = scene.render(&RenderInput {
             width: 160,
@@ -3193,7 +3218,7 @@ mod tests {
             let mut states = HashMap::new();
             for k in 0..=3 * fps {
                 render(&mut scene, &snapshot, 100.0 + k as f32 / fps as f32);
-                states.insert(scene.coop.yard.steps, state(&scene.coop.yard));
+                states.insert(coop_of(&scene).yard.steps, state(&coop_of(&scene).yard));
             }
             states
         };
@@ -3366,7 +3391,7 @@ mod tests {
             }
             let mut scene = Scene::new();
             render(&mut scene, &sample, 1.0);
-            let chicken = scene.coop.yard.find(identity(1)).unwrap();
+            let chicken = coop_of(&scene).yard.find(identity(1)).unwrap();
             assert_eq!(chicken.role, Role::Foraging);
             let walks = notes(&scene, 1)
                 .into_iter()
@@ -3414,11 +3439,11 @@ mod tests {
         sample.processes = processes;
         sample.elapsed = 2.0;
         render(&mut scene, &sample, 2.0);
-        let feeder = &scene.coop.feeders[0];
-        let chicken = scene.coop.yard.find(identity(3)).unwrap();
+        let feeder = &coop_of(&scene).feeders[0];
+        let chicken = coop_of(&scene).yard.find(identity(3)).unwrap();
         assert_eq!(chicken.target, feeder.slot(0), "real-time pushes in first");
         assert!(notes(&scene, 3).contains("rank 1 of 3 by priority -51 (real-time)"));
-        let displaced = scene.coop.yard.find(identity(2)).unwrap();
+        let displaced = coop_of(&scene).yard.find(identity(2)).unwrap();
         assert!(displaced.target[1] < feeder.eating_line(), "now queueing");
     }
 
@@ -3469,8 +3494,8 @@ mod tests {
         fresh.files = Measured::Pending;
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![a, b, hidden, fresh], 1.0), 1.0);
-        assert_eq!(scene.coop.flocks[0].nest.files, 140);
-        assert_eq!(clutch(scene.coop.flocks[0].nest.files), 7);
+        assert_eq!(coop_of(&scene).flocks[0].nest.files, 140);
+        assert_eq!(clutch(coop_of(&scene).flocks[0].nest.files), 7);
         assert!(nest_line(&scene, 1).ends_with(
             "nest: 7 eggs for at least 140 open files (1 unreadable, 1 not read yet of 4 members)"
         ));
@@ -3480,7 +3505,7 @@ mod tests {
         assert!(notes(&scene, 3).contains(&"open files unreadable (permissions)".into()));
         assert!(notes(&scene, 4).contains(&"open files not read yet".into()));
         // Only the table that could not be read counts against permissions.
-        assert!(scene.coop.legend().contains("no files for 1 (permissions)"));
+        assert!(legend_of(&scene).contains("no files for 1 (permissions)"));
     }
 
     #[test]
@@ -3501,7 +3526,7 @@ mod tests {
             nest_line(&scene, 1),
             "root.service nest: no eggs, open files not read yet"
         );
-        assert!(!scene.coop.legend().contains("no files"));
+        assert!(!legend_of(&scene).contains("no files"));
     }
 
     #[test]
@@ -3534,7 +3559,7 @@ mod tests {
         let mut scene = Scene::new();
         let mut sample = snapshot(vec![rotated, cache], 1.0);
         render(&mut scene, &sample, 1.0);
-        assert_eq!(scene.coop.flocks[0].nest.deleted.len(), 3);
+        assert_eq!(coop_of(&scene).flocks[0].nest.deleted.len(), 3);
         assert!(
             notes(&scene, 1)
                 .contains(&"2 deleted files still open, 1.2 GiB held (rotten eggs)".into())
@@ -3545,7 +3570,7 @@ mod tests {
         sample.processes[0] = holding(1, path, 11, &many);
         sample.elapsed = 2.0;
         render(&mut scene, &sample, 2.0);
-        assert_eq!(scene.coop.flocks[0].nest.deleted.len(), 12);
+        assert_eq!(coop_of(&scene).flocks[0].nest.deleted.len(), 12);
         assert!(nest_line(&scene, 2).contains(", 8 rotten for 12 deleted files still open"));
     }
 
@@ -3557,7 +3582,7 @@ mod tests {
         let workers: Vec<Process> = (1..=5).map(|pid| holding(pid, path, 3, &[log])).collect();
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(workers, 1.0), 1.0);
-        let nest = &scene.coop.flocks[0].nest;
+        let nest = &coop_of(&scene).flocks[0].nest;
         assert_eq!(nest.deleted.len(), 1);
         assert_eq!(nest.deleted_bytes(), 1 << 30);
         assert!(nest_line(&scene, 1).contains(", 1 rotten for 1 deleted file still open (1.0 GiB"));
@@ -3581,7 +3606,7 @@ mod tests {
             .collect();
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(holders.clone(), 1.0), 1.0);
-        let coop = &scene.coop;
+        let coop = coop_of(&scene);
         let nest = coop.flocks[0].nest();
         let brooders: Vec<&Chicken> = coop.yard.chickens.iter().collect();
         for chicken in &brooders {
@@ -3613,8 +3638,8 @@ mod tests {
         large.memory = 600 << 20;
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![large], 1.0), 1.0);
-        let flock = &scene.coop.flocks[0];
-        let chicken = &scene.coop.yard.chickens[0];
+        let flock = &coop_of(&scene).flocks[0];
+        let chicken = &coop_of(&scene).yard.chickens[0];
         assert!(chicken.radius > 1.0);
         assert!(clear_of_house_and_eggs(chicken, flock.nest()));
         let [x, y] = chicken.target;
@@ -3631,7 +3656,7 @@ mod tests {
         holder.locks_held = Measured::Known(1);
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![holder.clone()], 1.0), 1.0);
-        assert_eq!(scene.coop.yard.chickens[0].role, Role::Feeding);
+        assert_eq!(coop_of(&scene).yard.chickens[0].role, Role::Feeding);
         assert!(notes(&scene, 1).contains(&"holds 1 file lock".into()));
         // Once it stops running and the feeding hold has passed, it broods.
         holder.state = 'S';
@@ -3642,7 +3667,7 @@ mod tests {
                 elapsed as f32,
             );
         }
-        assert_eq!(scene.coop.yard.chickens[0].role, Role::Brooding);
+        assert_eq!(coop_of(&scene).yard.chickens[0].role, Role::Brooding);
     }
 
     #[test]
@@ -3655,7 +3680,7 @@ mod tests {
         let mut scene = Scene::new();
         let sample = snapshot(vec![holder.clone(), waiter.clone()], 1.0);
         render(&mut scene, &sample, 1.0);
-        let coop = &scene.coop;
+        let coop = coop_of(&scene);
         let home = coop
             .flocks
             .iter()
@@ -3677,22 +3702,22 @@ mod tests {
         waiter.state = 'R';
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![holder, waiter], 1.0), 1.0);
-        let chicken = scene.coop.yard.find(identity(2)).unwrap();
+        let chicken = coop_of(&scene).yard.find(identity(2)).unwrap();
         assert_eq!(chicken.role, Role::Feeding, "running outranks a stale wait");
         // A holder that is not sampled leaves it at its own nest.
         let mut orphan = sample.processes[1].clone();
         orphan.blocked_on = Some(Blocker::Process(77));
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![orphan.clone()], 1.0), 1.0);
-        let chicken = &scene.coop.yard.chickens[0];
+        let chicken = &coop_of(&scene).yard.chickens[0];
         assert_eq!(chicken.role, Role::Waiting);
-        assert!(chicken.target[0] > scene.coop.flocks[0].nest()[0]);
+        assert!(chicken.target[0] > coop_of(&scene).flocks[0].nest()[0]);
         assert!(notes(&scene, 2)[0].contains("pid 77, which was not sampled"));
         // So does a lock no process can be named for, such as an OFD lock.
         orphan.blocked_on = Some(Blocker::Unnamed);
         let mut scene = Scene::new();
         render(&mut scene, &snapshot(vec![orphan], 1.0), 1.0);
-        let chicken = &scene.coop.yard.chickens[0];
+        let chicken = &coop_of(&scene).yard.chickens[0];
         assert_eq!(chicken.role, Role::Waiting);
         assert_eq!(chicken.holder, None);
         assert!(notes(&scene, 2)[0].contains("no process can be named for (an OFD lock"));
@@ -3718,7 +3743,7 @@ mod tests {
             }));
             let mut scene = Scene::new();
             render(&mut scene, &snapshot(processes, 1.0), 1.0);
-            let coop = &scene.coop;
+            let coop = coop_of(&scene);
             let flock = coop.flocks.iter().find(|flock| flock.key == path).unwrap();
             let nest = flock.nest();
             let queue: Vec<&Chicken> = coop
@@ -3773,16 +3798,16 @@ mod tests {
         let mut scene = Scene::new();
         render(&mut scene, &before, 1.0);
         render(&mut scene, &before, 1.5);
-        let victim = scene.coop.yard.find(identity(2)).unwrap().position;
+        let victim = coop_of(&scene).yard.find(identity(2)).unwrap().position;
         assert!(
-            scene.coop.foxes.is_empty(),
+            coop_of(&scene).foxes.is_empty(),
             "the first sight is the baseline"
         );
         let mut after = snapshot(vec![small, bystander], 2.0);
         after.units = unit(3);
         render(&mut scene, &after, 2.0);
-        assert_eq!(scene.coop.foxes.len(), 1);
-        let fox = &scene.coop.foxes[0];
+        assert_eq!(coop_of(&scene).foxes.len(), 1);
+        let fox = &coop_of(&scene).foxes[0];
         assert_eq!(fox.prey, victim);
         assert!(
             fox.ghost
@@ -3793,7 +3818,7 @@ mod tests {
         again.units = unit(4);
         render(&mut scene, &again, 3.0);
         assert!(
-            scene.coop.foxes.iter().any(|fox| fox.ghost.is_none()),
+            coop_of(&scene).foxes.iter().any(|fox| fox.ghost.is_none()),
             "a kill with nobody gone sends a fox that leaves with nothing"
         );
     }
@@ -3820,7 +3845,7 @@ mod tests {
         before.units = units(path, 2);
         render(scene, &before, 1.0);
         render(scene, &before, 1.5);
-        let victim = scene.coop.yard.find(identity(2)).unwrap().position;
+        let victim = coop_of(scene).yard.find(identity(2)).unwrap().position;
         (victim, vec![small, bystander])
     }
 
@@ -3832,12 +3857,15 @@ mod tests {
         let mut gone = snapshot(survivors.clone(), 2.0);
         gone.units = units(path, 2);
         render(&mut scene, &gone, 2.0);
-        assert!(scene.coop.foxes.is_empty(), "the counter has not moved yet");
+        assert!(
+            coop_of(&scene).foxes.is_empty(),
+            "the counter has not moved yet"
+        );
         let mut counted = snapshot(survivors, 3.0);
         counted.units = units(path, 3);
         render(&mut scene, &counted, 3.0);
-        assert_eq!(scene.coop.foxes.len(), 1);
-        let fox = &scene.coop.foxes[0];
+        assert_eq!(coop_of(&scene).foxes.len(), 1);
+        let fox = &coop_of(&scene).foxes[0];
         assert_eq!(fox.prey, victim);
         assert!(
             fox.ghost
@@ -3858,14 +3886,14 @@ mod tests {
         let mut counted = snapshot(survivors.clone(), 4.0);
         counted.units = units(path, 3);
         render(&mut scene, &counted, 4.0);
-        assert_eq!(scene.coop.foxes.len(), 1);
-        assert_eq!(scene.coop.foxes[0].prey, victim);
-        assert!(scene.coop.foxes[0].ghost.is_some());
+        assert_eq!(coop_of(&scene).foxes.len(), 1);
+        assert_eq!(coop_of(&scene).foxes[0].prey, victim);
+        assert!(coop_of(&scene).foxes[0].ghost.is_some());
         // The victim is claimed once: a second kill finds nobody left to take.
         let mut again = snapshot(survivors, 5.0);
         again.units = units(path, 4);
         render(&mut scene, &again, 5.0);
-        assert!(scene.coop.foxes.iter().any(|fox| fox.ghost.is_none()));
+        assert!(coop_of(&scene).foxes.iter().any(|fox| fox.ghost.is_none()));
     }
 
     #[test]
@@ -3881,8 +3909,8 @@ mod tests {
         let mut counted = snapshot(survivors, 7.0);
         counted.units = units(path, 3);
         render(&mut scene, &counted, 7.0);
-        assert_eq!(scene.coop.foxes.len(), 1);
-        assert!(scene.coop.foxes[0].ghost.is_none());
+        assert_eq!(coop_of(&scene).foxes.len(), 1);
+        assert!(coop_of(&scene).foxes[0].ghost.is_none());
     }
 
     #[test]
@@ -3896,15 +3924,15 @@ mod tests {
             scene.record(&sample, 60.0 * k as f32);
         }
         assert!(
-            scene.coop.calls.len() <= 1,
+            coop_of(&scene).calls.len() <= 1,
             "an hour of kills leaves only the newest pending, not {}",
-            scene.coop.calls.len()
+            coop_of(&scene).calls.len()
         );
         let mut now = snapshot(processes, 60.0 * 40.0);
         now.units = units(path, 39);
         render(&mut scene, &now, 2400.0);
-        assert!(scene.coop.foxes.is_empty());
-        assert!(scene.coop.calls.is_empty());
+        assert!(coop_of(&scene).foxes.is_empty());
+        assert!(coop_of(&scene).calls.is_empty());
     }
 
     #[test]
@@ -3920,10 +3948,10 @@ mod tests {
             .collect();
         let mut before = snapshot(members.clone(), 1.0);
         before.units = units(path, 0);
-        coop.record(&before);
+        coop.ingest(&before);
         let mut burst = snapshot(members[..1].to_vec(), 2.0);
         burst.units = units(path, 5);
-        coop.record(&burst);
+        coop.ingest(&burst);
         let named: Vec<Option<u32>> = coop
             .calls
             .iter()
@@ -3933,7 +3961,7 @@ mod tests {
         coop.calls.clear();
         let mut later = snapshot(members[..1].to_vec(), 3.0);
         later.units = units(path, 6);
-        coop.record(&later);
+        coop.ingest(&later);
         assert_eq!(coop.calls.len(), 1);
         assert_eq!(
             coop.calls[0].victim, None,
@@ -3960,8 +3988,8 @@ mod tests {
             }
             sample
         };
-        coop.record(&at(0));
-        coop.record(&at(5));
+        coop.ingest(&at(0));
+        coop.ingest(&at(5));
         assert_eq!(coop.calls.len(), MAX_PENDING_CALLS);
     }
 
@@ -3982,7 +4010,7 @@ mod tests {
         sample.cores = 2;
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
-        let coop = &scene.coop;
+        let coop = coop_of(&scene);
         assert_eq!(coop.feeders.len(), 2);
         let chickens = &coop.yard.chickens;
         for chicken in chickens {
@@ -4038,7 +4066,7 @@ mod tests {
         sample.missing = [Source::CpuPressure, Source::LastCpu].into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
-        let coop = &scene.coop;
+        let coop = coop_of(&scene);
         assert_eq!(
             coop.feeders.len(),
             3,
@@ -4082,7 +4110,7 @@ mod tests {
             .filter(|chicken| chicken.target[1] == shared.eating_line())
             .count();
         assert_eq!(at_slots, shared.slots, "the rest wait in line");
-        let legend = coop.legend();
+        let legend = coop.legend(&Snapshot::default());
         assert!(legend.contains("no last CPU: running chickens share one trough"));
         assert!(legend.contains("no CPU pressure"));
     }
@@ -4094,9 +4122,9 @@ mod tests {
         sample.missing = Source::CpuPressure.into();
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
-        assert_eq!(scene.coop.feeders.len(), 2);
-        assert!(scene.coop.feeders.iter().all(|feeder| !feeder.shared));
-        let legend = scene.coop.legend();
+        assert_eq!(coop_of(&scene).feeders.len(), 2);
+        assert!(coop_of(&scene).feeders.iter().all(|feeder| !feeder.shared));
+        let legend = legend_of(&scene);
         assert!(!legend.contains("share one trough"));
         assert!(legend.contains("no CPU pressure"));
     }
@@ -4118,14 +4146,13 @@ mod tests {
         let mut scene = Scene::new();
         render(&mut scene, &sample, 1.0);
         assert!(
-            scene
-                .coop
+            coop_of(&scene)
                 .yard
                 .chickens
                 .iter()
                 .all(|chicken| !matches!(chicken.role, Role::Brooding | Role::Waiting))
         );
-        let legend = scene.coop.legend();
+        let legend = legend_of(&scene);
         assert!(
             legend.contains("cracked = deleted but open | chicks = threads"),
             "{legend}"
@@ -4142,7 +4169,7 @@ mod tests {
         sample.missing = Sources::default();
         sample.elapsed = 2.0;
         render(&mut scene, &sample, 2.0);
-        let legend = scene.coop.legend();
+        let legend = legend_of(&scene);
         assert!(legend.contains("file locks unreadable for 4"), "{legend}");
         assert!(legend.contains("brooding = holds a file lock"), "{legend}");
     }
@@ -4151,7 +4178,7 @@ mod tests {
     fn queued_feeders_wrap_into_columns_and_every_target_stays_inside_the_fence() {
         let path = "/system.slice/busy.service";
         let inside = |scene: &Scene| {
-            let yard = &scene.coop.yard;
+            let yard = &coop_of(scene).yard;
             for c in &yard.chickens {
                 for point in [c.position, c.target] {
                     assert_eq!(
@@ -4181,7 +4208,7 @@ mod tests {
         // The first population is placed straight at its targets, which must not be in the hedge.
         let mut scene = Scene::new();
         render(&mut scene, &running('R', 1.0), 1.0);
-        assert_eq!(scene.coop.feeders.len(), 1);
+        assert_eq!(coop_of(&scene).feeders.len(), 1);
         inside(&scene);
         // A population that starts walking must be able to arrive, one chicken to a spot.
         let mut scene = Scene::new();
@@ -4191,7 +4218,7 @@ mod tests {
             render(&mut scene, &sample, 2.0 + frame as f32 * 0.05);
         }
         inside(&scene);
-        let chickens = &scene.coop.yard.chickens;
+        let chickens = &coop_of(&scene).yard.chickens;
         assert!(
             chickens
                 .iter()
@@ -4232,22 +4259,20 @@ mod tests {
         render(&mut scene, &sample(6, 1.0), 1.0);
         let layout = |scene: &Scene| {
             (
-                scene.coop.yard.low,
-                scene.coop.yard.high,
-                scene.coop.band_top,
-                scene
-                    .coop
+                coop_of(scene).yard.low,
+                coop_of(scene).yard.high,
+                coop_of(scene).band_top,
+                coop_of(scene)
                     .feeders
                     .iter()
                     .map(|f| f.center)
                     .collect::<Vec<_>>(),
-                scene.coop.yard.eyes.clone(),
+                coop_of(scene).yard.eyes.clone(),
             )
         };
         let before = layout(&scene);
         // Drop whichever flock stands furthest south, the one that sets the yard's southern edge.
-        let outermost = scene
-            .coop
+        let outermost = coop_of(&scene)
             .flocks
             .iter()
             .min_by(|a, b| a.center[1].total_cmp(&b.center[1]))
@@ -4256,7 +4281,7 @@ mod tests {
         let mut smaller = sample(6, 2.0);
         smaller.processes.retain(|p| p.cgroup != outermost);
         render(&mut scene, &smaller, 2.0);
-        assert_eq!(scene.coop.flocks.len(), 5);
+        assert_eq!(coop_of(&scene).flocks.len(), 5);
         assert_eq!(layout(&scene), before);
         // A flock arriving beyond the fence grows it, and the fence does not shrink back.
         let mut scene = Scene::new();
@@ -4300,22 +4325,20 @@ mod tests {
         let mut scene = Scene::new();
         render(&mut scene, &sample, 30.0);
         let houses = |scene: &Scene| -> BTreeMap<String, [f32; 2]> {
-            scene
-                .coop
+            coop_of(scene)
                 .flocks
                 .iter()
                 .map(|f| (f.key.clone(), f.center))
                 .collect()
         };
         let seats = |scene: &Scene| -> HashMap<Identity, [f32; 2]> {
-            scene
-                .coop
+            coop_of(scene)
                 .yard
                 .chickens
                 .iter()
                 .map(|c| {
-                    let flock = &scene.coop.flocks[c.flock];
-                    let (offset, _) = seat_offset(scene.coop.seats.seat(c.id).unwrap());
+                    let flock = &coop_of(scene).flocks[c.flock];
+                    let (offset, _) = seat_offset(coop_of(scene).seats.seat(c.id).unwrap());
                     (
                         c.id,
                         [flock.center[0] + offset[0], flock.center[1] + offset[1]],
@@ -4385,14 +4408,12 @@ mod tests {
 
     /// House centres by flock and chicken positions by process, of what is drawn.
     fn places(scene: &Scene) -> Places {
-        let houses = scene
-            .coop
+        let houses = coop_of(scene)
             .flocks
             .iter()
             .map(|flock| (flock.key.clone(), flock.center))
             .collect();
-        let chickens = scene
-            .coop
+        let chickens = coop_of(scene)
             .yard
             .chickens
             .iter()
@@ -4429,7 +4450,7 @@ mod tests {
         let sample = demo(30.0, 160);
         let (mut scene, time) = settled_demo(&sample);
         let before = places(&scene);
-        let fence = (scene.coop.yard.low, scene.coop.yard.high);
+        let fence = (coop_of(&scene).yard.low, coop_of(&scene).yard.high);
         // One family of sixteen, all in one flock. The frames repeat the last time, so the yard
         // does not step and anything that moves was moved by the change of focus.
         let root = sample.processes[16].id;
@@ -4439,7 +4460,7 @@ mod tests {
         in_place(&scene, &before);
         draw_some(&mut scene, &sample, time, 4096, None, None);
         assert_eq!(places(&scene), before);
-        assert_eq!((scene.coop.yard.low, scene.coop.yard.high), fence);
+        assert_eq!((coop_of(&scene).yard.low, coop_of(&scene).yard.high), fence);
     }
 
     #[test]
@@ -4447,7 +4468,7 @@ mod tests {
         let sample = demo(30.0, 160);
         let (mut scene, time) = settled_demo(&sample);
         let before = places(&scene);
-        let fence = (scene.coop.yard.low, scene.coop.yard.high);
+        let fence = (coop_of(&scene).yard.low, coop_of(&scene).yard.high);
         draw_some(&mut scene, &sample, time, 80, None, None);
         assert!(places(&scene).0.len() < before.0.len());
         in_place(&scene, &before);
@@ -4455,14 +4476,14 @@ mod tests {
         // where its whole flock had it, sized for every member.
         let selected = sample.processes[150].id;
         let key = flock_key(&sample.processes[150]);
-        let span = scene.coop.seats.span(&key);
+        let span = coop_of(&scene).seats.span(&key);
         draw_some(&mut scene, &sample, time, 80, Some(selected), None);
         assert!(places(&scene).0.contains_key(&key));
         assert!(places(&scene).1.contains_key(&selected));
-        assert_eq!(scene.coop.seats.span(&key), span);
+        assert_eq!(coop_of(&scene).seats.span(&key), span);
         in_place(&scene, &before);
         draw_some(&mut scene, &sample, time, 4096, None, None);
         assert_eq!(places(&scene), before);
-        assert_eq!((scene.coop.yard.low, scene.coop.yard.high), fence);
+        assert_eq!((coop_of(&scene).yard.low, coop_of(&scene).yard.high), fence);
     }
 }

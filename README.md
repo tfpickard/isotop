@@ -215,7 +215,10 @@ default, free to rotate and tilt between a low angle and top-down. Tab cycles
 the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
 and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
-Orbit and flow share one layout, so a process sits in the same place in each. Views
+Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
+orbit turns its systems about their barycenter and flow holds its wells still, so
+switching from one to the other does not carry the places orbit has turned to over to
+flow. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
 
@@ -264,6 +267,9 @@ existing ones.
 
 Four levels are drawn per system; deeper processes are counted as collapsed.
 
+Known gap: where a body stands inside its system is not yet stable when memory and
+the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
+
 ### Ripple
 
 ![Ripple: pebble clusters driving interfering ripples](docs/media/ripple-motion.webp)
@@ -294,6 +300,9 @@ memory bends.
   each way, carrying traffic in each end's colour.
 - Connections that leave the machine send sparks rising off the sheet; exits
   burst outward; pressure adds turbulence.
+
+Known gap: where a body stands inside its system is not yet stable when memory and
+the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
 
 ### Cores
 
@@ -328,12 +337,18 @@ session and containers. Accounting comes from the cgroup v2 files
   as usage nears it; an arc around the membrane shows CPU use against its quota.
 - The membrane trembles with the cgroup's pressure, flashes red when its CPU
   quota throttles it, and bursts when the OOM killer strikes inside it.
-- Organelles: its processes, with the largest as the nucleus. Kernel threads
-  belong to no cell and are only counted.
+- Organelles: its processes. The nucleus is the largest process of a new cell
+  and keeps the centre until it exits; the largest process to arrive after that
+  takes it, and the centre stays bare until one does. Kernel threads belong to
+  no cell and are only counted.
+- Organelles keep their seats while memory moves the membrane and processes
+  come and go. The seats are spread for the room the cell reserved, and are laid
+  out again only when the membrane would no longer hold the outermost one or has
+  grown half again past the room.
 - Processes hidden by focus (`f`) or by `--limit` keep their seats, and their
   cells keep their place and size, so clearing the focus puts every cell back.
-  A cell draws only the processes that are shown, and its nucleus stays its
-  largest process even while that one is hidden.
+  A cell draws only the processes that are shown, and its nucleus stays the same
+  process even while that one is hidden.
 
 ### Strata
 
@@ -898,7 +913,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-62,958 lines of Rust (36,723 production, 26,235 test) in 61 files, 837 tests, 18 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+64,170 lines of Rust (36,937 production, 27,233 test) in 66 files, 868 tests, 18 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

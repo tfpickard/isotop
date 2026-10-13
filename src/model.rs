@@ -588,6 +588,12 @@ pub struct Snapshot {
     /// The kernel's count of OOM kills since boot (`Source::OomKills`): cumulative, so a view takes
     /// the difference between samples. None when it was not read or cannot be.
     pub oom_kills: Option<u64>,
+    /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
+    /// follower's, or the demo's. `main.rs` attaches them frame by frame, not the collector, which
+    /// does not own the follower, so a collected or demo sample starts with none. A view takes in
+    /// the ones it has not seen (`Delivery::unseen`). Only the newest sample keeps its lines
+    /// (`Delivery::retire`).
+    pub journal: crate::journal::Delivery,
 }
 
 /// The optional sources the shown view wants read. The background thread reads an optional
@@ -3689,6 +3695,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         interrupts,
         softirqs,
         oom_kills,
+        journal: crate::journal::Delivery::default(),
     };
     if options.oom_cycle {
         demo_kill_cycle(time, count, &mut snapshot);
@@ -5606,6 +5613,7 @@ mod tests {
             interrupts: Measured::Pending,
             softirqs: Measured::Pending,
             oom_kills: None,
+            journal: crate::journal::Delivery::default(),
         }
     }
 
@@ -5646,6 +5654,7 @@ mod tests {
             interrupts,
             softirqs,
             oom_kills,
+            journal,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
         let unix_links: BTreeSet<_> = unix_links.iter().collect();
@@ -5658,7 +5667,7 @@ mod tests {
              {outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
-             {interrupts:?}\n{softirqs:?} {oom_kills:?}"
+             {interrupts:?}\n{softirqs:?} {oom_kills:?}\n{journal:?}"
         )
     }
 

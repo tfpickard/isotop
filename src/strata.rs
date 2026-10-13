@@ -8,6 +8,7 @@ use crate::history::Sample;
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::palette::{kind_color, tint};
 use crate::render::{Point, Stage, label_name};
+use crate::views::ViewModule;
 
 const WINDOW: f64 = 60.0;
 const ROWS: usize = 40;
@@ -26,19 +27,16 @@ pub struct Strata {
 
 impl Strata {
     #[cfg(test)]
-    pub fn rows(&self) -> Vec<Identity> {
+    fn rows(&self) -> Vec<Identity> {
         let mut rows: Vec<(usize, Identity)> = self.rows.iter().map(|(&id, &r)| (r, id)).collect();
         rows.sort();
         rows.into_iter().map(|(_, id)| id).collect()
     }
+}
 
+impl ViewModule for Strata {
     #[expect(clippy::too_many_lines, reason = "split in #71 (A12)")]
-    pub fn draw(
-        &mut self,
-        stage: &mut Stage,
-        processes: &[&Process],
-        snapshot: &Snapshot,
-    ) -> usize {
+    fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         let now = snapshot.elapsed;
         let window: Vec<&Sample> = stage.history.window(now, WINDOW).collect();
         let interval = match window.as_slice() {
@@ -223,13 +221,44 @@ impl Strata {
         );
         shown
     }
+
+    /// The status legend.
+    fn legend(&self, _snapshot: &Snapshot) -> String {
+        " Ridge = process, height = CPU over the last minute, newest at the front | rows: kernel, system, session, containers".into()
+    }
+
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::model::{Identity, Snapshot, demo};
-    use crate::render::{Scene, hiding};
-    use crate::views::view;
+    use std::collections::HashMap;
+
+    use super::Strata;
+    use crate::model::{Identity, Kind, Snapshot, demo};
+    use crate::render::{Camera, RenderInput, Scene, hiding};
+    use crate::views::{View, view};
+
+    fn render(scene: &mut Scene, snapshot: &Snapshot, view: View, time: f32) {
+        let mut frame = scene.render(&RenderInput::small(
+            snapshot,
+            view,
+            &Camera::default(),
+            time,
+        ));
+        frame.rasterize();
+    }
+
+    /// The ridges' identities from the back row to the front.
+    fn ridges(scene: &Scene) -> Vec<Identity> {
+        scene
+            .module::<Strata>(view("strata"))
+            .expect("the strata view exists")
+            .rows()
+    }
 
     /// Few enough processes that every busy one gets one of the forty rows. With more, a drawn
     /// process takes a hidden one's row, and the hidden one finds none free when it is back.
@@ -278,5 +307,72 @@ mod tests {
             assert_eq!(drawn(&mut scene, limit, focus), fresh, "{limit} {focus:?}");
         }
         assert!(shown > super::ROWS);
+    }
+
+    #[test]
+    fn strata_ridges_follow_busy_processes_in_kind_order() {
+        let mut scene = Scene::new();
+        let mut snapshot = demo(0.0, 64);
+        for step in 0..30 {
+            snapshot.elapsed = step as f64;
+            for (i, p) in snapshot.processes.iter_mut().enumerate() {
+                p.cpu = if i % 4 == 0 { 30.0 + step as f32 } else { 0.0 };
+            }
+            // History builds up while another view is shown.
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, view("city"), step as f32);
+        }
+        render(&mut scene, &snapshot, view("strata"), 29.0);
+        assert_eq!(scene.visible, 16);
+        let first = snapshot.processes[0].id;
+        assert!(
+            scene.notes[&first][0].ends_with("over the last 29 s"),
+            "{:?}",
+            scene.notes[&first]
+        );
+        let rows: HashMap<Identity, f32> =
+            scene.positions.iter().map(|(id, p)| (*id, p[1])).collect();
+        snapshot.elapsed = 30.0;
+        snapshot.processes[33].cpu = 50.0;
+        render(&mut scene, &snapshot, view("strata"), 30.0);
+        assert_eq!(scene.visible, 17, "a newly busy process earns a ridge");
+        for (id, y) in &rows {
+            assert_eq!(scene.positions[id][1], *y, "an existing ridge moved row");
+        }
+        let order: Vec<u8> = ridges(&scene)
+            .iter()
+            .map(|id| {
+                let kind = snapshot
+                    .processes
+                    .iter()
+                    .find(|p| p.id == *id)
+                    .unwrap()
+                    .kind;
+                [Kind::Kernel, Kind::System, Kind::Session, Kind::Container]
+                    .iter()
+                    .position(|&k| k == kind)
+                    .unwrap() as u8
+            })
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "{order:?}");
+    }
+
+    #[test]
+    fn strata_reads_the_history_recorded_while_the_city_is_shown() {
+        let mut scene = Scene::new();
+        for step in 0..=10 {
+            let snapshot = demo(step as f64, 64);
+            scene.record(&snapshot, step as f32);
+            render(&mut scene, &snapshot, view("city"), step as f32);
+        }
+        render(&mut scene, &demo(10.0, 64), view("strata"), 10.0);
+        assert!(
+            scene
+                .notes
+                .values()
+                .any(|notes| notes[0].ends_with("over the last 10 s")),
+            "{:?}",
+            scene.notes.values().next()
+        );
     }
 }
