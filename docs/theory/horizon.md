@@ -14,6 +14,20 @@
 
 The shadow, the photon ring and the stars are scenery. The *ordering* of the bodies is the data.
 
+## History
+
+**Dark stars.** The idea that something could be too heavy for light to leave is older than relativity. In 1783 John Michell, and in 1796 Pierre-Simon Laplace, reasoned with Newtonian gravity and light as fast particles: a body with enough mass packed into a small enough radius has an escape velocity above $c$. The argument was dropped when light was shown to be a wave, and it was right for the wrong reasons.
+
+**Schwarzschild.** Einstein published the field equations of general relativity in November 1915. Within weeks Karl Schwarzschild, serving in the German army on the Russian front, found the exact solution for the space around a non-rotating mass and sent it to Einstein. He died of an autoimmune disease in May 1916. For decades the surface at $r = 2M$ was treated as a true singularity. Arthur Eddington (1924) and later David Finkelstein (1958) showed that it is only the coordinates that misbehave there, and that an infalling observer crosses it without noticing.
+
+**Collapse.** In 1939 Robert Oppenheimer and Hartland Snyder computed the collapse of a pressureless cloud and found both pictures at once: the infalling matter reaches the centre in finite proper time, while a distant observer sees it slow and freeze at the horizon. That is exactly the plunge this view draws. The phrase "black hole" was popularized by John Wheeler in a 1967 lecture, replacing "gravitationally completely collapsed object".
+
+**Disks.** Matter falling into a compact object has angular momentum and settles into a disk. Shakura and Sunyaev (1973), Novikov and Thorne (1973) and Page and Thorne (1974) worked out what a thin relativistic disk radiates, and Cygnus X-1, a bright X-ray binary, became the first strong black-hole candidate in the early 1970s.
+
+**Pictures.** In 1978 the French astrophysicist Jean-Pierre Luminet computed what a thin disk around a Schwarzschild hole looks like to a distant observer, on an IBM 7040 at the Paris-Meudon Observatory. The machine had no display, so he plotted the picture by hand with India ink, putting dots more densely where the numbers were brighter. It was published in 1979, and it contains the crescent-and-ring structure that this view reproduces. The Event Horizon Telescope imaged the shadow of M87\* in 2019 and of Sagittarius A\* in 2022.
+
+**The OOM killer.** Linux can promise more memory than it has (overcommit), so when it runs out it must choose a process to kill. Each process has an `oom_score`, higher meaning likelier to be chosen, and the administrator can bias it with `oom_score_adj`, which runs from -1000 (never kill) to +1000. That interface arrived in Linux 2.6.36 (2010) in place of the older, coarser `oom_adj`, which was a power-of-two bit shift. So the ranking this view draws is a policy that a kernel developer chose and has revised.
+
 ## Background theory
 
 ### Units
@@ -41,6 +55,18 @@ $$b_c = 3\sqrt{3} \approx 5.196$$
 Below it the photon crosses the horizon. Above it the photon turns round and escapes. The disc of $b < b_c$ is the **shadow**: its radius on the screen is `SHADOW_RADIUS`. Photons with $b$ just above $b_c$ wind around the photon sphere before leaving, which is the thin bright **photon ring**.
 
 A disk behind the hole is bent over the top of the shadow (the *primary* image) and a second, fainter, thinner image of its far side appears under it (the *secondary* image, from rays that swing the other way round the hole, $2\pi - \psi$ instead of $\psi$).
+
+### Derivations and worked numbers
+
+**The ISCO.** Write $V(r) = (1 - 2/r)(1 + L^2/r^2)$ for the effective potential. Circular orbits sit at $V' = 0$ and are stable if $V'' > 0$. Setting $V' = 0$ gives $L^2 = r^2/(r - 3)$, which exists only for $r > 3$. Setting $V'' = 0$ as well, so that the minimum is about to disappear, gives $r^2 - 6r = 0$, so $r = 6$. There $L^2 = 12$ and $E^2 = 8/9$. A particle falling from rest at infinity to the ISCO has radiated $1 - \sqrt{8/9} \approx 5.7\%$ of its rest mass: the efficiency of an accretion disk around a Schwarzschild hole, against well under 1% for nuclear fusion.
+
+**The photon sphere.** Light has the same equation without the "1": $V_\gamma = (1 - 2/r)/r^2$, whose maximum is at $r = 3$. A photon placed there on a tangent stays in an unstable circular orbit. Its impact parameter is $b = L/E = r/\sqrt{1 - 2/r}$ evaluated at $r = 3$, which is $3\sqrt3 \approx 5.196$. That is the radius of the shadow.
+
+**Orbit periods in this view.** The period at radius $r$ is $2\pi r^{3/2}$ in units of $M$. At the ISCO that is 92.3 $M$. The view runs time at 10 $M$ per second, so a body on the ISCO goes round in 9.2 s, and one at the outer edge of the ranked disk ($r = 23.5$) in 71.6 s: the inner bodies visibly outrun the outer ones, by a factor of $(23.5/6)^{3/2} \approx 7.8$.
+
+**A dim edge.** The gravitational and transverse-Doppler factor $(1 - 3/r)^{-1/2}$ is $\sqrt2 \approx 1.41$ at the ISCO. Intensity goes as $g^4 = (1+z)^{-4}$, so even before the line-of-sight Doppler shift, light from the inner edge arrives at $(1/1.41)^4 = 25\%$ of its emitted brightness.
+
+**An e-fold of the plunge.** Near the horizon the redshift of a falling emitter seen from far away goes as $1 - 2/r$, which falls by a factor of $e$ every $4\,M$ of the observer's time. At 10 $M$ per second that is one e-fold in 0.4 s, so a plunge fades quickly: the light is down by an order of magnitude after about a second.
 
 ### The disk
 
@@ -73,6 +99,8 @@ This is the classical "frozen star" picture. The image never crosses, but it fad
 **Rank, not value, sets the radius.** `orbits::Ranking` orders processes by `oom_score` with a swap margin so near-ties do not flicker, and `rank_radius` spaces the top 28 ranks from the ISCO outward ($r = 6 + 17.5\,(k/27)^{0.8}$). A body's radius eases to its rank's with a 1.5 s time constant. Its orbital speed is the circular-orbit angular velocity $\Omega = r^{-3/2}$ (the same as Kepler's), run at 10 $M$ of coordinate time per second of wall clock, so inner bodies visibly outrun outer ones.
 
 **A kill needs corroboration, and the victim is inferred.** A plunge starts when the kill counter (`/proc/vmstat` `oom_kill`, otherwise the sum over cgroups) *rises* and a process vanishes near it in time. The counter says that a kill happened, never whose. The counter comes from the background thread, so the exit and the rise need not land in the same sample: `Orbits::classify` keeps vanished processes as fading ghosts and matches a rise before or after an exit within `GHOST_WINDOW` (2.5 s) + `BACKGROUND_PERIOD` (2 s) + one sample interval. The best-ranked ghost in that window becomes the victim, so an unrelated exit close to a real kill can be the one shown plunging. A process that simply exits, with no rise, does not plunge.
+
+**Why a table.** The deflection angle of light is an elliptic integral: it has no elementary closed form. Rather than evaluate it per pixel, the view traces photons once and stores the answer in a table indexed by radius and sweep angle (360 radii, log-spaced from 2.0005 to 150, by 721 sweep angles from 0 to $\pi$, a step of 0.25°). A lookup is a bilinear interpolation. The table is also why the picture is the same on every machine: it is built from fixed constants, with no dependence on the sample.
 
 ## Faithful, stylized, invented
 

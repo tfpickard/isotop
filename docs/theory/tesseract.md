@@ -17,6 +17,14 @@ Because $x$ and $w$ use the same scale (30 and 30), the **slope** of a worldline
 
 The view then does three things to the picture: projects it from 4D to 3D, optionally rotates it in 4D, and optionally applies a **Lorentz boost** that shears worldlines the way a change of reference frame would in special relativity.
 
+## History
+
+**A fourth dimension.** Mathematicians had long treated four coordinates as algebra, but the *geometry* arrived in the 1850s with Ludwig Schläfli, who found the regular polytopes of any dimension: in 4D, six of them, including the 4-cube. The English mathematician Charles Howard Hinton popularized the idea; in his 1888 book *A New Era of Thought* he coined the word **tesseract**, from the Greek for "four rays", the four edges that meet at each vertex. Hinton taught his readers to visualize 4D with sets of coloured cubes. Victor Schlegel's diagrams of polytopes, projected so that one cell contains the rest, date from the 1880s.
+
+**Time as the fourth.** Hendrik Lorentz (1904) found the transformations under which Maxwell's equations keep their form, and Einstein (1905) derived them from the principle of relativity and the constancy of the speed of light. In 1908 Hermann Minkowski, Einstein's former teacher, reframed the theory as geometry: "Henceforth space by itself, and time by itself, are doomed to fade away into mere shadows, and only a kind of union of the two will preserve an independent reality." Alfred Robb (1911) introduced **rapidity** as the natural parameter of a boost. Salvador Dalí painted the cube-cross unfolded tesseract in *Corpus Hypercubus* (1954).
+
+**Cherenkov.** Pavel Cherenkov observed a faint blue glow from radioactive sources in liquids in 1934. Ilya Frank and Igor Tamm explained it in 1937 as radiation from particles faster than light *in that medium*, and the three shared the 1958 Nobel Prize. The cone's angle is the signature of the speed.
+
 ## Background theory
 
 ### A tesseract and its shadow
@@ -33,6 +41,16 @@ $$\big(x, z, y\big) \cdot \frac{W}{d - w}, \qquad d = 3.5$$
 with $W = 25$ world units per projected unit, the divisor floored at 0.75 so points near the eye do not blow up. Memory $y$ is drawn upward. Points with larger $w$ (the present) are nearer the eye and look larger and brighter; the past recedes. Worldline shade runs from about a third at $w = -1$ to full at $w = +1$.
 
 Coordinates beyond $\pm 1$ are compressed smoothly rather than clipped: $|c| \to 1 + 0.6\tanh((|c|-1)/0.6)$, so a process that burns far more CPU than the window expected still fits on screen.
+
+### Worked numbers
+
+**Perspective.** With the eye at $w = 3.5$ and $W = 25$, a point at the present ($w = +1$) is magnified by $25/2.5 = 10$ world units per unit and one a minute ago ($w = -1$) by $25/4.5 = 5.6$. So the present is 1.8 times larger than the past on screen, and its cube is the outer one.
+
+**Compression.** A coordinate of 2 is displayed at $1 + 0.6\tanh(1/0.6) \approx 1.56$. A very large one tends to 1.6.
+
+**A boost.** For a process using half a core, $\beta = 0.5$ and the rapidity is $\eta = \operatorname{artanh}(0.5) = 0.549$, so $\cosh\eta = 1.155$ and $\sinh\eta = 0.577$. The same worldline that leaned at slope 0.5 is now vertical. A process of slope 0.9 has $\eta = 1.47$, $\gamma = \cosh\eta = 2.29$, so its rest frame is a much more violent shear. Rapidities add: boosting by 0.549 and then by another 0.549 is the same as one boost of 1.099, which is the rest frame of a process of slope $\tanh(1.099) = 0.8$, not 1.0. This is the relativistic velocity addition rule, $(0.5 + 0.5)/(1 + 0.25) = 0.8$.
+
+**Cherenkov angles.** $\beta = 1.05$ gives $\arccos(1/1.05) = 17.8^\circ$ and $\beta = 2$ gives $60^\circ$. The cone opens as the process uses more cores.
 
 ### Rotations in four dimensions
 

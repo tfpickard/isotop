@@ -17,6 +17,16 @@
 
 The neuron model is real and standard. The *mapping* from CPU to current is an engineering choice, covered below.
 
+## History
+
+**The neuron.** In the 1880s and 1890s Camillo Golgi's silver stain showed nerve cells in their entirety for the first time, and Santiago Ramón y Cajal used it to argue that the brain is made of separate cells that touch rather than a continuous net. Their opposed interpretations shared the 1906 Nobel Prize. Cajal's drawings of cortex, with its layers of pyramidal cells, are still reproduced. Korbinian Brodmann mapped the cortex into numbered areas in 1909.
+
+**The equations.** Louis Lapicque (1907) modelled a neuron as a leaky capacitor that fires when it reaches a threshold, the *integrate-and-fire* model, which is crude and has survived 100 years because it is cheap. In 1952 Alan Hodgkin and Andrew Huxley worked out the actual ion currents in the giant axon of the squid and wrote them as four coupled equations, which won them a Nobel Prize in 1963 and is the standard of biophysical realism. McCulloch and Pitts (1943) abstracted the neuron to a threshold logic gate, which is the root of artificial neural networks. FitzHugh and Nagumo (1961 to 1962) found a two-variable reduction of Hodgkin-Huxley that exposes its geometry.
+
+**The compromise.** Eugene Izhikevich published his *simple model* in 2003. It is as cheap as integrate-and-fire (a few arithmetic operations per step) yet can be tuned to reproduce the firing patterns of many cell types, and it let him simulate tens of thousands of cortical neurons in real time on a desktop machine. Wolfgang Maass (1997) had called spiking networks the "third generation" of neural network models; they are the ones that compute with *when* a spike happens as well as how many.
+
+**The measure.** David Golomb and John Rinzel (1993) proposed the synchrony index used here to quantify how far a population of coupled neurons fires together, in their study of networks of mutually inhibiting neurons.
+
 ## Background theory
 
 ### Izhikevich neurons
@@ -33,6 +43,21 @@ with a reset rule: if $v \ge 30\ \mathrm{mV}$, then $v \leftarrow c$ and $u \lef
 
 The model is a normal form near a saddle-node bifurcation on an invariant circle. Below the **rheobase**, the smallest current that makes the neuron fire repeatedly, it sits at rest. Above it, it fires, and the rate rises smoothly from zero. That is Type I excitability, and it is why a lightly loaded process fires rarely but not never.
 
+### Fixed points and the rheobase
+
+Set $v' = 0$ and $u' = 0$ with $u = bv$: the resting state satisfies $0.04v^2 + (5 - b)v + 140 + I = 0$. With $b = 0.2$ and $I = 0$ the roots are $v = -70$ mV and $v = -50$ mV. The first is stable (the resting potential) and the second is a saddle (the threshold). Raising $I$ brings them together; the discriminant $(4.8)^2 - 0.16\,(140 + I) = 0.64 - 0.16\,I$ vanishes at $I = 4$, where they collide and annihilate. That is a saddle-node bifurcation: the resting state ceases to exist and the neuron must spike. The model is of **Type I**, so its firing rate climbs smoothly from zero, unlike a Type II neuron which switches on at a finite rate. (The reset makes the real onset a little earlier than $I = 4$ because a spiking cycle and the resting state can coexist.)
+
+Replaying the update rule at the noise-free current the code calibrates to gives these currents:
+
+| Pattern | 1 spike/s (rheobase) | 40 spikes/s |
+|---|---|---|
+| FS | 3.87 | 5.16 |
+| RS | 3.78 | 19.0 |
+| CH | 3.78 | 6.54 |
+| IB | 3.78 | 12.3 |
+
+An RS cell needs nearly four times the drive of an FS cell to fire at 40 Hz, because its large $d$ makes it adapt. So 100% CPU does not mean the same current for a kernel thread and a system service, and that is what the calibration is for. All four rheobases sit just under 4.
+
 ### Firing patterns
 
 Four of the paper's patterns are used:
@@ -45,6 +70,10 @@ Four of the paper's patterns are used:
 | IB | intrinsically bursting | 0.02 | 0.2 | -55 | 4 | container |
 
 Fast-spiking cells are inhibitory interneurons that follow strong drive with no adaptation. Regular-spiking cells are the cortex's main excitatory cell: a large $d$ makes them adapt, so inter-spike intervals lengthen. A high reset potential $c$ keeps chattering and bursting cells close to threshold after a spike, so they fire in bursts. The assignment of kind to pattern is a design choice (kernel threads are fast and relentless, services are steady, sessions are chatty).
+
+### Synaptic weights, worked
+
+The weight rule $w = \min\left(2,\ \tfrac14\ln(1 + B/1000)\right)$ for $B$ bytes per second gives $w = 0.25 \ln 2 \approx 0.17$ at 1 kB/s, 1.73 at 1 MB/s, and reaches the cap of 2 at $B = (e^8 - 1)\ \text{kB/s} \approx 3\ \text{MB/s}$. The logarithm is the usual device for a quantity that spans many decades: four decades of traffic map onto about one unit of weight. The socket-count fallback gives $w = 0.25 \ln(1 + n)$, 0.35 for three sockets.
 
 ### Synapses and delays
 
@@ -81,6 +110,8 @@ An active neuron also gets a little Gaussian current noise per step (standard de
 **Wiring.** Axons come from the sample's socket links and pipes. A socket link's `weight_of_rate` gives its synapse $w = \min(2,\ \tfrac14 \ln(1 + \text{bytes/s} \,/\, 1000))$, and when traffic is not measured, `weight_of_sockets` gives the same log of the socket count; the legend says which is in use. A pipe link is different: it always gets the fixed `PIPE_WEIGHT` of 1.0, so a pipe axon says that two processes are connected and nothing about how much flows through it. Both directions are offered when a link is two-way.
 
 **Layout.** A process's seat in its layer is fixed for its life (`layout::Seats`). A layer that outgrows the slice widens it by 1.25× and the slice never narrows again, so a seat never changes with the population. The one exception is structural growth: when an arriving process makes a layer exceed its capacity the slice widens, and every neuron's position is recomputed against the new width (seats stay the same, positions scale). Exits never shrink it.
+
+**Event queue.** Because spikes are rare events and delays are whole ticks, a spike in flight is a small tuple of ticks and a synapse index in a binary heap ordered by arrival. A step pops what is due, adds the weights to the targets' synaptic current, and fires whichever neurons crossed 30 mV. The queue is capped at 262,144 spikes. A spike beyond that is lost, as a saturated machine would lose one, and the simulation does not grow without bound. At 2,000 ticks per second a 20 ms axonal delay is 40 ticks.
 
 ## Faithful, stylized, invented
 
