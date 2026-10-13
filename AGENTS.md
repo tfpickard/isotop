@@ -333,6 +333,16 @@ match your own shell.
 
 `docs/ROADMAP.md` lists the planned views and the prerequisites and building blocks they rely on. Each item is one GitHub issue. `docs/VIEW_CONVENTIONS.md` holds the rules every new view and building block follows. Read both before taking an item.
 
+## The wiki
+
+`wiki/` holds the sources of the GitHub wiki: theory of operation, the mathematics behind each view, a page for
+each view and planned view, guides and media. `.github/workflows/wiki.yml` checks it with
+`python3 scripts/check_wiki.py` and publishes it on every merge to `main`, so edit the files, never the wiki UI.
+A PR that changes what a view does or how the pipeline works updates the page that describes it (cite files and
+symbols, not line numbers); `wiki/Guide-Contributing-to-the-Wiki.md` has the conventions, including the figure
+scripts in `docs/figures/` and the rule that a planned view's page says it is a design. Wiki-only changes use a
+`docs/...` branch.
+
 ## Code conventions
 
 - Comments explain math, protocol values or rules that aren't obvious, never what the next
@@ -390,6 +400,7 @@ match your own shell.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
   error-prone code.
 - Suppress lints with `#[expect(lint, reason = "...")]` only, never `#[allow]`.
+- A view with a page in `docs/theory/` has its constants and function names quoted there. Change them together, check any claim you touch against `src/`, and run `python3 scripts/code_report.py` (Markdown counts in the report). `docs/theory/figures/make_figures.py` regenerates the page diagrams; it needs matplotlib and numpy, which no gate does.
 
 ## Shell notes
 

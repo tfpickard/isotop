@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 740" width="900" height="740" font-family="system-ui, sans-serif" role="img">
+<title>Pressure stall information</title>
+<desc>Three tasks' states, the some and full stall shares per 2 s period, and the avg10 exponential averages.</desc>
+<rect width="900" height="740" fill="#0e1116"/>
+<line x1="90" y1="60" x2="90" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="90" y1="200" x2="90" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="90" y="217" font-size="11" text-anchor="middle" fill="#8b949e">0</text>
+<line x1="186.25" y1="60" x2="186.25" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="186.25" y1="200" x2="186.25" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="186.25" y="217" font-size="11" text-anchor="middle" fill="#8b949e">5</text>
+<line x1="282.5" y1="60" x2="282.5" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="282.5" y1="200" x2="282.5" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="282.5" y="217" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="378.75" y1="60" x2="378.75" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="378.75" y1="200" x2="378.75" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="378.75" y="217" font-size="11" text-anchor="middle" fill="#8b949e">15</text>
+<line x1="475" y1="60" x2="475" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="475" y1="200" x2="475" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="475" y="217" font-size="11" text-anchor="middle" fill="#8b949e">20</text>
+<line x1="571.25" y1="60" x2="571.25" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="571.25" y1="200" x2="571.25" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="571.25" y="217" font-size="11" text-anchor="middle" fill="#8b949e">25</text>
+<line x1="667.5" y1="60" x2="667.5" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="667.5" y1="200" x2="667.5" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="667.5" y="217" font-size="11" text-anchor="middle" fill="#8b949e">30</text>
+<line x1="763.75" y1="60" x2="763.75" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="763.75" y1="200" x2="763.75" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="763.75" y="217" font-size="11" text-anchor="middle" fill="#8b949e">35</text>
+<line x1="860" y1="60" x2="860" y2="200" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="860" y1="200" x2="860" y2="204" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="860" y="217" font-size="11" text-anchor="middle" fill="#8b949e">40</text>
+<rect x="90" y="60" width="770" height="140" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="90" y="46" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">Task states: productive (teal), stalled (red), asleep (dark)</text>
+<text x="80" y="87.33" font-size="11" text-anchor="end" fill="#8b949e">task A</text>
+<rect x="90" y="66.53" width="115.5" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<rect x="205.5" y="66.53" width="134.75" height="33.6" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="340.25" y="66.53" width="134.75" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<rect x="475" y="66.53" width="192.5" height="33.6" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="667.5" y="66.53" width="77" height="33.6" rx="0" fill="#2b3440" opacity="0.95"/>
+<rect x="744.5" y="66.53" width="115.5" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<text x="80" y="134" font-size="11" text-anchor="end" fill="#8b949e">task B</text>
+<rect x="90" y="113.2" width="192.5" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<rect x="282.5" y="113.2" width="77" height="33.6" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="359.5" y="113.2" width="154" height="33.6" rx="0" fill="#2b3440" opacity="0.95"/>
+<rect x="513.5" y="113.2" width="115.5" height="33.6" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="629" y="113.2" width="231" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<text x="80" y="180.67" font-size="11" text-anchor="end" fill="#8b949e">task C</text>
+<rect x="90" y="159.87" width="154" height="33.6" rx="0" fill="#2b3440" opacity="0.95"/>
+<rect x="244" y="159.87" width="38.5" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<rect x="282.5" y="159.87" width="57.75" height="33.6" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="340.25" y="159.87" width="96.25" height="33.6" rx="0" fill="#48b7c7" opacity="0.95"/>
+<rect x="436.5" y="159.87" width="115.5" height="33.6" rx="0" fill="#2b3440" opacity="0.95"/>
+<rect x="552" y="159.87" width="134.75" height="33.6" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="686.75" y="159.87" width="173.25" height="33.6" rx="0" fill="#2b3440" opacity="0.95"/>
+<line x1="90" y1="250" x2="90" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="90" y1="400" x2="90" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="90" y="417" font-size="11" text-anchor="middle" fill="#8b949e">0</text>
+<line x1="186.25" y1="250" x2="186.25" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="186.25" y1="400" x2="186.25" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="186.25" y="417" font-size="11" text-anchor="middle" fill="#8b949e">5</text>
+<line x1="282.5" y1="250" x2="282.5" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="282.5" y1="400" x2="282.5" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="282.5" y="417" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="378.75" y1="250" x2="378.75" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="378.75" y1="400" x2="378.75" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="378.75" y="417" font-size="11" text-anchor="middle" fill="#8b949e">15</text>
+<line x1="475" y1="250" x2="475" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="475" y1="400" x2="475" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="475" y="417" font-size="11" text-anchor="middle" fill="#8b949e">20</text>
+<line x1="571.25" y1="250" x2="571.25" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="571.25" y1="400" x2="571.25" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="571.25" y="417" font-size="11" text-anchor="middle" fill="#8b949e">25</text>
+<line x1="667.5" y1="250" x2="667.5" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="667.5" y1="400" x2="667.5" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="667.5" y="417" font-size="11" text-anchor="middle" fill="#8b949e">30</text>
+<line x1="763.75" y1="250" x2="763.75" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="763.75" y1="400" x2="763.75" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="763.75" y="417" font-size="11" text-anchor="middle" fill="#8b949e">35</text>
+<line x1="860" y1="250" x2="860" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="860" y1="400" x2="860" y2="404" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="860" y="417" font-size="11" text-anchor="middle" fill="#8b949e">40</text>
+<line x1="90" y1="400" x2="860" y2="400" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="400" x2="90" y2="400" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="404" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="90" y1="325" x2="860" y2="325" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="325" x2="90" y2="325" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="329" font-size="11" text-anchor="end" fill="#8b949e">0.5</text>
+<line x1="90" y1="250" x2="860" y2="250" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="250" x2="90" y2="250" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="254" font-size="11" text-anchor="end" fill="#8b949e">1</text>
+<rect x="90" y="250" width="770" height="150" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="46" y="325" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 46 325)">share of the 2 s period</text>
+<text x="90" y="238" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">'some' (orange) and 'full' (red) share of each 2 s period</text>
+<rect x="90" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="90" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="128.5" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="128.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="167" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="167" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="205.5" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="205.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="244" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="244" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="282.5" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="282.5" y="250" width="38.5" height="150" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="321" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="321" y="325" width="38.5" height="75" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="359.5" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="359.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="398" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="398" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="436.5" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="436.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="475" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="475" y="250" width="38.5" height="150" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="513.5" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="513.5" y="250" width="38.5" height="150" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="552" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="552" y="250" width="38.5" height="150" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="590.5" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="590.5" y="250" width="38.5" height="150" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="629" y="250" width="38.5" height="150" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="629" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="667.5" y="325" width="38.5" height="75" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="667.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="706" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="706" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="744.5" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="744.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="783" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="783" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<rect x="821.5" y="400" width="38.5" height="0" rx="0" fill="#ecb25c" opacity="0.9"/>
+<rect x="821.5" y="400" width="38.5" height="0" rx="0" fill="#f06054" opacity="0.95"/>
+<line x1="90" y1="460" x2="90" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="90" y1="630" x2="90" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="90" y="647" font-size="11" text-anchor="middle" fill="#8b949e">0</text>
+<line x1="186.25" y1="460" x2="186.25" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="186.25" y1="630" x2="186.25" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="186.25" y="647" font-size="11" text-anchor="middle" fill="#8b949e">5</text>
+<line x1="282.5" y1="460" x2="282.5" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="282.5" y1="630" x2="282.5" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="282.5" y="647" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="378.75" y1="460" x2="378.75" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="378.75" y1="630" x2="378.75" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="378.75" y="647" font-size="11" text-anchor="middle" fill="#8b949e">15</text>
+<line x1="475" y1="460" x2="475" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="475" y1="630" x2="475" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="475" y="647" font-size="11" text-anchor="middle" fill="#8b949e">20</text>
+<line x1="571.25" y1="460" x2="571.25" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="571.25" y1="630" x2="571.25" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="571.25" y="647" font-size="11" text-anchor="middle" fill="#8b949e">25</text>
+<line x1="667.5" y1="460" x2="667.5" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="667.5" y1="630" x2="667.5" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="667.5" y="647" font-size="11" text-anchor="middle" fill="#8b949e">30</text>
+<line x1="763.75" y1="460" x2="763.75" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="763.75" y1="630" x2="763.75" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="763.75" y="647" font-size="11" text-anchor="middle" fill="#8b949e">35</text>
+<line x1="860" y1="460" x2="860" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="860" y1="630" x2="860" y2="634" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="860" y="647" font-size="11" text-anchor="middle" fill="#8b949e">40</text>
+<line x1="90" y1="630" x2="860" y2="630" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="630" x2="90" y2="630" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="634" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="90" y1="587.5" x2="860" y2="587.5" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="587.5" x2="90" y2="587.5" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="591.5" font-size="11" text-anchor="end" fill="#8b949e">20</text>
+<line x1="90" y1="545" x2="860" y2="545" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="545" x2="90" y2="545" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="549" font-size="11" text-anchor="end" fill="#8b949e">40</text>
+<line x1="90" y1="502.5" x2="860" y2="502.5" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="502.5" x2="90" y2="502.5" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="506.5" font-size="11" text-anchor="end" fill="#8b949e">60</text>
+<line x1="90" y1="460" x2="860" y2="460" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="86" y1="460" x2="90" y2="460" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="82" y="464" font-size="11" text-anchor="end" fill="#8b949e">80</text>
+<rect x="90" y="460" width="770" height="170" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="475" y="666" font-size="12" text-anchor="middle" fill="#c9d1d9">time (s)</text>
+<text x="46" y="545" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 46 545)">avg10 (%)</text>
+<text x="90" y="448" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">avg10 as the kernel reports it (updated every 2 s) and as isotop reads it</text>
+<polyline points="90,630 128.5,630 128.5,630 167,630 167,630 205.5,630 205.5,630 244,630 244,591.51 282.5,591.51 282.5,559.98 321,559.98 321,534.17 359.5,534.17 359.5,513.04 398,513.04 398,534.23 436.5,534.23 436.5,551.57 475,551.57 475,565.78 513.5,565.78 513.5,538.92 552,538.92 552,516.92 590.5,516.92 590.5,498.91 629,498.91 629,484.17 667.5,484.17 667.5,472.09 706,472.09 706,481.45 744.5,481.45 744.5,508.36 783,508.36 783,530.39 821.5,530.39 821.5,548.44 860,548.44 860,563.21" fill="none" stroke="#ecb25c" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="90,630 128.5,630 128.5,630 167,630 167,630 205.5,630 205.5,630 244,630 244,630 282.5,630 282.5,630 321,630 321,591.51 359.5,591.51 359.5,579.23 398,579.23 398,588.43 436.5,588.43 436.5,595.96 475,595.96 475,602.13 513.5,602.13 513.5,568.68 552,568.68 552,541.29 590.5,541.29 590.5,518.87 629,518.87 629,500.5 667.5,500.5 667.5,523.96 706,523.96 706,543.17 744.5,543.17 744.5,558.9 783,558.9 783,571.78 821.5,571.78 821.5,582.33 860,582.33 860,590.96" fill="none" stroke="#f06054" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="686.75" y="473.45" font-size="12" text-anchor="start" fill="#ecb25c">some avg10</text>
+<text x="686.75" y="535.17" font-size="12" text-anchor="start" fill="#f06054">full avg10</text>
+<text x="90" y="686" font-size="11" text-anchor="start" fill="#8b949e">A stall that lasts 10 s at 100 % reads avg10 = 100 (1 - 1/e) = 63 %: the window is a time constant, not a box of 10 s.</text>
+<text x="90" y="706" font-size="11" text-anchor="start" fill="#8b949e">isotop samples the file every 2 s on the background thread, so a Cells membrane trembles for several seconds after the stall that caused it.</text>
+</svg>

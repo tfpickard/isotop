@@ -1,0 +1,76 @@
+name: Wiki
+
+# The wiki is written in wiki/ and reviewed like code. This workflow publishes it to the GitHub
+# wiki (tfpickard/isotop.wiki.git) when wiki/ changes on main. Nothing edited in the wiki UI
+# survives the next publish: change the files here instead.
+#
+# One-time setup: GitHub creates the wiki's git repository only when a first page is saved in
+# the web UI (Wiki tab > Create the first page). Do that once; this workflow takes over.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+      - 'docs/media/**'
+      - 'docs/mockups/**'
+      - 'scripts/check_wiki.py'
+      - '.github/workflows/wiki.yml'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'wiki/**'
+      - 'docs/media/**'
+      - 'docs/mockups/**'
+      - 'scripts/check_wiki.py'
+      - '.github/workflows/wiki.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: python3 scripts/check_wiki.py
+
+  publish:
+    needs: check
+    # Only main publishes, including manual runs: a feature branch must not overwrite the wiki.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Publish wiki/ to the GitHub wiki
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPOSITORY}.wiki.git"
+          if ! git clone --quiet "$remote" "$RUNNER_TEMP/wiki" 2>/dev/null; then
+            echo "::error::The wiki repository does not exist yet. Save a first page in the wiki's web UI once, then re-run this workflow."
+            exit 1
+          fi
+          find "$RUNNER_TEMP/wiki" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R wiki/. "$RUNNER_TEMP/wiki/"
+          cd "$RUNNER_TEMP/wiki"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki is already up to date."
+            exit 0
+          fi
+          git commit --quiet -m "Publish wiki from ${SOURCE_SHA}"
+          git push --quiet origin HEAD

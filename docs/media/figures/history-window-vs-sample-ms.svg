@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 510" width="800" height="510" font-family="system-ui, sans-serif" role="img">
+<title>History window against sampling interval</title>
+<desc>Seconds covered by 60 and by 240 samples as --sample-ms varies, with the documented minute marked.</desc>
+<rect width="100%" height="100%" fill="#0e1116"/>
+<text x="60" y="28" font-size="15" fill="#c9d1d9" text-anchor="start" font-weight="600">How much past is N samples? (issues #126 and #127)</text>
+<clipPath id="clip1"><rect x="72" y="62" width="680" height="330"/></clipPath>
+<line x1="72" y1="62" x2="72" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="72" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">100</text>
+<line x1="174.35" y1="62" x2="174.35" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="174.35" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">200</text>
+<line x1="309.65" y1="62" x2="309.65" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="309.65" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">500</text>
+<line x1="412" y1="62" x2="412" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="412" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">1000</text>
+<line x1="514.35" y1="62" x2="514.35" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="514.35" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">2000</text>
+<line x1="649.65" y1="62" x2="649.65" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="649.65" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">5000</text>
+<line x1="752" y1="62" x2="752" y2="392" stroke="#262c36" stroke-width="1"/>
+<text x="752" y="408" font-size="11" fill="#8b949e" text-anchor="middle" font-weight="normal">10000</text>
+<line x1="72" y1="367.6" x2="752" y2="367.6" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="371.6" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">5</text>
+<line x1="72" y1="334.48" x2="752" y2="334.48" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="338.48" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">10</text>
+<line x1="72" y1="301.37" x2="752" y2="301.37" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="305.37" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">20</text>
+<line x1="72" y1="257.6" x2="752" y2="257.6" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="261.6" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">50</text>
+<line x1="72" y1="224.48" x2="752" y2="224.48" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="228.48" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">100</text>
+<line x1="72" y1="191.37" x2="752" y2="191.37" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="195.37" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">200</text>
+<line x1="72" y1="147.6" x2="752" y2="147.6" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="151.6" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">500</text>
+<line x1="72" y1="114.48" x2="752" y2="114.48" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="118.48" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">1000</text>
+<line x1="72" y1="81.37" x2="752" y2="81.37" stroke="#262c36" stroke-width="1"/>
+<text x="65" y="85.37" font-size="11" fill="#8b949e" text-anchor="end" font-weight="normal">2000</text>
+<rect x="72" y="62" width="680" height="330" fill="none" stroke="#8b949e" stroke-width="1"/>
+<text x="412" y="430" font-size="12" fill="#c9d1d9" text-anchor="middle" font-weight="normal">--sample-ms</text>
+<text x="26" y="227" font-size="12" fill="#c9d1d9" text-anchor="middle" font-weight="normal" transform="rotate(-90 26 227)">seconds of history covered</text>
+<polyline points="72,292.66 75.4,291.56 78.8,290.46 82.2,289.36 85.6,288.26 89,287.16 92.4,286.06 95.8,284.96 99.2,283.86 102.6,282.76 106,281.66 109.4,280.56 112.8,279.46 116.2,278.36 119.6,277.26 123,276.16 126.4,275.06 129.8,273.96 133.2,272.86 136.6,271.76 140,270.66 143.4,269.56 146.8,268.46 150.2,267.36 153.6,266.26 157,265.16 160.4,264.06 163.8,262.96 167.2,261.86 170.6,260.76 174,259.66 177.4,258.56 180.8,257.46 184.2,256.36 187.6,255.26 191,254.16 194.4,253.06 197.8,251.96 201.2,250.86 204.6,249.76 208,248.66 211.4,247.56 214.8,246.46 218.2,245.36 221.6,244.26 225,243.16 228.4,242.06 231.8,240.96 235.2,239.86 238.6,238.76 242,237.66 245.4,236.56 248.8,235.46 252.2,234.36 255.6,233.26 259,232.16 262.4,231.06 265.8,229.96 269.2,228.86 272.6,227.76 276,226.66 279.4,225.56 282.8,224.46 286.2,223.36 289.6,222.26 293,221.16 296.4,220.06 299.8,218.96 303.2,217.86 306.6,216.76 310,215.66 313.4,214.56 316.8,213.46 320.2,212.36 323.6,211.26 327,210.16 330.4,209.06 333.8,207.96 337.2,206.86 340.6,205.76 344,204.66 347.4,203.56 350.8,202.46 354.2,201.36 357.6,200.26 361,199.16 364.4,198.06 367.8,196.96 371.2,195.86 374.6,194.76 378,193.66 381.4,192.56 384.8,191.46 388.2,190.36 391.6,189.26 395,188.16 398.4,187.06 401.8,185.96 405.2,184.86 408.6,183.76 412,182.66 415.4,181.56 418.8,180.46 422.2,179.36 425.6,178.26 429,177.16 432.4,176.06 435.8,174.96 439.2,173.86 442.6,172.76 446,171.66 449.4,170.56 452.8,169.46 456.2,168.36 459.6,167.26 463,166.16 466.4,165.06 469.8,163.96 473.2,162.86 476.6,161.76 480,160.66 483.4,159.56 486.8,158.46 490.2,157.36 493.6,156.26 497,155.16 500.4,154.06 503.8,152.96 507.2,151.86 510.6,150.76 514,149.66 517.4,148.56 520.8,147.46 524.2,146.36 527.6,145.26 531,144.16 534.4,143.06 537.8,141.96 541.2,140.86 544.6,139.76 548,138.66 551.4,137.56 554.8,136.46 558.2,135.36 561.6,134.26 565,133.16 568.4,132.06 571.8,130.96 575.2,129.86 578.6,128.76 582,127.66 585.4,126.56 588.8,125.46 592.2,124.36 595.6,123.26 599,122.16 602.4,121.06 605.8,119.96 609.2,118.86 612.6,117.76 616,116.66 619.4,115.56 622.8,114.46 626.2,113.36 629.6,112.26 633,111.16 636.4,110.06 639.8,108.96 643.2,107.86 646.6,106.76 650,105.66 653.4,104.56 656.8,103.46 660.2,102.36 663.6,101.26 667,100.16 670.4,99.06 673.8,97.96 677.2,96.86 680.6,95.76 684,94.66 687.4,93.56 690.8,92.46 694.2,91.36 697.6,90.26 701,89.16 704.4,88.06 707.8,86.96 711.2,85.86 714.6,84.76 718,83.66 721.4,82.56 724.8,81.46 728.2,80.36 731.6,79.26 735,78.16 738.4,77.06 741.8,75.96 745.2,74.86 748.6,73.76 752,72.66" fill="none" stroke="#58a6ff" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="1.0" clip-path="url(#clip1)"/>
+<polyline points="72,358.89 75.4,357.79 78.8,356.69 82.2,355.59 85.6,354.49 89,353.39 92.4,352.29 95.8,351.19 99.2,350.09 102.6,348.99 106,347.89 109.4,346.79 112.8,345.69 116.2,344.59 119.6,343.49 123,342.39 126.4,341.29 129.8,340.19 133.2,339.09 136.6,337.99 140,336.89 143.4,335.79 146.8,334.69 150.2,333.59 153.6,332.49 157,331.39 160.4,330.29 163.8,329.19 167.2,328.09 170.6,326.99 174,325.89 177.4,324.79 180.8,323.69 184.2,322.59 187.6,321.49 191,320.39 194.4,319.29 197.8,318.19 201.2,317.09 204.6,315.99 208,314.89 211.4,313.79 214.8,312.69 218.2,311.59 221.6,310.49 225,309.39 228.4,308.29 231.8,307.19 235.2,306.09 238.6,304.99 242,303.89 245.4,302.79 248.8,301.69 252.2,300.59 255.6,299.49 259,298.39 262.4,297.29 265.8,296.19 269.2,295.09 272.6,293.99 276,292.89 279.4,291.79 282.8,290.69 286.2,289.59 289.6,288.49 293,287.39 296.4,286.29 299.8,285.19 303.2,284.09 306.6,282.99 310,281.89 313.4,280.79 316.8,279.69 320.2,278.59 323.6,277.49 327,276.39 330.4,275.29 333.8,274.19 337.2,273.09 340.6,271.99 344,270.89 347.4,269.79 350.8,268.69 354.2,267.59 357.6,266.49 361,265.39 364.4,264.29 367.8,263.19 371.2,262.09 374.6,260.99 378,259.89 381.4,258.79 384.8,257.69 388.2,256.59 391.6,255.49 395,254.39 398.4,253.29 401.8,252.19 405.2,251.09 408.6,249.99 412,248.89 415.4,247.79 418.8,246.69 422.2,245.59 425.6,244.49 429,243.39 432.4,242.29 435.8,241.19 439.2,240.09 442.6,238.99 446,237.89 449.4,236.79 452.8,235.69 456.2,234.59 459.6,233.49 463,232.39 466.4,231.29 469.8,230.19 473.2,229.09 476.6,227.99 480,226.89 483.4,225.79 486.8,224.69 490.2,223.59 493.6,222.49 497,221.39 500.4,220.29 503.8,219.19 507.2,218.09 510.6,216.99 514,215.89 517.4,214.79 520.8,213.69 524.2,212.59 527.6,211.49 531,210.39 534.4,209.29 537.8,208.19 541.2,207.09 544.6,205.99 548,204.89 551.4,203.79 554.8,202.69 558.2,201.59 561.6,200.49 565,199.39 568.4,198.29 571.8,197.19 575.2,196.09 578.6,194.99 582,193.89 585.4,192.79 588.8,191.69 592.2,190.59 595.6,189.49 599,188.39 602.4,187.29 605.8,186.19 609.2,185.09 612.6,183.99 616,182.89 619.4,181.79 622.8,180.69 626.2,179.59 629.6,178.49 633,177.39 636.4,176.29 639.8,175.19 643.2,174.09 646.6,172.99 650,171.89 653.4,170.79 656.8,169.69 660.2,168.59 663.6,167.49 667,166.39 670.4,165.29 673.8,164.19 677.2,163.09 680.6,161.99 684,160.89 687.4,159.79 690.8,158.69 694.2,157.59 697.6,156.49 701,155.39 704.4,154.29 707.8,153.19 711.2,152.09 714.6,150.99 718,149.89 721.4,148.79 724.8,147.69 728.2,146.59 731.6,145.49 735,144.39 738.4,143.29 741.8,142.19 745.2,141.09 748.6,139.99 752,138.89" fill="none" stroke="#f0883e" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" opacity="1.0" clip-path="url(#clip1)"/>
+<line x1="72" y1="248.89" x2="752" y2="248.89" stroke="#7ee787" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="80" y="242.89" font-size="11" fill="#7ee787" text-anchor="start" font-weight="normal">the minute Strata and Ptolemy are documented to show</text>
+<line x1="412" y1="62" x2="412" y2="392" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="4 4"/>
+<text x="417" y="386.02" font-size="11" fill="#8b949e" text-anchor="start" font-weight="normal">default</text>
+<line x1="207.3" y1="62" x2="207.3" y2="392" stroke="#ff7b72" stroke-width="1.2" stroke-dasharray="2 4"/>
+<text x="212.3" y="386.02" font-size="11" fill="#ff7b72" text-anchor="start" font-weight="normal">250 ms</text>
+<circle cx="72" cy="292.66" r="4.0" fill="#58a6ff" opacity="1.0" clip-path="url(#clip1)"/>
+<circle cx="412" cy="182.66" r="4.0" fill="#58a6ff" opacity="1.0" clip-path="url(#clip1)"/>
+<circle cx="72" cy="358.89" r="4.0" fill="#f0883e" opacity="1.0" clip-path="url(#clip1)"/>
+<circle cx="412" cy="248.89" r="4.0" fill="#f0883e" opacity="1.0" clip-path="url(#clip1)"/>
+<text x="80" y="284.66" font-size="11" fill="#58a6ff" text-anchor="start" font-weight="normal">24 s</text>
+<text x="80" y="350.89" font-size="11" fill="#f0883e" text-anchor="start" font-weight="normal">6 s</text>
+<text x="404" y="172.66" font-size="11" fill="#58a6ff" text-anchor="end" font-weight="normal">240 s</text>
+<text x="404" y="266.89" font-size="11" fill="#f0883e" text-anchor="end" font-weight="normal">60 s</text>
+<line x1="402" y1="320" x2="424" y2="320" stroke="#58a6ff" stroke-width="2.2"/>
+<text x="431" y="324" font-size="11.5" fill="#c9d1d9" text-anchor="start" font-weight="normal">240 samples: the most the ring holds (CAPACITY)</text>
+<line x1="402" y1="337" x2="424" y2="337" stroke="#f0883e" stroke-width="2.2"/>
+<text x="431" y="341" font-size="11.5" fill="#c9d1d9" text-anchor="start" font-weight="normal">60 samples: Ptolemy's History::recent(until, SERIES)</text>
+<text x="72" y="462" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">Below 250 ms the ring holds under 60 s, so Strata's minute is cut short (#127).</text>
+<text x="72" y="479" font-size="11.5" fill="#8b949e" text-anchor="start" font-weight="normal">Away from 1000 ms, Ptolemy's 60 samples stop being a minute (#126). A window is a duration, not a count.</text>
+</svg>

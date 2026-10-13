@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 416" width="900" height="416" font-family="system-ui, sans-serif" role="img">
+<title>Cortex calibration: CPU to input current to firing rate</title>
+<desc>Input current and resulting firing rate against CPU for the four neuron types.</desc>
+<rect width="100%" height="100%" fill="#0e1116"/>
+<text x="450" y="22" font-size="15" text-anchor="middle" fill="#c9d1d9" font-weight="600">cortex (planned): CPU -&gt; input current -&gt; firing rate, simulated</text>
+<clipPath id="clip1"><rect x="70" y="60" width="360" height="280"/></clipPath>
+<line x1="132.75" y1="60" x2="132.75" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="132.75" y="356" font-size="11" text-anchor="middle" fill="#8b949e">1</text>
+<line x1="252.75" y1="60" x2="252.75" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="252.75" y="356" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="372.75" y1="60" x2="372.75" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="372.75" y="356" font-size="11" text-anchor="middle" fill="#8b949e">100</text>
+<line x1="70" y1="340" x2="430" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="63" y="344" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="70" y1="232.31" x2="430" y2="232.31" stroke="#21262d" stroke-width="1"/>
+<text x="63" y="236.31" font-size="11" text-anchor="end" fill="#8b949e">20</text>
+<line x1="70" y1="124.62" x2="430" y2="124.62" stroke="#21262d" stroke-width="1"/>
+<text x="63" y="128.62" font-size="11" text-anchor="end" fill="#8b949e">40</text>
+<rect x="70" y="60" width="360" height="280" fill="none" stroke="#484f58" stroke-width="1"/>
+<text x="250" y="378" font-size="12" text-anchor="middle" fill="#c9d1d9">CPU (percent of one core)</text>
+<text x="22" y="200" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 22 200)">input current I</text>
+<text x="250" y="52" font-size="13" text-anchor="middle" fill="#c9d1d9" font-weight="600">current map (piecewise linear in cpu)</text>
+<clipPath id="clip2"><rect x="520" y="60" width="350" height="280"/></clipPath>
+<line x1="581" y1="60" x2="581" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="581" y="356" font-size="11" text-anchor="middle" fill="#8b949e">1</text>
+<line x1="697.67" y1="60" x2="697.67" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="697.67" y="356" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="814.34" y1="60" x2="814.34" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="814.34" y="356" font-size="11" text-anchor="middle" fill="#8b949e">100</text>
+<line x1="520" y1="340" x2="870" y2="340" stroke="#21262d" stroke-width="1"/>
+<text x="513" y="344" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="520" y1="281.67" x2="870" y2="281.67" stroke="#21262d" stroke-width="1"/>
+<text x="513" y="285.67" font-size="11" text-anchor="end" fill="#8b949e">25</text>
+<line x1="520" y1="223.33" x2="870" y2="223.33" stroke="#21262d" stroke-width="1"/>
+<text x="513" y="227.33" font-size="11" text-anchor="end" fill="#8b949e">50</text>
+<line x1="520" y1="165" x2="870" y2="165" stroke="#21262d" stroke-width="1"/>
+<text x="513" y="169" font-size="11" text-anchor="end" fill="#8b949e">75</text>
+<line x1="520" y1="106.67" x2="870" y2="106.67" stroke="#21262d" stroke-width="1"/>
+<text x="513" y="110.67" font-size="11" text-anchor="end" fill="#8b949e">100</text>
+<rect x="520" y="60" width="350" height="280" fill="none" stroke="#484f58" stroke-width="1"/>
+<text x="695" y="378" font-size="12" text-anchor="middle" fill="#c9d1d9">CPU (percent of one core)</text>
+<text x="472" y="200" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 472 200)">firing rate (Hz)</text>
+<text x="695" y="52" font-size="13" text-anchor="middle" fill="#c9d1d9" font-weight="600">resulting rate, noise sigma 1.2</text>
+<line x1="520" y1="246.67" x2="870" y2="246.67" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4"/>
+<text x="527.81" y="241.67" font-size="10" text-anchor="start" fill="#8b949e">40 Hz</text>
+<line x1="662.55" y1="60" x2="662.55" y2="340" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4"/>
+<line x1="814.34" y1="60" x2="814.34" y2="340" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4"/>
+<g clip-path="url(#clip1)">
+<polyline points="70,332.19 80.57,330.43 91.14,328.28 101.71,326.89 112.27,326.69 122.84,326.43 133.41,326.12 143.98,325.74 154.55,325.27 165.12,324.69 175.69,323.99 186.25,323.13 196.82,322.07 207.39,320.78 217.96,319.41 228.53,319.32 239.1,319.22 249.67,319.09 260.24,318.93 270.8,318.73 281.37,318.49 291.94,318.2 302.51,317.84 313.08,317.4 323.65,316.86 334.22,316.2 344.78,315.39 355.35,314.41 365.92,313.19 376.49,311.74 387.06,310.01 397.63,307.89 408.2,305.3 418.76,302.13 429.33,298.24" fill="none" stroke="#e8743a" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<polyline points="520,340 530.28,340 540.55,340 550.83,340 561.1,340 571.38,340 581.65,340 591.93,340 602.2,340 612.48,340 622.75,340 633.03,339.42 643.3,334.17 653.58,323.67 663.85,300.92 674.13,298.58 684.4,296.83 694.68,296.25 704.95,292.75 715.23,292.17 725.5,290.42 735.78,285.75 746.05,282.83 756.33,278.17 766.6,273.5 776.88,268.83 787.15,263.58 797.43,257.17 807.7,251.33 817.98,244.92 828.25,235.58 838.53,226.25 848.8,215.17 859.08,200.58 869.35,184.25" fill="none" stroke="#e8743a" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<circle cx="520" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="530.28" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="540.55" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="550.83" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="561.1" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="571.38" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="581.65" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="591.93" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="602.2" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="612.48" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="622.75" cy="340" r="1.8" fill="#e8743a"/>
+<circle cx="633.03" cy="339.42" r="1.8" fill="#e8743a"/>
+<circle cx="643.3" cy="334.17" r="1.8" fill="#e8743a"/>
+<circle cx="653.58" cy="323.67" r="1.8" fill="#e8743a"/>
+<circle cx="663.85" cy="300.92" r="1.8" fill="#e8743a"/>
+<circle cx="674.13" cy="298.58" r="1.8" fill="#e8743a"/>
+<circle cx="684.4" cy="296.83" r="1.8" fill="#e8743a"/>
+<circle cx="694.68" cy="296.25" r="1.8" fill="#e8743a"/>
+<circle cx="704.95" cy="292.75" r="1.8" fill="#e8743a"/>
+<circle cx="715.23" cy="292.17" r="1.8" fill="#e8743a"/>
+<circle cx="725.5" cy="290.42" r="1.8" fill="#e8743a"/>
+<circle cx="735.78" cy="285.75" r="1.8" fill="#e8743a"/>
+<circle cx="746.05" cy="282.83" r="1.8" fill="#e8743a"/>
+<circle cx="756.33" cy="278.17" r="1.8" fill="#e8743a"/>
+<circle cx="766.6" cy="273.5" r="1.8" fill="#e8743a"/>
+<circle cx="776.88" cy="268.83" r="1.8" fill="#e8743a"/>
+<circle cx="787.15" cy="263.58" r="1.8" fill="#e8743a"/>
+<circle cx="797.43" cy="257.17" r="1.8" fill="#e8743a"/>
+<circle cx="807.7" cy="251.33" r="1.8" fill="#e8743a"/>
+<circle cx="817.98" cy="244.92" r="1.8" fill="#e8743a"/>
+<circle cx="828.25" cy="235.58" r="1.8" fill="#e8743a"/>
+<circle cx="838.53" cy="226.25" r="1.8" fill="#e8743a"/>
+<circle cx="848.8" cy="215.17" r="1.8" fill="#e8743a"/>
+<circle cx="859.08" cy="200.58" r="1.8" fill="#e8743a"/>
+<circle cx="869.35" cy="184.25" r="1.8" fill="#e8743a"/>
+</g>
+<g clip-path="url(#clip1)">
+<polyline points="70,332.39 80.57,330.68 91.14,328.58 101.71,327.23 112.27,327.03 122.84,326.78 133.41,326.47 143.98,326.1 154.55,325.65 165.12,325.09 175.69,324.4 186.25,323.56 196.82,322.53 207.39,321.28 217.96,319.83 228.53,318.83 239.1,317.61 249.67,316.1 260.24,314.26 270.8,312.01 281.37,309.25 291.94,305.86 302.51,301.72 313.08,296.64 323.65,290.43 334.22,282.82 344.78,273.49 355.35,262.07 365.92,248.08 376.49,231.27 387.06,211.34 397.63,186.92 408.2,157.02 418.76,120.38 429.33,75.52" fill="none" stroke="#26b88a" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<polyline points="520,340 530.28,340 540.55,340 550.83,340 561.1,340 571.38,340 581.65,340 591.93,340 602.2,340 612.48,340 622.75,340 633.03,335.33 643.3,333.58 653.58,329.5 663.85,324.83 674.13,323.08 684.4,320.75 694.68,319.58 704.95,317.25 715.23,314.92 725.5,311.42 735.78,307.92 746.05,304.42 756.33,299.17 766.6,293.92 776.88,287.5 787.15,279.33 797.43,269.42 807.7,257.75 817.98,243.17 828.25,226.25 838.53,204.67 848.8,179 859.08,146.33 869.35,106.67" fill="none" stroke="#26b88a" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<circle cx="520" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="530.28" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="540.55" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="550.83" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="561.1" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="571.38" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="581.65" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="591.93" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="602.2" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="612.48" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="622.75" cy="340" r="1.8" fill="#26b88a"/>
+<circle cx="633.03" cy="335.33" r="1.8" fill="#26b88a"/>
+<circle cx="643.3" cy="333.58" r="1.8" fill="#26b88a"/>
+<circle cx="653.58" cy="329.5" r="1.8" fill="#26b88a"/>
+<circle cx="663.85" cy="324.83" r="1.8" fill="#26b88a"/>
+<circle cx="674.13" cy="323.08" r="1.8" fill="#26b88a"/>
+<circle cx="684.4" cy="320.75" r="1.8" fill="#26b88a"/>
+<circle cx="694.68" cy="319.58" r="1.8" fill="#26b88a"/>
+<circle cx="704.95" cy="317.25" r="1.8" fill="#26b88a"/>
+<circle cx="715.23" cy="314.92" r="1.8" fill="#26b88a"/>
+<circle cx="725.5" cy="311.42" r="1.8" fill="#26b88a"/>
+<circle cx="735.78" cy="307.92" r="1.8" fill="#26b88a"/>
+<circle cx="746.05" cy="304.42" r="1.8" fill="#26b88a"/>
+<circle cx="756.33" cy="299.17" r="1.8" fill="#26b88a"/>
+<circle cx="766.6" cy="293.92" r="1.8" fill="#26b88a"/>
+<circle cx="776.88" cy="287.5" r="1.8" fill="#26b88a"/>
+<circle cx="787.15" cy="279.33" r="1.8" fill="#26b88a"/>
+<circle cx="797.43" cy="269.42" r="1.8" fill="#26b88a"/>
+<circle cx="807.7" cy="257.75" r="1.8" fill="#26b88a"/>
+<circle cx="817.98" cy="243.17" r="1.8" fill="#26b88a"/>
+<circle cx="828.25" cy="226.25" r="1.8" fill="#26b88a"/>
+<circle cx="838.53" cy="204.67" r="1.8" fill="#26b88a"/>
+<circle cx="848.8" cy="179" r="1.8" fill="#26b88a"/>
+<circle cx="859.08" cy="146.33" r="1.8" fill="#26b88a"/>
+<circle cx="869.35" cy="106.67" r="1.8" fill="#26b88a"/>
+</g>
+<g clip-path="url(#clip1)">
+<polyline points="70,332.39 80.57,330.68 91.14,328.58 101.71,327.23 112.27,327.03 122.84,326.78 133.41,326.47 143.98,326.1 154.55,325.65 165.12,325.09 175.69,324.4 186.25,323.56 196.82,322.53 207.39,321.28 217.96,319.93 228.53,319.74 239.1,319.52 249.67,319.25 260.24,318.91 270.8,318.5 281.37,318 291.94,317.38 302.51,316.63 313.08,315.71 323.65,314.57 334.22,313.19 344.78,311.49 355.35,309.41 365.92,306.86 376.49,303.8 387.06,300.17 397.63,295.73 408.2,290.28 418.76,283.61 429.33,275.45" fill="none" stroke="#e0a020" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<polyline points="520,340 530.28,340 540.55,340 550.83,340 561.1,340 571.38,340 581.65,340 591.93,340 602.2,340 612.48,340 622.75,340 633.03,326 643.3,321.92 653.58,309.08 663.85,296.25 674.13,294.5 684.4,292.17 694.68,292.75 704.95,291 715.23,289.25 725.5,289.25 735.78,284 746.05,279.92 756.33,275.25 766.6,273.5 776.88,266.5 787.15,260.67 797.43,254.83 807.7,245.5 817.98,236.17 828.25,220.42 838.53,208.17 848.8,191.25 859.08,174.92 869.35,147.5" fill="none" stroke="#e0a020" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<circle cx="520" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="530.28" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="540.55" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="550.83" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="561.1" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="571.38" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="581.65" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="591.93" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="602.2" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="612.48" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="622.75" cy="340" r="1.8" fill="#e0a020"/>
+<circle cx="633.03" cy="326" r="1.8" fill="#e0a020"/>
+<circle cx="643.3" cy="321.92" r="1.8" fill="#e0a020"/>
+<circle cx="653.58" cy="309.08" r="1.8" fill="#e0a020"/>
+<circle cx="663.85" cy="296.25" r="1.8" fill="#e0a020"/>
+<circle cx="674.13" cy="294.5" r="1.8" fill="#e0a020"/>
+<circle cx="684.4" cy="292.17" r="1.8" fill="#e0a020"/>
+<circle cx="694.68" cy="292.75" r="1.8" fill="#e0a020"/>
+<circle cx="704.95" cy="291" r="1.8" fill="#e0a020"/>
+<circle cx="715.23" cy="289.25" r="1.8" fill="#e0a020"/>
+<circle cx="725.5" cy="289.25" r="1.8" fill="#e0a020"/>
+<circle cx="735.78" cy="284" r="1.8" fill="#e0a020"/>
+<circle cx="746.05" cy="279.92" r="1.8" fill="#e0a020"/>
+<circle cx="756.33" cy="275.25" r="1.8" fill="#e0a020"/>
+<circle cx="766.6" cy="273.5" r="1.8" fill="#e0a020"/>
+<circle cx="776.88" cy="266.5" r="1.8" fill="#e0a020"/>
+<circle cx="787.15" cy="260.67" r="1.8" fill="#e0a020"/>
+<circle cx="797.43" cy="254.83" r="1.8" fill="#e0a020"/>
+<circle cx="807.7" cy="245.5" r="1.8" fill="#e0a020"/>
+<circle cx="817.98" cy="236.17" r="1.8" fill="#e0a020"/>
+<circle cx="828.25" cy="220.42" r="1.8" fill="#e0a020"/>
+<circle cx="838.53" cy="208.17" r="1.8" fill="#e0a020"/>
+<circle cx="848.8" cy="191.25" r="1.8" fill="#e0a020"/>
+<circle cx="859.08" cy="174.92" r="1.8" fill="#e0a020"/>
+<circle cx="869.35" cy="147.5" r="1.8" fill="#e0a020"/>
+</g>
+<g clip-path="url(#clip1)">
+<polyline points="70,332.39 80.57,330.68 91.14,328.58 101.71,327.23 112.27,327.03 122.84,326.78 133.41,326.47 143.98,326.1 154.55,325.65 165.12,325.09 175.69,324.4 186.25,323.56 196.82,322.53 207.39,321.28 217.96,319.89 228.53,319.33 239.1,318.66 249.67,317.83 260.24,316.81 270.8,315.57 281.37,314.05 291.94,312.18 302.51,309.9 313.08,307.1 323.65,303.67 334.22,299.47 344.78,294.33 355.35,288.03 365.92,280.32 376.49,271.05 387.06,260.06 397.63,246.6 408.2,230.1 418.76,209.91 429.33,185.17" fill="none" stroke="#9d92f0" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<polyline points="520,340 530.28,340 540.55,340 550.83,340 561.1,340 571.38,340 581.65,340 591.93,340 602.2,340 612.48,340 622.75,340 633.03,335.33 643.3,333 653.58,329.5 663.85,323.08 674.13,320.75 684.4,319 694.68,317.25 704.95,315.5 715.23,314.33 725.5,310.83 735.78,307.92 746.05,304.42 756.33,299.75 766.6,295.08 776.88,288.67 787.15,281.08 797.43,271.17 807.7,255.42 817.98,237.92 828.25,217.5 838.53,194.17 848.8,169.67 859.08,137 869.35,92.67" fill="none" stroke="#9d92f0" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<circle cx="520" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="530.28" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="540.55" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="550.83" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="561.1" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="571.38" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="581.65" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="591.93" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="602.2" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="612.48" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="622.75" cy="340" r="1.8" fill="#9d92f0"/>
+<circle cx="633.03" cy="335.33" r="1.8" fill="#9d92f0"/>
+<circle cx="643.3" cy="333" r="1.8" fill="#9d92f0"/>
+<circle cx="653.58" cy="329.5" r="1.8" fill="#9d92f0"/>
+<circle cx="663.85" cy="323.08" r="1.8" fill="#9d92f0"/>
+<circle cx="674.13" cy="320.75" r="1.8" fill="#9d92f0"/>
+<circle cx="684.4" cy="319" r="1.8" fill="#9d92f0"/>
+<circle cx="694.68" cy="317.25" r="1.8" fill="#9d92f0"/>
+<circle cx="704.95" cy="315.5" r="1.8" fill="#9d92f0"/>
+<circle cx="715.23" cy="314.33" r="1.8" fill="#9d92f0"/>
+<circle cx="725.5" cy="310.83" r="1.8" fill="#9d92f0"/>
+<circle cx="735.78" cy="307.92" r="1.8" fill="#9d92f0"/>
+<circle cx="746.05" cy="304.42" r="1.8" fill="#9d92f0"/>
+<circle cx="756.33" cy="299.75" r="1.8" fill="#9d92f0"/>
+<circle cx="766.6" cy="295.08" r="1.8" fill="#9d92f0"/>
+<circle cx="776.88" cy="288.67" r="1.8" fill="#9d92f0"/>
+<circle cx="787.15" cy="281.08" r="1.8" fill="#9d92f0"/>
+<circle cx="797.43" cy="271.17" r="1.8" fill="#9d92f0"/>
+<circle cx="807.7" cy="255.42" r="1.8" fill="#9d92f0"/>
+<circle cx="817.98" cy="237.92" r="1.8" fill="#9d92f0"/>
+<circle cx="828.25" cy="217.5" r="1.8" fill="#9d92f0"/>
+<circle cx="838.53" cy="194.17" r="1.8" fill="#9d92f0"/>
+<circle cx="848.8" cy="169.67" r="1.8" fill="#9d92f0"/>
+<circle cx="859.08" cy="137" r="1.8" fill="#9d92f0"/>
+<circle cx="869.35" cy="92.67" r="1.8" fill="#9d92f0"/>
+</g>
+<rect x="78" y="68" width="123.32" height="76" fill="#0e1116" stroke="#484f58" stroke-width="1" fill-opacity="0.88"/>
+<line x1="85" y1="78" x2="103" y2="78" stroke="#e8743a" stroke-width="2.2"/>
+<text x="109" y="82" font-size="11" text-anchor="start" fill="#c9d1d9">FS (kernel)</text>
+<line x1="85" y1="95" x2="103" y2="95" stroke="#26b88a" stroke-width="2.2"/>
+<text x="109" y="99" font-size="11" text-anchor="start" fill="#c9d1d9">RS (system)</text>
+<line x1="85" y1="112" x2="103" y2="112" stroke="#e0a020" stroke-width="2.2"/>
+<text x="109" y="116" font-size="11" text-anchor="start" fill="#c9d1d9">CH (session)</text>
+<line x1="85" y1="129" x2="103" y2="129" stroke="#9d92f0" stroke-width="2.2"/>
+<text x="109" y="133" font-size="11" text-anchor="start" fill="#c9d1d9">IB (container)</text>
+<text x="450" y="404" font-size="11" text-anchor="middle" fill="#8b949e">silent up to about 3 % CPU; at 5 % the noisy neurons already fire 6 to 20 Hz; one full core gives 39 to 44 Hz for every type</text>
+</svg>
