@@ -1,4 +1,5 @@
 mod arbor;
+mod armorial;
 mod blackbody;
 mod cells;
 mod coop;
