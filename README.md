@@ -729,7 +729,7 @@ A Hertzsprung-Russell sky of the machine: every process is a star on a planetari
 | Nova | A process born after the first frame | A ramp over the first 0.5 s and a burst ring over 1.5 s |
 | Fade and supernova | A process that exits | A star that held under 1 GiB when last seen fades out. One that held more goes supernova: a flash and an expanding blue-to-red shell. A zombie counts as exited, with the memory it last had alive |
 | Labels | The six most luminous stars | `name K3 III` beside the star, in both modes |
-| Inspector lines | The selected or toured star | `class K3 III \| T 4200 K \| m +1.23`, the main sequence's m at that temperature with the residual, and the CV over 10 s with the twinkle it makes |
+| Inspector lines | The selected or toured star | `class K3 III \| T 4600 K \| m +1.23`, the main sequence's m at that temperature with the residual, and the CV over 10 s with the twinkle it makes |
 
 **Luminosity classes.** The residual is how far above (positive: fainter) the fitted line the star stands. The class is the first of these whose bound the residual is under:
 
