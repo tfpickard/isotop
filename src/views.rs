@@ -841,6 +841,20 @@ pub static REGISTRY: &[ViewInfo] = &[
             Box::new(switchboard::Switchboard::default())
         })
     },
+    ViewInfo {
+        link_strokes: true,
+        flash: false,
+        haze: false,
+        pitch: Some(LOWEST_PITCH),
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("lights", "LIGHTS", Backdrop::Space, || {
+            Box::new(crate::lights::Lights::default())
+        })
+    },
 ];
 
 /// The registered view called `name`, for tests.
