@@ -79,12 +79,12 @@ mod tests {
     #[test]
     fn holding_and_releasing_while_paused_or_rewound_does_not_jump() {
         let mut app = globe_at(0.0);
-        app.history.push_back(model::demo(50.0, 64));
-        app.history.push_back(model::demo(100.0, 64));
+        app.history.samples_mut().push_back(model::demo(50.0, 64));
+        app.history.samples_mut().push_back(model::demo(100.0, 64));
         app.animation = 500.0;
         // [ pauses and steps back to the sample at 50 s, whatever the animation clock says.
         app.key(KeyCode::Char('['), KeyModifiers::NONE, 10.0);
-        assert!(app.paused);
+        assert!(app.history.is_paused());
         assert_eq!(app.render_time(), 50.0);
         let free = home_on_screen(&mut app);
         let time = app.render_time();

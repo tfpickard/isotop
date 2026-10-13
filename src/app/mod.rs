@@ -3,6 +3,7 @@ mod camera;
 pub(crate) mod fixtures;
 mod input;
 mod overlay;
+mod player;
 mod pointer;
 mod renderer;
 mod screen;
@@ -11,7 +12,6 @@ mod status;
 mod switcher;
 mod tour;
 
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use crossterm::event::MouseButton;
@@ -25,6 +25,7 @@ use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
 
 pub(crate) use input::typed;
+use player::HistoryPlayer;
 use pointer::Pointer;
 pub(crate) use renderer::Renderer;
 pub(crate) use screen::Layout;
@@ -46,9 +47,7 @@ pub(crate) struct App {
     /// The selected thing; never Some while a process is selected.
     pub(crate) thing: Option<Thing>,
     pub(crate) focus: Option<Identity>,
-    pub(crate) history: VecDeque<Snapshot>,
-    pub(crate) paused: bool,
-    pub(crate) history_index: usize,
+    pub(crate) history: HistoryPlayer,
     pub(crate) search: Option<String>,
     pub(crate) matches: Vec<Identity>,
     pub(crate) match_index: usize,
@@ -110,9 +109,7 @@ impl App {
             selected: None,
             thing: None,
             focus: None,
-            history: VecDeque::from([snapshot]),
-            paused: false,
-            history_index: 0,
+            history: HistoryPlayer::new(snapshot),
             search: None,
             matches: Vec::new(),
             match_index: 0,
@@ -155,13 +152,7 @@ impl App {
     /// newest sample is ever fed more.
     pub(super) fn push_sample(&mut self, snapshot: Snapshot, capacity: usize) {
         self.scene.record(&snapshot, self.animation);
-        if let Some(newest) = self.history.back_mut() {
-            newest.journal.retire();
-        }
-        self.history.push_back(snapshot);
-        if self.history.len() > capacity {
-            self.history.pop_front();
-        }
+        self.history.push(snapshot, capacity);
     }
 
     /// Whether the journal follower should run at `now`: while the demand contains
@@ -180,11 +171,7 @@ impl App {
     }
 
     pub(super) fn snapshot(&self) -> &Snapshot {
-        &self.history[if self.paused {
-            self.history_index
-        } else {
-            self.history.len() - 1
-        }]
+        self.history.snapshot()
     }
 
     pub(super) fn both(&mut self, change: impl Fn(&mut Camera)) {
@@ -195,8 +182,8 @@ impl App {
     /// The time the scene is drawn at: the sample's own while paused or rewound, else the
     /// animation clock.
     pub(super) fn render_time(&self) -> f32 {
-        if self.paused {
-            self.history[self.history_index].elapsed as f32
+        if self.history.is_paused() {
+            self.history.snapshot().elapsed as f32
         } else {
             self.animation
         }
@@ -223,11 +210,6 @@ impl App {
     /// Records the frame's display list, which `render` then rasterizes: everything that moves a
     /// view's state, without the pixels.
     pub(super) fn draw(&mut self, width: u32, height: u32, limit: usize) -> Frame {
-        let index = if self.paused {
-            self.history_index
-        } else {
-            self.history.len() - 1
-        };
         let time = self.render_time();
         self.scene.highlight = [
             self.selected,
@@ -238,7 +220,7 @@ impl App {
         .flatten()
         .collect();
         let mut input = RenderInput {
-            snapshot: &self.history[index],
+            snapshot: self.history.snapshot(),
             view: self.view,
             camera: &self.camera,
             width,
@@ -248,7 +230,7 @@ impl App {
             time,
             limit,
             focus: self.focus,
-            paused: self.paused,
+            paused: self.history.is_paused(),
             toured: self.tour.as_ref().map(|tour| tour.target),
         };
         let mut frame = self.scene.render(&input);
@@ -301,9 +283,10 @@ pub(crate) fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f6
             journal_totals,
             ..
         } = app;
-        if let Some(newest) = history.back_mut() {
-            newest.journal.add(journal_totals, lines, dropped);
-        }
+        history
+            .newest_mut()
+            .journal
+            .add(journal_totals, lines, dropped);
     }
 }
 
@@ -323,7 +306,7 @@ mod tests {
             journal_totals,
             ..
         } = &mut app;
-        history[0].journal.add(
+        history.samples_mut()[0].journal.add(
             journal_totals,
             vec![journal::Line::new(6, "sshd[1]: hello")],
             0,
@@ -359,7 +342,7 @@ mod tests {
         // `main.rs` hands the frame's lines to the sample; the view takes them in when it draws.
         feed(&mut app, None, true, 0.0, 1.0);
         let lines = journal::demo(0.0, 1.0);
-        assert_eq!(app.history.back().unwrap().journal.lines, lines);
+        assert_eq!(app.history.newest().journal.lines, lines);
         assert_eq!(line(&app), " > waiting for the journal...", "not drawn yet");
         app.render(320, 180, 512);
         assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
@@ -367,7 +350,7 @@ mod tests {
 
         // Drawing the same sample again, or a newer one that brought no lines, queues none twice.
         app.render(320, 180, 512);
-        app.history.push_back(model::demo(2.0, 16));
+        app.history.samples_mut().push_back(model::demo(2.0, 16));
         app.render(320, 180, 512);
         assert_eq!(legend(&app), queued);
         assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
@@ -377,36 +360,42 @@ mod tests {
         app.render(320, 180, 512);
         let all = journal::demo(0.0, 2.0);
         assert_eq!(line(&app), format!(" > {}", all.last().unwrap().text));
-        assert_eq!(
-            app.history.back().unwrap().journal.through as usize,
-            all.len()
-        );
+        assert_eq!(app.history.newest().journal.through as usize, all.len());
     }
 
     #[test]
     fn feed_attaches_each_frames_journal_lines_to_the_newest_sample() {
         let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
-        app.history.push_front(model::demo(0.0, 16));
+        app.history.samples_mut().push_front(model::demo(0.0, 16));
         feed(&mut app, None, true, 0.0, 1.0);
         assert!(
-            app.history[0].journal.lines.is_empty(),
+            app.history.samples()[0].journal.lines.is_empty(),
             "an older sample gets none"
         );
-        assert_eq!(app.history[1].journal.lines, journal::demo(0.0, 1.0));
+        assert_eq!(
+            app.history.samples()[1].journal.lines,
+            journal::demo(0.0, 1.0)
+        );
         feed(&mut app, None, true, 1.0, 2.0);
-        let newest = &app.history[1].journal;
+        let newest = &app.history.samples()[1].journal;
         assert_eq!(newest.lines, journal::demo(0.0, 2.0));
         assert_eq!(newest.through as usize, newest.lines.len());
         // A frame that brought nothing leaves the sample as it was.
         let before = newest.clone();
         feed(&mut app, None, true, 2.0, 2.05);
-        assert_eq!(app.history[1].journal, before);
+        assert_eq!(app.history.samples()[1].journal, before);
     }
 
     #[test]
     fn the_history_keeps_the_journal_lines_of_the_newest_sample_only() {
         let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
-        let held = |app: &App| -> usize { app.history.iter().map(|s| s.journal.lines.len()).sum() };
+        let held = |app: &App| -> usize {
+            app.history
+                .samples()
+                .iter()
+                .map(|s| s.journal.lines.len())
+                .sum()
+        };
         for sample in 0..40 {
             app.push_sample(model::demo(f64::from(sample), 16), 24);
             // A flood bigger than a sample keeps arrives every frame, twice.
@@ -419,7 +408,7 @@ mod tests {
                     journal_totals,
                     ..
                 } = &mut app;
-                let newest = history.back_mut().unwrap();
+                let newest = history.newest_mut();
                 newest.journal.add(journal_totals, flood, 0);
             }
             assert!(held(&app) <= journal::KEPT, "{} lines held", held(&app));
@@ -428,7 +417,7 @@ mod tests {
         assert_eq!(held(&app), journal::KEPT, "the newest sample's lines");
         // The numbering outlives the lines: a sample that was the newest says how many had
         // arrived by then, and offers none of them to a view that has not taken them.
-        for older in app.history.iter().take(23) {
+        for older in app.history.samples().iter().take(23) {
             assert!(older.journal.lines.is_empty());
             assert!(older.journal.through > 0);
             assert!(older.journal.unseen(0).is_empty());

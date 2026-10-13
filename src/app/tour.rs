@@ -504,7 +504,9 @@ mod tests {
         assert_eq!(cursor_index(&app), targets + 2);
         // A process ahead of it that is no target exits, so it moves up one place.
         let ahead = app.visit_cycle()[targets];
-        app.history[0].processes.retain(|p| p.id != ahead);
+        app.history.samples_mut()[0]
+            .processes
+            .retain(|p| p.id != ahead);
         app.render(320, 180, 512);
         let cycle = app.visit_cycle();
         let at = cycle.iter().position(|&other| other == id).unwrap();
@@ -514,7 +516,9 @@ mod tests {
         // The visited process itself exits: the stored index, clamped, stands in for it.
         let gone = visited(&app);
         let index = cursor_index(&app);
-        app.history[0].processes.retain(|p| p.id != gone);
+        app.history.samples_mut()[0]
+            .processes
+            .retain(|p| p.id != gone);
         app.render(320, 180, 512);
         let cycle = app.visit_cycle();
         press(&mut app, KeyCode::Char(' '));
@@ -524,7 +528,7 @@ mod tests {
     #[test]
     fn space_does_nothing_with_no_visitable_process() {
         let mut app = visiting_app();
-        app.history[0].processes.clear();
+        app.history.samples_mut()[0].processes.clear();
         app.render(320, 180, 512);
         assert!(app.visit_cycle().is_empty());
         for (code, modifiers) in [
@@ -551,14 +555,14 @@ mod tests {
     fn p_pauses_and_space_no_longer_does() {
         let mut app = visiting_app();
         press(&mut app, KeyCode::Char(' '));
-        assert!(!app.paused);
+        assert!(!app.history.is_paused());
         press_with(&mut app, KeyCode::Char('P'), KeyModifiers::SHIFT);
-        assert!(app.paused);
+        assert!(app.history.is_paused());
         assert!(app.text(0.0, "test", 20, 512)[0].contains("/ PAUSED"));
         press(&mut app, KeyCode::Char('P'));
-        assert!(!app.paused);
+        assert!(!app.history.is_paused());
         press(&mut app, KeyCode::Char('p'));
-        assert!(!app.paused, "lowercase p belongs to the views");
+        assert!(!app.history.is_paused(), "lowercase p belongs to the views");
     }
 
     #[test]

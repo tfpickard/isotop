@@ -155,7 +155,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
         let frame_start = Instant::now();
         let elapsed = last_frame.elapsed().as_secs_f32();
         last_frame = Instant::now();
-        if !app.paused {
+        if !app.history.is_paused() {
             app.animation += elapsed;
             if last_sample.elapsed() >= Duration::from_millis(options.sample_ms as u64) {
                 let snapshot = if options.demo {
@@ -184,7 +184,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
         if app.demand().contains(Source::Journal) {
             let now = origin.elapsed().as_secs_f64();
             // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
-            if !app.paused {
+            if !app.history.is_paused() {
                 fed = f64::max(fed, now - 2.0);
                 feed(&mut app, journal.as_ref(), options.demo, fed, now);
                 fed = now;

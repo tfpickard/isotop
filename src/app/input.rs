@@ -157,19 +157,10 @@ impl App {
                 }
             }
             KeyCode::Char('P') => {
-                self.paused = !self.paused;
-                self.history_index = self.history.len() - 1;
+                self.history.toggle_pause();
             }
-            KeyCode::Char('[') => {
-                if !self.paused {
-                    self.history_index = self.history.len() - 1;
-                    self.paused = true;
-                }
-                self.history_index = self.history_index.saturating_sub(1);
-            }
-            KeyCode::Char(']') if self.paused => {
-                self.history_index = (self.history_index + 1).min(self.history.len() - 1)
-            }
+            KeyCode::Char('[') => self.history.rewind(),
+            KeyCode::Char(']') => self.history.forward(),
             _ => {}
         }
         false

@@ -20,7 +20,7 @@ impl App {
             .map_or((self.scene.visible, self.scene.collapsed), |header| {
                 header(&self.scene)
             });
-        let mode = match (self.paused, &self.tour) {
+        let mode = match (self.history.is_paused(), &self.tour) {
             (true, _) => "PAUSED",
             (false, Some(Tour { running: true, .. })) => "TOUR",
             (false, _) => "LIVE",

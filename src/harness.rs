@@ -93,8 +93,7 @@ impl Session {
 
     /// Takes in a new sample, as the main loop does when one arrives.
     pub fn sample(&mut self, snapshot: Snapshot) {
-        self.app.scene.record(&snapshot, self.app.animation);
-        self.app.history.push_back(snapshot);
+        self.app.push_sample(snapshot, usize::MAX);
     }
 
     /// Draws and rasterizes the frame at `time`.

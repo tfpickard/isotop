@@ -1,7 +1,5 @@
 //! Headless runs: the warm-up that settles a frame before it is captured.
 
-use std::collections::VecDeque;
-
 use crate::app::{App, feed};
 use crate::cli::Options;
 use crate::demo_snapshot;
@@ -69,17 +67,17 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
             Phase::History { seconds } => {
                 for back in (1..=seconds).rev() {
                     let at = options.time - back as f64;
-                    app.history = VecDeque::from([demo_snapshot(row, at - 1.0, at, count)]);
+                    app.history.replace(demo_snapshot(row, at - 1.0, at, count));
                     app.animation = at as f32;
                     let frame = app.render(width, height, limit);
                     app.scene.spare = frame.release();
                 }
-                app.history = VecDeque::from([demo_snapshot(
+                app.history.replace(demo_snapshot(
                     row,
                     options.time - options.sample_seconds(),
                     options.time,
                     count,
-                )]);
+                ));
             }
             Phase::Record { seconds } => {
                 for back in (1..=seconds).rev() {
@@ -113,19 +111,20 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
                     if at < 0.0 {
                         continue;
                     }
-                    app.history = VecDeque::from([demo_snapshot(row, at - interval, at, count)]);
+                    app.history
+                        .replace(demo_snapshot(row, at - interval, at, count));
                     for index in 0..frames {
                         app.animation = (at + f64::from(index) * f64::from(step)) as f32;
                         let frame = app.draw(width, height, limit);
                         app.scene.spare = frame.release();
                     }
                 }
-                app.history = VecDeque::from([demo_snapshot(
+                app.history.replace(demo_snapshot(
                     row,
                     options.time - interval,
                     options.time,
                     count,
-                )]);
+                ));
             }
             Phase::Settle { frames, step, lead } => {
                 for index in 0..frames {
@@ -215,13 +214,13 @@ mod tests {
         warm_up(&mut app, &options, None);
         assert_eq!(app.history.len(), 1);
         assert_eq!(
-            format!("{:?}", app.history[0].processes),
+            format!("{:?}", app.history.samples()[0].processes),
             format!("{:?}", model::demo_with(12.0, 64, asked).processes)
         );
         // With churn a sample carries the life events since the one a `--sample-ms` before it;
         // without, none.
         assert_eq!(
-            app.history[0].life,
+            app.history.samples()[0].life,
             model::demo_events(11.0, 12.0, 64, asked)
         );
         let interval = |view| demo_snapshot(app.scene.row(view), 0.0, 120.0, 64).life;

@@ -377,7 +377,7 @@ mod tests {
         let before = (
             legend(&app),
             app.goal.clone(),
-            (app.labels, app.panel, app.paused),
+            (app.labels, app.panel, app.history.is_paused()),
         );
         press(&mut app, KeyCode::Char('v'));
         assert!(app.picker.is_some());
@@ -409,7 +409,7 @@ mod tests {
         assert!(lines[0].starts_with("View: qxam1/+lh_"), "{lines:?}");
         assert_eq!(legend(&app), before.0, "the view saw no key");
         assert!(app.goal == before.1, "the camera did not move");
-        assert_eq!((app.labels, app.panel, app.paused), before.2);
+        assert_eq!((app.labels, app.panel, app.history.is_paused()), before.2);
         assert!(
             app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0),
             "Ctrl-C still quits"
