@@ -8,7 +8,7 @@ use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::tint;
 use crate::simulation::{growth, hash, smoothing};
 use crate::views::systems::Orbit;
-use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
+use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule, ViewOptions};
 use crate::{globe, glyphs};
 
 pub mod field;
@@ -348,10 +348,6 @@ pub enum Item {
     /// Depth-tested triangle whose colour and pick are sampled from field `field` (an index into
     /// `Frame::fields`) at `uv`, in node units, interpolated linearly across the triangle. It
     /// writes depth, the sampled colour and the owner of the nearest node (see `field`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first recorded by a view that draws a field")
-    )]
     Field {
         points: [Point; 3],
         uv: [[f32; 2]; 3],
@@ -973,7 +969,6 @@ impl Frame {
 
     /// A pick-only disc of `radius` pixels at the projection of `position`, depth-tested there:
     /// it keeps splatted or translucent content under it pickable.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub(crate) fn pick_disc(&mut self, camera: &Camera, position: Point, radius: f32, pick: u32) {
         let center = self.project(camera, position);
         self.items.push(Item::Pick {
@@ -1142,6 +1137,32 @@ pub struct Title {
     pub text: String,
 }
 
+/// Which side of its point a `Tag` is written on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no view writes a tag to the left of its point; the app moves one that runs off the screen"
+    )
+)]
+pub enum Side {
+    Right,
+    Left,
+}
+
+/// A short text written beside a world point instead of centred on it, as a `places` entry is:
+/// the name of a star next to the star. `side` is where the text goes if it fits; the app writes
+/// it on the other side when that one runs off the screen, and leaves it out when neither fits
+/// or another label is in the way. Its text is untrusted like process text and reaches the
+/// terminal only through `terminal::clean_text`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tag {
+    pub at: Point,
+    pub side: Side,
+    pub text: String,
+}
+
 /// What a view draws with, and its only way to talk back to the app. A view reads only `Stage`,
 /// the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the
 /// platform could not measure is `snapshot.missing`; `Stage` does not copy it.
@@ -1217,6 +1238,9 @@ pub(crate) struct Stage<'a> {
     /// `places`, in the order pushed. Each system's centre (`Title::at`) is kept in the camera
     /// fit with the `positions`, when the view gave no `bounds`.
     pub titles: &'a mut Vec<Title>,
+    /// Texts written beside a point, before `places` and `titles` are offered their cells: the
+    /// labels a view wants read before its other text.
+    pub tags: &'a mut Vec<Tag>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
     /// nothing rises.
@@ -1342,8 +1366,13 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     /// The last frame's `Stage::titles`.
     pub titles: Vec<Title>,
+    /// The last frame's `Stage::tags`.
+    pub tags: Vec<Tag>,
     /// The last frame's `Stage::bounds`, which `fit` frames the camera to.
     bounds: Vec<Point>,
+    /// The rotation and pitch of the camera the last frame was drawn with, when the shown row is
+    /// a `billboard`: `fit` measures `bounds` under them.
+    billboard: Option<(f32, f32)>,
     /// The last frame's `Stage::notes`: popup lines after the sockets.
     pub notes: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::sparklines`.
@@ -1396,7 +1425,9 @@ impl Scene {
             positions: HashMap::new(),
             places: Vec::new(),
             titles: Vec::new(),
+            tags: Vec::new(),
             bounds: Vec::new(),
+            billboard: None,
             notes: HashMap::new(),
             sparklines: HashMap::new(),
             tour: Vec::new(),
@@ -1430,6 +1461,13 @@ impl Scene {
     /// module's own state, or None once it no longer shows the thing.
     pub fn card(&self, view: View, thing: Thing, snapshot: &Snapshot) -> Option<Card> {
         self.modules[view.index()].card(thing, snapshot)
+    }
+
+    /// Hands every module the command-line settings, once, before the first frame.
+    pub fn configure(&mut self, options: &ViewOptions) {
+        for module in &mut self.modules {
+            module.configure(options);
+        }
     }
 
     /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means.
@@ -1487,6 +1525,16 @@ impl Scene {
             zoom: 1.0,
             ..camera.clone()
         };
+        // A billboard's bounds hold for the camera that drew them, which may not yet have turned
+        // to the goal; its extent on the screen is the same under every rotation and pitch.
+        let measure = match self.billboard {
+            Some((rotation, pitch)) if !self.bounds.is_empty() => Camera {
+                rotation,
+                pitch,
+                ..probe.clone()
+            },
+            _ => probe.clone(),
+        };
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
         let points: Vec<Point> = if self.bounds.is_empty() {
@@ -1502,7 +1550,7 @@ impl Scene {
             self.bounds.clone()
         };
         for &p in &points {
-            let q = probe.view(p);
+            let q = measure.view(p);
             for i in 0..2 {
                 min[i] = min[i].min(q[i]);
                 max[i] = max[i].max(q[i]);
@@ -1575,7 +1623,9 @@ impl Scene {
         self.collapsed = 0;
         self.places.clear();
         self.titles.clear();
+        self.tags.clear();
         self.bounds.clear();
+        self.billboard = row.billboard.then_some((camera.rotation, camera.pitch));
         self.notes.clear();
         self.sparklines.clear();
         self.tour.clear();
@@ -1717,6 +1767,7 @@ impl Scene {
             popup: &mut self.popup,
             callout: &mut self.callout,
             titles: &mut self.titles,
+            tags: &mut self.tags,
             headroom: &mut self.headroom,
         };
         let shown = self.modules[view.index()].draw(&mut stage, processes, snapshot);
@@ -2541,6 +2592,21 @@ mod tests {
     }
 
     #[test]
+    fn the_scene_hands_every_module_the_command_line_settings() {
+        let snapshot = demo(10.0, 8);
+        let (probe, quiet) = (View::at(0), View::at(1));
+        let mut scene = Scene::with_rows(testing::ROWS);
+        scene.configure(&ViewOptions { hr_diagram: true });
+        for view in [probe, quiet] {
+            assert_eq!(
+                scene.legend(view, &snapshot),
+                " probe: 0 draws | 0 records | keys [] | ViewOptions { hr_diagram: true }",
+                "a module takes the settings whether or not it is the shown view"
+            );
+        }
+    }
+
+    #[test]
     fn a_modules_tests_can_read_its_state_by_type() {
         let snapshot = demo(12.0, 16);
         let camera = Camera::default();
@@ -2690,6 +2756,43 @@ mod tests {
     }
 
     #[test]
+    fn a_billboard_is_framed_as_the_camera_that_drew_it_saw_it() {
+        let snapshot = demo(10.0, 16);
+        // Drawn under the default camera, while the goal has already turned and tilted.
+        let goal = Camera {
+            rotation: FRAC_PI_2,
+            pitch: FRAC_PI_2,
+            ..Camera::default()
+        };
+        let zoom = |view: View| {
+            let mut scene = Scene::with_rows(testing::PLANES);
+            render(&mut scene, &snapshot, view, 10.0);
+            let mut fitted = goal.clone();
+            scene.fit(&mut fitted, 1200, 600);
+            (fitted.zoom, fitted.center)
+        };
+        // 600 by 300 pixels fill 0.9 of a 1200 by 600 frame at zoom 1.8, whatever the pitch.
+        let (zoom_billboard, center) = zoom(View::at(0));
+        assert!((zoom_billboard - 1.8).abs() < 1e-3, "{zoom_billboard}");
+        // Centred, as the goal's rotation and pitch see the point ORIGIN_Y down the frame.
+        let lifted = Camera {
+            zoom: 1.0,
+            ..goal.clone()
+        }
+        .ground(0.0, (ORIGIN_Y - 0.5) * 600.0 / zoom_billboard);
+        assert!(
+            (center[0] - lifted[0]).abs() < 1e-3 && (center[1] - lifted[1]).abs() < 1e-3,
+            "{center:?} against {lifted:?}"
+        );
+        // An ordinary view's bounds are world points, framed as the goal will see them.
+        let (zoom_ordinary, _) = zoom(View::at(1));
+        assert!(
+            (zoom_ordinary - 1.8).abs() > 0.1,
+            "the bounds of an ordinary view are not corrected: {zoom_ordinary}"
+        );
+    }
+
+    #[test]
     fn rows_switch_the_haze_the_exit_flash_and_the_links_off() {
         let snapshot = demo(10.0, 32);
         let mut fewer = snapshot.clone();
@@ -2750,7 +2853,9 @@ mod tests {
             positions: _,
             places: _,
             titles: _,
+            tags: _,
             bounds: _,
+            billboard: _,
             notes: _,
             sparklines: _,
             tour: _,

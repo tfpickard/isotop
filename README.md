@@ -29,9 +29,10 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
+./target/release/isotop --view hr --hr-diagram # hr starts on its Hertzsprung-Russell diagram; `m` flies between it and the sky
 ```
 
 Each view knows whether it runs on the platform; every view runs on Linux and macOS
@@ -167,6 +168,7 @@ cache is stale.
 | CPU clock | There is no clock per core. Each cluster's average clock is the cycles its cores ran divided by the CPU time they ran them in, summed over every process isotop can read between two samples, and every lane of that kind shows it, so a cluster's chevrons move together and the legend says "cluster clock". A cluster with less than 0.05 s of CPU time in the interval has no reading, and its chevrons pause. Virtual machines count no cycles; there the legend says "no clock readings" and the chevrons stay still. Without sudo the clocks come from your own processes only |
 | Run queue | There is no run queue per CPU, so no red marbles at the start line. Each process's waiting threads come instead from its runnable time, which counts running as well, minus its CPU time: red beads trail its marble, one per thread waiting on average, with a faint red glow when any wait. The kernel brings runnable time up to date only when a thread is switched onto a core or blocks, so isotop counts only growth beyond the highest value it has seen; waiting can show a sample late. A process first seen while a thread had run for a long time without a switch can show that run as waiting once, so each reading is held to the process's thread count. After exec, whose new task keeps only one thread's counters, waiting starts over |
 | cgroups | Cells groups processes by app bundle and user, with no limits, quotas, throttling, OOM events or pressure. The coop forms its flocks the same way, one per group, and no fox comes for an OOM kill; its legend says so |
+| cgroups and socket traffic (hr) | Hr is never skipped. Without cgroups its constellations are the app groups, one disc each, and its legend says "constellations = app groups"; loopback links have no byte counters, so a stick figure with no traffic is drawn at one brightness and the legend says "lines at one brightness". The Milky Way holds `kernel_task` |
 | Per-connection socket traffic and RTT | Globe arcs are drawn without rates or round-trip times, and its legend says so. Loopback links have no byte counters, so in the coop peers pull by co-activity only, the smaller of the two CPUs and only when both are busy. In the cortex a synapse weighs the sockets of its link instead of the traffic, min(0.25 ln(1 + sockets), 2), and the legend says "no socket traffic: weight = socket count" |
 | Uninterruptible sleep (D) | Never shown, so no red buildings, and no mud puddles in the coop |
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
@@ -212,8 +214,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the nineteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor and hr are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -706,6 +708,54 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Hr
+
+A Hertzsprung-Russell sky of the machine: every process is a star on a planetarium dome, coloured by the blackbody its CPU would make, as bright as its memory, and sorted into the cgroup constellation it belongs to. `m` sends every star to its place on a Hertzsprung-Russell diagram of the machine and classifies it against the machine's own main sequence, such as `K3 III`.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Star | A process that is not a kernel thread (`Process::kind`), alive | One pickable star each. Zombies are not stars. A star's place on the dome is fixed when it is born and kept until it exits |
+| Colour | CPU, percent of one core | A blackbody at T = 2400 K x (1 + cpu / 5)^0.47, at most 40,000 K, so idle is 2,400 K (class M), one core about 10,000 K and twenty cores 40,000 K. The colour is `blackbody::color(T, 1.0)`; the core of the star is mixed 60 % towards white |
+| Brightness and size | Memory (RSS; the physical footprint on macOS) | The magnitude m = -2.5 log10(memory / 1 GiB) (`stellar::magnitude`), clamped to -6 .. +9; a process with no memory is +9. The point-spread star (`stellar::spread`) scales with the frame height over 720 px, not with zoom; a star whose flux is over 60 (a magnitude under 2.55) gets a bloom up to 48 px at 1080p |
+| Twinkle | The coefficient of variation CV of the shared CPU history over the last 10 s | Amplitude min(0.8, 0.45 CV), as the sum of three sines at 0.9 to 3.5 Hz with phases from the identity hash. A star with fewer than 3 samples, or a mean CPU under a thousandth of a percent, does not twinkle. A steady process shines steadily |
+| Spectral class | The temperature | O from 30,000 K, B from 10,000 K, A from 7,500 K, F from 6,000 K, G from 5,200 K, K from 3,700 K, M below. The subclass 0 to 9 is the position of log10 T within the class, 0 at its hot edge: 4,500 K is K4 |
+| Luminosity class | The star's residual from the main sequence: its m less the fitted line's m at its temperature | See the thresholds below. `K3 III` is a class K3 giant; a white dwarf of class A is `DA`. With fewer than 3 points there is no fit and the label is the spectral class alone |
+| Constellation | `Process::cgroup` (`Process::group` where the platform has no cgroups) | One disc each from `layout::Discs`, sized by sqrt(members + 3) in buckets of 12 members and 1.5 times more, so a disc is re-placed rarely. The name is the cgroup's group label, written in the clearest part of the disc. A star sits inside 0.85 of the radius at a place from its identity hash, nudged once clear of the others at its birth and kept |
+| Dashed boundary | The constellation discs | The edges between cells of a fixed 64 by 36 grid that belong to different constellations (each cell goes to the disc nearest by power distance). Recomputed only when a disc is placed, grows or the layout's scale changes. 5 px on and 4 off at 720p |
+| Stick figure | A socket link (`Snapshot::links`) between two stars of one constellation | A line with a gap of 4.5 + 1.6 max(0, 3.5 - m) px at each star, drawn at brightness 0.35 + 0.65 min(1, log10(1 + B) / 6) with B the link's bytes a second, blended toward the sky; 0.65 where the platform has no traffic. A link between two constellations is a faint dashed line, up to 360 px long. `c` chooses all, highlighted or none |
+| Milky Way | Kernel threads (`Kind::Kernel`) | A band across the dome whose brightness is 1 - exp(-count / 40) of the number of kernel threads, and a faint point of dust for each, along it. The dust is not pickable; its place is kept for search and the tour. Kernel threads never appear on the diagram |
+| Nova | A process born after the first frame | A ramp over the first 0.5 s and a burst ring over 1.5 s |
+| Fade and supernova | A process that exits | A star that held under 1 GiB when last seen fades out. One that held more goes supernova: a flash and an expanding blue-to-red shell. A zombie counts as exited, with the memory it last had alive |
+| Labels | The six most luminous stars | `name K3 III` beside the star, in both modes |
+| Inspector lines | The selected or toured star | `class K3 III \| T 4200 K \| m +1.23`, the main sequence's m at that temperature with the residual, and the CV over 10 s with the twinkle it makes |
+
+**Luminosity classes.** The residual is how far above (positive: fainter) the fitted line the star stands. The class is the first of these whose bound the residual is under:
+
+| Class | Residual under (magnitudes) |
+| --- | --- |
+| Ia | -6 |
+| Ib | -4.5 |
+| II | -3.25 |
+| III | -1.75 |
+| IV | -0.9 |
+| V | 1.5 |
+| VI | 2.75 |
+| D (white dwarf) | 2.75 or more, if T is at least 7,500 K (a cooler star stays VI) |
+
+**The main sequence** is the Theil-Sen line of m on log10 T: the median of the slopes of all pairs of stars, then the median intercept, so a few giants and a few dwarfs do not drag it. It leaves out kernel threads, processes with no memory, stars clamped at either end of the magnitude scale and pairs whose log10 T differs by 0.01 or less, and above 400 stars it uses every k-th star by identity. It is computed once for each new sample, never for each frame. With a demo's narrow range of memory the line is nearly flat; on a real machine, where memory runs over six orders of magnitude, giants and dwarfs spread above and below it.
+
+**Diagram mode.** `m` flies the stars in 1.5 s (cubic in and out, each star waiting up to 0.28 of the flight and bending its path by up to 0.25 of its length, both from its identity hash, driven by the animation clock), the dome fades and the axes come up: temperature on x from 45,000 K at the left to 2,250 K at the right, hot on the left, with O B A F G K M along the top and under each tick the CPU that makes it; magnitude on y from -6 at the top to +9 at the bottom, with the memory each stands for; the fitted main sequence dashed; and the regions (main sequence, giants, supergiants, white dwarfs) named where the fit puts them. A star's place on the diagram depends on its own CPU and memory and on nothing else. `m` again flies the stars home. The labels of the six brightest and the constellation names wait for a flight to land.
+
+**Keys and flags.** `m` toggles between the sky and the diagram, and appears on the help line while hr is shown. `--hr-diagram` starts hr in the diagram, for headless renders: `isotop --demo --view hr --hr-diagram --output hr-diagram.png`. Pan and zoom apply to both; rotate and tilt leave the dome upright, since it always faces the viewer. Click a star for its inspector; the tour and Space visit the twelve brightest.
+
+**Demo.** `--demo --view hr` turns on births and exits, with a process that held more than 1 GiB exiting within the first seconds, so novae, fades and a supernova appear by `--time 12`. A headless demo run replays 12 seconds of samples first, as a live run takes them, so the twinkle and the main sequence are settled.
+
+**Caps.** Each star adds about three items to the frame, for each process the scene admits; one cached colour field of 288 by 162 nodes for the dome, rebuilt only when the kernel-thread count changes or a flight is running.
+
+**What cannot be measured.** Without cgroups (macOS) the constellations are app groups and the legend says `constellations = app groups`; without socket traffic the stick figures are drawn at one brightness and the legend says `lines at one brightness`. The Milky Way on macOS holds `kernel_task`.
+
+**Platform.** On Linux everything above. On macOS the stars, the classes and the diagram are as on Linux; see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -804,7 +854,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -839,6 +889,7 @@ visit the next or a random process in the tour's own order and let it go on from
 | `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
 | `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
 | `b` | Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame |
+| `m` | Hr: fly the stars to the Hertzsprung-Russell diagram, and back to the sky |
 | `?` | Toggle help; the second line leads with the shown view's own keys |
 | `q` / Ctrl-C | Quit |
 

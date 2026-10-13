@@ -2563,6 +2563,13 @@ pub struct DemoOptions {
     /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
     /// `unreadable` 0, as in `demo`.
     pub unreadable_parent: bool,
+    /// With `churn`, brings the out-of-memory victim's first kill forward to `DEMO_EARLY_KILL`
+    /// seconds of demo time, so a process that grew above 1 GiB has just exited when a view
+    /// looks at the first seconds. Its cycle starts at a fixed `DEMO_GIANT_OFFSET` instead of
+    /// the staggered one, whatever the process count; the cycle, the victim's size and the
+    /// kills 90 s apart are as without it, and no other transient changes. Off, the first kill
+    /// is at 40.8 s at 192 processes.
+    pub early_giant: bool,
 }
 
 impl DemoOptions {
@@ -2581,6 +2588,7 @@ impl DemoOptions {
         oom_cycle: false,
         thread_churn: false,
         unreadable_parent: false,
+        early_giant: false,
     };
 }
 
@@ -2612,6 +2620,11 @@ const DEMO_KILL_PERIOD: f64 = 30.0;
 /// Seconds into a kill cycle at which the victim is killed, and at which a new one starts.
 const DEMO_KILL_AT: f64 = 20.0;
 const DEMO_RESPAWN_AT: f64 = 26.0;
+
+/// The demo second of the out-of-memory victim's first kill under `DemoOptions::early_giant`,
+/// and where its cycle starts for that: 60 s before the kill that falls 90 s after the first.
+const DEMO_EARLY_KILL: f64 = 8.8;
+const DEMO_GIANT_OFFSET: f64 = DEMO_EARLY_KILL + DEMO_OOM_PERIOD - 60.0;
 
 /// The last base index that may be the kill cycle's victim, and the score it has.
 const DEMO_VICTIM_LAST: usize = 134;
@@ -2697,14 +2710,25 @@ fn demo_cycle_period(family: usize, families: usize, mortality: bool) -> f64 {
 
 /// When a family's cycle number 0 starts, in demo seconds. Staggered, so families do not fork in
 /// step.
-fn demo_cycle_offset(family: usize) -> f64 {
-    5.9 * family as f64
+fn demo_cycle_offset(family: usize, families: usize, early_giant: bool) -> f64 {
+    if early_giant && family == families {
+        DEMO_GIANT_OFFSET
+    } else {
+        5.9 * family as f64
+    }
 }
 
 /// The number of the cycle of `family` that `time` falls in; negative before the first.
-fn demo_epoch(time: f64, family: usize, families: usize, mortality: bool) -> i64 {
-    ((time - demo_cycle_offset(family)) / demo_cycle_period(family, families, mortality)).floor()
-        as i64
+fn demo_epoch(
+    time: f64,
+    family: usize,
+    families: usize,
+    mortality: bool,
+    early_giant: bool,
+) -> i64 {
+    ((time - demo_cycle_offset(family, families, early_giant))
+        / demo_cycle_period(family, families, mortality))
+    .floor() as i64
 }
 
 /// The identity of the transient in pool slot `slot`. The pid is above every base pid, and the
@@ -2747,8 +2771,14 @@ fn demo_base_identity(index: usize) -> Identity {
 /// most 4.2 s after that, its children run for at most 12 s, and the last zombie window ends
 /// 1.4 s after the last of them, so under 19 s of the shortest cycle's 24. The victim lives 35
 /// to 55 s, is killed 60 s into its cycle and is a zombie for a second after, inside the 90.
-fn demo_cycle(count: usize, family: usize, epoch: i64, mortality: bool) -> Vec<Transient> {
-    let cycle = demo_cycle_drawn(count, family, epoch, mortality);
+fn demo_cycle(
+    count: usize,
+    family: usize,
+    epoch: i64,
+    mortality: bool,
+    early_giant: bool,
+) -> Vec<Transient> {
+    let cycle = demo_cycle_drawn(count, family, epoch, mortality, early_giant);
     if mortality {
         demo_mortal(cycle, count, family, epoch)
     } else {
@@ -2757,13 +2787,19 @@ fn demo_cycle(count: usize, family: usize, epoch: i64, mortality: bool) -> Vec<T
 }
 
 /// The cycle `demo_cycle` describes before `DemoOptions::mortality` shapes it.
-fn demo_cycle_drawn(count: usize, family: usize, epoch: i64, mortality: bool) -> Vec<Transient> {
+fn demo_cycle_drawn(
+    count: usize,
+    family: usize,
+    epoch: i64,
+    mortality: bool,
+    early_giant: bool,
+) -> Vec<Transient> {
     let families = demo_families(count);
     if count == 0 || family > families {
         return Vec::new();
     }
-    let start =
-        demo_cycle_offset(family) + epoch as f64 * demo_cycle_period(family, families, mortality);
+    let start = demo_cycle_offset(family, families, early_giant)
+        + epoch as f64 * demo_cycle_period(family, families, mortality);
     let mut rng = Rng::new(hash_identity(
         Identity {
             pid: family as u32,
@@ -2985,12 +3021,13 @@ fn demo_mortal(
 /// The transients listed at `time`, family by family with the parent of a cycle before its
 /// children: those born at or before `time` and not yet gone. A cycle holds its transients
 /// inside itself, so only the cycle that `time` falls in can have any.
-fn demo_listed(time: f64, count: usize, mortality: bool) -> Vec<Transient> {
+fn demo_listed(time: f64, count: usize, options: DemoOptions) -> Vec<Transient> {
     let families = demo_families(count);
+    let (mortality, early) = (options.mortality, options.early_giant);
     (0..=families)
         .flat_map(|family| {
-            let epoch = demo_epoch(time, family, families, mortality);
-            demo_cycle(count, family, epoch, mortality)
+            let epoch = demo_epoch(time, family, families, mortality, early);
+            demo_cycle(count, family, epoch, mortality, early)
         })
         .filter(|transient| transient.birth <= time && time < transient.end)
         .collect()
@@ -3183,12 +3220,13 @@ pub struct DemoLife {
 /// short interval.
 pub fn demo_life(from: f64, to: f64, count: usize, options: DemoOptions) -> Vec<DemoLife> {
     let families = demo_families(count);
-    let mortality = options.mortality;
+    let (mortality, early) = (options.mortality, options.early_giant);
     let mut events = Vec::new();
     for family in 0..=families {
-        let epochs = demo_epoch(from, family, families, mortality)
-            ..=demo_epoch(to, family, families, mortality);
-        for transient in epochs.flat_map(|epoch| demo_cycle(count, family, epoch, mortality)) {
+        let epochs = demo_epoch(from, family, families, mortality, early)
+            ..=demo_epoch(to, family, families, mortality, early);
+        for transient in epochs.flat_map(|epoch| demo_cycle(count, family, epoch, mortality, early))
+        {
             let event = |kind, time, running_at: f64, cpu_seconds| DemoLife {
                 kind,
                 id: transient.id,
@@ -3589,7 +3627,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     if options.churn {
         // The units keep the limits they were given from the base processes, and the transients
         // add what they use, so a unit's pressure shows them.
-        let transients: Vec<Process> = demo_listed(time, count, options.mortality)
+        let transients: Vec<Process> = demo_listed(time, count, options)
             .iter()
             .map(|transient| transient.process(time))
             .collect();
@@ -3597,9 +3635,9 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             // The victim's scope stays, counting its kills from when each victim is gone: with a
             // head start, so the count is positive before time 0 as well, and rises at each kill.
             let families = demo_families(count);
-            let kills = ((time - demo_cycle_offset(families) - 60.0 - DEMO_ZOMBIE_SECONDS)
-                / DEMO_OOM_PERIOD)
-                .floor() as i64
+            let offset = demo_cycle_offset(families, families, options.early_giant);
+            let kills = ((time - offset - 60.0 - DEMO_ZOMBIE_SECONDS) / DEMO_OOM_PERIOD).floor()
+                as i64
                 + 1001;
             units
                 .entry(DEMO_VICTIM_UNIT.to_owned())
@@ -6112,7 +6150,7 @@ mod tests {
         });
         assert!(service);
         let kills = |time: f64| demo_with(time, 192, MORTAL).units[DEMO_VICTIM_UNIT].oom_kills;
-        let victim_end = demo_cycle_offset(12) + 61.0;
+        let victim_end = demo_cycle_offset(12, 12, false) + 61.0;
         assert_eq!(kills(victim_end).map(|k| k - 1), kills(victim_end - 0.5));
     }
 
@@ -6323,7 +6361,7 @@ mod tests {
         // Within a pid, consecutive cycles never overlap in time.
         for family in 0..=families {
             let parents: Vec<_> = (0..5)
-                .map(|epoch| demo_cycle(count, family, epoch, false)[0].clone())
+                .map(|epoch| demo_cycle(count, family, epoch, false, false)[0].clone())
                 .collect();
             assert!(
                 parents
@@ -6332,6 +6370,50 @@ mod tests {
                         && pair[0].id.start != pair[1].id.start
                         && pair[0].end <= pair[1].birth)
             );
+        }
+    }
+
+    #[test]
+    fn an_early_giant_brings_the_first_one_gib_kill_forward_and_changes_nothing_else() {
+        const EARLY: DemoOptions = DemoOptions {
+            churn: true,
+            early_giant: true,
+            ..DemoOptions::NONE
+        };
+        for count in [64, 192, 1000] {
+            let kills: Vec<DemoLife> = demo_life(-1.0, 300.0, count, EARLY)
+                .into_iter()
+                .filter(|event| event.kind == DemoLifeKind::Exit && event.signal == Some(9))
+                .collect();
+            let times: Vec<f64> = kills.iter().map(|kill| kill.time).collect();
+            assert_eq!(times.len(), 4, "{count} processes: {times:?}");
+            for (time, expected) in times.iter().zip([9.8, 99.8, 189.8, 279.8]) {
+                assert!(
+                    (time - expected).abs() < 1e-6,
+                    "{count} processes: kills at {times:?}, the first {DEMO_EARLY_KILL} s plus the zombie second"
+                );
+            }
+            assert!(kills.iter().all(|kill| kill.memory > 1 << 30));
+        }
+        // Without it the first kill is later, at the staggered 40.8 s at 192 processes.
+        let first = demo_life(-1.0, 300.0, 192, CHURN)
+            .into_iter()
+            .find(|event| event.kind == DemoLifeKind::Exit && event.signal == Some(9))
+            .expect("a kill");
+        assert!((first.time - 41.8).abs() < 1e-6, "{}", first.time);
+        // Every other transient, and every base process, is as it was.
+        for time in [0.0, 12.0, 41.0, 100.0] {
+            let plain = demo_with(time, 192, CHURN);
+            let early = demo_with(time, 192, EARLY);
+            let others = |snapshot: &Snapshot| -> Vec<String> {
+                snapshot
+                    .processes
+                    .iter()
+                    .filter(|process| !process.name.starts_with("leak-"))
+                    .map(|process| format!("{process:?}"))
+                    .collect()
+            };
+            assert_eq!(others(&plain), others(&early), "at {time} s");
         }
     }
 

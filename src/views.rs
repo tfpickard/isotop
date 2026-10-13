@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    arbor, cells, coop, cores, cortex, globe, horizon, hr, matrix, murmuration, necropolis,
+    ptolemy, reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -112,6 +112,12 @@ pub struct ViewInfo {
     /// The camera pitch set when the view is switched to and on `r`. Default: None, which leaves
     /// the pitch where it is.
     pub pitch: Option<f32>,
+    /// Whether the view draws a plane that faces the viewer whatever the camera's rotation and
+    /// pitch (a sky dome, built each frame from `Camera::ground`). Its `Stage::bounds` then hold
+    /// only for the camera that drew them, so the camera fit measures them under that camera's
+    /// rotation and pitch instead of the goal's, which a view switched to has not yet been
+    /// drawn under. Default: off.
+    pub billboard: bool,
     /// Whether `g` and the idle tour visit processes in this view; switching to a view without
     /// the tour ends a running one. Default: on.
     pub tour: bool,
@@ -182,6 +188,7 @@ impl ViewInfo {
             flash: true,
             haze: true,
             pitch: None,
+            billboard: false,
             tour: true,
             header: None,
             face: None,
@@ -385,6 +392,15 @@ pub enum ViewKey {
     Escape,
 }
 
+/// Command-line settings that only some views read, handed to every module once, before its first
+/// frame, through `ViewModule::configure`. A view takes the fields it knows and ignores the rest;
+/// a new view's flag adds a field here and one line in `Options::view_options`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewOptions {
+    /// `--hr-diagram`: the hr view starts in diagram mode instead of the sky.
+    pub hr_diagram: bool,
+}
+
 /// A view that the scene draws, records and asks for its legend through this trait. Its state
 /// lives in the implementing type, which the registry row's `build` makes.
 pub trait ViewModule {
@@ -393,6 +409,10 @@ pub trait ViewModule {
     /// `stage.bounds` when the content moves by itself. Step by `stage.dt`, and tell the app
     /// anything else only through the other `Stage` outputs, such as `tour` and `popup`.
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize;
+
+    /// Takes in the command-line settings once, before the first frame, whichever view is shown.
+    /// A view that has none of its own leaves it.
+    fn configure(&mut self, _options: &ViewOptions) {}
 
     /// Takes in each new sample, whichever view is shown, for history the view needs when it
     /// opens.
@@ -729,6 +749,35 @@ pub static REGISTRY: &[ViewInfo] = &[
             Box::new(arbor::Arbor::default())
         })
     },
+    ViewInfo {
+        // Stick figures are the view's own, along the socket links of a constellation.
+        links: LinkRule::DrawnByView,
+        link_strokes: true,
+        // A birth is a nova and an exit a fade or a supernova, drawn by the view; the dome is the
+        // sky, and pressure haze would tint it.
+        flash: false,
+        haze: false,
+        // The dome faces the viewer whatever the rotation and pitch, and is framed as it was
+        // drawn; top-down keeps its plane flat to the viewer from the start.
+        billboard: true,
+        pitch: Some(std::f32::consts::FRAC_PI_2),
+        keys: "m diagram or sky",
+        // Twelve seconds of samples as a live run takes them: the twinkle reads ten seconds of
+        // CPU, and the births and the first supernova of the churn are in the history.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 12,
+                before_start: false,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            early_giant: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("hr", "HR", Backdrop::Void, || Box::new(hr::Hr::default()))
+    },
 ];
 
 /// The registered view called `name`, for tests.
@@ -741,7 +790,7 @@ pub fn view(name: &str) -> View {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use crate::render::{Title, TourTarget};
+    use crate::render::{Side, Tag, Title, TourTarget};
 
     /// A module view that seats the first half of the processes on a line and lets the rest
     /// collapse. Its legend counts what reached it through the trait. `m` toggles a mode that
@@ -752,11 +801,17 @@ pub mod testing {
         records: usize,
         keys: String,
         mode: bool,
+        /// The command-line settings `configure` took in, if it was called.
+        configured: Option<ViewOptions>,
     }
 
     impl ViewModule for Probe {
         fn state(&self) -> Option<&dyn std::any::Any> {
             Some(self)
+        }
+
+        fn configure(&mut self, options: &ViewOptions) {
+            self.configured = Some(*options);
         }
 
         fn draw(
@@ -787,8 +842,11 @@ pub mod testing {
         }
 
         fn legend(&self, _snapshot: &Snapshot) -> String {
+            let configured = self
+                .configured
+                .map_or_else(String::new, |options| format!(" | {options:?}"));
             format!(
-                " probe: {} draws | {} records | keys [{}]",
+                " probe: {} draws | {} records | keys [{}]{configured}",
                 self.draws, self.records, self.keys
             )
         }
@@ -832,6 +890,10 @@ pub mod testing {
             self.0.record(snapshot, time);
         }
 
+        fn configure(&mut self, options: &ViewOptions) {
+            self.0.configure(options);
+        }
+
         fn legend(&self, snapshot: &Snapshot) -> String {
             self.0.legend(snapshot)
         }
@@ -853,6 +915,8 @@ pub mod testing {
 
     /// The text `Guide` titles its system with.
     pub const GUIDE_TITLE: &str = "guide system";
+    /// The tag the guide writes beside the last process.
+    pub const GUIDE_TAG: &str = "guide tag";
 
     /// A module view that seats every process on a line, asks the tour to visit the last one at
     /// a point beside its seat, adds a line to its popup and titles the line as a system. Its
@@ -899,6 +963,11 @@ pub mod testing {
                     reach: 3.0,
                     text: GUIDE_TITLE.into(),
                 });
+                stage.tags.push(Tag {
+                    at: [index as f32 * 4.0, 0.0, 0.0],
+                    side: Side::Right,
+                    text: GUIDE_TAG.into(),
+                });
                 stage.tour.push(TourTarget {
                     id: last.id,
                     position: [index as f32 * 4.0, 3.0, 0.0],
@@ -928,6 +997,49 @@ pub mod testing {
         ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
             Box::new(Probe::default())
         }),
+    ];
+
+    /// A module view that draws nothing but a plane facing the viewer, 600 by 300 pixels at zoom
+    /// 1, whose corners it gives as `Stage::bounds`: the ground points that appear at those
+    /// offsets from the centre of the camera drawing it.
+    #[derive(Default)]
+    pub struct Plane;
+
+    impl ViewModule for Plane {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            _processes: &[&Process],
+            _snapshot: &Snapshot,
+        ) -> usize {
+            let zoom = stage.camera.zoom;
+            stage.bounds.extend(
+                [
+                    (-300.0, -150.0),
+                    (300.0, -150.0),
+                    (300.0, 150.0),
+                    (-300.0, 150.0),
+                ]
+                .map(|(x, y)| {
+                    let [x, y] = stage.camera.ground(x * zoom, y * zoom);
+                    [x, y, 0.0]
+                }),
+            );
+            0
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            " plane".into()
+        }
+    }
+
+    /// `plane`, a view of a plane that faces the viewer, as a billboard and as an ordinary view.
+    pub static PLANES: &[ViewInfo] = &[
+        ViewInfo {
+            billboard: true,
+            ..ViewInfo::new("billboard", "BILLBOARD", Backdrop::Void, || Box::new(Plane))
+        },
+        ViewInfo::new("ordinary", "ORDINARY", Backdrop::Void, || Box::new(Plane)),
     ];
 
     /// A module view that seats each process by its rank in the frame's process order, so one
