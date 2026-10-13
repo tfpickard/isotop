@@ -4,6 +4,16 @@ Terms as isotop and this wiki use them. Entries marked *(isotop)* name something
 link to says exactly how. Entries marked *(general)* are standard physics, mathematics or computing, defined
 here only as far as the wiki needs.
 
+## History
+
+The glossary is older than the dictionary. The first monolingual English dictionary is usually taken to be Robert
+Cawdrey's *A Table Alphabeticall*, published in 1604, which explained about 2,500 "hard usuall English wordes",
+most of them borrowed from Latin and Greek, for readers who met them in print and did not know what they meant.
+It was a glossary in the modern sense: a list of terms from one body of text, defined for the people about to read it.
+The entries below do the same job for a smaller body of text, and borrow Cawdrey's habit of marking where a word
+came from: *(isotop)* for a word the code uses, *(general)* for one it borrowed, and *(record)* for one that belongs
+to the account on [View Matrix](View-Matrix#history).
+
 ## isotop: data
 
 **Background sampler** *(isotop)*: the thread that reads the slow sources (sockets, open files, file locks,

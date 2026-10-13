@@ -1,6 +1,6 @@
 # Guide: Recipes
 
-Task-sized recipes for running, measuring, capturing and checking isotop. Each is marked **verified here** (run on the machine that built this page: Linux x86_64, 4 cores, no GPU, no graphical session, release build, with the output quoted where it is short) or **not verified** (with the reason). Anything that needs a graphics-capable terminal, a GPU, macOS or a network is the latter. (The build tree also holds one view that is not on `main`, the tutorial's `lissajous`, so its `--list-views` has fifteen names; the outputs quoted below are the fourteen of `main`.) Commands assume the repository root and a release build (`cargo build --release`); the binary is `./target/release/isotop`.
+Task-sized recipes for running, measuring, capturing and checking isotop. Each is marked **verified here** (run on the machine that built this page: Linux x86_64, 4 cores, no GPU, no graphical session, release build, with the output quoted where it is short) or **not verified** (with the reason). Anything that needs a graphics-capable terminal, a GPU, macOS or a network is the latter. The tree these recipes were last run on has eighteen views (`--list-views` prints them), and the outputs quoted below are from it. Commands assume the repository root and a release build (`cargo build --release`); the binary is `./target/release/isotop`.
 
 For the machinery behind the headless recipes see [Guide: Headless and Reproducible Renders](Guide-Headless-and-Reproducible-Renders); for the views see [Gallery](Gallery).
 
@@ -30,6 +30,16 @@ For the machinery behind the headless recipes see [Guide: Headless and Reproduci
 | 22 | Use isotop over SSH | not verified |
 | 23 | Run the gates | verified here except the macOS type-check |
 | 24 | Place the globe's home | verified here |
+
+## History
+
+A cookbook is a list of procedures that each claim to be repeatable by a stranger. The oldest surviving Western collection is *De re coquinaria*, attributed to Apicius and usually dated to the late 4th or early 5th century, though it holds recipes a few centuries older and was probably assembled by several hands. Its recipes are terse and assume a trained cook, which makes them hard to follow today: the form began as a memory aid for people who already knew how.
+
+The form moved toward the stranger in stages. Hannah Glasse's *The Art of Cookery Made Plain and Easy* (1747) wrote in plain language for household cooks. Its best-known line, "first catch your hare", is not in it; the nearest passage begins "Take your hare when it be cas'd", and the saying appears in print in the early 19th century as a misquotation (the earliest hare version found is from an 1815 newspaper). Fannie Farmer's edition of *The Boston Cooking-School Cook Book* (1896) is credited with standardising measurement, the level teaspoon among it, so that a recipe meant the same quantity in every kitchen. Reproducibility was an editorial achievement before it was a computing one.
+
+Programming took the word in 1998 with the *Perl Cookbook* by Tom Christiansen and Nathan Torkington (O'Reilly, August 1998, foreword by Larry Wall), organised by task rather than by language feature and built as a companion to *Programming Perl*. The *Python Cookbook* (Alex Martelli and David Ascher, O'Reilly, July 2002) followed it, collecting about two hundred recipes from the community and, by its preface, modelled on the Perl book at the suggestion of O'Reilly's editor-in-chief Frank Willison. Its link to ActiveState's recipe site, which I expected, I could not confirm (unverified). Sources also disagree on the Perl book's page count (794 in O'Reilly's press release, 964 in a Wikipedia entry that describes a later edition), a reminder that the edition is part of the citation.
+
+The recipes in this project's wiki follow the later habit: each carries a status, because a recipe that was not run is a rumour. The labels in the table above are that habit made explicit. The project's own sequence of gates, which recipe 23 reproduces, was written down in `AGENTS.md` on its first day of existence (2026-10-07) and has been edited since. Altitude was not varied.
 
 ## 1. A reproducible screenshot
 
@@ -67,7 +77,7 @@ The default `--time` is 12. A view whose window of history is not full by then n
 ./target/release/isotop --demo --view ptolemy --time 300 --width 960 --renderer cpu --output ptolemy.png
 ```
 
-Ptolemy needs 30 samples before it has planets, and its reference renders use 300. Tesseract and Necropolis replay a minute and ten minutes of samples before the frame (the necropolis from before time 0, so `--time 12` already shows ten rows of graves); Strata replays a minute. The list of which view warms up how is in the [headless guide](Guide-Headless-and-Reproducible-Renders).
+Ptolemy needs 30 samples before it has planets, and its reference renders use 300 (`contract.time` on its registry row). Tesseract and Necropolis replay a minute and ten minutes of samples before the frame (the necropolis from before time 0, so `--time 12` already shows ten rows of graves); Strata replays a minute; Cortex, Murmuration and Arbor play 12, 15 and 8 seconds of frames (`Phase::Play`) so their simulations have settled. The list of which view warms up how is in the [headless guide](Guide-Headless-and-Reproducible-Renders).
 
 ## 4. Benchmark a view
 
@@ -75,12 +85,12 @@ Ptolemy needs 30 samples before it has planets, and its reference renders use 30
 
 ```sh
 ./target/release/isotop --demo --view city --width 960 --renderer cpu --benchmark 30
-# 30 frames | 960x540 | 192 visible | 16.41 ms/frame | 60.9 renderer fps on cpu (excludes terminal transport)
+# 30 frames | 960x540 | 192 visible | 13.33 ms/frame | 75.0 renderer fps on cpu (excludes terminal transport)
 ./target/release/isotop --demo --view city --width 960 --renderer cpu --processes 1000 --benchmark 30
-# 30 frames | 960x540 | 1000 visible | 20.26 ms/frame | 49.4 renderer fps on cpu (excludes terminal transport)
+# 30 frames | 960x540 | 1000 visible | 14.36 ms/frame | 69.6 renderer fps on cpu (excludes terminal transport)
 ```
 
-The benchmark measures scene recording and rasterization, not terminal transport. The project's budget (`docs/VIEW_CONVENTIONS.md`) is at least 10 fps on the CPU rasterizer at 1920x1080 with 192 processes and at least 5 fps at `--processes 1000`; measure that with `--width 1920`. The numbers above are this machine's. `--benchmark` alone does not run the `Output`-only settling of ripple, flow, cores, reef and coop, so for those add `--output` as well to measure a settled scene. Add `--fps N` to change the time step between benchmark frames (frame `i` is drawn at `--time` plus `i / fps`).
+The benchmark measures scene recording and rasterization, not terminal transport. The project's budget (`docs/VIEW_CONVENTIONS.md`) is at least 10 fps on the CPU rasterizer at 1920x1080 with 192 processes and at least 5 fps at `--processes 1000`; measure that with `--width 1920`. The numbers above are this machine's. `--benchmark` alone does not run the `Output`-only settling of ripple, flow, cores, reef and coop, so for those add `--output` as well to measure a settled scene (matrix and the views from tesseract on settle under `--benchmark` too). Add `--fps N` to change the time step between benchmark frames (frame `i` is drawn at `--time` plus `i / fps`).
 
 For end-to-end throughput in a real terminal, `--duration 5` runs an interactive session for five seconds and prints presented frames per second after restoring the terminal. **Not verified** (needs a graphics-capable terminal).
 
@@ -107,11 +117,11 @@ $ ./target/release/isotop --demo --view city --renderer auto --benchmark 5
 
 * **Aliasing.** A load that oscillates faster than half the sampling rate shows up as a slower wobble. See [Theory: Model and Rates](Theory-Model-and-Rates) for the derivation.
 * **How long the history is.** The shared history keeps 240 samples, and a view asks for a window in seconds, so at `--sample-ms 100` it holds 24 seconds and a view that wants a minute gets less. `--history` (default 120) separately sets how many snapshots pause and rewind retain.
-* **Headless warm-ups.** In a demo headless run, `Replay` phases replay `seconds / sample_seconds` samples, so a different `--sample-ms` is a different frame.
+* **Headless warm-ups.** In a demo headless run, `Replay` and `Play` phases replay `seconds / sample_seconds` samples, so a different `--sample-ms` is a different frame.
 
 ![A 1.1 hertz load seen once per second appears as a 0.1 hertz wobble](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/model-sampling-alias.svg)
 
-Verified: `--demo --view tesseract --time 12 --width 480` at `--sample-ms 250` and `1000` writes two different files. The background sampler's own period (sockets, files, cgroups) is fixed at two seconds (`model::BACKGROUND_PERIOD`) and does not follow the flag.
+Verified: `--demo --view tesseract --time 12 --width 480` (and `--view arbor`, a `Play` view) at `--sample-ms 250` and `1000` writes two different files. The background sampler's own period (sockets, files, cgroups) is fixed at two seconds (`model::BACKGROUND_PERIOD`) and does not follow the flag.
 
 ## 7. Cap the scene with `--limit` and `--processes`
 
@@ -166,11 +176,11 @@ Click or search to select a process, press `f` to draw only it and its descendan
 
 ```sh
 ./target/release/isotop --list-views | tr '\n' ' '
-# city orbit ripple flow cores cells strata globe reef matrix coop ptolemy tesseract necropolis
+# city orbit ripple flow cores cells strata globe reef matrix coop ptolemy tesseract necropolis cortex horizon murmuration arbor
 ./target/release/isotop --verbose --list-views >/dev/null     # stderr: nothing on Linux
 ```
 
-`--list-views` prints the views this platform supports, in Tab order, and exits; CI renders exactly this list. `--verbose` prints `skipping view <name>: not supported on this platform` to stderr, once per unsupported view, before the terminal is touched. Every view runs on Linux and macOS today, so on both it prints nothing; the flag exists for views that will be unavailable on one platform (the roadmap marks the switchboard unavailable on macOS).
+`--list-views` prints the views this platform supports, in Tab order, and exits; CI renders exactly this list. `--verbose` prints `skipping view <name>: not supported on this platform` to stderr, once per unsupported view, before the terminal is touched. Every view runs on Linux and macOS today, so on both it prints nothing; the flag exists for views that will be unavailable on one platform (`docs/VIEW_CONVENTIONS.md` records the switchboard, which is planned and not implemented, as unavailable on macOS).
 
 ## 14. Set up Ghostty
 
@@ -277,7 +287,7 @@ The tolerance recorded in `docs/VIEW_CONVENTIONS.md` has two limits: the per-cha
 | Default | at most 0.25 | at most 0.25 % | every view not named below, and every new view |
 | Line-dominant (`--max-mean 0.5 --max-share 1.0`) | at most 0.5 | at most 1.0 % | city, ripple, cores, cells, globe |
 
-Orbit, flow and strata exceed even the line-dominant limit on the measured Apple GPU; they are known parity debt of the older views. `Gpu::new` refuses software adapters, and Linux CI has no hardware GPU, so the CPU/GPU comparison runs on the macOS CI job, which uploads `parity.txt` and the PNGs as the `parity-macOS` artifact. `python3 scripts/compare_png.py --self-test` checks the script itself (passes here). See [Theory: GPU and Parity](Theory-GPU-and-Parity).
+Orbit, flow and strata exceed even the line-dominant limit on the measured Apple GPU; they are known parity debt that predates the parity rule. `Gpu::new` refuses software adapters, and Linux CI has no hardware GPU, so the CPU/GPU comparison runs on the macOS CI job, which uploads `parity.txt` and the PNGs as the `parity-macOS` artifact. `python3 scripts/compare_png.py --self-test` checks the script itself (passes here). See [Theory: GPU and Parity](Theory-GPU-and-Parity).
 
 ## 21. Linux and macOS
 
@@ -302,7 +312,7 @@ What is planned, not implemented: [issue 97](https://github.com/tfpickard/isotop
 
 ## 23. Run the gates
 
-**Status:** verified here, on the tree of [Guide: Writing a View](Guide-Writing-a-View) (`cargo fmt --check` clean, `cargo clippy --all-targets -- -D warnings` clean, `cargo test` with 537 passed, 0 failed and 4 ignored, the release build, the smoke test, `code_report.py --check`); the macOS type-check below was not run (the target is not installed). The full order is from `AGENTS.md`:
+**Status:** not verified on the current tree. An earlier revision of this page ran the whole sequence on the tree of [Guide: Writing a View](Guide-Writing-a-View) before the views were unified onto `ViewModule`; this revision rebuilt the release binary and ran the commands of recipes 1 to 4, 7, 12 and 13 only, so the test count is not quoted. The macOS type-check was never run here (the target is not installed). The full order is from `AGENTS.md`:
 
 ```sh
 cargo fmt && cargo fmt --check
