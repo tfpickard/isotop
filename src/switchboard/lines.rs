@@ -593,6 +593,7 @@ impl Lines {
                 self.totals.clear();
             }
             let watching = !self.totals.is_empty();
+            let mut present = BTreeSet::new();
             for row in snapshot.interrupts.known().into_iter().flatten() {
                 let Ok(number) = row.id.parse::<u64>() else {
                     continue;
@@ -607,7 +608,12 @@ impl Lines {
                     self.moved.insert(number);
                 }
                 self.totals.insert(number, total);
+                present.insert(number);
             }
+            // A line that left the table (a device removed) takes its history with it, so neither
+            // map grows with every IRQ number the machine ever had.
+            self.totals.retain(|number, _| present.contains(number));
+            self.moved.retain(|number| present.contains(number));
             self.seat_jacks(&reading, watching);
             self.plug(time, reseed);
             self.track_nmi(&reading, time);
@@ -1226,5 +1232,27 @@ pub mod tests {
         assert_eq!(nvme.name, "nvme0q* (40)");
         assert!(nvme.key & FOLDED != 0);
         assert_eq!(nvme.rate(), Some(200.0));
+    }
+
+    #[test]
+    fn a_line_that_leaves_the_table_takes_its_history_with_it() {
+        let mut lines = Lines::default();
+        let rows = |numbers: &[u32], total: u64| -> Vec<Interrupt> {
+            numbers
+                .iter()
+                .map(|&number| {
+                    let mut line = row(number, &format!("dev{number}"), 0, 5.0, None);
+                    line.per_cpu[0].1 = total;
+                    line
+                })
+                .collect()
+        };
+        lines.take_in(&sample(rows(&[1, 2, 3], 10), 1.0), 1.0, false);
+        lines.take_in(&sample(rows(&[1, 2, 3], 20), 2.0), 2.0, false);
+        assert_eq!(lines.totals.len(), 3);
+        assert_eq!(lines.moved.len(), 3);
+        lines.take_in(&sample(rows(&[1], 30), 3.0), 3.0, false);
+        assert_eq!(lines.totals.keys().copied().collect::<Vec<_>>(), [1]);
+        assert_eq!(lines.moved.iter().copied().collect::<Vec<_>>(), [1]);
     }
 }
