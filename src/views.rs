@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, plumbing,
+    ptolemy, reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -730,6 +730,29 @@ pub static REGISTRY: &[ViewInfo] = &[
         },
         ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
             Box::new(arbor::Arbor::default())
+        })
+    },
+    ViewInfo {
+        // The runs between processes are the view's own: pipes, tubes and hoses, each its own
+        // thing to pick, whatever the `c` key says.
+        links: LinkRule::DrawnByView,
+        // The pipes, the descriptors and the wait channels are read only while it is shown.
+        sources: Sources::of(&[Source::Pipes, Source::IoDetail, Source::WaitChannel]),
+        // Twelve seconds of the demo as a live run drew it: the water has travelled, and the
+        // sample in which gzip drops its end of the pipe has been seen.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 12,
+                step: 0.1,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            plumbing: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("plumbing", "PLUMBING", Backdrop::Dusk, || {
+            Box::new(plumbing::Plumbing::default())
         })
     },
 ];

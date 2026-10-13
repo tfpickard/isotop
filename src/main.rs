@@ -36,6 +36,7 @@ mod palette;
 mod picker;
 mod places;
 mod platform;
+mod plumbing;
 mod ptolemy;
 mod reef;
 mod render;

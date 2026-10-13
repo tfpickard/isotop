@@ -212,7 +212,7 @@ fn hostile_text_reaches_no_terminal_in_any_view() {
         }
     }
     // The check is not vacuous: the process views do put the names on the screen.
-    for name in ["city", "orbit", "murmuration", "arbor"] {
+    for name in ["city", "orbit", "murmuration", "arbor", "plumbing"] {
         assert!(
             showing.contains(&name),
             "{name} shows no process name: {showing:?}"
