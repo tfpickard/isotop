@@ -86,7 +86,7 @@ pub fn flow_lines(who: &str, outflow: Outflow) -> Vec<String> {
             rate: value,
             outlets,
         } if outlets.is_single() => vec![format!(
-            "{who} writes {}: all of it, through its only outlet",
+            "{who} writes {}: all of it, through its only outlet that isotop can see",
             rate(value)
         )],
         Outflow::Measured {

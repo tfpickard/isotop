@@ -700,7 +700,11 @@ mod tests {
         scan.pass_with(&targets, &mut fake, caps, &mut clock);
         let third = scan.pass_with(&targets, &mut fake, caps, &mut clock);
         let asked: Vec<u32> = fake.asked.iter().map(|(pid, _)| *pid).collect();
-        assert_eq!(asked, [1, 2, 3], "each pass resumes where the last one stopped");
+        assert_eq!(
+            asked,
+            [1, 2, 3],
+            "each pass resumes where the last one stopped"
+        );
         for pid in [1, 2, 3] {
             assert!(third.contains_key(&id(pid)), "{pid} has a result");
         }

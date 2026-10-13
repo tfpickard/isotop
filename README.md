@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in nineteen views: a process
+A living picture of your machine inside the terminal, in twenty-one views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, the system log (the systemd
@@ -235,7 +235,7 @@ The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. The view registry
 (`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
 truth for the list of views, their Tab order and their digits: Tab cycles
-the nineteen views in that order, the number keys 1 to 9 jump straight to the first nine
+the twenty-one views in that order, the number keys 1 to 9 jump straight to the first nine
 and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, ouija, anthill and plumbing are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
@@ -389,6 +389,7 @@ A race track with one lane per CPU, banked like a velodrome: performance cores i
 | Marble size | Memory (RSS; the physical footprint on macOS) | min(0.2 + 0.3 × `mass_radius`, 0.6): it tells processes apart between about 1 and 171 MiB |
 | Marble colour | Kind and state | The same colours as Orbit |
 | Marble trail | CPU | Eight beams over (0.05 + 0.5 × cpu / (cpu + 60)) × 6 ÷ r radians behind it, fading |
+| Marble queue beads | Threads waiting to run (`Process::waiting`, at most 6, drawn above 0.05) | A red glow behind the marble of size (0.5 + 0.4 × w) × zoom and strength 0.12 + 0.3 × w ÷ (w + 1), and round(w) red beads spaced 0.4 apart behind it |
 | Marble glow | CPU above 20 % | A warm glow of size × zoom × (2 + 2 × cpu / (cpu + 100)) and strength 0.25 + 0.5 × cpu / (cpu + 100) |
 | Hop | A change of the process's last CPU between samples | The marble crosses to the new lane in 0.6 s on a smoothstep arc that rises up to 0.8 + 0.3 × the distance, leaving a light trail; the inspector counts the hops |
 | Lane label | CPU number, kind, clock, busy share, process counts | `cpuN`, `P` or `E`, the clock in GHz, the busy percentage, and `N running, M idle`: the processes by last CPU, running being those on the track (the counts are left out where the platform reports no last CPU) |
@@ -923,7 +924,7 @@ The channels between processes as the plumbing of a boiler room: every process w
 
 **Decorative:** the brick walls, their arched windows and the slab, tile lines and dusk sky; the yellow paint of the bays and the order of the seats (which carries nothing but who came first); the iron, copper, brass and rubber colours, the rivets, the cap, the valve wheel and the collars and flanges; the position of a run's window in its longest leg; which side of a tank a run leaves by; the scatter of the droplets, which is seeded by the writer and the pipe; and which way an overhead tube turns its corner.
 
-**The flow rule.** A tank's flow is the growth of what its write calls moved (`wchar`) that no file position explains (`IoDetail::unattributed`, which already takes off what its write-only files advanced), less what it sent over TCP, loopback and remote, which is measured exactly. The outlets left for that remainder are every writable regular file, every pipe or FIFO it may write, every Unix socket pair, every other socket and a terminal; a TCP connection whose send rate was measured is already taken off, so it is not an outlet. With one outlet the remainder went through it, and the water, the gauge and the label are exact. With two or more the flow is known as a whole and its share of each is unknown: the manifold says `split unknown` and the card names the outlets. A writable file is an outlet whatever its position says, because `pwrite`, AIO and io_uring write to a file without moving it, so a process that holds one pipe and a file it may write is `split unknown` and a lone pipe is exact only when the process holds no writable file. A walk of the descriptors that a cap cut short (`IoDetail::partial`) is never exact. Descriptors of other kinds (epoll, eventfd) are not counted, so the outlets of a process that writes to such an object are understated. I/O that is not attributed is never given to a file, a pipe or a socket.
+**The flow rule.** A tank's flow is the growth of what its write calls moved (`wchar`) that no file position explains (`IoDetail::unattributed`, which already takes off what its write-only files advanced), less what it sent over TCP, loopback and remote, which is measured exactly. The outlets left for that remainder are every writable regular file, every pipe or FIFO it may write, every Unix socket pair, every other socket and a terminal; a TCP connection whose send rate was measured is already taken off, so it is not an outlet. With one outlet the remainder went through it, and the water, the gauge and the label are exact. With two or more the flow is known as a whole and its share of each is unknown: the manifold says `split unknown` and the card names the outlets. A writable file is an outlet whatever its position says, because `pwrite`, AIO and io_uring write to a file without moving it, so a process that holds one pipe and a file it may write is `split unknown` and a lone pipe is exact only when the process holds no writable file. A walk of the descriptors that a cap cut short (`IoDetail::partial`) is never exact. Descriptors of other kinds (character devices such as `/dev/null`, memfds, epoll, eventfd) are not counted as outlets, because isotop only counts them and cannot tell a readable one from a writable one, so "exact" means exact among the outlets isotop can see: a process that writes to `/dev/null` as well as a pipe still shows its whole remainder as the pipe's. I/O that is not attributed is never given to a file, a pipe or a socket.
 
 **Layout.** A tank's place depends on its cgroup and on when it became a tank, nothing else: CPU, memory and the other tanks never move it, and bays are placed again only when their block of seats is outgrown. Runs keep their route until an end moves or a new tank stands on it, and tanks are routed round at a fixed radius, so a change of memory moves no run. Water and beads move by the wall clock, whatever the frame rate, and stand still while paused.
 
@@ -1200,7 +1201,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-85,019 lines of Rust (50,382 production, 34,637 test) in 141 files, 1,184 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+85,096 lines of Rust (50,414 production, 34,682 test) in 141 files, 1,185 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

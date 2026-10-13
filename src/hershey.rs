@@ -49,6 +49,14 @@ const COUNT_COLUMNS: usize = 3;
 
 const SIMPLEX: &str = include_str!("hershey/romans.jhf");
 const TRIPLEX: &str = include_str!("hershey/romant.jhf");
+/// The notice the font data's terms require to be distributed with it, verbatim.
+const NOTICE: &str = include_str!("hershey/NOTICE");
+
+/// The acknowledgements of the Hershey Fonts, which `--help` prints so that they travel with the
+/// binary that embeds the font data.
+pub(crate) fn credits() -> String {
+    format!("The Hershey Fonts embedded in this program:\n\n{NOTICE}")
+}
 
 /// Which of the two faces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

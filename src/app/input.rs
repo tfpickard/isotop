@@ -68,8 +68,10 @@ impl App {
     fn perform(&mut self, action: Action, code: KeyCode, step: f32, touring: bool) -> bool {
         match action {
             Action::Quit => {
-                // A view may take the quit to play a farewell first; none does by default.
-                if !self.scene.key(self.view, ViewKey::Quit) {
+                // A view may take the quit to play a farewell first; none does by default. A
+                // paused or rewound app stands still (`Stage::dt` is 0), so a farewell could
+                // never finish: it quits at once.
+                if self.history.is_paused() || !self.scene.key(self.view, ViewKey::Quit) {
                     return true;
                 }
                 self.quitting = true;
@@ -284,6 +286,15 @@ mod tests {
         );
         let mut app = app_over(views::testing::FAREWELLS);
         assert!(app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0));
+
+        // A paused app has no time to play a farewell in, so it quits at once.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('P'));
+        assert!(app.history.is_paused());
+        assert!(
+            press(&mut app, KeyCode::Char('q')),
+            "no farewell while paused"
+        );
 
         // Switching away cancels the deferred quit, and a view that defers nothing quits at once.
         let mut app = app_over(views::testing::FAREWELLS);

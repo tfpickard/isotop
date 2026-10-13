@@ -122,10 +122,16 @@ impl Options {
     }
 }
 
+/// What ends `--help`: the controls the keymap lists, then the acknowledgements the Hershey font
+/// data must be distributed with.
+fn long_help_footer() -> String {
+    format!("{}\n\n{}", keys::summary(), crate::hershey::credits())
+}
+
 /// Parses the command line. The controls the keymap lists end `--help`.
 pub(crate) fn parse() -> Options {
     let matches = Options::command()
-        .after_long_help(keys::summary())
+        .after_long_help(long_help_footer())
         .get_matches();
     Options::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
 }
@@ -326,15 +332,20 @@ mod tests {
     #[test]
     fn help_ends_with_the_controls_from_the_keymap() {
         let help = Options::command()
-            .after_long_help(keys::summary())
+            .after_long_help(long_help_footer())
             .render_long_help()
             .to_string();
         assert!(help.contains("Q / e"), "{help}");
-        assert!(help.contains("--keys"), "{help}");
         assert!(
-            help.trim_end()
-                .ends_with(keys::summary().lines().last().unwrap()),
+            help.contains("Hershey Fonts embedded in this program"),
             "{help}"
+        );
+        assert!(help.contains("--keys"), "{help}");
+        let controls = help.find(keys::summary().lines().last().unwrap());
+        let credits = help.find("Hershey Fonts embedded in this program");
+        assert!(
+            controls < credits,
+            "the controls come first, then the credits: {help}"
         );
     }
 
