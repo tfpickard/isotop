@@ -1,7 +1,7 @@
 # Stellar photometry
 
 Astronomers measure how bright a star looks with a logarithmic scale of *magnitudes*, a historical accident that turned out to match the eye. isotop borrows the scale wholesale: memory is the star's brightness, 1 GiB is magnitude 0, and `src/stellar.rs` turns a magnitude into a
-sharp core inside a soft halo and turns births and exits into flashes. [View Ptolemy](View-Ptolemy) draws every steady process as such a star, and the specified [Planned HR](Planned-HR) sky is specified to build on the same module. This page derives the magnitude scale, explains the point-spread function behind the "star" look, lists exactly
+sharp core inside a soft halo and turns births and exits into flashes. [View Ptolemy](View-Ptolemy) draws every steady process as such a star, and the sky of the planned [Planned HR](Planned-HR) view is specified to build on the same module. This page derives the magnitude scale, explains the point-spread function behind the "star" look, lists exactly
 what the code does and where it saturates, and compares the nova, fade and supernova timelines with the real things.
 
 ![Memory to magnitude, halo profile, nova and fade, and supernova curves](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/stellar-photometry.svg)

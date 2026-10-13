@@ -2,6 +2,15 @@
 
 A terminal is a grid of characters, and isotop wants to show it a 1920-pixel image ten times a second. The Kitty graphics protocol makes that possible: an escape sequence carries (or points to) a block of raw pixels, and the terminal paints them under the text. This page is the protocol as isotop uses it, byte for byte, because the escape stream was captured from the release binary through a pseudo-terminal while these pages were written: the capability probe and why it ends with an ordinary device-attributes query, the two transports (POSIX shared memory and zlib plus base64), double buffering with image ids, the z-index trick that lets popups and labels be ordinary text drawn over the scene, how the terminal is restored, and what tmux lacks.
 
+## History
+
+* **Graphics terminals before bitmaps.** Text terminals that could also draw go back to the vector storage tubes of the early 1970s such as Tektronix's, which kept a drawn line lit without refresh. DEC's VT100 (1978) established the escape-sequence vocabulary that terminals still speak (ANSI X3.64, later ECMA-48). DEC added ReGIS, a geometric language of primitives such as lines and arcs, first on the VT125 in July 1981, and later in the VT240 series.
+* **Sixel.** DEC's other graphics format described a bitmap rather than shapes. Sixel was first used to send bitmaps to DEC dot-matrix printers such as the LA50 and later to the VT240-series terminals. The sources consulted here disagree about the year, and none confirmed 1983 (unverified). A *sixel* is a column of six pixels; each column is sent as one printable ASCII character, offset by 63, so the characters `?` through `~` encode 0 to 63. The sixel `?` is six pixels switched off.
+* **Image protocols for modern terminals.** With GPU-composited terminal emulators came escape sequences for whole images: iTerm2 defined one for inline images on macOS (details unverified here), and Kovid Goyal's kitty terminal defined the graphics protocol this page uses, which adds image ids, placements, z-order, compression and, importantly for isotop, shared-memory transfer. Its introduction date is not verified here. Other terminals adopted it, among them Ghostty, which Mitchell Hashimoto announced as open source with a 1.0 release in December 2024 and whose documentation lists the Kitty graphics and keyboard protocols.
+* **Shared memory.** Passing data between processes by naming a region of memory both can open, rather than copying it through a pipe, is the oldest trick of local inter-process communication; POSIX standardised `shm_open` and `shm_unlink` in the 1990s (IEEE Std 1003.1b-1993, to the best of my knowledge, unverified). The protocol's `t=s` medium uses it so that only the name crosses the terminal's byte stream.
+* **Synchronized output.** The `?2026` bracket is one of several proposals to stop terminals showing a half-drawn frame; it is a convention among terminal authors rather than an ECMA or ISO standard.
+* In isotop, `?` is also what `clean_text` writes in place of every character it will not forward. In sixel it means nothing is drawn.
+
 ## Theory: bitmap graphics through a text channel
 
 The channel is a byte stream of text and escape sequences, parsed by a terminal state machine. Kitty's protocol (Goyal) puts graphics in *APC* sequences, `ESC _ G <key=value,...> ; <payload> ESC \`, which terminals that do not know them are meant to ignore. The control keys select the action (transmit, display, query, delete), the pixel format and geometry, the *medium* the payload travels in, and optional compression; the payload is base64. Two media matter here:
@@ -15,13 +24,14 @@ The information-theoretic view is simple. A 1920 by 1080 RGB frame is $3 \times 
 
 ### Entering: the capability probe
 
-`Terminal::enter` refuses to run unless both stdin and stdout are terminals. Then, in order: raw mode; the alternate screen (`ESC [ ? 1049 h`); the cursor hidden (`?25l`); mouse capture, which in `crossterm` is the five modes `?1000h ?1002h ?1003h ?1015h ?1006h` (button, drag, any-motion, urxvt and SGR encodings). Then `probe()`.
+`Terminal::enter` refuses to run unless both stdin and stdout are terminals. Then, in order: raw mode; the alternate screen (`ESC [ ? 1049 h`); the cursor hidden (`?25l`); mouse capture, which in `crossterm` is the five modes `?1000h ?1002h ?1003h ?1015h ?1006h` (button, drag, any-motion, urxvt and SGR encodings). Then `probe()`, and, if the terminal answered the keyboard query, the push of the keyboard flags.
 
-The probe asks three questions and uses one sentinel. It writes a three-byte shared-memory object `/isotop-<pid>-probe` and sends, in one flush:
+The probe asks four questions and uses one sentinel. It writes a three-byte shared-memory object `/isotop-<pid>-probe` and sends, in one flush:
 
 ```text
 ESC _ G i=31,s=1,v=1,a=q,t=d,f=24 ; AAAA ESC \          Kitty graphics, direct medium (a 1x1 pixel, 3 zero bytes)
 ESC _ G i=32,s=1,v=1,a=q,t=s,f=24,S=3 ; <b64 name> ESC \ Kitty graphics, shared-memory medium (sent only if the object was made)
+ESC [ ? u                                                Kitty keyboard protocol: report the current flags
 ESC [ ? 1016 $ p                                         DECRQM: is SGR-Pixels mouse reporting (mode 1016) known?
 ESC [ c                                                  DA1: primary device attributes
 ```
@@ -32,6 +42,7 @@ ESC [ c                                                  DA1: primary device att
 |---|---|---|
 | `i=31;OK` | direct graphics work | otherwise: refuse to start, unless `--force-graphics` |
 | `i=32;OK` | the terminal can read shared memory | `shared_memory = true`, unless `--direct` |
+| `ESC [ ? <digits> u` | the terminal speaks the Kitty keyboard protocol (`keyboard_reply`) | `Terminal::enter` pushes `KEYBOARD_FLAGS` (disambiguate escape codes, report alternate keys, report all keys as escape codes) so that Shift + Space is distinguishable from Space; `restore_screen` pops them |
 | `ESC [ ? 1016 ; 1 $ y` or `; 2 $ y` | the terminal knows SGR-Pixels (set or reset) | enable it with `ESC [ ? 1016 h`; clicks are then pixel-precise ([Theory Picking](Theory-Picking)) |
 
 If graphics are not detected the error names tmux when `$TMUX` is set ("tmux does not pass Kitty graphics through ...") and otherwise says detection failed; the `Drop` of the half-built `Terminal` restores the screen before the process exits. On macOS the wait uses `select(2)` for a terminal, because `poll(2)` does not support devices there.
@@ -108,9 +119,10 @@ The image fits the scene area through the `c` and `r` keys, and `Layout::measure
 
 ### Restoring the terminal
 
-`Terminal` implements `Drop`, and the guard is created *before* the probe so that an early error also restores. The captured shutdown is:
+`Terminal` implements `Drop`, and the guard is created *before* the probe so that an early error also restores. The captured shutdown is below; its first line, the pop of the keyboard flags, is added from the source (`restore_screen`) and was not in the capture:
 
 ```text
+ESC[<1u                                                      keyboard flags popped first (only if pushed)
 ESC[?2026l  ESC[?1016l  ESC_G a=d,d=A,q=2 ESC\
 ESC[?1006l ESC[?1015l ESC[?1003l ESC[?1002l ESC[?1000l     mouse capture off
 ESC[?25h                                                     cursor shown

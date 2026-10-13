@@ -1,6 +1,18 @@
 # Math: Schwarzschild
 
-The Schwarzschild metric is the exact vacuum solution of Einstein's equations outside a spherical, non-rotating mass, and nearly everything the Planned [Horizon](Planned-Horizon) view draws can be derived from it in a few lines: the radii 2M, 3M and 4M and 6M, the Kepler-exact orbital frequency, the bending and capture of light, the redshift of orbiting gas, the freezing of an infalling body, the tidal stretching, even the temperature of Hawking radiation. This page derives those results, checks the important ones numerically with the Python standard library, and separates what the theory says from what the (not yet existing) view will do with it. It has no view of its own: it is the mathematics page behind [Horizon](Planned-Horizon), and it is independent of isotop. Throughout, $G = c = 1$ and $M$ is the mass, so lengths and times are in units of $GM/c^2$ and $GM/c^3$; for the Sun $GM/c^2 = 1.4766$ km and $GM/c^3 = 4.925\ \mu$s.
+The Schwarzschild metric is the exact vacuum solution of Einstein's equations outside a spherical, non-rotating mass, and nearly everything the [Horizon](Planned-Horizon) view draws can be derived from it in a few lines: the radii 2M, 3M and 4M and 6M, the Kepler-exact orbital frequency, the bending and capture of light, the redshift of orbiting gas, the freezing of an infalling body, the tidal stretching, even the temperature of Hawking radiation. This page derives those results, checks the important ones numerically with the Python standard library, and separates what the theory says from what the view does with it. It has no view of its own: it is the mathematics page behind [Horizon](Planned-Horizon), and it is independent of isotop. Throughout, $G = c = 1$ and $M$ is the mass, so lengths and times are in units of $GM/c^2$ and $GM/c^3$; for the Sun $GM/c^2 = 1.4766$ km and $GM/c^3 = 4.925\ \mu$s.
+
+## History
+
+The longer account lives in the repository: [docs/theory/horizon.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/horizon.md).
+
+**Dark stars.** The idea that something could be too heavy for light to leave is older than relativity. John Michell (1783) and Pierre-Simon Laplace (1796) reasoned with Newtonian gravity and light as fast particles: enough mass inside a small enough radius gives an escape speed above $c$. The argument lapsed when light was shown to be a wave, and it was right for the wrong reasons.
+
+**Schwarzschild.** Einstein published the field equations in November 1915. Karl Schwarzschild, an astronomer serving in the German army on the Eastern Front, sent him the exact solution for the space outside a non-rotating mass in a letter dated 22 December 1915; Einstein replied on 9 January 1916 and presented the paper to the Prussian Academy, and the solution appeared in the Academy's *Sitzungsberichte* in 1916. A second paper, on the interior of a uniform sphere, followed within weeks. Schwarzschild was invalided home with the autoimmune disease pemphigus and died at Potsdam on 11 May 1916, aged 42. His surname is German for "black shield". Nothing follows from this.
+
+**What the radius means.** For decades the surface at $r = 2M$ was treated as a true singularity. Eddington (1924) and later Finkelstein (1958) showed that only the coordinates misbehave there and that an infalling observer crosses without incident; Kruskal (1960) gave the maximal extension used in the references. In 1939 Oppenheimer and Snyder computed the collapse of a pressureless cloud and found both pictures at once: finite proper time to the centre, and for a distant observer a surface that freezes at the horizon, which is the plunge of section "Falling in". John Wheeler popularised the phrase "black hole" in a 1967 lecture.
+
+**Disks and pictures.** Shakura and Sunyaev (1973), Novikov and Thorne (1973) and Page and Thorne (1974) worked out what a thin relativistic disk radiates. In 1978 Jean-Pierre Luminet computed the appearance of such a disk around a Schwarzschild hole on an IBM 7040 at the Paris-Meudon Observatory and, the machine having no display, drew the result by hand in India ink; it was published in 1979. The Event Horizon Telescope imaged the shadow of M87\* in 2019 and of Sagittarius A\* in 2022. Hawking (1975) showed that the hole radiates, with the temperature of the last section, and Bekenstein (1973) had given it an entropy.
 
 ## The metric
 
@@ -56,7 +68,7 @@ $$
 \Omega = \sqrt{\frac{M}{r^{3}}},
 $$
 
-identical to Kepler's third law, exactly and not just in the weak-field limit, in the units of the distant observer's clock. The proper time of the orbiting body runs slower: $d\tau/dt = \sqrt{1 - 3M/r}$ (that is, $u^t = 1/\sqrt{1 - 3M/r}$). The period at the ISCO is $2\pi\,6^{3/2}M = 92.3M$ in coordinate time and $65.3M$ in proper time. In isotop's units of $M = 1$ and $10M$ per wall-clock second, an ISCO orbit would take 9.2 s.
+identical to Kepler's third law, exactly and not just in the weak-field limit, in the units of the distant observer's clock. The proper time of the orbiting body runs slower: $d\tau/dt = \sqrt{1 - 3M/r}$ (that is, $u^t = 1/\sqrt{1 - 3M/r}$). The period at the ISCO is $2\pi\,6^{3/2}M = 92.3M$ in coordinate time and $65.3M$ in proper time. In isotop's units of $M = 1$ and $10M$ per wall-clock second (`orbits::M_PER_SECOND`), an ISCO orbit takes 9.2 s.
 
 ![Effective potential, Doppler beaming of a disk ring, and the plunge](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/horizon-potential-redshift-plunge.svg)
 
@@ -178,7 +190,7 @@ This is a quantum result and cannot be derived from the classical metric alone, 
 
 ## What "memory pressure as mass" could honestly mean
 
-The Planned [Horizon](Planned-Horizon) view uses units in which $M = 1$: the mass sets the scale and nothing else, so no measured quantity is the mass of anything. The measured quantities enter elsewhere: `oom_score` ranks the orbits, memory pressure (`memory some avg10`) sets the *brightness* of the disk, and an OOM kill triggers a plunge. The honest physical content is therefore these:
+The [Horizon](Planned-Horizon) view uses units in which $M = 1$: the mass sets the scale and nothing else, so no measured quantity is the mass of anything. The measured quantities enter elsewhere: `oom_score` ranks the orbits, memory pressure (`memory some avg10`, `snapshot.pressure[1]`) sets the *brightness* of the disk (a gain from 0.45 at no pressure to 1.35 at 100 %), and an OOM kill triggers a plunge. The honest physical content is therefore these:
 
 * **Brightness is accretion rate.** The disk's luminosity is $\eta\dot M c^2$, so tying brightness to a pressure is tying it to a rate at which something is being consumed, which is a sound reading. It does not say how much has been consumed.
 * **Rank is not mass.** The orbit radius is a rank of `oom_score`, a monotone function; the metric's radii $6M$ to $30M$ are chosen, and the physical radius of any process is not a measurement.
@@ -186,7 +198,11 @@ The Planned [Horizon](Planned-Horizon) view uses units in which $M = 1$: the mas
 
 ## Where in the code
 
-Nothing described on this page exists in the source tree today. The design that will use it is [Planned-Horizon](Planned-Horizon) (issue [#43](https://github.com/tfpickard/isotop/issues/43)): a pure-physics module `src/horizon/lens.rs` (photon table, Page-Thorne flux, $1 + z$, `plunge_track`). The Python prototype, reference only, is `docs/mockups/code/horizon.py` (`LensTable`, `beloborodov_b`, `page_thorne`, `one_plus_z`, `plunge_track`). Figure scripts on this page: `docs/figures/schwarzschild-light-bending.py` and `docs/figures/horizon-potential-redshift-plunge.py`.
+The [Horizon](Planned-Horizon) view implements part of this page; the rest is theory that the view does not use (tides, Hawking temperature, the full proper-time infall).
+
+* [`src/horizon/lens.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon/lens.rs): `LensTable` (the photon table of section "Lensing a scene by its vertices": 360 radii by 721 sweeps, traced with RK4 at `PHOTON_STEP = 0.002`), `trace_photon`, `beloborodov_impact_parameter`, `flux` (the closed form derived above, with the coefficient $\sqrt3/2$) and `disk_flux`, `angular_velocity` and `period`, `one_plus_z`, `disk_emission`, `PlungeTrack` and `plunge_brightness`; constants `HORIZON`, `ISCO`, `SHADOW_RADIUS`, `DISK_OUTER`, `PLUNGE_FLOOR`.
+* [`src/horizon/orbits.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon/orbits.rs): `rank_radius`, `band_radius`, `M_PER_SECOND`, `Orbits`; [`src/horizon.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon.rs): the view itself; [`src/horizon/disk.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon/disk.rs): the lensed disk, shadow and photon ring as triangles.
+* The Python prototype, reference only, is `docs/mockups/code/horizon.py` (`LensTable`, `beloborodov_b`, `page_thorne`, `one_plus_z`, `plunge_track`); its `page_thorne` carries the wrong coefficient discussed under "The accretion disk flux", and `lens::flux` documents the correction. Figure scripts on this page: `docs/figures/schwarzschild-light-bending.py` and `docs/figures/horizon-potential-redshift-plunge.py`.
 
 ## References
 

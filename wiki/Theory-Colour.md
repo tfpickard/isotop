@@ -5,15 +5,26 @@ Every colour that means something about a process or a CPU core lives in one 174
 colours, three core colours, eight district colours, four stone colours, and two arithmetic helpers, `mix` and
 `tint`. This page asks what those numbers are, what space the arithmetic happens in, what it costs there, and
 how well a viewer can tell the colours apart, including a viewer with colour-vision deficiency. The numbers
-are computed from the actual palette values. It ends with the two planned changes: a colour-blind-safe
-palette ([#104](https://github.com/tfpickard/isotop/issues/104)) and a blackbody colour table
-([#32](https://github.com/tfpickard/isotop/issues/32)).
+are computed from the actual palette values. It ends with the blackbody colour table that
+[`src/blackbody.rs`](https://github.com/tfpickard/isotop/blob/main/src/blackbody.rs) now provides
+([#32](https://github.com/tfpickard/isotop/issues/32)) and the one change still planned, a colour-blind-safe
+palette ([#104](https://github.com/tfpickard/isotop/issues/104)).
 
 ![The isotop palette, and the same swatches as a protanope, a deuteranope and a tritanope would see them; below, mix and tint compared with linear-light blending](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/colour-palette.svg)
 
 *Rows: normal vision; protanopia, deuteranopia, tritanopia (Machado et al. 2009, severity 1.0, section 5).
 Below: a `mix` of teal and amber in the encoded space the code uses, against the same blend in linear light,
 with the relative luminance of each step. Colour-vision simulations are indicative.*
+
+## History
+
+Colour on a computer display began as a matter of what the cathode-ray tube happened to do. The tube's brightness is roughly a power of the drive voltage, so a byte that was meant to be linear in intensity was not, and the exponent near 2.2 became a convention rather than a design. sRGB wrote that convention down. A proposal dated 5 November 1996 by Michael Stokes and Ricardo Motta of Hewlett-Packard and Matthew Anderson and Srinivasan Chandrasekar of Microsoft asked for a standard default colour space for operating systems, printers and the web, "based on a calibrated colorimetric RGB color space well suited to Cathode Ray Tube (CRT) monitors, television, scanners, digital cameras, and printing systems". The IEC published it as IEC 61966-2-1 in October 1999 (amended in 2003); a small numerical error caused by rounding was corrected on the way, and the viewing conditions were clarified. The W3C's copy of the proposal now carries a note that the document is obsolete and kept for historical purposes only.
+
+The question of what a temperature looks like is older. The colour of heated bodies was a working fact for smiths long before Planck gave the spectrum of a blackbody in 1900. Priest described something like correlated colour temperature in 1923, and Davis introduced the name in 1931, defining it on the Planckian locus, the curve a blackbody's chromaticity follows as its temperature rises. The CIE later fixed the chromaticity diagram in which the nearest point on that locus is sought: the 1960 uniform-chromaticity-scale diagram. The tabulated colour-matching functions that turn a spectrum into a chromaticity are the CIE 1931 standard observer; Wyman, Sloan and Shirley (2013) published a multi-lobe Gaussian fit to them, which is what lets `blackbody.rs` carry a generator and no tabulated CIE data.
+
+Colour-vision deficiency was studied as a medical and, soon, a military problem. Shinobu Ishihara of the University of Tokyo published his plates in 1917 (some sources say he began them in 1916) at the request of the Japanese military, who wanted to screen conscripts; the plates rely on pseudo-isochromatic pairs that look alike to a dichromat and differ to everyone else. The computational counterpart is Brettel, Viénot and Mollon (1997), who simulated dichromat appearance on a screen, and Machado, Oliveira and Fernandes (2009), who extended it to partial loss in a single matrix on linear RGB, which is the model section 5 uses. Okabe and Ito (2008) turned the same concern into a palette of colours chosen to survive it.
+
+The yardsticks of section 1 are of the same period. CIEDE2000 was adopted by the CIE in 2001 and its implementation notes are Sharma, Wu and Dalal (2005); WCAG 2.0 (2008) set the contrast ratio, and WCAG 2.1 (2018) added the 3:1 threshold for graphical objects that section 2 applies to the kernel colour.
 
 ## 1. Theory: what a number like `[72, 183, 199]` is
 
@@ -90,7 +101,7 @@ Functions:
 * `state_color(state)`: `Z` zombie, `T` or `t` stopped, `D` blocked, else none. A state colour **overrides** the
   kind colour.
 * `process_color(process, group)` (City): the state colour, or `DISTRICTS[group % 8]`.
-* `kind_color(process)` (Orbit, Ripple, Flow, Cores, Cells, Strata, Globe, Coop, Ptolemy, Tesseract): the state
+* `kind_color(process)` (Orbit, Ripple, Flow, Cores, Cells, Strata, Globe, Coop, Ptolemy, Tesseract, Murmuration, Horizon): the state
   colour, else the kind base brightness-scaled per pid (section 3.2). State colours are **not** jittered.
 * `core_color(kind)` and `core_name(kind)` ("performance", "efficiency", "unknown").
 * Colours used by only one view stay in that view (for example Reef's own palette), and the terminal
@@ -174,7 +185,7 @@ two renderers agree.
 
 **Truncation is biased.** `as u8` rounds toward zero, so the expected error is $-0.5$ of a level per channel
 per operation; repeated blends (a glow over a beam over a sphere) accumulate a few levels of darkening. It is
-smaller than the 6-level tolerance of the planned blackbody test and well below perception, and it is the
+smaller than the 6-level tolerance of the blackbody test and well below perception, and it is the
 reason the golden hashes are exact: deterministic truncation, not rounding that depends on a libm.
 
 ### 3.4 Blending and haze
@@ -251,13 +262,13 @@ Section 5 shows what the test will find on the shipped palette: the stopped/sess
 threshold above about 4.5, and the unknown-core/system pair fails under deuteranopia. That is a concrete
 reason the check should include the *state against kind* pairs, which the issue's list does.
 
-## 7. Planned: the blackbody table (issue #32)
+## 7. The blackbody table
 
-> **Planned, not yet implemented.** Specified in [issue #32](https://github.com/tfpickard/isotop/issues/32)
-> ("B5: Add the blackbody colour table"), `src/blackbody.rs` does not exist. It will serve the planned Horizon
-> and HR views.
-
-A star's colour is its temperature. The plan is a pure module mapping $T\in[1000,40000]$ K to a display colour.
+A star's colour is its temperature. [`src/blackbody.rs`](https://github.com/tfpickard/isotop/blob/main/src/blackbody.rs)
+is a pure module mapping $T\in[1000,40000]$ K (`MINIMUM_KELVIN`, `MAXIMUM_KELVIN`) to a colour. The Horizon view
+draws its accretion disk and its stars with `blackbody::linear` and `blackbody::color`
+(`src/horizon/disk.rs`); the planned HR view is meant to use it as well. This section gives the physics, then the
+recipe as the module's header states it, then a check of the table.
 
 **Physics.** A blackbody at temperature $T$ emits the spectral radiance
 $B_\lambda(T)\propto\lambda^{-5}\bigl(e^{c_2/(\lambda T)}-1\bigr)^{-1}$, $c_2=hc/k=1.4387769\times10^{-2}$ m K, with
@@ -265,17 +276,20 @@ its peak at $\lambda_{\max}=b/T$ ($b=2.8978\times10^{-3}$ m K, Wien's law): 2 89
 502 nm at 5 778 K, 290 nm at 10 000 K. The eye integrates the spectrum against the colour-matching functions
 $\bar x,\bar y,\bar z$: $X=\int B_\lambda\bar x\,d\lambda$, and so on.
 
-**The recipe in the issue.** Multi-lobe Gaussian fit of the CIE 1931 2-degree observer by Wyman, Sloan and
-Shirley (2013) (no tabulated CIE data, for licence reasons); integrate 360 to 830 nm in 1 nm steps in `f64`;
+**The recipe in the module.** Multi-lobe Gaussian fit of the CIE 1931 2-degree observer by Wyman, Sloan and
+Shirley (2013) (the constants of the lobes are in the test `generated`, which the table must match); integrate 360 to 830 nm in 1 nm steps in `f64`;
 convert with the IEC 61966-2-1 matrix to linear sRGB; clip negative channels to 0; divide by the largest
-channel; store 256 entries at $T_k=1000\cdot40^{k/255}$ (geometric, 1.46 percent per step, "because colour changes
-fastest at low temperatures"); interpolate linearly in $\ln T$; and, for `color(kelvin, brightness)`, scale by the
-brightness **then apply the sRGB transfer function and round**, because "frames hold sRGB-encoded bytes, so
-linear values must never go straight into a `Color`". This is exactly the point of section 3.1: the table is in
-linear light, the frame is in encoded bytes, and the module is the one place a transfer function is applied.
+channel; store 256 entries at $T_k=1000\cdot40^{k/255}$ (geometric, 1.46 percent per step, because colour changes
+fastest when it is cold); interpolate linearly in $\ln T$; and, for `color(kelvin, brightness)`, scale by the
+brightness **then apply the sRGB transfer function and round** (`encode`), because frames hold sRGB-encoded bytes
+and linear values must never go straight into a `Color`. This is exactly the point of section 3.1: the table is
+in linear light, the frame is in encoded bytes, and `color` is where a blackbody crosses from one to the other.
+There is no chromatic adaptation: the colour is that of the light itself, white point and all.
 
 **A check of the recipe.** The prototype technique in `docs/mockups/code/hr.py` is the recipe in NumPy. I
-re-implemented it in the standard library (the same lobe constants, 1 nm steps, same matrix) and computed:
+re-implemented it in the standard library (the same lobe constants, 1 nm steps, same matrix) and computed the
+following; the module's own table gives the same two end rows (1 000 K `[255, 47, 0]`, 40 000 K
+`[158, 184, 255]`, pinned by `blackbody_colours_match_published_values`):
 
 | $T$ (K) | linear, max-normalised | encoded | hex | $Y$ |
 |---|---|---|---|---|
@@ -296,6 +310,11 @@ at 5 000 K, $6\times10^{-4}$ at 4 000 K, $1\times10^{-3}$ at 2 856 K and $3\time
 discrepancy being at the cool end where the Wyman fit and the polynomial are both least accurate. The 6 500 K
 point is $(0.3135,0.3237)$, which is the well-known chromaticity of a 6 500 K blackbody. So the lobe constants
 reproduce a physically reasonable locus.
+
+The module's test compares six temperatures (2 000 to 20 000 K) with a published table of blackbody colours
+(Mitchell Charity's "What color is a blackbody?", the CIE 1931 2-degree observer) within 6 levels per channel. That
+table is chromatically adapted and the module's is not, so at 1 000 K and 40 000 K the green channel differs by
+9 and 8 levels; the test pins those two rows instead of tolerating them.
 
 What the table shows about the design:
 
@@ -329,6 +348,8 @@ repository root.
 
 * [`src/palette.rs`](https://github.com/tfpickard/isotop/blob/main/src/palette.rs): the constants, `mix`,
   `tint`, `state_color`, `process_color`, `kind_color`, `core_color`, `core_name`, `stone_color`, `DISTRICTS`.
+* [`src/blackbody.rs`](https://github.com/tfpickard/isotop/blob/main/src/blackbody.rs): `TABLE`, `linear`, `color`,
+  `MINIMUM_KELVIN`, `MAXIMUM_KELVIN`; its users are in `src/horizon/disk.rs`.
 * [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Color`, `Sky`, `Frame::blend`,
   `Frame::ball` (sphere light), `Frame::halo`, `Frame::ray`.
 * [`src/render/shared.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/shared.rs): sky colours,
