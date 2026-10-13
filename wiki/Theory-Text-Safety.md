@@ -4,16 +4,26 @@ isotop's input is the process table of a machine on which, by definition, other 
 running, and the names of those programs are chosen by the programs. A process can call itself anything
 that fits in fifteen bytes, and give itself any command line. isotop then writes those names onto your
 terminal, which is a device that treats certain byte sequences as commands. This page is a small security
-chapter: the threat model, what the one sanitising function does and why that is sufficient, a verified
+chapter: the threat model, what the sanitising function does and why that is sufficient, a verified
 demonstration that the hostile text really arrives from the kernel, the gaps in the current design (one of
 them an availability bug that I found while checking), and the plan to make the compiler enforce the rule.
+
+## History
+
+A terminal is an interpreter, and the language it interprets is older than most of the programs that print to it. The control functions are standardised as ECMA-48 (the reference below is its fifth edition, 1991) and ISO/IEC 6429, and DEC's VT100 terminals spread the escape-sequence style through the late 1970s (dates from memory, unverified). Xterm and its successors added window titles, colours, reports and, later, graphics. Those functions exist so that a program can control its own terminal; the case of a program that prints other people's text was not what they were introduced for.
+
+The vulnerability class was named in public early in 2003. A message titled "Terminal Emulator Security Issues" was posted to Vulnwatch, Bugtraq and Full-Disclosure on 24 February 2003. Among the issues it described were the escape sequences that make a terminal report its own state back: set the window title with one sequence, ask for it with another, and the terminal types the title onto the command line as if the user had entered it. A carriage return cannot be put in the title, so the user still has to press Enter. Eterm and rxvt were also reported to have a screen-dump sequence that wrote the terminal's contents to a file. CVE entries followed for xterm in XFree86 4.2.0 and earlier (CVE-2003-0063), Eterm 0.9.1 and earlier (CVE-2003-0068) and dtterm (CVE-2003-0064). CVE-2003-0063 was reserved on 4 February 2003 and, depending on the database, published on 3 March 2003 or on 1 September 2004.
+
+The text itself is the second attack surface, because Unicode added ways for a string to display as something other than what it stores. Boucher and Anderson's *Trojan Source* (CVE-2021-42574, published 1 November 2021) used the bidirectional controls of the Unicode Bidirectional Algorithm to make source code read differently to a reviewer and to a compiler, and some compilers and code hosts are reported to have added warnings for bidi controls (a secondary source, unverified here). Confusable characters were catalogued in the Unicode Consortium's Technical Standard #39. A process viewer meets both problems in a weaker form, since the strings it prints are names that anyone may choose.
+
+The design that this page documents is an allow-list: accept only what is known to be harmless, instead of removing what is known to be dangerous. The idea of moving that decision from a comment into the type of the string, planned in section 6, is the one King summarised in 2019 as "parse, don't validate".
 
 ## 1. The invariant
 
 `AGENTS.md`, Invariants: "**Process text is untrusted.** Names and command lines are sanitized before they
 reach the terminal (`process_text_cannot_inject_terminal_controls`). Keep it that way for any new text."
 `docs/VIEW_CONVENTIONS.md`, "Untrusted text": every string from the system is stored raw in the model, and
-reaches the terminal only through `terminal::clean_text`; scene labels also go through `render::label_name`;
+reaches the terminal only through `terminal::clean_text` (generated Braille sparklines have their own function, `terminal::clean_sparkline`, described in section 3); scene labels also go through `render::label_name`;
 text drawn into the frame (`Item::Glyph`) is cleaned before layout; kernel strings that are only compared are
 mapped to enums and never displayed raw; and "do not widen `clean_text`".
 
@@ -129,7 +139,7 @@ exactness, and it is paid in readability (section 5).
 
 Where it is applied, in `terminal.rs`: `Terminal::present` runs every status-line string through
 `clean_text(line, columns)`; `draw_label` through `clean_text(&label.text, room)`; `draw_popup` through
-`clean_text(line, inner)`. These are the three places where text enters the escape stream. The Matrix view's text is
+`clean_text(line, inner)`. These are the three places where text enters the escape stream; inside `draw_popup`, a line whose index is in `popup.braille` goes through `clean_sparkline` instead. The Matrix view's text is
 drawn as pixels by the 7 by 14 bitmap font in `glyphs.rs`, whose `glyph(c)` has its own allow-list ("anything
 outside printable ASCII is drawn as `?`") and cannot emit a control by construction.
 
@@ -139,6 +149,18 @@ ASCII `..` ("the ellipsis is ASCII because `terminal::clean_text` turns every ot
 It counts characters, not bytes (`labels_count_characters_not_bytes`), which is correct *only because* the
 sanitiser later makes characters and cells coincide.
 
+### 3.0 The second function: `clean_sparkline`
+
+The inspector card of a process may carry generated braille lines (`stage.sparklines`: Cortex's membrane trace, for
+one). They cannot go through `clean_text`, which would turn every dot into `?`. `clean_sparkline(text, width)`
+keeps the Braille Patterns block (U+2800 to U+28FF) and the space and maps every other scalar to `?`, so a
+sparkline can carry nothing but dots the view generated. It leaves `clean_text` alone: "Do not widen `clean_text`"
+in `docs/VIEW_CONVENTIONS.md`, and `process_names_still_lose_braille_in_clean_text` pins that a process name with
+braille in it still comes out as `??name`. The output is not ASCII, so P1 does not hold for it, but the allowed set
+(256 braille cells and the space) contains no control, no bidi control and no zero-width character, and every
+member occupies one cell. Only `Stage::sparklines` reaches it, and its doc comment says that text from the system
+never belongs there. The test is `sparkline_sanitizer_passes_braille_but_not_controls_or_other_text`.
+
 ### 3.1 The tests
 
 | test | file | asserts |
@@ -146,6 +168,7 @@ sanitiser later makes characters and cells coincide.
 | `process_text_cannot_inject_terminal_controls` | `terminal.rs` | `clean_text("bad\x1b[2J\nname", 80) == "bad?[2J?name"`, and `clean_text("abcdef", 3) == "abc"` |
 | `thing_card_text_cannot_inject_terminal_controls` | `main.rs` | a pickable "lantern" with a card title ending `\x1b]0;flare\x07` and a line `wick \x1b[2J\x07lit`: the bytes `draw_label` and `draw_popup` produce contain `lantern 100?]0;flare?` and `wick ?[2J?lit`, and contain none of `\x1b]0;`, `\x1b[2J`, `\x07` |
 | `epitaphs_are_sanitized` | `necropolis.rs` | a process named `evil\u{1b}]0;pwned\u{7}name` has a grave card whose popup output contains `evil?]0;pwned?name-77` and no `\x1b]0;` or BEL |
+| `sparkline_sanitizer_passes_braille_but_not_controls_or_other_text` | `terminal.rs` | `clean_sparkline("⣿\x1b[2J\n⣿", 80) == "⣿?????⣿"`, `"a\u{27ff}\u{2900}\u{202e}"` becomes `????`, and the cut is in cells |
 | `cut_labels_survive_terminal_text_cleaning_unchanged` | `render.rs` | `label_name` output passes through `clean_text` unchanged (no `?`) and is at most 15 cells |
 
 The first is the sentinel the guides name; the second and third are end-to-end (hostile text through the
@@ -196,14 +219,15 @@ Every label, popup and status line passes through `clean_text` "because three fu
 straight to the output would compile. Issue [#81](https://github.com/tfpickard/isotop/issues/81) says it
 in those words and plans the type (section 6).
 
-### 5.2 Byte widths in `place_panel`
+### 5.2 Byte widths in `place_lines`
 
-`place_panel(lines, ...)` in `main.rs` computes the popup width from `lines.iter().map(String::len).max()`,
-the **byte** length of the *uncleaned* lines, while the border and padding are then drawn with the cleaned,
-one-character-per-cell text. For ASCII the two agree; for non-ASCII text the popup is wider than needed (a
-two-byte character counts 2 and draws as one cell; the box is only too wide, never too narrow, since bytes are
-at least characters). Labels and hover tags use `chars().count()`, which is right because `clean_text` is
-character-for-character. #81 lists the discrepancy and adds `SafeText::width()`.
+`place_panel(lines, ...)` in `main.rs` calls `place_lines`, which computes the popup width from the **byte**
+length (`line.len()`) of the *uncleaned* lines, except for the lines flagged as braille, whose width is
+`chars().count()` (a braille cell is three bytes and one cell). The border and padding are then drawn with the
+cleaned, one-character-per-cell text. For ASCII the two agree; for non-ASCII text in an unflagged line the popup is
+wider than needed (a two-byte character counts 2 and draws as one cell; the box is only too wide, never too
+narrow, since bytes are at least characters). Labels and hover tags use `chars().count()`, which is right because
+`clean_text` is character-for-character. #81 lists the discrepancy and adds `SafeText::width()`.
 
 ### 5.3 Legibility: every non-ASCII name is `?`
 
@@ -291,6 +315,7 @@ Allowing printable Unicode needs a stricter filter and a width model, because P1
 cargo test process_text_cannot_inject_terminal_controls
 cargo test thing_card_text_cannot_inject_terminal_controls
 cargo test epitaphs_are_sanitized
+cargo test sparkline_sanitizer_passes_braille
 cargo test cut_labels_survive_terminal_text_cleaning_unchanged
 
 # the hostile name: run the script of section 4 with `import time; time.sleep(120)` appended, in the
@@ -303,11 +328,11 @@ In a headless run the names appear only in the PNG (as bitmap text via `glyph`, 
 ## 8. Where in the code
 
 * [`src/terminal.rs`](https://github.com/tfpickard/isotop/blob/main/src/terminal.rs): `clean_text`,
-  `Terminal::present`, `draw_label`, `draw_popup`, `Label`, `Popup`.
+  `clean_sparkline`, `Terminal::present`, `draw_label`, `draw_popup`, `Label`, `Popup`.
 * [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `label_name`,
-  `without_apple_prefix`, `LABEL_NAME_CELLS`; `Card` (its text "is untrusted").
+  `without_apple_prefix`, `LABEL_NAME_CELLS`; `Card` (its text "is untrusted"), `Stage::sparklines`.
 * [`src/glyphs.rs`](https://github.com/tfpickard/isotop/blob/main/src/glyphs.rs): `glyph`.
-* [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `place_panel`, the label and
+* [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `place_panel` and `place_lines`, the label and
   tag placement, `thing_card_text_cannot_inject_terminal_controls`.
 * [`src/platform/linux/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/mod.rs):
   `parse_stat` (`rfind(')')`), `Texts::read` (lossy `cmdline`), `Sampler::processes` (the
