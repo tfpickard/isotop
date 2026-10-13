@@ -150,13 +150,15 @@ impl Coop {
             let body = draw_chicken(
                 frame,
                 camera,
-                chicken,
-                ground,
-                r,
-                kind_color(process),
-                index as u32,
-                selected,
-                time,
+                &Bird {
+                    chicken,
+                    ground,
+                    r,
+                    plumage: kind_color(process),
+                    pick: index as u32,
+                    selected,
+                    time,
+                },
             );
             if let Some(read) = process.read_rate.filter(|&rate| rate > DUST_RATE) {
                 for puff in 0..puffs(read) {
@@ -630,52 +632,97 @@ fn offset(base: Point, forward: [f32; 2], f: f32, side: f32, up: f32) -> Point {
     ]
 }
 
-/// Draws one chicken in the pose of its role and returns its body centre: a plump body of
-/// three spheres, neck, head with comb, beak, wattle and eyes, wings, a tail fan and legs.
-#[expect(clippy::too_many_arguments, reason = "split in #78 (A19)")]
-#[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
-fn draw_chicken(
-    frame: &mut Frame,
-    camera: &Camera,
-    chicken: &Chicken,
+/// A chicken as it is drawn this frame.
+struct Bird<'a> {
+    chicken: &'a Chicken,
+    /// Where it stands on the ground, between its last two steps.
     ground: [f32; 2],
+    /// The body radius, grown in over the first moments of its process.
     r: f32,
     plumage: Color,
     pick: u32,
     selected: bool,
     time: f32,
-) -> Point {
-    let forward = [chicken.theta.cos(), chicken.theta.sin()];
-    let phase = (chicken.id.pid % 97) as f32;
-    let seated = chicken.role == Role::Roosting || chicken.perch > 0.0;
-    let walking = chicken.role == Role::Foraging || chicken.walking();
-    // Hopping up to the perch over the last unit of the walk.
-    let lift = if seated {
-        let away = (chicken.target[0] - ground[0]).hypot(chicken.target[1] - ground[1]);
-        chicken.perch * (1.0 - away).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let perched = seated && lift > 0.0;
-    let zombie = chicken.role == Role::Zombie;
-    // Body height, then the head's offset forward and up, in body radii.
-    let (height, head_forward, head_up, neck) = match chicken.role {
-        Role::Zombie => (r * 0.8, 1.05, -0.3, false),
-        Role::Frozen => (lift + r * 0.72, 0.85, 0.45, false),
-        // Brooding: settled low on the straw pad, feathers fluffed out.
-        Role::Brooding if perched => (lift + r * 0.4, 0.8, 0.4, false),
-        _ if perched => (lift + r * 0.6, 0.7, 0.5, false),
-        Role::Feeding if chicken.arrived => {
-            // Pecking is decorative: the head bobs into the trough.
-            let peck = (time * 7.0 + phase).sin().abs();
-            (r * 1.3, 1.15, 0.25 - 0.45 * peck, true)
+}
+
+/// How a chicken stands and which way it faces, from its role.
+struct Pose {
+    forward: [f32; 2],
+    phase: f32,
+    perched: bool,
+    walking: bool,
+    zombie: bool,
+    /// 1 for a chicken on its feet, -1 for a zombie with its feet up.
+    up: f32,
+    body: Point,
+    /// The head's offset forward and up from the body, in body radii.
+    head_forward: f32,
+    head_up: f32,
+    neck: bool,
+}
+
+impl Bird<'_> {
+    fn pose(&self) -> Pose {
+        let (chicken, ground, r, time) = (self.chicken, self.ground, self.r, self.time);
+        let forward = [chicken.theta.cos(), chicken.theta.sin()];
+        let phase = (chicken.id.pid % 97) as f32;
+        let seated = chicken.role == Role::Roosting || chicken.perch > 0.0;
+        let walking = chicken.role == Role::Foraging || chicken.walking();
+        // Hopping up to the perch over the last unit of the walk.
+        let lift = if seated {
+            let away = (chicken.target[0] - ground[0]).hypot(chicken.target[1] - ground[1]);
+            chicken.perch * (1.0 - away).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let perched = seated && lift > 0.0;
+        let zombie = chicken.role == Role::Zombie;
+        // Body height, then the head's offset forward and up, in body radii.
+        let (height, head_forward, head_up, neck) = match chicken.role {
+            Role::Zombie => (r * 0.8, 1.05, -0.3, false),
+            Role::Frozen => (lift + r * 0.72, 0.85, 0.45, false),
+            // Brooding: settled low on the straw pad, feathers fluffed out.
+            Role::Brooding if perched => (lift + r * 0.4, 0.8, 0.4, false),
+            _ if perched => (lift + r * 0.6, 0.7, 0.5, false),
+            Role::Feeding if chicken.arrived => {
+                // Pecking is decorative: the head bobs into the trough.
+                let peck = (time * 7.0 + phase).sin().abs();
+                (r * 1.3, 1.15, 0.25 - 0.45 * peck, true)
+            }
+            _ => (r * 1.3, 0.85, 0.95, true),
+        };
+        let up = if zombie { -1.0 } else { 1.0 };
+        Pose {
+            forward,
+            phase,
+            perched,
+            walking,
+            zombie,
+            up,
+            body: [ground[0], ground[1], height],
+            head_forward,
+            head_up,
+            neck,
         }
-        _ => (r * 1.3, 0.85, 0.95, true),
-    };
-    let up = if zombie { -1.0 } else { 1.0 };
-    let body = [ground[0], ground[1], height];
-    if !perched && pick != NONE {
-        // A soft shadow grounds the bird; decorative.
+    }
+}
+
+/// Draws one chicken in the pose of its role and returns its body centre: a plump body of
+/// three spheres, neck, head with comb, beak, wattle and eyes, wings, a tail fan and legs.
+fn draw_chicken(frame: &mut Frame, camera: &Camera, bird: &Bird) -> Point {
+    let pose = bird.pose();
+    draw_shadow(frame, camera, bird, &pose);
+    draw_mud(frame, camera, bird, &pose);
+    draw_legs(frame, camera, bird, &pose);
+    draw_torso(frame, camera, bird, &pose);
+    draw_head(frame, camera, bird, &pose);
+    pose.body
+}
+
+/// A soft shadow grounds a bird that is not on its perch; decorative.
+fn draw_shadow(frame: &mut Frame, camera: &Camera, bird: &Bird, pose: &Pose) {
+    let (ground, r) = (bird.ground, bird.r);
+    if !pose.perched && bird.pick != NONE {
         let shade = r * 1.05;
         for k in 0..6 {
             let (a, b) = (k as f32 / 6.0 * TAU, (k + 1) as f32 / 6.0 * TAU);
@@ -699,11 +746,16 @@ fn draw_chicken(
             );
         }
     }
-    if chicken.role == Role::Stuck {
+}
+
+/// The mud puddle a stuck chicken stands in.
+fn draw_mud(frame: &mut Frame, camera: &Camera, bird: &Bird, pose: &Pose) {
+    let (ground, r) = (bird.ground, bird.r);
+    if bird.chicken.role == Role::Stuck {
         let puddle = r * 1.8;
         for k in 0..10 {
             let (a, b) = (k as f32 / 10.0 * TAU, (k + 1) as f32 / 10.0 * TAU);
-            let wobble = |angle: f32| puddle * (0.85 + 0.15 * (angle * 3.0 + phase).sin());
+            let wobble = |angle: f32| puddle * (0.85 + 0.15 * (angle * 3.0 + pose.phase).sin());
             frame.facet(
                 camera,
                 [
@@ -724,7 +776,14 @@ fn draw_chicken(
             );
         }
     }
-    if zombie {
+}
+
+/// Legs in the air for a zombie, striding for a walker and standing for the rest; none for a
+/// chicken sitting on a perch or frozen.
+fn draw_legs(frame: &mut Frame, camera: &Camera, bird: &Bird, pose: &Pose) {
+    let (chicken, ground, r, time) = (bird.chicken, bird.ground, bird.r, bird.time);
+    let (body, forward) = (pose.body, pose.forward);
+    if pose.zombie {
         for side in [-0.3, 0.3] {
             let hip = offset(body, forward, -0.1 * r, side * r, 0.5 * r);
             let knee = offset(body, forward, -0.15 * r, side * 1.2 * r, 1.25 * r);
@@ -732,9 +791,9 @@ fn draw_chicken(
             frame.line(camera, hip, knee, LEGS);
             frame.line(camera, knee, foot, LEGS);
         }
-    } else if !perched && chicken.role != Role::Frozen {
-        let stride = if walking {
-            (time * (4.0 + 3.0 * chicken.speed) + phase).sin() * 0.35 * r
+    } else if !pose.perched && chicken.role != Role::Frozen {
+        let stride = if pose.walking {
+            (time * (4.0 + 3.0 * chicken.speed) + pose.phase).sin() * 0.35 * r
         } else {
             0.0
         };
@@ -748,6 +807,12 @@ fn draw_chicken(
             frame.line(camera, hip, foot, LEGS);
         }
     }
+}
+
+/// The tail fan, the body of three spheres and the wings.
+fn draw_torso(frame: &mut Frame, camera: &Camera, bird: &Bird, pose: &Pose) {
+    let (r, plumage, pick) = (bird.r, bird.plumage, bird.pick);
+    let (body, forward, up) = (pose.body, pose.forward, pose.up);
     let feathers = tint(plumage, 0.72);
     for side in [-0.3_f32, 0.0, 0.3] {
         frame.facet(
@@ -761,7 +826,7 @@ fn draw_chicken(
             pick,
         );
     }
-    frame.sphere(camera, body, r, plumage, pick, selected);
+    frame.sphere(camera, body, r, plumage, pick, bird.selected);
     part(
         frame,
         camera,
@@ -790,20 +855,56 @@ fn draw_chicken(
             pick,
         );
     }
-    let head = offset(body, forward, head_forward * r, 0.0, up * head_up * r);
-    let head_radius = 0.45 * r;
-    if neck {
+}
+
+/// A chicken's head as the parts that sit on it are placed.
+struct Head {
+    at: Point,
+    radius: f32,
+}
+
+/// The neck, the head and what is on it.
+fn draw_head(frame: &mut Frame, camera: &Camera, bird: &Bird, pose: &Pose) {
+    let (r, plumage, pick) = (bird.r, bird.plumage, bird.pick);
+    let (body, forward, up) = (pose.body, pose.forward, pose.up);
+    let head = Head {
+        at: offset(
+            body,
+            forward,
+            pose.head_forward * r,
+            0.0,
+            up * pose.head_up * r,
+        ),
+        radius: 0.45 * r,
+    };
+    if pose.neck {
         part(
             frame,
             camera,
-            offset(body, forward, 0.65 * r, 0.0, (head_up * 0.5 + 0.1) * r),
+            offset(body, forward, 0.65 * r, 0.0, (pose.head_up * 0.5 + 0.1) * r),
             0.38 * r,
             plumage,
             pick,
         );
     }
-    part(frame, camera, head, head_radius, tint(plumage, 1.08), pick);
-    let comb_radius = 0.18 * r;
+    part(
+        frame,
+        camera,
+        head.at,
+        head.radius,
+        tint(plumage, 1.08),
+        pick,
+    );
+    draw_comb(frame, camera, bird, pose, &head);
+    draw_beak(frame, camera, pose, &head);
+    draw_eyes(frame, camera, pose, &head);
+}
+
+/// The comb: three small spheres when it is large enough on screen, otherwise one triangle.
+fn draw_comb(frame: &mut Frame, camera: &Camera, bird: &Bird, pose: &Pose, head: &Head) {
+    let (forward, up) = (pose.forward, pose.up);
+    let (head_radius, head) = (head.radius, head.at);
+    let comb_radius = 0.18 * bird.r;
     if comb_radius * camera.zoom >= 1.2 {
         for (along, rise) in [(0.35, 0.8), (-0.05, 0.95), (-0.45, 0.75)] {
             part(
@@ -851,6 +952,12 @@ fn draw_chicken(
             NONE,
         );
     }
+}
+
+/// The beak, in two facets, and the wattle under it.
+fn draw_beak(frame: &mut Frame, camera: &Camera, pose: &Pose, head: &Head) {
+    let (forward, up) = (pose.forward, pose.up);
+    let (head_radius, head) = (head.radius, head.at);
     let tip = offset(
         head,
         forward,
@@ -904,6 +1011,12 @@ fn draw_chicken(
         COMB,
         NONE,
     );
+}
+
+/// The two eyes.
+fn draw_eyes(frame: &mut Frame, camera: &Camera, pose: &Pose, head: &Head) {
+    let (forward, up) = (pose.forward, pose.up);
+    let (head_radius, head) = (head.radius, head.at);
     for side in [-0.6, 0.6] {
         part(
             frame,
@@ -920,7 +1033,6 @@ fn draw_chicken(
             NONE,
         );
     }
-    body
 }
 
 /// Chicks for threads: in a file behind a moving hen along its trail, tucked beside a still one.
