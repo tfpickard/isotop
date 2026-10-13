@@ -538,7 +538,7 @@ fn name_the_largest(cells: &mut [Cell]) {
 }
 
 /// The cgroup a process's cell stands for; processes outside cgroup v2 share one by group name.
-fn cell_name(process: &Process) -> &str {
+pub(crate) fn cell_name(process: &Process) -> &str {
     if process.cgroup.is_empty() {
         &process.group
     } else {
@@ -548,7 +548,7 @@ fn cell_name(process: &Process) -> &str {
 
 /// The last path component without its unit suffix and systemd's `\x2d` escapes, shortened
 /// for a label.
-fn short(name: &str) -> String {
+pub(crate) fn short(name: &str) -> String {
     let leaf = name.rsplit('/').next().unwrap_or(name);
     let leaf = without_apple_prefix(leaf)
         .trim_end_matches(".service")
