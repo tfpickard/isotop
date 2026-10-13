@@ -7,11 +7,13 @@ Writes docs/media/figures/hive-honeycomb-frame.svg. Run from the repository root
 Left: the perimeter of a regular n-gon of unit area, P = 2 sqrt(n tan(pi / n)); of the three
 regular polygons that tile the plane the hexagon needs the least wall (Hales 2001 proves that
 no tiling by equal-area cells of any shape does better). Middle: one frame of 64 x 32 offset
-cells filled in the arrangement of the prototype `Comb.layout` (brood in the centre, pollen
-around it, royal jelly below, honey in an arch above and capped honey on its rim) from a made-up
-split of 1,160 cells; the colours are mine. Right: the one cell unit of the scene, a power of
+cells filled in the arrangement of `Lattice::arrange` in src/hive.rs, which ports the
+prototype `Comb.layout` (brood in the centre, pollen around it, royal jelly below, honey in an
+arch above and capped honey after it) from a made-up split of 1,160 cells; every row has 64
+cells, the odd rows shifted half a cell, so a frame is 2,048 cells in a box 64.5 pitches wide;
+the colours are mine. Right: the one cell unit of the scene, a power of
 two of at least 64 KiB, as the largest frame grows from 1 MiB to 64 GiB and shrinks back, with
-the hysteresis of the specification (keep the unit while the largest frame is between 700 and
+the hysteresis of `next_unit` in src/hive.rs (keep the unit while the largest frame is between 700 and
 2,000 cells).
 """
 
@@ -30,9 +32,9 @@ COLUMNS, ROWS = 64, 32
 def comb_cells(columns, rows):
     cells = []
     for row in range(rows):
-        for col in range(columns - (row % 2)):
+        for col in range(columns):
             cells.append((col + 0.5 + 0.5 * (row % 2), row * SQRT3 / 2 + 1 / SQRT3))
-    width = columns
+    width = columns + 0.5
     height = (rows - 1) * SQRT3 / 2 + 2 / SQRT3
     return cells, width, height
 
@@ -67,7 +69,7 @@ COLOURS = {"empty": "#2b2116", "honey": "#e8a317", "capped": "#cdb26a", "pollen"
 
 
 def next_unit(unit, largest):
-    """The unit rule of the specification."""
+    """The unit rule of `next_unit` in src/hive.rs."""
     if (700 * unit <= largest <= 2000 * unit) or (unit == 64 * KIB and largest < 700 * unit):
         return unit
     target = 64 * KIB
@@ -78,7 +80,7 @@ def next_unit(unit, largest):
 
 def main():
     svg = P.Svg(1200, 470, "Honeycomb: cell geometry, one frame, the cell unit",
-                "Perimeter of regular polygons of unit area, a frame of 2,032 offset hexagonal "
+                "Perimeter of regular polygons of unit area, a frame of 2,048 offset hexagonal "
                 "cells filled by kind, and the cell unit against the largest frame.")
     svg.text(24, 28, "Hive: why hexagons, the frame arrangement, the cell unit", size=16,
              weight="600")

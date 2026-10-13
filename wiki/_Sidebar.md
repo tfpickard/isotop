@@ -45,16 +45,15 @@
 [Ptolemy](View-Ptolemy) &middot; [Tesseract](View-Tesseract)<br>
 [Necropolis](View-Necropolis) &middot; [Cortex](View-Cortex)<br>
 [Horizon](View-Horizon) &middot; [Murmuration](View-Murmuration)<br>
-[Arbor](View-Arbor)
+[Arbor](View-Arbor) &middot; [HR](View-HR)<br>
+[Hive](View-Hive) &middot; [Switchboard](View-Switchboard)
 
 **Planned**
 
 [Mold](Planned-Mold) &middot; [Chamber](Planned-Chamber)<br>
-[HR](Planned-HR) &middot; [Hive](Planned-Hive)<br>
-[Anthill](Planned-Anthill) &middot; [Switchboard](Planned-Switchboard)<br>
-[Plumbing](Planned-Plumbing) &middot; [Morph](Planned-Morph)<br>
-[Ouija](Planned-Ouija) &middot; [Canyon](Planned-Canyon)<br>
-[Die](Planned-Die)
+[Anthill](Planned-Anthill) &middot; [Plumbing](Planned-Plumbing)<br>
+[Morph](Planned-Morph) &middot; [Ouija](Planned-Ouija)<br>
+[Canyon](Planned-Canyon) &middot; [Die](Planned-Die)
 
 **Guides**
 

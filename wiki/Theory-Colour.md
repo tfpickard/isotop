@@ -267,7 +267,7 @@ reason the check should include the *state against kind* pairs, which the issue'
 A star's colour is its temperature. [`src/blackbody.rs`](https://github.com/tfpickard/isotop/blob/main/src/blackbody.rs)
 is a pure module mapping $T\in[1000,40000]$ K (`MINIMUM_KELVIN`, `MAXIMUM_KELVIN`) to a colour. The Horizon view
 draws its accretion disk and its stars with `blackbody::linear` and `blackbody::color`
-(`src/horizon/disk.rs`); the planned HR view is meant to use it as well. This section gives the physics, then the
+(`src/horizon/disk.rs`); [View HR](View-HR) uses it as well. This section gives the physics, then the
 recipe as the module's header states it, then a check of the table.
 
 **Physics.** A blackbody at temperature $T$ emits the spectral radiance
@@ -370,7 +370,7 @@ repository root.
   the jitter does not shift saturation when a channel clips at 255.
 * **Run the CVD test now.** The planned test of #104 on the *current* palette would fail on the pairs
   above; fixing the stopped/session pair is independent of the `--palette` switch.
-* **Blackbody for CPU.** The mockups map CPU to temperature for the HR diagram's stars; what are the perceptual
+* **Blackbody for CPU.** [View HR](View-HR) maps CPU to temperature for its stars; what are the perceptual
   consequences of a luminance that is non-monotone in $T$ (section 7)?
 
 ## 11. References

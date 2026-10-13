@@ -22,7 +22,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "ouija draws flat fields of colour; heights, owners, shading and displaced relief have no view yet"
+        reason = "ouija draws flat fields of colour and hr and hive use corners and flat relief (hive also a shading); heights, owners, per-vertex shading and displaced relief have no view yet"
     )
 )]
 

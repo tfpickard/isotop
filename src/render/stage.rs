@@ -56,6 +56,9 @@ impl<'a> RenderInput<'a> {
     }
 }
 
+/// The frame rate `--fps` defaults to, which a scene assumes until the app tells it otherwise.
+pub(crate) const DEFAULT_FPS: u32 = 10;
+
 /// The longest step `Stage::dt` reports, in seconds. A longer gap (a stall, a slow frame) counts
 /// as this much, so a simulation never leaps.
 pub(crate) const MAX_DT: f32 = 0.5;
@@ -107,6 +110,32 @@ pub struct Title {
     pub text: String,
 }
 
+/// Which side of its point a `Tag` is written on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no view writes a tag to the left of its point; the app moves one that runs off the screen"
+    )
+)]
+pub enum Side {
+    Right,
+    Left,
+}
+
+/// A short text written beside a world point instead of centred on it, as a `places` entry is:
+/// the name of a star next to the star. `side` is where the text goes if it fits; the app writes
+/// it on the other side when that one runs off the screen, and leaves it out when neither fits
+/// or another label is in the way. Its text is untrusted like process text and reaches the
+/// terminal only through `SafeText::new`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tag {
+    pub at: Point,
+    pub side: Side,
+    pub text: String,
+}
+
 /// What a view draws with, and its only way to talk back to the app. A view reads only `Stage`,
 /// the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the
 /// platform could not measure is `snapshot.missing`; `Stage` does not copy it.
@@ -131,6 +160,9 @@ pub(crate) struct Stage<'a> {
     /// draws more than the slice (exited processes) keeps within it.
     pub limit: usize,
     pub time: f32,
+    /// The target frame rate (`--fps`), for a view that animates faster than a frame can show
+    /// and caps it there, as the switchboard caps a lamp's flicker.
+    pub fps: u32,
     /// Frames the scene has rendered, this one included, whichever view was shown. A view that
     /// must tell a frame that follows its own last frame from one after a gap (another view was
     /// shown in between) compares it with the number it last drew at: the galaxy of Orbit
@@ -182,6 +214,9 @@ pub(crate) struct Stage<'a> {
     /// `places`, in the order pushed. Each system's centre (`Title::at`) is kept in the camera
     /// fit with the `positions`, when the view gave no `bounds`.
     pub titles: &'a mut Vec<Title>,
+    /// Texts written beside a point, before `places` and `titles` are offered their cells: the
+    /// labels a view wants read before its other text.
+    pub tags: &'a mut Vec<Tag>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
     /// nothing rises.

@@ -32,6 +32,9 @@ PICKER_VISITS = [
     "horizon",
     "murmuration",
     "arbor",
+    "hr",
+    "hive",
+    "switchboard",
     "anthill",
     "plumbing",
     # Last, so that the live run's final `q` is pressed on the board and plays its farewell.
@@ -42,6 +45,9 @@ PICKER_VISITS = [
 # afterwards before the next keys go out.
 VIEW_KEYS = {
     "tesseract": [(b".;", [b"plane YW"]), (b"b\x1b", [b"/ TESSERACT /"])],
+    # `m` sends the stars to the diagram, whose legend leads with the fitted main sequence, and
+    # back to the sky, whose legend leads with the Milky Way.
+    "hr": [(b"m", [b"main sequence m ="]), (b"m", [b"in the Milky Way"])],
 }
 
 

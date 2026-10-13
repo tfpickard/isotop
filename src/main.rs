@@ -17,7 +17,9 @@ mod harness;
 mod headless;
 mod hershey;
 mod history;
+mod hive;
 mod horizon;
+mod hr;
 mod interactive;
 mod io_detail;
 mod journal;
@@ -42,6 +44,7 @@ mod simulation;
 mod status;
 mod stellar;
 mod strata;
+mod switchboard;
 mod terminal;
 mod tesseract;
 mod threads;
@@ -122,6 +125,8 @@ fn start(options: &Options, view: View, available: Vec<bool>) -> Result<Startup,
     }
     let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
+    app.scene.configure(&options.view_options());
+    app.scene.fps = options.fps;
     app.playlist = playlist;
     app.set_renderer(Renderer::choose(options.renderer, options.gpu_power)?);
     Ok(Startup {

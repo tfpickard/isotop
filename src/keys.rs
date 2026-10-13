@@ -567,7 +567,7 @@ pub(crate) static KEYMAP: &[Binding] = &[
         Docs::Also,
         &[],
     ),
-    // The keys views may claim. The tesseract is the only view that does.
+    // The keys views may claim: the tesseract and hr do.
     global(
         Group::ViewLocal,
         &[key(','), key('.')],
@@ -595,6 +595,16 @@ pub(crate) static KEYMAP: &[Binding] = &[
         row(
             "`b`",
             "Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame",
+        ),
+        &[],
+    ),
+    global(
+        Group::ViewLocal,
+        &[key('m')],
+        Action::ViewLocal,
+        row(
+            "`m`",
+            "Hr: fly the stars to the Hertzsprung-Russell diagram, and back to the sky",
         ),
         &[],
     ),

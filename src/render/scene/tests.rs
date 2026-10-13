@@ -1,7 +1,9 @@
+use std::f32::consts::FRAC_PI_2;
+
 use super::*;
 use crate::model::demo;
 use crate::simulation::GROW_SECONDS;
-use crate::views::{testing, view};
+use crate::views::{ViewOptions, testing, view};
 fn render(scene: &mut Scene, snapshot: &Snapshot, view: View, time: f32) -> Frame {
     let mut frame = scene.render(&RenderInput::small(
         snapshot,
@@ -184,6 +186,21 @@ fn a_module_view_draws_records_and_legends_through_the_trait() {
 }
 
 #[test]
+fn the_scene_hands_every_module_the_command_line_settings() {
+    let snapshot = demo(10.0, 8);
+    let (probe, quiet) = (View::at(0), View::at(1));
+    let mut scene = Scene::with_rows(testing::ROWS);
+    scene.configure(&ViewOptions { hr_diagram: true });
+    for view in [probe, quiet] {
+        assert_eq!(
+            scene.legend(view, &snapshot),
+            " probe: 0 draws | 0 records | keys [] | ViewOptions { hr_diagram: true }",
+            "a module takes the settings whether or not it is the shown view"
+        );
+    }
+}
+
+#[test]
 fn a_modules_tests_can_read_its_state_by_type() {
     let snapshot = demo(12.0, 16);
     let camera = Camera::default();
@@ -235,6 +252,43 @@ fn a_view_that_draws_its_own_links_learns_the_link_mode_and_the_highlighted() {
 }
 
 #[test]
+fn a_billboard_is_framed_as_the_camera_that_drew_it_saw_it() {
+    let snapshot = demo(10.0, 16);
+    // Drawn under the default camera, while the goal has already turned and tilted.
+    let goal = Camera {
+        rotation: FRAC_PI_2,
+        pitch: FRAC_PI_2,
+        ..Camera::default()
+    };
+    let zoom = |view: View| {
+        let mut scene = Scene::with_rows(testing::PLANES);
+        render(&mut scene, &snapshot, view, 10.0);
+        let mut fitted = goal.clone();
+        scene.fit(&mut fitted, 1200, 600);
+        (fitted.zoom, fitted.center)
+    };
+    // 600 by 300 pixels fill 0.9 of a 1200 by 600 frame at zoom 1.8, whatever the pitch.
+    let (zoom_billboard, center) = zoom(View::at(0));
+    assert!((zoom_billboard - 1.8).abs() < 1e-3, "{zoom_billboard}");
+    // Centred, as the goal's rotation and pitch see the point ORIGIN_Y down the frame.
+    let lifted = Camera {
+        zoom: 1.0,
+        ..goal.clone()
+    }
+    .ground(0.0, (ORIGIN_Y - 0.5) * 600.0 / zoom_billboard);
+    assert!(
+        (center[0] - lifted[0]).abs() < 1e-3 && (center[1] - lifted[1]).abs() < 1e-3,
+        "{center:?} against {lifted:?}"
+    );
+    // An ordinary view's bounds are world points, framed as the goal will see them.
+    let (zoom_ordinary, _) = zoom(View::at(1));
+    assert!(
+        (zoom_ordinary - 1.8).abs() > 0.1,
+        "the bounds of an ordinary view are not corrected: {zoom_ordinary}"
+    );
+}
+
+#[test]
 fn rows_switch_the_haze_the_exit_flash_and_the_links_off() {
     let snapshot = demo(10.0, 32);
     let mut fewer = snapshot.clone();
@@ -281,6 +335,7 @@ fn scene_has_no_view_specific_fields() {
         frames: _,
         last_time: _,
         clock: _,
+        fps: _,
         births: _,
         arrivals: _,
         previous: _,
@@ -295,7 +350,9 @@ fn scene_has_no_view_specific_fields() {
         positions: _,
         places: _,
         titles: _,
+        tags: _,
         bounds: _,
+        billboard: _,
         notes: _,
         sparklines: _,
         tour: _,

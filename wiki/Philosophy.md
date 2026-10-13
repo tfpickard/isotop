@@ -5,7 +5,7 @@ fits in a corner of the screen. isotop is instead a machine for turning the hum 
 pictures that are worth looking at for their own sake, and for taking the physics, mathematics and biology
 behind those pictures seriously enough to write them down. This wiki is where that writing lives.
 
-It is maximalist on purpose. There are eighteen views and eleven more specified, a CPU rasterizer and a GPU
+It is maximalist on purpose. There are twenty-one views and eight more specified, a CPU rasterizer and a GPU
 rasterizer that must agree pixel for pixel, a Fourier transform written in-tree so a planet can carry an
 epicycle chain, a Lorentz boost applied to the history of a shell. None of that is proportionate to the problem
 of "which process is using the CPU". It is proportionate to a different problem: *how much of the structure

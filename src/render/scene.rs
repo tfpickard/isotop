@@ -10,7 +10,7 @@ use crate::palette::tint;
 use crate::simulation::growth;
 use crate::simulation::smoothing;
 use crate::views::systems::Orbit;
-use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
+use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule, ViewOptions};
 
 const FADE_SECONDS: f32 = 1.2;
 const LINK: Color = [80, 175, 235];
@@ -72,6 +72,9 @@ pub struct Scene {
     last_time: Option<f32>,
     /// The step every `Stage` gets as `dt`.
     clock: FrameClock,
+    /// The target frame rate, `--fps`, which the app sets once: every `Stage` carries it, and
+    /// whichever view is shown caps what it animates at it.
+    pub fps: u32,
     /// When each process was first seen, for the growth every view eases new bodies in with.
     births: HashMap<Identity, f32>,
     /// When each process that arrived after the first frame was first seen: `Stage::age`.
@@ -106,8 +109,13 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     /// The last frame's `Stage::titles`.
     pub titles: Vec<Title>,
+    /// The last frame's `Stage::tags`.
+    pub tags: Vec<Tag>,
     /// The last frame's `Stage::bounds`, which `fit` frames the camera to.
     pub(super) bounds: Vec<Point>,
+    /// The rotation and pitch of the camera the last frame was drawn with, when the shown row is
+    /// a `billboard`: `fit` measures `bounds` under them.
+    billboard: Option<(f32, f32)>,
     /// The last frame's `Stage::notes`: popup lines after the sockets.
     pub notes: HashMap<Identity, Vec<String>>,
     /// The last frame's `Stage::sparklines`.
@@ -149,6 +157,7 @@ impl Scene {
             frames: 0,
             last_time: None,
             clock: FrameClock::default(),
+            fps: DEFAULT_FPS,
             births: HashMap::new(),
             arrivals: HashMap::new(),
             previous: HashMap::new(),
@@ -163,7 +172,9 @@ impl Scene {
             positions: HashMap::new(),
             places: Vec::new(),
             titles: Vec::new(),
+            tags: Vec::new(),
             bounds: Vec::new(),
+            billboard: None,
             notes: HashMap::new(),
             sparklines: HashMap::new(),
             tour: Vec::new(),
@@ -198,6 +209,13 @@ impl Scene {
     /// module's own state, or None once it no longer shows the thing.
     pub fn card(&self, view: View, thing: Thing, snapshot: &Snapshot) -> Option<Card> {
         self.modules[view.index()].card(thing, snapshot)
+    }
+
+    /// Hands every module the command-line settings, once, before the first frame.
+    pub fn configure(&mut self, options: &ViewOptions) {
+        for module in &mut self.modules {
+            module.configure(options);
+        }
     }
 
     /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means.
@@ -255,6 +273,16 @@ impl Scene {
             zoom: 1.0,
             ..camera.clone()
         };
+        // A billboard's bounds hold for the camera that drew them, which may not yet have turned
+        // to the goal; its extent on the screen is the same under every rotation and pitch.
+        let measure = match self.billboard {
+            Some((rotation, pitch)) if !self.bounds.is_empty() => Camera {
+                rotation,
+                pitch,
+                ..probe.clone()
+            },
+            _ => probe.clone(),
+        };
         let mut min = [f32::INFINITY; 2];
         let mut max = [f32::NEG_INFINITY; 2];
         let points: Vec<Point> = if self.bounds.is_empty() {
@@ -270,7 +298,7 @@ impl Scene {
             self.bounds.clone()
         };
         for &p in &points {
-            let q = probe.view(p);
+            let q = measure.view(p);
             for i in 0..2 {
                 min[i] = min[i].min(q[i]);
                 max[i] = max[i].max(q[i]);
@@ -343,7 +371,9 @@ impl Scene {
         self.collapsed = 0;
         self.places.clear();
         self.titles.clear();
+        self.tags.clear();
         self.bounds.clear();
+        self.billboard = row.billboard.then_some((camera.rotation, camera.pitch));
         self.notes.clear();
         self.sparklines.clear();
         self.tour.clear();
@@ -469,6 +499,7 @@ impl Scene {
             highlight: &self.highlight,
             limit,
             time,
+            fps: self.fps,
             frames: self.frames,
             dt,
             history: &self.history,
@@ -486,6 +517,7 @@ impl Scene {
             popup: &mut self.popup,
             callout: &mut self.callout,
             titles: &mut self.titles,
+            tags: &mut self.tags,
             headroom: &mut self.headroom,
             quit: &mut self.quit,
         };

@@ -11,6 +11,8 @@ use crate::render::{Camera, Color, Frame, Item, Point};
 
 const GIBIBYTE: u64 = 1 << 30;
 const MEBIBYTE: u64 = 1 << 20;
+/// The memory below which `magnitude` reads the same: a star holding less is no fainter.
+pub const MEMORY_FLOOR: u64 = MEBIBYTE;
 
 /// A star's flux is 1 at this magnitude, the faintest the prototype draws as a visible star.
 const FLUX_ONE_MAGNITUDE: f32 = 7.0;
@@ -56,6 +58,19 @@ pub struct Spread {
     pub halo_px: f32,
     /// Strength of the halo, 0 to 0.95; 0 when the star has none.
     pub halo: f32,
+    /// How the halo blends into the frame.
+    pub blend: Halo,
+}
+
+impl Spread {
+    /// This spread with its halo blended as a `Puff`, which rounds on both rasterizers: for a
+    /// sky of many stars, whose halos overlap.
+    pub fn puffed(self) -> Self {
+        Self {
+            blend: Halo::Puff,
+            ..self
+        }
+    }
 }
 
 /// The point-spread of a star of `magnitude` in a frame `frame_height` pixels high. With flux
@@ -82,13 +97,24 @@ pub fn spread(magnitude: f32, frame_height: u32) -> Spread {
         core,
         halo_px,
         halo,
+        blend: Halo::Glow,
     }
+}
+
+/// How the soft layer of a star blends into the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Halo {
+    /// An `Item::Glow`, which the CPU blends with truncation and the GPU with rounding, so
+    /// halos that overlap drift apart by a level or two between the rasterizers.
+    Glow,
+    /// An `Item::Puff`, which rounds on both: for a sky of many stars, whose halos overlap.
+    Puff,
 }
 
 impl Frame {
     /// Draws a star at `position`: one pickable sphere sized in pixels, so zoom does not change
-    /// it, with a whitened and brightened `color`, and one glow in `color` when the spread has a
-    /// halo.
+    /// it, with a whitened and brightened `color`, and one halo in `color` when the spread has
+    /// one, blended as `Spread::blend` says.
     pub(crate) fn star(
         &mut self,
         camera: &Camera,
@@ -108,11 +134,20 @@ impl Frame {
             selected,
         });
         if spread.halo > 0.0 {
-            self.items.push(Item::Glow {
-                center: [center[0], center[1]],
-                radius: spread.halo_px,
-                color,
-                strength: spread.halo,
+            let center = [center[0], center[1]];
+            self.items.push(match spread.blend {
+                Halo::Glow => Item::Glow {
+                    center,
+                    radius: spread.halo_px,
+                    color,
+                    strength: spread.halo,
+                },
+                Halo::Puff => Item::Puff {
+                    center,
+                    radius: spread.halo_px,
+                    color,
+                    strength: spread.halo,
+                },
             });
         }
     }
@@ -120,7 +155,6 @@ impl Frame {
 
 /// The kind of event a flash timeline plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub enum Flash {
     /// A birth: the star brightens sharply, then settles.
     Nova,
@@ -132,7 +166,6 @@ pub enum Flash {
 
 /// The flash for a process that exits holding `memory` bytes: a supernova above 1 GiB, a fade
 /// otherwise.
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub fn exit_flash(memory: u64) -> Flash {
     if memory > GIBIBYTE {
         Flash::Supernova
@@ -324,6 +357,69 @@ mod tests {
             frame.items[0],
             Item::Sphere { radius, pick: NONE, .. } if radius == star.core_px
         ));
+    }
+
+    #[test]
+    fn a_puffed_star_draws_its_halo_as_a_puff_and_the_core_as_before() {
+        let mut frame = frame();
+        let camera = Camera::default();
+        let star = spread(0.0, 540);
+        let position = [1.0, 2.0, 0.0];
+        frame.star(&camera, position, &star, [200, 220, 255], 3, false);
+        let glow = frame.items.clone();
+        frame.items.clear();
+        frame.star(&camera, position, &star.puffed(), [200, 220, 255], 3, false);
+        assert_eq!(frame.items.len(), 2);
+        match (glow[0], frame.items[0]) {
+            (
+                Item::Sphere {
+                    center: a,
+                    color: x,
+                    ..
+                },
+                Item::Sphere {
+                    center: b,
+                    color: y,
+                    ..
+                },
+            ) => {
+                assert_eq!((a, x), (b, y), "the core is the same");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(glow[1], Item::Glow { .. }));
+        match (glow[1], frame.items[1]) {
+            (
+                Item::Glow {
+                    center: a,
+                    radius: r,
+                    color: c,
+                    strength: s,
+                },
+                Item::Puff {
+                    center: b,
+                    radius: q,
+                    color: d,
+                    strength: t,
+                },
+            ) => assert_eq!(
+                (a, r, c, s),
+                (b, q, d, t),
+                "the halo is the same, blended alike"
+            ),
+            other => panic!("{other:?}"),
+        }
+        // A faint star has no halo to blend.
+        frame.items.clear();
+        frame.star(
+            &camera,
+            position,
+            &spread(7.5, 540).puffed(),
+            [255; 3],
+            3,
+            false,
+        );
+        assert_eq!(frame.items.len(), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 
 use crate::keys;
 use crate::picker;
-use crate::views::{REGISTRY, View};
+use crate::views::{REGISTRY, View, ViewOptions};
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum RendererChoice {
@@ -103,6 +103,9 @@ pub(crate) struct Options {
     /// This machine's location as LAT,LON for the globe; defaults to the system time zone's city
     #[arg(long, value_parser = parse_home, allow_hyphen_values = true)]
     pub(crate) home: Option<(f32, f32)>,
+    /// Start the hr view as a Hertzsprung-Russell diagram instead of the sky (m toggles)
+    #[arg(long)]
+    pub(crate) hr_diagram: bool,
 }
 
 impl Options {
@@ -119,6 +122,13 @@ impl Options {
     /// `--sample-ms` in seconds: how far back the sample before the first one is.
     pub(crate) fn sample_seconds(&self) -> f64 {
         f64::from(self.sample_ms) / 1000.0
+    }
+
+    /// The settings the view modules read, taken once at startup.
+    pub(crate) fn view_options(&self) -> ViewOptions {
+        ViewOptions {
+            hr_diagram: self.hr_diagram,
+        }
     }
 }
 
@@ -239,6 +249,12 @@ pub(crate) fn preflight(
 mod tests {
     use super::*;
     use crate::app::fixtures::*;
+
+    #[test]
+    fn view_options_come_from_the_command_line_and_default_to_off() {
+        assert_eq!(options(&[]).view_options(), ViewOptions::default());
+        assert!(options(&["--hr-diagram"]).view_options().hr_diagram);
+    }
 
     /// What `preflight` returns and writes to standard output and error for `arguments`, with
     /// the views named in `missing` unavailable.

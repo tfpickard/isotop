@@ -3,8 +3,8 @@ pub use camera::{Camera, ISOMETRIC, LOWEST_PITCH, ORIGIN_Y};
 pub(crate) use draw::{cover, glows, mass_radius, similar};
 pub use frame::{Backdrop, Buffers, Card, Frame, Item, Sky, THING, Target, Thing};
 pub use scene::{Scene, label_name, thread_label, without_apple_prefix};
-pub use stage::{RenderInput, Title, TourTarget};
-pub(crate) use stage::{Stage, ring_bounds};
+pub(crate) use stage::{DEFAULT_FPS, Stage, ring_bounds};
+pub use stage::{RenderInput, Side, Tag, Title, TourTarget};
 mod camera;
 mod draw;
 pub mod field;
@@ -18,13 +18,6 @@ mod text;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
-#[cfg_attr(
-    not(test),
-    expect(
-        unused_imports,
-        reason = "ouija draws flat, unshaded fields; no view shades one yet"
-    )
-)]
 pub use field::{Field, Placement, Relief, Shading};
 pub use shared::LIGHT;
 pub use shared::NONE;

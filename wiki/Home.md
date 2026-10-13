@@ -8,7 +8,7 @@ the **theory of operation**, the **mathematics** behind every view, the **histor
 and, as it grows, **worked examples and recipes**. Start with the [Philosophy](Philosophy) if you want to
 know why, or the [Theory Overview](Theory-Overview) if you want to know how.
 
-![All eighteen views](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/contact-sheet.webp)
+![The first eighteen views](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/contact-sheet.webp)
 
 ## History
 
@@ -72,7 +72,7 @@ Data in, pixels out, with a contract at every seam.
 
 ## Views
 
-Eighteen exist today.
+Twenty-one exist today (twenty on macOS, where the switchboard has no interrupt counters to read).
 
 | | | |
 |---|---|---|
@@ -82,16 +82,16 @@ Eighteen exist today.
 | [Coop](View-Coop) | [Matrix](View-Matrix) | [Ptolemy](View-Ptolemy) |
 | [Tesseract](View-Tesseract) | [Necropolis](View-Necropolis) | [Cortex](View-Cortex) |
 | [Horizon](View-Horizon) | [Murmuration](View-Murmuration) | [Arbor](View-Arbor) |
+| [HR](View-HR) | [Hive](View-Hive) | [Switchboard](View-Switchboard) |
 
 ### Planned views
 
-Eleven more are specified, tracked on the project board, and documented here theory first. Each page says
+Eight more are specified, tracked on the project board, and documented here theory first. Each page says
 plainly that it describes a design.
 
 | | | |
 |---|---|---|
-| [Mold](Planned-Mold) | [Chamber](Planned-Chamber) | [HR](Planned-HR) |
-| [Hive](Planned-Hive) | [Anthill](Planned-Anthill) | [Switchboard](Planned-Switchboard) |
+| [Mold](Planned-Mold) | [Chamber](Planned-Chamber) | [Anthill](Planned-Anthill) |
 | [Plumbing](Planned-Plumbing) | [Morph](Planned-Morph) | [Ouija](Planned-Ouija) |
 | [Canyon](Planned-Canyon) | [Die](Planned-Die) | |
 
