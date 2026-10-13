@@ -17,6 +17,7 @@ mod headless;
 mod history;
 mod horizon;
 mod interactive;
+mod io_detail;
 mod journal;
 mod layout;
 mod matrix;

@@ -185,6 +185,7 @@ cache is stale.
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| Unattributed I/O (per-file I/O detail) | Without `rchar` and `wchar` there is nothing to hold a file's claim to and nothing to take it from, so the remainder is never told (`IoDetail::unattributed` is None, and the platform reports "unattributed io" as missing) and a claim is held only to the size of its file: an `lseek` can make a descriptor claim bytes nothing read, and a descriptor inherited across `fork` shows the position either process moved. The 24 processes are ranked by disk I/O per second rather than by syscalls, so I/O that the page cache absorbed ranks low. Other users' processes are unreadable without root, and a vnode whose path the kernel refuses to build (the `fsgetpath` check of a security policy) counts as another kind of descriptor and marks the reading partial. No view draws it yet |
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
 | Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
@@ -867,6 +868,23 @@ the kernel gives the size of the first packet and not a total), and the pipes an
 processes with their direction, from `/proc/<pid>/fd` and `fdinfo` (macOS: `proc_pidfdinfo`,
 which also counts the bytes waiting in a pipe). Linux gives no such count for a pipe another
 process holds. Only the pipes are read on demand; the existing views draw neither.
+
+Another, for the views that draw it, is where the busiest processes' I/O goes (`Process::io_detail`,
+read only while such a view is shown). For the 24 busiest processes (on Linux by syscalls per
+second; macOS counts none and ranks by the bytes that reached storage per second,
+`ri_diskio_bytesread` plus `ri_diskio_byteswritten`) isotop reads the regular files their
+descriptors hold, with each descriptor's position, from `/proc/<pid>/fd` and `fdinfo` (macOS:
+`proc_pidfdinfo`, `PROC_PIDFDVNODEPATHINFO`), at most 256 files per process and 4096 descriptors
+per pass, and counts their pipes, sockets, terminals and anonymous descriptors. A file is
+credited with how far a descriptor's position moved between two passes and with nothing else:
+by access mode, so a read-write descriptor's bytes are never split between reads and writes;
+nothing for a descriptor that is new, reopened, rewound or changed in its flags (no rate, which is
+not zero), or one opened to append, whose position is always the end of the file. On Linux the
+claims of a process are held to the growth of its `rchar` and `wchar` over the same interval,
+read just before and after the walk. The **unattributed** remainder is what those counters grew by
+and no file position explains: `pread` and `pwrite`, which name their own offset, memory-mapped
+I/O, pipes, sockets, terminals and files opened to append. A file's rate is therefore a lower
+bound on what the process did with it.
 
 The sky is tinted by pressure stall information from `/proc/pressure`: amber for
 CPU, crimson for memory, blue for I/O (the matrix has no haze, and a view's row can
