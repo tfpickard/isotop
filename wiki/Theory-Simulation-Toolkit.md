@@ -368,14 +368,14 @@ python3 docs/figures/simulation-fixedstep.py     # regenerate the figure from th
 All in [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs): `growth`,
 `sprout`, `smoothing`, `smoothstep`, `Complex`, `dft`, `fft`, `inverse_fft`, `transform`,
 `SpatialHash`, `SpatialHash3` (`rebuild`, `neighbours`, `nearest`, `visit_shell`, `face_distance`),
-`Rng`, `hash_identity`, `FixedStep`, `XorShift32`, `hash`. Users: `coop.rs` (`YardClock`, `SpatialHash`),
+`Rng`, `hash_identity`, `FixedStep`, `XorShift32`, `hash`. Users: `coop/sim.rs` (`YardClock`, `SpatialHash`),
 `murmuration.rs` (`SpatialHash3`, `FixedStep`, `Rng`), `arbor.rs` and `cortex.rs` (`FixedStep`),
 `ptolemy.rs` (`dft`, `smoothstep`), `necropolis.rs` (`smoothstep`), `render.rs` (`FrameClock`, `growth`,
 `smoothing`), `model.rs` (`smoothing`, demo `Rng`s).
 
 **Duplicates that contradict the rule.** `simulation::smoothstep` exists, yet the same polynomial is written
 out again in `tesseract.rs` (its own `fn smoothstep`), `cores.rs` (two inline `u * u * (3.0 - 2.0 * u)`),
-`coop.rs` (a closure `ease`), `horizon/disk.rs` (a closure `smooth`), `horizon/lens.rs` (the `taper` in the
+`coop/creatures.rs` (a closure `ease`), `horizon/disk.rs` (a closure `smooth`), `horizon/lens.rs` (the `taper` in the
 plunge brightness) and the demo workload in `model.rs`; and `1.0 - (-dt / TURN_EASE).exp()` is spelled out in
 `tesseract.rs` where `smoothing(dt, TURN_EASE)` would do, as is Arbor's wind easing
 (`1.0 - (-STEP / WIND_EASING).exp()`). They are numerically identical today, so replacing them changes no pixels;

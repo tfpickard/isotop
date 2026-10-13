@@ -207,7 +207,7 @@ Views that predate the contract do not all meet it. Verified in the tree, and tr
 | Ripple | its own clock with CFL substeps | `medium.rs` |
 | Orbit | galaxy continuity decided by a frame counter (`self.frame + 1 == frames`) | `views/systems.rs` (`Galaxy::revolve`) |
 | Matrix | reads `$USER` | `matrix.rs` (`login`) |
-| pid-only seeding | `hash::knuth(pid)` etc. at about a dozen sites | `palette.rs`, `reef.rs`, `coop.rs`, `necropolis.rs`, `model.rs`, `render.rs`, `views/orbit.rs`, `views/ripple.rs`, `views/systems.rs` |
+| pid-only seeding | `hash::knuth(pid)` etc. at about a dozen sites | `palette.rs`, `reef.rs`, `coop/sim.rs`, `necropolis.rs`, `model.rs`, `render.rs`, `views/orbit.rs`, `views/ripple.rs`, `views/systems.rs` |
 
 Below the clamp (10 fps for a 0.1 s clamp) these views run slower than real time rather than diverging, which
 is the safe failure; they are deterministic in a headless run, where frames are generated at a fixed `--fps`.
@@ -255,7 +255,7 @@ portable; the GPU path is checked for *tolerance*, not equality (see
 | `every_view_renders_the_same_frame_twice` | `main.rs` | the golden render of every view, done twice in one process, gives equal hashes. Each render builds fresh `HashMap`s, each with its own hasher seed, so it is also a test of hash-order independence |
 | `every_view_matches_its_golden_hash` | `main.rs`, `tests/golden.txt` | the colour, pick and depth buffers of `--demo --time 12 --renderer cpu --width 480` hash (FNV-1a 64) to the stored values (Linux x86_64 only) |
 | `bless_mode_rewrites_the_golden_file` | `main.rs` | the bless mechanics, against a temp path |
-| 10 versus 60 fps tests | `simulation.rs`, `coop.rs`, `tesseract.rs` | same state after the same number of steps, or the same eased angle |
+| 10 versus 60 fps tests | `simulation.rs`, `coop/sim.rs`, `tesseract.rs` | same state after the same number of steps, or the same eased angle |
 
 `tests/golden.txt` has one line per view: `name pixels picks depth`, three 16-digit hex FNV-1a 64 values.
 The depth buffer is hashed as `f32::to_bits` little-endian, the picks as `u32` little-endian, the pixels as

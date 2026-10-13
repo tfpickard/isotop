@@ -1,4 +1,4 @@
-"""The Coop view's transfer functions, plotted from the constants of src/coop.rs.
+"""The Coop view's transfer functions, plotted from the constants of src/coop/sim.rs.
 
 Run from the repository root: python3 docs/figures/coop-mappings.py
 Writes docs/media/figures/coop-mappings.svg. Standard library only.
@@ -56,7 +56,7 @@ def main():
               "Six panels: foraging speed against CPU, eggs against open files, dust puffs against "
               "read rate, peer pull against traffic and co-activity, and fox eyes against memory "
               "pressure.")
-    heading(svg, "The coop's transfer functions", "constants from src/coop.rs and README.md; every "
+    heading(svg, "The coop's transfer functions", "constants from src/coop/sim.rs and README.md; every "
             "curve saturates, so no process can dominate the yard")
     w, h, gx, gy = 286, 200, 358, 290
     ox, oy = 62, 96
