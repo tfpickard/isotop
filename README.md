@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in eighteen views: a process
+A living picture of your machine inside the terminal, in nineteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, the system log (the systemd
@@ -8,8 +8,9 @@ journal, or the unified log on macOS) as Matrix rain, a chicken yard, a geocentr
 cosmos of Fourier epicycles, a minute of process worldlines in a tesseract whose fourth
 axis is time, a moonlit cemetery of the processes that exited, a slice of cortex
 whose neurons fire with CPU, a black hole whose orbits rank the processes the OOM
-killer will take next, a murmuration of starlings with one bird for each thread, and
-the process tree as a tree. Written in
+killer will take next, a murmuration of starlings with one bird for each thread, the
+process tree as a tree, and the journal spelled letter by letter by the planchette of a
+talking board. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -23,6 +24,7 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 | ![Matrix](docs/media/matrix.webp)<br>**10 Matrix** | ![Coop](docs/media/coop.webp)<br>**11 Coop** | ![Ptolemy](docs/media/ptolemy.webp)<br>**12 Ptolemy** |
 | ![Tesseract](docs/media/tesseract.webp)<br>**13 Tesseract** | ![Necropolis](docs/media/necropolis.webp)<br>**14 Necropolis** | ![Cortex](docs/media/cortex.webp)<br>**15 Cortex** |
 | ![Horizon](docs/media/horizon.webp)<br>**16 Horizon** | ![Murmuration](docs/media/murmuration.webp)<br>**17 Murmuration** | ![Arbor](docs/media/arbor.webp)<br>**18 Arbor** |
+| ![Ouija](docs/media/ouija.webp)<br>**19 Ouija** | | |
 
 The numbers are the views' places in the Tab order (the registry's, which
 `isotop --list-views` prints); the keys 1 to 9 and 0 jump to the first ten.
@@ -42,7 +44,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, ouija
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -190,6 +192,7 @@ cache is stale.
 | Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
+| Job results and CPU pressure (ouija) | The unified log has no `JOB_RESULT`, so no line ends a job and the planchette never goes to YES: the platform reports "job results" as missing, and the legend says "no job results: no visits to YES". macOS has no CPU pressure, so the planchette is steady, and the legend says "no cpu pressure: planchette steady". Spelling, the pace and the visits to NO (from the log's severities, as in Matrix) are as on Linux |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
@@ -227,8 +230,8 @@ The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. The view registry
 (`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
 truth for the list of views, their Tab order and their digits: Tab cycles
-the eighteen views in that order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the nineteen views in that order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor and ouija are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -818,6 +821,39 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Ouija
+
+![Ouija: a talking board by candlelight; a heart-shaped planchette over a lit letter, and below the board the journal line it is spelling, decoded in amber and not yet decoded in violet](docs/media/ouija.webp)
+
+The newest line of the system journal (on macOS, the unified log) spelled one letter at a time by the planchette of a talking board seen at an angle by candlelight, with the line decoding in a ribbon below the board as the planchette lands on its letters.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Where the planchette goes | The newest journal entries (`journalctl --follow --output=export`: `SYSLOG_IDENTIFIER`, else `_COMM`, then `_PID` and `MESSAGE`), as Matrix reads them | The line is uppercased and **only A to Z and 0 to 9 are kept: every other character is dropped, with no transliteration** (`I/O` is spelled `IO`, an accented letter is not spelled at all). A run of spaces, even one that dropped characters split, is one visit to the centre of the board, below the digits; none at the start or end of a line. At most 40 visits are spelled for a line, and the rest of its ribbon decodes at once. A line with nothing the board has visits the centre once |
+| Pace | Lines waiting to be spelled | Each visit takes max(0.06, 0.25 / (1 + queued / 4)) s: the first 60 % is a smoothstep glide along a path bowed to the left of its direction by 0.12 of its length, the rest a dwell. More than 8 queued: the oldest are dropped and counted as skipped |
+| Visit to NO | Syslog `PRIORITY` of 3 or lower (error, critical, alert, emergency), or `JOB_RESULT` of `failed`, `timeout`, `canceled` or `dependency` | The planchette goes to NO for 0.6 s before the line is spelled, once for a line |
+| Visit to YES | `JOB_RESULT` of `done`, on the entry that ends a systemd job | The planchette goes to YES for 0.6 s before the line is spelled, once for a line; an entry that is also an error goes to NO only |
+| Jitter | CPU pressure (`some avg10` in `/proc/pressure/cpu`) | The planchette trembles by 0.025 x percent / 100 board widths at most, the sum of sinusoids of 13.1, 29.3, 11.7 and 31.9 radians a second, normalised so each axis peaks at one. None where the machine reports no CPU pressure |
+| Lit letter | The mark under the planchette's window | Glows from 85 % through the glide until the planchette leaves; the letter, or YES, NO or GOODBYE, is drawn again bright |
+| Ribbon | The line being spelled, with its source, its severity and its job result | Up to 44 characters around the cursor: the characters the planchette has reached amber (the one that has just landed brighter), the others scrambled violet. The caption names the source (up to the first `[` or `:`), the severity and the job result. All text is cleaned like every other text, one printable ASCII character per cell, `?` for the rest |
+| Queue and skipped | Lines waiting and lines dropped | `N queued, M skipped` in the legend; the follower's own drops count as skipped too |
+| Status line | The newest line, whether it is spelled yet or not | ` > source[pid]: message` in place of the inspector |
+| GOODBYE | The `q` key in an interactive run | A glide of 0.85 s to GOODBYE and 0.15 s of dwell before the app ends; see below |
+
+**Decorative:** the board and the table: the wood and its grain, knots and worn edges, the border, the rules and the diamonds, the sun and the moon with its stars, the velvet and its folds; the candles, their flames and halos and the way they flicker (by up to 16 % in three sinusoids), which also set how bright the wood is; the shape of the planchette, its brass, its shadow and its slow sway of 2 degrees; the board's yaw of 4 degrees; the violet characters of the ribbon, which stand for text not yet decoded, are a hash of the line, the character's place and the time (8 times a second) and carry nothing of the line but its length. The layout of the letters is the board's own and never changes.
+
+**Quit effect.** The first `q` while the board is shown, in a session at a terminal, takes the quit: the planchette glides to GOODBYE, which lights, and a second later the app ends. `q` again during the glide quits at once, and Ctrl-C always does. Nothing starts it but that key: `--output`, `--benchmark` and `--duration` press no key, so the glide never plays there, and switching to another view during it cancels it. No other key is the board's.
+
+**Backlog.** The first lines to arrive after the board is shown are the follower's backlog (`--lines=200` at the start, or whatever gathered while another view was shown): only the newest is spelled, and the others are not counted as skipped. Lines after it are queued one by one.
+
+**Demo.** `--demo` writes the lines of Matrix's demo, one in 25 of them, and every 7 s a line that ends a job: `Finished backup.service - Nightly backup.` (priority 6, done) and `Failed to start mount-nas.service - NAS mount.` (priority 3, failed), alternately. A headless run plays the eight seconds of journal before `--time`, so a frame lands in the middle of a line.
+
+**What cannot be measured.** Without CPU pressure the planchette is steady and the legend says `no cpu pressure: planchette steady`. Where `journalctl` cannot be run or read, the line the board spells is the error isotop writes in its place, as in Matrix, and it goes to NO. A line longer than 4,096 bytes is cut, as in Matrix. The time of an entry is not drawn, and the board's pace is its own: a line takes up to ten seconds to spell when the board is idle, and the board lags the journal by as much, and more when it is behind.
+
+**Platform.** On Linux everything above. On macOS the unified log supplies the lines and their severities, so spelling and the visits to NO work, but the log has no `JOB_RESULT`, so the planchette never goes to YES, and macOS reports no CPU pressure, so it never trembles; the legend names both (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)).
+
+Ouija has no keys of its own, and the camera and process controls move only the camera. The board, the velvet and the letters are colour fields and Hershey strokes (`Frame::field`, `Frame::stroke_text`), so the CPU and the GPU draw the same frame.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -1054,7 +1090,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo ouija feeds the journal for the eight seconds before `--time`, a frame every 0.05 s (matrix does the same), so `--time 12` lands in the middle of a line. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
