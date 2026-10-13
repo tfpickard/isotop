@@ -13,9 +13,9 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 | Python | 121 | 22,916 | 832 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 14,011 | 4,981 |
+| Markdown | 89 | 0 | 14,330 | 5,028 |
 | Plain Text | 7 | 0 | 306 | 0 |
-| **Total** | **379** | **137,382** | **16,867** | **12,383** |
+| **Total** | **386** | **137,382** | **17,186** | **12,430** |
 
 ## Rust by module
 
