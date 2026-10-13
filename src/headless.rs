@@ -1,6 +1,6 @@
 //! Headless runs: the warm-up that settles a frame before it is captured.
 
-use crate::app::{App, feed};
+use crate::app::App;
 use crate::cli::Options;
 use crate::demo_snapshot;
 use crate::history;
@@ -137,7 +137,7 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
                 let mut fed = options.time - lead;
                 for index in 0..frames {
                     let at = options.time - lead + index as f64 * step;
-                    feed(app, journal, options.demo, fed, at);
+                    app.feed_journal(journal, options.demo, fed, at);
                     fed = at;
                     app.animation = at as f32;
                     let frame = app.render(width, height, limit);

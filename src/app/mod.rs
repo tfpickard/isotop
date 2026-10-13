@@ -1,4 +1,5 @@
 mod camera;
+mod feed;
 #[cfg(test)]
 pub(crate) mod fixtures;
 mod input;
@@ -12,17 +13,16 @@ mod status;
 mod switcher;
 mod tour;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::journal::{self, Journal};
 use crate::model::{Demand, Identity, Snapshot};
 use crate::picker::{self, Picker};
-use crate::platform::Source;
 use crate::render::{Frame, RenderInput, Scene, Thing};
 use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
 
 use camera::CameraController;
+use feed::JournalFeed;
 pub(crate) use input::typed;
 use player::HistoryPlayer;
 use pointer::Pointer;
@@ -30,11 +30,6 @@ pub(crate) use renderer::Renderer;
 pub(crate) use screen::Layout;
 use search::Search;
 use tour::{Cursor, Tour};
-
-/// How long the journal follower keeps running after the demand last contained
-/// `Source::Journal` (Matrix was shown), so a look at another view does not restart it, and with
-/// it the rain's backlog.
-pub(crate) const JOURNAL_LINGER: Duration = Duration::from_secs(30);
 
 pub(crate) struct App {
     pub(crate) scene: Scene,
@@ -60,10 +55,7 @@ pub(crate) struct App {
     /// The terminal reports Shift+Space apart from Space (the Kitty keyboard protocol is on).
     pub(crate) keyboard: bool,
     pub(crate) renderer: Renderer,
-    /// When the demand last contained `Source::Journal`; None while it has not.
-    pub(crate) journal_demanded: Option<Instant>,
-    /// What `feed` has attached to samples so far, which numbers the next lines.
-    pub(crate) journal_totals: journal::Totals,
+    pub(crate) journal: JournalFeed,
     /// Whether each of the scene's views runs on this platform, in row order.
     pub(crate) available: Vec<bool>,
     /// The views Tab and Shift+Tab cycle; never empty while any view is available.
@@ -104,8 +96,7 @@ impl App {
             rng: Rng::new(clock_seed()),
             keyboard: false,
             renderer: Renderer::cpu(),
-            journal_demanded: None,
-            journal_totals: journal::Totals::default(),
+            journal: JournalFeed::default(),
             playlist: picker::playlist(&[], &available),
             picker: None,
             available,
@@ -125,16 +116,6 @@ impl App {
     pub(super) fn push_sample(&mut self, snapshot: Snapshot, capacity: usize) {
         self.scene.record(&snapshot, self.animation);
         self.history.push(snapshot, capacity);
-    }
-
-    /// Whether the journal follower should run at `now`: while the demand contains
-    /// `Source::Journal` and for `JOURNAL_LINGER` after it last did.
-    pub(super) fn journal_wanted(&mut self, now: Instant) -> bool {
-        if self.demand().contains(Source::Journal) {
-            self.journal_demanded = Some(now);
-        }
-        self.journal_demanded
-            .is_some_and(|shown| now.saturating_duration_since(shown) < JOURNAL_LINGER)
     }
 
     /// The optional sources the shown view reads.
@@ -237,180 +218,10 @@ fn clock_seed() -> u64 {
         .map_or(0, |elapsed| elapsed.as_nanos() as u64)
 }
 
-/// Attaches the journal lines of this frame to the newest sample (`Snapshot::journal`), where the
-/// view that draws them finds them: synthetic ones arriving in `(from, to]` demo seconds, or
-/// whatever `journalctl` has written since the last call.
-pub(crate) fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64) {
-    let lines = match (demo, source) {
-        (true, _) => journal::demo(from, to),
-        (false, Some(source)) => source.drain(),
-        (false, None) => Vec::new(),
-    };
-    let dropped = source.map_or(0, Journal::dropped);
-    if !lines.is_empty() || dropped > 0 {
-        let App {
-            history,
-            journal_totals,
-            ..
-        } = app;
-        history
-            .newest_mut()
-            .journal
-            .add(journal_totals, lines, dropped);
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::app::fixtures::*;
-
-    #[test]
-    fn matrix_status_ignores_a_process_selected_in_another_view() {
-        let snapshot = model::demo(1.0, 16);
-        let selected = snapshot.processes[0].id;
-        let mut app = App::new(view("matrix"), snapshot, all_available());
-        app.selected = Some(selected);
-        let App {
-            history,
-            journal_totals,
-            ..
-        } = &mut app;
-        history.samples_mut()[0].journal.add(
-            journal_totals,
-            vec![journal::Line::new(6, "sshd[1]: hello")],
-            0,
-        );
-        // The line reaches the view when it draws the sample that carries it.
-        let frame = app.render(320, 180, 512);
-        let text = app.text(0.0, "test", 20, 512);
-        assert_eq!(text[1], " > sshd[1]: hello");
-        assert!(text[2].contains("queued"), "{}", text[2]);
-        let layout = Layout {
-            columns: 80,
-            rows: 24,
-            width: 320,
-            height: 180,
-            cell: None,
-        };
-        assert!(app.popup(&frame, &layout).is_none());
-        assert_eq!(app.selected, Some(selected), "kept for the process views");
-    }
-
-    #[test]
-    fn matrix_lines_reach_the_view_through_the_snapshot() {
-        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
-        let line = |app: &App| {
-            app.scene
-                .inspector_line(app.view)
-                .expect("the matrix has one")
-        };
-        let legend = |app: &App| app.scene.legend(app.view, app.snapshot());
-        app.render(320, 180, 512);
-        assert_eq!(line(&app), " > waiting for the journal...");
-
-        // `main.rs` hands the frame's lines to the sample; the view takes them in when it draws.
-        feed(&mut app, None, true, 0.0, 1.0);
-        let lines = journal::demo(0.0, 1.0);
-        assert_eq!(app.history.newest().journal.lines, lines);
-        assert_eq!(line(&app), " > waiting for the journal...", "not drawn yet");
-        app.render(320, 180, 512);
-        assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
-        let queued = legend(&app);
-
-        // Drawing the same sample again, or a newer one that brought no lines, queues none twice.
-        app.render(320, 180, 512);
-        app.history.samples_mut().push_back(model::demo(2.0, 16));
-        app.render(320, 180, 512);
-        assert_eq!(legend(&app), queued);
-        assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
-
-        // Lines attached to the newer sample are the next ones taken.
-        feed(&mut app, None, true, 1.0, 2.0);
-        app.render(320, 180, 512);
-        let all = journal::demo(0.0, 2.0);
-        assert_eq!(line(&app), format!(" > {}", all.last().unwrap().text));
-        assert_eq!(app.history.newest().journal.through as usize, all.len());
-    }
-
-    #[test]
-    fn feed_attaches_each_frames_journal_lines_to_the_newest_sample() {
-        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
-        app.history.samples_mut().push_front(model::demo(0.0, 16));
-        feed(&mut app, None, true, 0.0, 1.0);
-        assert!(
-            app.history.samples()[0].journal.lines.is_empty(),
-            "an older sample gets none"
-        );
-        assert_eq!(
-            app.history.samples()[1].journal.lines,
-            journal::demo(0.0, 1.0)
-        );
-        feed(&mut app, None, true, 1.0, 2.0);
-        let newest = &app.history.samples()[1].journal;
-        assert_eq!(newest.lines, journal::demo(0.0, 2.0));
-        assert_eq!(newest.through as usize, newest.lines.len());
-        // A frame that brought nothing leaves the sample as it was.
-        let before = newest.clone();
-        feed(&mut app, None, true, 2.0, 2.05);
-        assert_eq!(app.history.samples()[1].journal, before);
-    }
-
-    #[test]
-    fn the_history_keeps_the_journal_lines_of_the_newest_sample_only() {
-        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
-        let held = |app: &App| -> usize {
-            app.history
-                .samples()
-                .iter()
-                .map(|s| s.journal.lines.len())
-                .sum()
-        };
-        for sample in 0..40 {
-            app.push_sample(model::demo(f64::from(sample), 16), 24);
-            // A flood bigger than a sample keeps arrives every frame, twice.
-            for _ in 0..2 {
-                let flood: Vec<journal::Line> = (0..journal::KEPT)
-                    .map(|n| journal::Line::new(6, format!("line {n}")))
-                    .collect();
-                let App {
-                    history,
-                    journal_totals,
-                    ..
-                } = &mut app;
-                let newest = history.newest_mut();
-                newest.journal.add(journal_totals, flood, 0);
-            }
-            assert!(held(&app) <= journal::KEPT, "{} lines held", held(&app));
-        }
-        assert_eq!(app.history.len(), 24);
-        assert_eq!(held(&app), journal::KEPT, "the newest sample's lines");
-        // The numbering outlives the lines: a sample that was the newest says how many had
-        // arrived by then, and offers none of them to a view that has not taken them.
-        for older in app.history.samples().iter().take(23) {
-            assert!(older.journal.lines.is_empty());
-            assert!(older.journal.through > 0);
-            assert!(older.journal.unseen(0).is_empty());
-        }
-    }
-
-    #[test]
-    fn the_journal_stops_after_matrix_has_been_hidden_for_a_while() {
-        let start = Instant::now();
-        let at = |seconds: u64| start + Duration::from_secs(seconds);
-        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
-        assert!(!app.journal_wanted(at(0)), "Matrix was never shown");
-        app.view = view("matrix");
-        assert!(app.journal_wanted(at(10)));
-        assert!(app.journal_wanted(at(500)), "shown all along");
-        app.view = view("globe");
-        assert!(app.journal_wanted(at(501)));
-        assert!(app.journal_wanted(at(529)), "a look at another view");
-        assert!(!app.journal_wanted(at(530)));
-        assert!(!app.journal_wanted(at(900)));
-        app.view = view("matrix");
-        assert!(app.journal_wanted(at(901)), "back on Matrix");
-    }
 
     #[test]
     fn changing_views_updates_the_demand() {

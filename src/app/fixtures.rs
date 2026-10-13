@@ -17,7 +17,7 @@ pub(crate) use crate::render::{self, Camera, Frame, ISOMETRIC, ORIGIN_Y, Scene, 
 pub(crate) use crate::simulation::Rng;
 pub(crate) use crate::terminal::{Label, Tone};
 pub(crate) use crate::views::{self, REGISTRY, View, testing, view};
-pub(crate) use crate::{demo_snapshot, globe, journal, picker, terminal};
+pub(crate) use crate::{demo_snapshot, globe, picker, terminal};
 pub(crate) use clap::Parser;
 
 /// Every registered view available, as on Linux and macOS today.

@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
 
-use app::{App, Layout, Renderer, feed, typed};
+use app::{App, Layout, Renderer, typed};
 use cli::{Options, Preflight, preflight};
 use headless::warm_up;
 use journal::Journal;
@@ -185,7 +185,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
             // Paused, the view keeps what it shows; the journal backlog is bounded meanwhile.
             if !app.history.is_paused() {
                 fed = f64::max(fed, now - 2.0);
-                feed(&mut app, journal.as_ref(), options.demo, fed, now);
+                app.feed_journal(journal.as_ref(), options.demo, fed, now);
                 fed = now;
             }
         }
