@@ -15,11 +15,15 @@ use crate::render::{Camera, Color, Frame, Item, LIGHT, NONE, Point, SCALE};
 use crate::simulation::{Rng, hash};
 
 /// The soil of a mound before it is lit.
-const SOIL: Color = [158, 118, 86];
+const SOIL: Color = [170, 128, 94];
 
 /// The dark of an entrance, and the pebbles' pale stone.
 const HOLE: Color = [14, 9, 7];
 const STONE: Color = [226, 214, 190];
+
+/// The cooler, greyer stone of a file that was deleted while it is open: nothing links to it, but
+/// its space is in use until the last descriptor closes.
+const DELETED_STONE: Color = [152, 164, 184];
 
 /// An ant is dark, and a crumb is pale when it was read, coral when it was written, and between
 /// the two when the direction is not known.
@@ -175,7 +179,7 @@ pub fn mound(frame: &mut Frame, camera: &Camera, mound: &Mound) {
     } else if awake {
         mix(SOIL, glow, 0.14)
     } else {
-        tint(SOIL, 0.72)
+        tint(SOIL, 0.9)
     };
     // A facet's brightness: ambient and the one light of the scene.
     let shade = |normal: Point| 0.30 + 0.85 * dot(normal, LIGHT).max(0.0);
@@ -292,6 +296,8 @@ pub struct Heap {
     /// How much of itself it shows, from 0 when a file has just opened or is about to close to 1.
     pub presence: f32,
     pub highlight: bool,
+    /// The file was deleted while open.
+    pub deleted: bool,
 }
 
 /// The most pebbles a pile is made of.
@@ -306,6 +312,7 @@ pub fn pile(frame: &mut Frame, camera: &Camera, heap: &Heap) {
         seed,
         presence,
         highlight,
+        deleted,
     } = *heap;
     if presence <= 0.0 {
         return;
@@ -313,10 +320,11 @@ pub fn pile(frame: &mut Frame, camera: &Camera, heap: &Heap) {
     let radius = radius * (0.4 + 0.6 * presence);
     let t = ((radius - 0.45) / 2.55).clamp(0.0, 1.0);
     let count = (6.0 + (MOST_PEBBLES - 6) as f32 * t).round() as usize;
+    let kind = if deleted { DELETED_STONE } else { STONE };
     let stone = if highlight {
-        mix(STONE, [255, 255, 235], 0.5)
+        mix(kind, [255, 255, 235], 0.5)
     } else {
-        STONE
+        kind
     };
     let mut rng = Rng::new(seed);
     let peak = 0.75 * radius;
@@ -635,6 +643,7 @@ mod tests {
             seed: 5,
             presence: 1.0,
             highlight: false,
+            deleted: false,
         };
         pile(&mut frame, &camera, &heap);
         let balls = frame
@@ -686,6 +695,7 @@ mod tests {
             seed: 123,
             presence: 1.0,
             highlight: false,
+            deleted: false,
         };
         let (mut one, mut two) = (blank(), blank());
         pile(&mut one, &camera, &heap);

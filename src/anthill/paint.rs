@@ -166,6 +166,7 @@ impl Anthill {
                     seed: record.seed,
                     presence: appear.min(leave),
                     highlight: stage.thing == Some(thing),
+                    deleted: record.deleted,
                 },
             );
         }

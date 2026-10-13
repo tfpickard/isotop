@@ -123,8 +123,10 @@ impl Anthill {
                 seed: hash::fnv1a_64(&pile.path) ^ pile.key,
                 first: if first { f32::NEG_INFINITY } else { now },
                 gone: None,
+                deleted: pile.deleted,
             });
             record.at = at;
+            record.deleted = pile.deleted;
             record.radius = pile_radius(pile.size);
             record.gone = None;
         }

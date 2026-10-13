@@ -99,6 +99,8 @@ struct Record {
     first: f32,
     /// When it was first missing from a sample, if it is: it fades from then.
     gone: Option<f32>,
+    /// Its file was deleted while open.
+    deleted: bool,
 }
 
 /// A tunnel as drawn: the path between two nests and how its dashes slide.
@@ -126,6 +128,8 @@ pub struct Anthill {
     stale: bool,
     /// The sample taken in: its time, and how many processes were drawn from it.
     taken: Option<(u64, usize)>,
+    /// The time of the newest sample seen.
+    newest: f64,
     plan: Option<Plan>,
     nests: HashMap<Identity, Nest>,
     records: HashMap<u64, Record>,
@@ -146,10 +150,15 @@ impl Anthill {
         nest_radius(memory * HEADROOM) * RESERVE
     }
 
-    /// Gives every sampled process, drawn or not, a place, and the clearing room for them.
+    /// Gives every sampled process, drawn or not, a place, and the clearing room for them. The
+    /// rooms of processes that are gone are freed only by a sample newer than any seen, so that
+    /// rewinding and going forward again leaves every nest where it was.
     fn seat(&mut self, stage: &Stage, snapshot: &Snapshot) {
-        let alive: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
-        self.packer.retain(|id| alive.contains(&id));
+        if snapshot.elapsed >= self.newest {
+            self.newest = snapshot.elapsed;
+            let alive: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
+            self.packer.retain(|id| alive.contains(&id));
+        }
         let mut pending: Vec<(f32, Identity)> = Vec::new();
         for process in &snapshot.processes {
             let memory = stage.eased(process).1 as f32;
