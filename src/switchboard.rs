@@ -22,7 +22,7 @@ use crate::platform::Source;
 use crate::render::{Card, Color, NONE, Stage, Thing};
 use crate::simulation::FixedStep;
 use crate::status::{missing_note, sources_note};
-use crate::terminal::clean_text;
+use crate::terminal::SafeText;
 use crate::views::ViewModule;
 
 use cord::{MOVE, Spot};
@@ -33,6 +33,12 @@ use scenery::{Pen, Plan};
 pub const LINE: &str = "interrupt line";
 
 /// Text on the board is cut to this many characters.
+/// `text` as the terminal will show it, cut to `width` cells: the names the board writes come from
+/// the kernel's interrupt table, so they are cleaned like process text.
+fn clean(text: &str, width: usize) -> String {
+    SafeText::new(text).cut(width).to_owned()
+}
+
 const LABEL: usize = 14;
 /// A cord is drawn this many times wider than the formula says, which is in the prototype's
 /// pixels and reads thin beside the lamps.
@@ -452,7 +458,7 @@ impl Switchboard {
         let mut put = |x: f32, d: f32, z: f32, text: &str| {
             stage
                 .places
-                .push((scenery::point(x, d, z), clean_text(text, LABEL + 12)));
+                .push((scenery::point(x, d, z), clean(text, LABEL + 12)));
         };
         put(
             (scenery::BOARD.0 + scenery::BOARD.1) / 2.0,
@@ -708,13 +714,13 @@ impl ViewModule for Switchboard {
             lines.push(format!(
                 "{} lines of {}",
                 jack.members,
-                clean_text(&jack.device, 40)
+                clean(&jack.device, 40)
             ));
         } else {
             lines.push(format!(
                 "IRQ {}  {}",
-                clean_text(&jack.id, 12),
-                clean_text(&jack.chip, 40)
+                clean(&jack.id, 12),
+                clean(&jack.chip, 40)
             ));
         }
         let rate = jack.rate();
@@ -750,7 +756,7 @@ impl ViewModule for Switchboard {
             lines.push(format!("top CPUs {}", shares.join("  ")));
         }
         Some(Card {
-            title: clean_text(&jack.name, 40),
+            title: clean(&jack.name, 40),
             lines,
             at: scenery::point(x, 2.0, scenery::TOP_Z - y),
         })

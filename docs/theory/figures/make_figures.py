@@ -282,7 +282,7 @@ def coop_mappings():
     fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.0))
     psi = np.linspace(0, 100, 300)
     for cv, color in [(0, BLUE), (1, GREEN), (2, RED)]:
-        eta = np.minimum(0.5 + 0.5 * min(cv, 2) + 5.5 * psi / (psi + 15), 2 * math.pi)  # coop.rs, noise
+        eta = np.minimum(0.5 + 0.5 * min(cv, 2) + 5.5 * psi / (psi + 15), 2 * math.pi)  # coop/sim.rs, noise
         axes[0].plot(psi, eta, color=color, label=f"cᵥ = {cv}")
     axes[0].axhline(2 * math.pi, color=INK, lw=0.6, ls="--")
     axes[0].set_xlabel("CPU pressure ψ (%)")
@@ -290,7 +290,7 @@ def coop_mappings():
     axes[0].set_title("noise grows with pressure and burstiness", fontsize=8.5)
     axes[0].legend(fontsize=7.5, frameon=False)
     cpu = np.linspace(0, 400, 400)
-    axes[1].plot(cpu, 0.6 + 3.4 * cpu / (cpu + 25), color=BLUE)  # coop.rs, V_MIN, V_SPAN, SPEED_KNEE
+    axes[1].plot(cpu, 0.6 + 3.4 * cpu / (cpu + 25), color=BLUE)  # coop/sim.rs, V_MIN, V_SPAN, SPEED_KNEE
     axes[1].set_xlabel("CPU (% of a core)")
     axes[1].set_ylabel("foraging speed (units/s)")
     axes[1].set_title("speed saturates at 4", fontsize=8.5)

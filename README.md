@@ -1,13 +1,18 @@
 # isotop
 
-A living picture of your machine inside the terminal, in twenty-one views: a process
+A living picture of your machine inside the terminal, in twenty-four views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
-history, a globe of network connections, a coral reef, a chicken yard, a geocentric
-cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
-macOS) as Matrix rain, a minute of process worldlines in a tesseract whose fourth
-axis is time, a moonlit cemetery of the processes that exited, and a black hole whose orbits rank the
-processes the OOM killer will take next. Written in
+history, a globe of network connections, a coral reef, the system log (the systemd
+journal, or the unified log on macOS) as Matrix rain, a chicken yard, a geocentric
+cosmos of Fourier epicycles, a minute of process worldlines in a tesseract whose fourth
+axis is time, a moonlit cemetery of the processes that exited, a slice of cortex
+whose neurons fire with CPU, a black hole whose orbits rank the processes the OOM
+killer will take next, a murmuration of starlings with one bird for each thread, the
+process tree as a tree, the journal spelled letter by letter by the planchette of a
+talking board, an anthill whose ants carry the bytes of read and write calls between
+nests and files, and a boiler room whose pipes, tubes and hoses are the channels between
+processes. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -18,13 +23,22 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 | ![City](docs/media/city.webp)<br>**1 City** | ![Orbit](docs/media/orbit.webp)<br>**2 Orbit** | ![Ripple](docs/media/ripple.webp)<br>**3 Ripple** |
 | ![Flow](docs/media/flow.webp)<br>**4 Flow** | ![Cores](docs/media/cores.webp)<br>**5 Cores** | ![Cells](docs/media/cells.webp)<br>**6 Cells** |
 | ![Strata](docs/media/strata.webp)<br>**7 Strata** | ![Globe](docs/media/globe.webp)<br>**8 Globe** | ![Reef](docs/media/reef.webp)<br>**9 Reef** |
+| ![Matrix](docs/media/matrix.webp)<br>**10 Matrix** | ![Coop](docs/media/coop.webp)<br>**11 Coop** | ![Ptolemy](docs/media/ptolemy.webp)<br>**12 Ptolemy** |
+| ![Tesseract](docs/media/tesseract.webp)<br>**13 Tesseract** | ![Necropolis](docs/media/necropolis.webp)<br>**14 Necropolis** | ![Cortex](docs/media/cortex.webp)<br>**15 Cortex** |
+| ![Horizon](docs/media/horizon.webp)<br>**16 Horizon** | ![Murmuration](docs/media/murmuration.webp)<br>**17 Murmuration** | ![Arbor](docs/media/arbor.webp)<br>**18 Arbor** |
+| ![Hr](docs/media/hr.webp)<br>**19 Hr** | ![Hive](docs/media/hive.webp)<br>**20 Hive** | ![Switchboard](docs/media/switchboard.webp)<br>**21 Switchboard** |
+| ![Ouija](docs/media/ouija.webp)<br>**22 Ouija** | ![Anthill](docs/media/anthill.webp)<br>**23 Anthill** | ![Plumbing](docs/media/plumbing.webp)<br>**24 Plumbing** |
+
+The numbers are the views' places in the Tab order (the registry's, which
+`isotop --list-views` prints); the keys 1 to 9 and 0 jump to the first ten.
 
 The video at the top is a live session on a real machine, touring the views. The
-other screenshots and recordings are of Ghostty running `isotop --demo`, the
-synthetic workload; the coop image is a crop of a headless `--demo --output` render.
+stills of the first nine views and the other recordings are of Ghostty running
+`isotop --demo`, the synthetic workload; the rest are headless
+`--demo --output` renders, and the coop image is a crop of one.
 
 The [wiki](https://github.com/tfpickard/isotop/wiki) is the academic companion: the theory of operation, the
-mathematics and physics behind every view (and the fifteen views still planned), media, and recipes. Its
+mathematics and physics behind every view (and the eleven views still planned), media, and recipes. Its
 sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to `main`.
 
 ## Run
@@ -33,7 +47,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux)
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), ouija, anthill, plumbing
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ./target/release/isotop --view hr --hr-diagram # hr starts on its Hertzsprung-Russell diagram; `m` flies between it and the sky
@@ -178,15 +192,19 @@ cache is stale.
 | File locks | There is no table of who holds or waits for a lock: `fcntl(F_GETLK)` only tests a range of a file the caller has open itself. No hen broods or queues at a nest in the coop, and its legend says "no file lock table: no brooding or queueing". Open files and files deleted while open are measured; see above |
 | GPU memory | Not read. Apple GPUs share memory with the CPU, and there are no green GPU beacons or halos; the Orbit legend leaves out "green = NVIDIA GPU" |
 | Syscall I/O | The bytes and calls of read and write syscalls (`rchar`, `wchar`, `syscr` and `syscw` in Linux's `/proc/<pid>/io`) have no macOS counterpart, so `Process::syscall_io` is always empty and the platform reports "syscall io" as missing. Storage bytes (`proc_pid_rusage`) are measured as on Linux |
+| Syscall counts in the anthill | Anthill is never skipped. Without the read and write counts an ant is K KiB moved instead of K calls, the direction of an ant is the open flags', and a crumb has one size, unsized; its legend says "no syscall io: ant = K KiB moved, crumbs unsized". With no remainder to tell (the next row) tunnels show no rate and no ants go to a blanket, which the legend says as "no unattributed io: tunnels show no rate, nothing goes to a blanket" |
+| Unattributed I/O (per-file I/O detail) | Without `rchar` and `wchar` there is nothing to hold a file's claim to and nothing to take it from, so the remainder is never told (`IoDetail::unattributed` is None, and the platform reports "unattributed io" as missing) and a claim is held only to the size of its file: an `lseek` can make a descriptor claim bytes nothing read, and a descriptor inherited across `fork` shows the position either process moved. The 24 processes are ranked by disk I/O per second rather than by syscalls, so I/O that the page cache absorbed ranks low. Other users' processes are unreadable without root, and a vnode whose path the kernel refuses to build (the `fsgetpath` check of a security policy) counts as another kind of descriptor and marks the reading partial. No view draws it yet |
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
 | Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
 | Interrupt table (switchboard) | The switchboard is unavailable: macOS exposes no unprivileged per-IRQ or per-CPU interrupt counters (`powermetrics` needs root, and IOReport is private). Tab, Shift+Tab and the number keys pass over it, the `v` picker and `--list-views` do not list it, `--verbose` prints `skipping view switchboard: not supported on this platform`, and there is no "not supported" screen. The module still compiles there |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
+| Job results and CPU pressure (ouija) | The unified log has no `JOB_RESULT`, so no line ends a job and the planchette never goes to YES: the platform reports "job results" as missing, and the legend says "no job results: no visits to YES". macOS has no CPU pressure, so the planchette is steady, and the legend says "no cpu pressure: planchette steady". Spelling, the pace and the visits to NO (from the log's severities, as in Matrix) are as on Linux |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
+| Pipes, outflow and wait channels (plumbing) | Pipes are read as on Linux, and `Pipe::buffered` says how many bytes wait in an anonymous pipe, which the pipe's card quotes (the window has no fill level either way). There is no `/proc/<pid>/wchan`, so `Source::WaitChannel` is missing: no gauge pins in the red, no window runs dry or packed, and the legend says "no wait channel: no red or dry gauges". Without `rchar` and `wchar` there is no remainder to attribute (see Unattributed I/O above), so every tank's flow is unmeasured: grey still water in the windows, a grey face with a slash on every gauge, and the legend says "no unattributed io: water and gauges unmeasured". Loopback connections have no byte counters, so the hoses are grey with no beads ("no socket traffic: hoses unmeasured") and a process holding a loopback connection has no flow either. Pipes, Unix sockets with their queues, bursts, manifolds' absence (no flow to split) and the layout are as on Linux |
 | Memory detail (hive) | Hive is never skipped. `memory detail` is always missing, so every frame is unsplit: one pale-nectar kind counted from the physical footprint, never sealed, and the legend says `no memory detail: cells = memory footprint`. Hives are apps instead of cgroups (`hive = app`). Brood still comes from the growth of the footprint, and threads and their CPU are read as on Linux, but another user's processes are unreadable without sudo: their bees stand in the idle cluster and the legend counts them (`N without thread CPU`) |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
@@ -219,9 +237,11 @@ has no warning level, so nothing is amber.
 ## Worlds
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
-default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the twenty-one views in order (twenty on macOS), the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive and (on Linux) the switchboard are reached with Tab, Shift+Tab,
+default, free to rotate and tilt between a low angle and top-down. The view registry
+(`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
+truth for the list of views, their Tab order and their digits: Tab cycles
+the twenty-four views in that order (twenty-three on macOS), the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive, (on Linux) the switchboard, ouija, anthill and plumbing are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -230,154 +250,228 @@ flow. Views
 that grow as data arrives (cores, cells, strata, globe, reef, coop) keep the camera
 framed until you move it; Home, Tab or a number key frames them again.
 
+**Reading the mapping tables.** Every view's section opens with a table of what it
+draws, the measured quantity behind it and the transform, and a **Decorative:**
+paragraph for everything it draws that is not a measurement. In them, *CPU* is the
+share of one core a process used, smoothed with a 1.5 s time constant when it is
+sampled and eased towards each sample over 0.3 s when it is drawn (so 100 means one
+busy core), and *memory* is the resident set (the physical footprint on macOS),
+eased the same way. `mass_radius` is the radius several views give a body so that
+its volume follows memory: 0.24 × ∛MiB world units, clamped to 0.25 to 4.5 (about
+1.1 MiB and below share the smallest size, about 6.4 GiB and above the largest, and
+a 1 GiB process is about five times as wide as a 6 MiB one). *Growth* is the ease
+with which a process that appears arrives: 1 − (1 − t)³ over 0.9 s. A threshold or
+a saturating curve such as `cpu / (cpu + 50)` is the transform the code uses, with
+its constants.
+
 ### City
 
-- Height: smoothed process CPU usage, `1 + 44 * cpu / (cpu + 100)` world units
-  against 4-unit plots: idle processes are low blocks, one busy core is a tower
-  about six plots tall, and multi-core work climbs towards eleven.
-- Footprint: bounded square-root memory scale (resident set).
-- District: service/cgroup, split into fixed 16-building blocks as needed.
-- Windows and rooftop lights: decorative CPU activity cues; green beacons:
-  processes using the NVIDIA GPU.
-- Cyan ground pulses: attributed disk I/O activity when readable.
-- Pink: zombie; orange: stopped; red: uninterruptible sleep.
+![City: districts of buildings, tall where a process is busy](docs/media/city.webp)
 
-Plots stay fixed as resources change. Exited processes release their plots.
-Blocks grow along square shells so newly allocated districts do not relocate
-existing ones.
+A town of districts with one building for each process: its height is set by CPU and its footprint by memory.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Building | Process | One per drawn process, on a plot it keeps until it leaves the sample; picking and the inspector use the process |
+| Height | CPU | (1 + 44 × cpu / (cpu + 100)) × growth, growth at least 0.05: 1 unit when idle, 23 at one busy core, 36 at four, towards 45, against plots 4 units across |
+| Footprint | Memory (RSS; the physical footprint on macOS) | Half the side is (0.42 + 1.05 × √(MiB / (MiB + 220))) × (0.35 + 0.65 × growth): a side from 0.84 units for the smallest process to 2.94 for the largest, 2.3 at 220 MiB |
+| District and plot | `Process::group`: the service or scope the cgroup path ends in (`ungrouped` if none; the app bundle or executable name on macOS) | A district is a 4 by 4 block of plots. A new process takes the first vacant plot of its group's districts, or opens a district; districts spiral out in square shells 23 units apart, and a freed plot goes to the next arrival of its group ([#155](https://github.com/tfpickard/isotop/issues/155)) |
+| Wall and roof colour | Process state, otherwise the district | Zombie pink (213, 97, 126), stopped or traced orange (225, 161, 75), uninterruptible sleep red (222, 94, 73); any other state takes its district's colour, one of eight repeating by district number. The kind of the process is not shown |
+| Window rows | CPU, through the height | One row of three windows on each wall for every 0.85 units of height; drawn only when zoomed in (zoom above 3) |
+| Window brightness | CPU | A lit window is (241, 206, 136) × (0.55 + 0.35 × cpu / (cpu + 50)); an unlit one is (28, 40, 53) |
+| Rooftop lamp | CPU above 1 % | An amber sphere on the roof; its brightness pulse is decorative |
+| GPU beacon | NVIDIA GPU memory: the process has an entry (`Process::gpu_memory`), whatever the amount | A green glow and sphere at a corner of the roof |
+| I/O pulse | Storage I/O (`io_rate`, bytes read plus written) above 1 KiB/s | A cyan dot that runs along the foot of the east wall once every 1.4 s; the rate beyond the threshold does not change it |
+| Socket links | `Snapshot::links` | Every link, lifted 1.5 units over the plots (`link_lift`); see [Links and weather](#links-and-weather) |
+
+**Decorative:** each district's ground slab, its 4 by 4 grid and its coloured border; each building's shadow, the shading of its walls (0.40, 0.66, 0.55 and 0.30 of its colour) and roof; the colour of a district; which windows are lit (a fixed pattern from the pid: a window is dark when pid + 7 × row + 11 × column is a multiple of 5); the pulse of the rooftop lamp and the run of the I/O dot; the outline of the selected building.
+
+Plots stay fixed as resources change. Exited processes release their plots. Districts grow along square shells, so a newly allocated district does not relocate existing ones. The camera fit leaves room for the tallest building (`Stage::headroom`). **What cannot be measured.** Without NVML there are no beacons; the I/O counters of other users' processes are unreadable without privileges, so those buildings have no pulse; macOS has no uninterruptible sleep, so no red buildings.
 
 ### Orbit
 
-- Colour: slate kernel threads, teal system services, amber processes in your
-  session, violet containers (from kernel thread flags and the cgroup path).
-- Size: volume proportional to memory (radius is the cube root), so a 1 GiB
-  process is about five times as wide as a 6 MiB one. A body with children is
-  sized by the memory of its whole subtree, so stars carry their systems' mass.
-- Rings: Saturn rings for threads, one more ring per fourfold thread count.
-- CPU: a warm glow and a comet trail along the orbit. Green glow and halo: NVIDIA
-  GPU memory.
-- Children orbit their parents on Keplerian ellipses with the parent at one
-  focus. Motion follows Kepler's equation, so bodies speed up near periapsis, and
-  periods follow T ~ sqrt(a^3 / M): wider orbits are slower and heavier parents
-  pull their children round faster (clamped to 8 s to 10 min).
-- Branches hanging off a top-level process (init, kthreadd) become separate solar
-  systems; leaf processes stay in orbit, so kernel threads form one ringed system
-  around kthreadd.
-- Large sibling sets fill concentric shells that share one eccentricity and
-  orientation, so they are scaled copies of each other and never cross; siblings
-  on a shell share one ellipse and keep their order.
-- Systems are packed around the centre, largest first, and the whole galaxy
-  revolves about its memory-weighted barycenter like satellite galaxies:
-  systems whose rings overlap turn together, and detached outer systems turn at
-  their own slower Kepler rate (once every 2 to 15 minutes), so they never
-  collide. A system only moves out of its place on the wheel when it outgrows
-  the room reserved for it.
+![Orbit: the process tree as nested systems of bodies on orbits](docs/media/orbit.webp)
 
-Four levels are drawn per system; deeper processes are counted as collapsed.
+The process tree as nested systems: every top-level process is a star, its children orbit it on Keplerian ellipses with the parent at one focus, theirs orbit them, down to four levels.
 
-Known gap: where a body stands inside its system is not yet stable when memory and
-the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Body | Process | One sphere per drawn process; four levels (0 to 3) are drawn in each system, and deeper processes are counted as collapsed |
+| Body size | Memory (RSS; the physical footprint on macOS) of the whole subtree the body anchors, including the processes below the four levels drawn (a leaf's own memory) | `mass_radius` × growth: a star carries the mass of its system, and a 1 GiB subtree has a radius of 2.4 units against 0.44 for a 6 MiB one |
+| Body colour | Kind and state | Kernel slate (104, 122, 156), system teal (72, 183, 199), session amber (236, 178, 92), container violet (178, 136, 232), each × (0.86 + 0.24 × j) with j from a hash of the pid; zombie pink, stopped orange and uninterruptible sleep red, without the jitter |
+| Thread rings | Thread count (`Process::threads`) | None below 4 threads, then one more ring at 4, 16, 64 and 256 (at most four); ring k stands (1.45 + 0.28 × k) body radii out, and the systems leave room for the rings |
+| CPU glow | CPU above 1 % | A warm (255, 190, 110) glow of radius core × (2.2 + 2 × cpu / (cpu + 50)) and strength 0.3 + 0.6 × cpu / (cpu + 40), core being the body's radius on screen, at least 3.5 pixels |
+| Comet trail | CPU above 3 %, of a body on an orbit (a star has no orbit) | 2 + ⌊14 × cpu / (cpu + 40)⌋ segments back along the orbit, each min(0.6 / a, 0.25) radians of mean anomaly, fading from full to 0.2 |
+| NVIDIA glow | NVIDIA GPU memory | A green (118, 214, 60) glow of radius core × (2.6 + 0.5 × ln(1 + MiB / 64)) and strength 0.6; a process whose amount the driver does not report counts as 0 MiB |
+| NVIDIA halo | Any NVIDIA GPU memory entry | A green ring of 1.9 body radii |
+| System | The process tree (`Process::parent`) | A process with no readable parent in the sample, and a branch with children that hangs off a top-level process (init, kthreadd), is a star; the leaves of a top-level process stay in its orbit, so kernel threads form one ringed system around kthreadd |
+| Shell and orbit size | None: packing. The extents of the siblings (their size, rings and what they anchor) set how far apart the shells are | Children, those with children of their own first and then by identity, fill confocal shells around their parent, which share one eccentricity and orientation; a shell's semi-major axis a grows with the extent of the bodies it must hold, and siblings on a shell are spaced evenly in mean anomaly |
+| Orbital period | Memory of the parent's subtree, and the orbit | T = clamp(30 s × (a / 3)^1.5 / √(M / 512 MiB), 8 s, 600 s), M the parent's subtree memory, at least 1 MiB; Kepler's equation is solved every frame, so a body runs faster near periapsis |
+| Galaxy turn | Memory of each system, and its distance from the pivot | The systems whose distances from the memory-weighted barycentre overlap, give or take their room, turn together as a band with T = clamp(240 s × (r / 30)^1.5 / √(M / 4 GiB), 120 s, 900 s), M the memory inside the band; no band outside another turns faster, and the galaxy turns only across consecutive frames |
+| System title | The star's name, and the number of processes the system draws | `init` for systemd as pid 1, `systemd --user` for another systemd, otherwise the name cut to 15 cells; ` (N)` follows when N is more than 1. The tour visits stars with the most members first, and a body with children says in its inspector how much memory its system holds |
+| Hollow star | A parent isotop can see but not read (`Snapshot::shadows`, on macOS without sudo) that has readable leaves | An unpickable outline (168, 182, 210) with no figures, titled `name (unreadable) (N)`, that its leaves orbit |
+| Socket links | `Snapshot::links`, `Snapshot::outside` | Every link and every connection leaving the machine; see [Links and weather](#links-and-weather) |
+
+**Decorative:** the orbit lines (slate blue, fading as 1 / (1 + 0.3 × depth), gold for the selected body's) and the spokes to bodies that anchor systems; the eccentricity (0.06 to 0.22) and the direction of the periapsis of each parent's shells, from a hash of its pid; where on its shell a body starts and which shell it takes; where a system stands (a golden-angle spiral, largest first); the direction the rings of a body lean in; the per-pid brightness of a body; the stars of the sky.
+
+**The systems.** Large sibling sets fill concentric shells that share one eccentricity and orientation, so they are scaled copies of each other and never cross; siblings on a shell share one ellipse and keep their order. Systems are packed around the centre, largest first, each keeping 30 % more room than it needs, and the whole galaxy revolves about its memory-weighted barycenter like satellite galaxies: systems whose rings overlap turn together, and detached outer systems turn at their own slower Kepler rate, so they never collide. A system only moves out of its place on the wheel when it outgrows the room reserved for it. Four levels are drawn per system; deeper processes are counted as collapsed.
+
+Known gap: where a body stands inside its system is not yet stable when memory and the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
 
 ### Ripple
 
 ![Ripple: pebble clusters driving interfering ripples](docs/media/ripple-motion.webp)
 
-The machine as a pond: a damped 2D wave equation (nine-point stencil, absorbing
-border) simulated on a grid and drawn as a smoothly lit surface.
+The machine as a pond: processes are pebbles in clusters, and each busy one drives a damped wave on the water.
 
-- Processes are pebbles, clustered by cgroup like handfuls thrown into the
-  water. A pebble keeps its place for life; a cluster moves only when it
-  outgrows the open water around it.
-- Busy pebbles drive ripples at their own pitch, louder with more CPU, so a
-  cluster's rings interfere and spread out to its neighbours.
-- Pebbles float on the surface, sized by memory.
-- Every patch of water belongs to its nearest process and is tinted by it;
-  hovering the water names its owner.
-- New processes drip; exiting processes splash. Pressure raises a swell.
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Pebble | Process | One per drawn process, floating on the water at its height plus 0.35 of its radius |
+| Pebble size | Memory (RSS; the physical footprint on macOS) | `mass_radius` × growth |
+| Pebble colour | Kind and state | The same colours as Orbit |
+| Cluster and slot | `Process::group`: the service or scope the cgroup path ends in | One cluster per group. Slot k of its sunflower spiral lies √(k + ½) spacings out and k golden angles round; a new process takes the lowest free slot of its group and keeps it for life, drawn or not ([#155](https://github.com/tfpickard/isotop/issues/155)) |
+| Spacing of a cluster | Memory of its largest pebble | (2 × largest radius + 1) ÷ 1.4 × 1.15, set again only when the largest would touch a neighbour, so pebbles grow in place into the room left round them |
+| Place of a cluster | Its extent (spacing × √(highest slot + 1) + the largest radius) | 1.1 × (extent + 3) units of open water reserved on a golden-angle spiral that clears every other cluster; a cluster moves only when it outgrows its water |
+| Ripple loudness | CPU, of a process above 0.3 % | Its pebble's cell of the water is driven by 900 × cpu / (cpu + 40) × sin(ω t + φ) per second, spread over the 3 × 3 cells round it with weights 1, ½ and ¼ |
+| Drip | A process that appeared in this sample | An upward kick of 30 at its pebble |
+| Splash | A process that left | A downward kick of 90 where it was last drawn |
+| Swell | CPU and I/O pressure (some, 10 s average; memory pressure does not enter) | Amplitude 0.01 + 0.12 × p / (p + 20) world units of height, p the CPU pressure plus the I/O pressure in percent |
+| Water tint | The nearest process, by kind | Every grid node belongs to its nearest pebble (a breadth-first flood, the larger pebble taking a shared node first); 8 % of the owner's colour is mixed into the deep water (10, 30, 46), and hovering the water names its owner |
+| Foam | The wave's own vertical speed | speed × 0.05, at most 1, makes up a quarter of the highlight that blends the water towards moonlight (never beyond 0.6), so water at rest has none |
+| CPU and NVIDIA glow | CPU above 1 %, NVIDIA GPU memory | As in Orbit, round the pebble |
+| Cluster title | The drawn pebble of the lowest slot, and the number of drawn pebbles (two or more) | That pebble's name as in an Orbit title, then ` (N)`: the name of one process, not of the group. The tour visits the largest clusters first, and the pebble's inspector says how much memory the cluster holds ([#154](https://github.com/tfpickard/isotop/issues/154)) |
+| Socket links | `Snapshot::links`, `Snapshot::outside` | Every link and every connection leaving the machine; see [Links and weather](#links-and-weather) |
+
+**Decorative:** the pitch of a ripple (0.35 to 1.25 Hz) and its phase, both from a hash of the pid; the lighting of the water (a light at the side of the viewer, specular glints, a cool crest tint) and its palette, whose crest and moonlight tints are added to the deep water; the 10 % wobble of a pebble off its spiral slot, from the pid, and the turn of each cluster's spiral, from its name; the three travelling sines of the swell, whose directions and speeds are fixed.
+
+**The water.** A damped wave equation, `h_tt = c² ∇²h − 0.35 h_t − 0.5 h`, on a grid of about 150 cells along its longer side (`medium::Wave`): c is 14 cells a second, the Laplacian has nine points so rings stay round, and an absorbing border 10 cells thick drinks up what reaches it. It steps in substeps of at most half a cell's travel time and catches up at most 0.25 s a frame. The surface is drawn as lit facets of 0.09 times the wave height. New processes drip; exiting processes splash.
 
 ### Flow
 
-Spacetime weather: particles traced through a velocity field over a sheet that
-memory bends.
+![Flow: wells, whirlpools and rivers on a sheet of spacetime](docs/media/flow.webp)
 
-- Each solar system bends a gravity well as wide as the system and deeper for
-  more memory; heavy processes add their own dimples. The fabric brightens and
-  turns violet with depth.
-- Busy processes spin whirlpools and emit particles in their colour.
-- Socket links become two-lane rivers between the processes that talk, one lane
-  each way, carrying traffic in each end's colour.
-- Connections that leave the machine send sparks rising off the sheet; exits
-  burst outward; pressure adds turbulence.
+Spacetime weather: particles traced through a velocity field over a sheet that memory bends.
 
-Known gap: where a body stands inside its system is not yet stable when memory and
-the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Body | Process | One sphere per drawn process, at its place in its system (held still) and sunk into the sheet (z = the sheet's depth + 0.6 of its radius); a hollow outline for a hub |
+| Body size | Memory (RSS; the physical footprint on macOS) of the whole subtree the body anchors | 0.7 × `mass_radius` × growth, as in Orbit |
+| Body colour | Kind and state | The same colours as Orbit |
+| CPU and NVIDIA glow | CPU above 1 %, NVIDIA GPU memory | As in Orbit, round the body |
+| System well | Memory of the whole system (the subtree of its star) | A Gaussian bowl 2 + 14 × m / (m + 2048) units deep, m in MiB, falling off as exp(−d² ÷ w²) with w = max(extent ÷ 2, 4), the extent being how far the system reaches; the sheet is flat between systems |
+| Process dimple | Memory of a process's subtree above about 53 MiB (a body radius above 0.9) | A bowl 0.4 × r deep and 1 + 2 × r wide that also draws particles in (inflow 0.6 × r³), r the body's radius |
+| Fabric colour | Depth of the sheet | Each net line runs from (28, 42, 72) at the surface to (98, 82, 192) at the deepest point, in proportion to depth ÷ deepest |
+| Whirlpool | CPU above 0.5 % | A vortex of strength 6 + 60 × cpu / (cpu + 40) with a core of (1 + 2 × r)² |
+| Busy particles | CPU above 0.5 % | 1 + 30 × cpu / (cpu + 40) bright particles a second in the process's colour, born within 1.5 × r + 0.5 of the body and living 4 to 7 s |
+| River | Socket links (`Snapshot::links`): the number n of sockets joining two processes, and the CPU of both | Two lanes along the line between the bodies, one each way, each 2.5 + 0.8 × ln(1 + n) wide, with a flow of (8 + 3 × ln(1 + n)) × (0.6 + 1.4 × b), b = (cpu₁ + cpu₂) ÷ (cpu₁ + cpu₂ + 30). Each end sends (0.4 + 0.3 × n) × (0.5 + 2 × b) particles a second, in its own colour, into the lane leading away from it. Bytes are not measured here: both lanes carry the same amount ([#148](https://github.com/tfpickard/isotop/issues/148)) |
+| Spark | Connections leaving the machine (`Snapshot::outside`: n, per process) | 2 × n particles a second in pink (255, 110, 200), rising 2.5 units a second for 2.5 s |
+| Turbulence | CPU, memory and I/O pressure (some, 10 s average) | Amplitude 0.4 + 6 × p / (p + 25) units a second, p the three percentages added together, in a fixed sine field |
+| Exit burst | A process that left | 40 particles flung out at 9 units a second from where it stood, living 1.6 s |
+| Birth puff | A process that appeared | 12 particles at 3 units a second, living 1.2 s |
+
+**Decorative:** the background particles (about 400 a second in dim blue anywhere on the sheet, living 5 to 8 s, which only show the field); the sense of a whirlpool, which alternates with the parity of the pid; the sine field the turbulence blows through; the trail of a particle (20 positions), its fade and the glow of a bright one; drawing every third line of the net; the lane offsets and the lit sphere's shading.
+
+**The sheet.** A `medium::Flow` of about 140 cells along its longer side, kept while the footprint of the layout stays about the same, whose velocity field and depths are worked out again every quarter second (speeds capped at 20, depths at −20). Particles are advected by a midpoint step of at most 0.1 s, at most 6,000 at a time. The systems are laid out as in Orbit but with the bodies held still.
+
+Known gap: where a body stands inside its system is not yet stable when memory and the population change; tracked in [#142](https://github.com/tfpickard/isotop/issues/142).
 
 ### Cores
 
 ![Cores: marbles lapping a lane per CPU](docs/media/cores-motion.webp)
 
-A race track with one lane per CPU: performance cores inside in gold, efficiency
-cores outside in teal (from `/sys/devices/cpu_core` and `cpu_atom` on hybrid
-Intel CPUs), banked like a velodrome.
+A race track with one lane per CPU, banked like a velodrome: performance cores inside in gold, efficiency cores outside in teal, and a marble for every running process.
 
-- Lane brightness: how busy that CPU was (`/proc/stat`). Chevrons run at its
-  clock speed (`cpufreq`).
-- Red marbles queued behind the start line: tasks waiting for that CPU, from
-  run-queue delay in `/proc/schedstat`.
-- Marbles: running processes, sized by memory. A marble covers one lap per 10
-  seconds of CPU time, so a process using a full core laps every 10 seconds. When
-  the scheduler moves a process to another CPU, its marble hops across lanes;
-  the inspector counts the hops.
-- Idle processes stay off the track and only count towards their lane's label.
-- On macOS, which reports no last CPU, marbles ride the middle of the performance
-  or the efficiency lanes, whichever they mostly ran on, and hop between the two when
-  that changes; chevrons run at each cluster's clock, and red beads trail a marble
-  for its waiting threads; see [macOS](#macos).
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Lane | A CPU (`Snapshot::cpus`) | One lane each, ordered by core kind and then number, from a radius of 9 in steps of 1.5, with 1.2 more between kinds; one lane of unknown kind per core when the platform lists none |
+| Lane colour | Core kind (`/sys/devices/cpu_core` and `cpu_atom` on hybrid Intel CPUs) | Performance gold (236, 178, 92) inside, efficiency teal (72, 183, 199) outside, unknown (140, 160, 196) |
+| Lane brightness | How busy the CPU was in the last interval (`/proc/stat`) | The lane's colour × (0.10 + 0.45 × busy); before a first reading it draws as idle |
+| Chevron speed | The CPU's clock (`cpufreq`) | The pattern of 12 chevrons turns 0.1 radians a second for every GHz; without a reading it stands still |
+| Chevron brightness | How busy the CPU was | The lane's colour × (0.55 + 0.8 × busy) |
+| Red queue at the start line | Tasks waiting for the CPU (run-queue delay in `/proc/schedstat`, as an average over the interval) | w rounded to that many red beads, at most 6, and a red glow of strength 0.25 + 0.5 × w ÷ (w + 1), once w is above 0.05 |
+| Marble | A running process: CPU of 1 % or more, or state R | One per such process, on the lane of the CPU it last ran on (`Process::core`) ([#152](https://github.com/tfpickard/isotop/issues/152)) |
+| Marble position | CPU | Starts at 2π × cpu_time ÷ 10 s and advances 2π ÷ 10 s × cpu ÷ 100 every second, so a full core laps in 10 s |
+| Marble size | Memory (RSS; the physical footprint on macOS) | min(0.2 + 0.3 × `mass_radius`, 0.6): it tells processes apart between about 1 and 171 MiB |
+| Marble colour | Kind and state | The same colours as Orbit |
+| Marble trail | CPU | Eight beams over (0.05 + 0.5 × cpu / (cpu + 60)) × 6 ÷ r radians behind it, fading |
+| Marble queue beads | Threads waiting to run (`Process::waiting`, at most 6, drawn above 0.05) | A red glow behind the marble of size (0.5 + 0.4 × w) × zoom and strength 0.12 + 0.3 × w ÷ (w + 1), and round(w) red beads spaced 0.4 apart behind it |
+| Marble glow | CPU above 20 % | A warm glow of size × zoom × (2 + 2 × cpu / (cpu + 100)) and strength 0.25 + 0.5 × cpu / (cpu + 100) |
+| Hop | A change of the process's last CPU between samples | The marble crosses to the new lane in 0.6 s on a smoothstep arc that rises up to 0.8 + 0.3 × the distance, leaving a light trail; the inspector counts the hops |
+| Lane label | CPU number, kind, clock, busy share, process counts | `cpuN`, `P` or `E`, the clock in GHz, the busy percentage, and `N running, M idle`: the processes by last CPU, running being those on the track (the counts are left out where the platform reports no last CPU) |
+
+**Decorative:** the shape of the track (inner radius 9, lanes 1.5 wide), its banking (outer lanes stand higher, 0.16 per unit of radius), the infield disc, the rim and the start line, the number of chevrons (12) and the starting phase of each lane's pattern (the CPU number × 1.9), the arc and the light trail of a hop.
+
+Idle processes stay off the track and only count towards their lane's label. A process with no last CPU the track can place is put on the first lane, and counted there. **On macOS**, which reports no last CPU, marbles ride the middle of the performance or the efficiency lanes, whichever they mostly ran on, and hop between the two when that changes; chevrons run at each cluster's clock, and red beads trail a marble for its waiting threads; see [macOS](#macos).
 
 ### Cells
 
-Every cgroup is a cell in a petri dish: one dish each for system services, your
-session and containers. Accounting comes from the cgroup v2 files
-(`memory.current`, `memory.max`, `cpu.stat`, `cpu.max`, `memory.events`,
-`pids.current`, `*.pressure`).
+![Cells: cgroups as cells in three petri dishes](docs/media/cells.webp)
 
-- Cell size: the cgroup's memory. A dashed ring marks its memory limit, reddening
-  as usage nears it; an arc around the membrane shows CPU use against its quota.
-- The membrane trembles with the cgroup's pressure, flashes red when its CPU
-  quota throttles it, and bursts when the OOM killer strikes inside it.
-- Organelles: its processes. The nucleus is the largest process of a new cell
-  and keeps the centre until it exits; the largest process to arrive after that
-  takes it, and the centre stays bare until one does. Kernel threads belong to
-  no cell and are only counted.
-- Organelles keep their seats while memory moves the membrane and processes
-  come and go. The seats are spread for the room the cell reserved, and are laid
-  out again only when the membrane would no longer hold the outermost one or has
-  grown half again past the room.
-- Processes hidden by focus (`f`) or by `--limit` keep their seats, and their
-  cells keep their place and size, so clearing the focus puts every cell back.
-  A cell draws only the processes that are shown, and its nucleus stays the same
-  process even while that one is hidden.
+Every cgroup is a cell in a petri dish: one dish each for system services, your session and containers. Accounting comes from the cgroup v2 files (`memory.current`, `memory.max`, `cpu.stat`, `cpu.max`, `memory.events`, `pids.current`, `*.pressure`).
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Dish | Process kind | Three discs: system services (teal), your session (amber) and containers (violet), labelled with their cell and process counts. Kernel threads belong to no cell and are counted on a label |
+| Cell | The cgroup (`Process::cgroup`, its full v2 path; the group, an app bundle on macOS, where there is none) | One per cgroup with processes of the dish's kind; the 12 largest of each dish are named, by the last path component without `.service` or `.scope` |
+| Cell size | Memory of the cgroup (`memory.current`; the sum of its processes' memory without accounting), and how many seats it has used | Radius max(1.3 + 0.16 × √MiB, 0.75 × √(seats + 1) + 1) ([#156](https://github.com/tfpickard/isotop/issues/156)) |
+| Cytoplasm | CPU use of the cgroup (`cpu.stat`) | The dish colour × (0.16 + 0.14 × cpu / (cpu + 50)) |
+| Membrane tremble | Pressure of the cgroup: the highest of `cpu.pressure`, `memory.pressure` and `io.pressure` (some, 10 s average) | Amplitude (0.03 + 0.22 × p / (p + 15)) of the radius |
+| Red flash | CPU quota throttling (`cpu.stat`, since the previous reading) | The membrane blends towards (255, 96, 80) by 0.5 + 0.5 × sin(12 t) while the cgroup is throttled |
+| Dashed ring | Memory limit (`memory.max`) against memory in use | Drawn once a quarter of the limit is in use, at r ÷ √(use ÷ limit) clamped to 1.04 to 1.6 × r (where the membrane would stand at the limit if it grew with √memory), amber (236, 190, 110) turning red as use goes from 60 % to 100 % ([#156](https://github.com/tfpickard/isotop/issues/156)) |
+| CPU arc | CPU use of the cgroup against its quota (`cpu.max`), or against one core with no quota | Sweeps 360° × min(use ÷ quota, 1) round the rim from the top once the share is above 1 %, red (255, 96, 80) when a quota exists and more than 90 % of it is used, warm otherwise |
+| Burst | The cgroup's OOM kills (`memory.events`) rising | 24 red glows spreading from the membrane to 2.5 radii over 1.6 s |
+| Organelle | Process | One sphere per drawn process, at a seat of its cell |
+| Organelle size | Memory (RSS; the physical footprint on macOS) | min(0.8 × `mass_radius`, 0.42 × the spacing of the seats) × (0.3 + 0.7 × growth) |
+| Organelle colour | Kind and state | The same colours as Orbit |
+| Organelle glow | CPU above 1 % | A warm glow of size × zoom × (2 + 2 × cpu / (cpu + 50)) and strength 0.3 + 0.5 × cpu / (cpu + 40) |
+| Nucleus | The largest process (by memory) of a new cell | At the centre, `mass_radius` clamped to 0.45 to 0.32 of the cell's radius; it keeps the centre until it exits, then the largest process to arrive after that takes it, and the centre stays bare until one does |
+
+**Decorative:** the discs of the dishes and their rims; the shape of the membrane's tremble (a five-lobed and a three-lobed wave turning at fixed speeds, with a phase from the cell's name); the cytoplasm's base tint; the halo of the nucleus and the spokes from it to each organelle; where a seat lies (a golden-angle spiral numbered by arrival); where the cells lie in a dish; the spread of the burst.
+
+**Seats.** Organelles keep their seats while memory moves the membrane and processes come and go. The seats are spread for the room the cell reserved, and are laid out again only when the membrane would no longer hold the outermost one or has grown half again past the room. Processes hidden by focus (`f`) or by `--limit` keep their seats, and their cells keep their place and size, so clearing the focus puts every cell back. A cell draws only the processes that are shown, and its nucleus stays the same process even while that one is hidden. The cgroup figures (memory, CPU, pressure, kills) are the last reading of the background thread, taken every 2 s and not eased. **What cannot be measured.** Without cgroup v2 the cells are the services (or app bundles) the processes belong to, and there are no limits, quotas, pressure or OOM bursts; the legend says so.
 
 ### Strata
 
-The last minute of CPU use as a ridgeline landscape. Each of up to 40 busy
-processes is a ridge whose height traces its CPU over time, with now at the
-front edge; rows run from kernel threads at the back through system services and
-your session to containers at the front. A process keeps its ridge, in the same
-row, while it stays busy. History is recorded whichever view is shown, so the
-landscape is already a minute deep when you switch to it.
+![Strata: a minute of CPU use as ridges, kernel threads at the back](docs/media/strata.webp)
+
+The last minute of CPU use as a ridgeline landscape: each busy process is a ridge whose height traces its CPU, with now at the front edge.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Ridge | A process whose CPU reached 0.5 % at some sample of the last 60 s | At most 40, each in its own row for as long as it stays busy; the processes drawn come first when rows are scarce |
+| Height | CPU at each sample of the window (the shared history, which keeps the sampled values without the 0.3 s easing) | 0.15 + 16 × cpu / (cpu + 60) units: 10.1 at 100 %, 14.0 at 400 %; a sample the process was not in counts as 0 ([#153](https://github.com/tfpickard/isotop/issues/153)) |
+| Position along the ridge | Time of the sample (`Snapshot::elapsed`) | 1 unit for every second before the shown sample, 60 units in all; while the newest sample is shown the landscape scrolls on between samples by up to one sampling interval |
+| Row | Process kind | A quarter of the 40 rows for each kind, kernel threads at the back, then system services, your session and containers at the front; a newcomer takes the free row nearest the middle of its quarter and spills into the next ones when it is full |
+| Ridge colour | Kind and state | The same colours as Orbit; the face is the colour × (0.10 + 0.12 × f) below and × (0.20 + 0.45 × f) above, and the crest line × (0.75 + 0.6 × f), f being the mean height of the segment ÷ 16, so a higher ridge is brighter |
+| Label | Name and current CPU | `name 23%` at the front of the ridge |
+| Inspector note | Highest CPU in the window | `peak N% CPU over the last S s` |
+| Time marks | Seconds before the shown sample | `now`, `-15 s`, `-30 s`, `-45 s` and `-60 s` |
+
+**Decorative:** the floor and its tick lines, the split of a ridge's face into a darker base and a brighter upper part at 45 % of its height, and the 2.4 units between rows. Memory is not drawn.
+
+A process keeps its ridge, in the same row, while it stays busy. History is recorded whichever view is shown, so the landscape is already a minute deep when you switch to it.
 
 ### Globe
 
-Where the machine's TCP connections go. The world turns once every five minutes;
-arcs rise from home to every remote place, brighter with more traffic, cyan when
-mostly downloading and pink when mostly uploading, with pulses travelling the way
-the bytes flow. Processes with connections hover above home, and their inspector
-lists each connection with its round-trip time and rates (from the kernel's
-`tcp_info` through sock_diag).
+![Globe: arcs from home to the places the machine's TCP connections reach](docs/media/globe.webp)
 
-Locations come from a local GeoIP database, read the first time the globe is
-shown and looked up only while it is shown; nothing is sent anywhere.
+Where the machine's TCP connections go: arcs rise from home to every remote place over a turning earth.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Home | The system time zone's city (`/etc/localtime` and `zone1970.tab`), or `--home LAT,LON` | A glowing point on the earth with its name; when home is unknown it is drawn at 0°N 0°E and labelled `home unknown: pass --home LAT,LON` ([#150](https://github.com/tfpickard/isotop/issues/150)) |
+| Endpoint | Remote addresses of established TCP connections (`Snapshot::remotes`), placed by the local GeoIP database | One per place, connections landing on the same whole degree of latitude and longitude joining, or per address when it has no place; a glow and a sphere at the end of its arc, labelled with the place and ` xN` for N connections (the 12 with most traffic, when facing you) |
+| Arc | The endpoint's connections | A great circle from home, 40 segments, ending at 1.01 R for a place and at 1.25 R for an address with no place, R being the globe's radius; its lift off the surface, R × (0.04 + 0.22 × angle ÷ π) at the middle, angle being the great-circle distance from home, only keeps long arcs clear of the sphere and is decorative |
+| Arc brightness | Traffic: bytes a second sent plus received over the endpoint's connections (`tcp_info` through sock_diag) | The colour × (0.35 + 0.65 × t ÷ (t + 50 000)); a rate not measured yet counts as 0. The end glow is 0.3 + 0.5 × t ÷ (t + 50 000) |
+| Arc colour | Direction of the traffic | Cyan (110, 220, 255) when the endpoint received at least as much as it sent (also with no traffic), pink (255, 140, 210) when it sent more; neutral (170, 190, 215) on a platform with no per-connection rates ([#151](https://github.com/tfpickard/isotop/issues/151)) |
+| Pulses | Traffic above 64 bytes a second | Three glows on the arc, moving at 0.15 + 0.5 × t ÷ (t + 100 000) arcs a second, towards home when download is at least upload and away otherwise |
+| Ring round the north pole | Addresses with no place | On a ring 24° from the pole at 1.25 R, at an angle from a hash of the address; one label counts them: `no GeoIP database: N addresses (see --geoip)` and `locating N addresses`; an address the database does not list is labelled with itself, a private one with `(private)` |
+| Process above home | A process with at least one remote connection | A sphere of min(0.25 + 0.3 × `mass_radius`, 0.6) × growth in its kind's colour, 2.5 above the surface, on a line to home |
+| Inspector lines | The process's connections | Up to four of `address:port place`, the smoothed round-trip time in ms, and the up and down rates (`n/a` until a second scan), then `and N more connections` |
+
+**Decorative:** the earth (ocean, Natural Earth 110 m coastlines, a graticule every 30°), its halo and its turn, once every five minutes at a constant speed that starts with home facing the isometric camera; the phase of a pulse; the seat of a process in the cloud above home (a golden-angle spiral numbered by arrival, so it does not reshuffle); the angle of an address round the pole.
+
+Locations come from a local GeoIP database, read the first time the globe is shown and looked up only while it is shown; nothing is sent anywhere.
 
 - A city-level MaxMind-format database gives cities: pass `--geoip PATH`, or put
   one in `~/.local/share/isotop/` (any `*.mmdb`). DB-IP's free
@@ -405,8 +499,6 @@ shown and looked up only while it is shown; nothing is sent anywhere.
   has no geography, with `(private)`. The count label sits over the north pole, so
   it is out of sight when the globe is turned to show the south; the legend still
   says "no GeoIP database".
-- Home is the system time zone's city (`/etc/localtime` and `zone1970.tab`), or
-  `--home LAT,LON`.
 
 Coastlines and country label points are from [Natural Earth](https://www.naturalearthdata.com/)
 (public domain).
@@ -415,15 +507,27 @@ Coastlines and country label points are from [Natural Earth](https://www.natural
 
 ![Reef: coral, schools of fish and crabs](docs/media/reef-motion.webp)
 
-The machine as a coral reef under a sea sky. System services grow as coral
-colonies, one per cgroup, with a polyp per process that glows with CPU; your
-session's apps swim in schools whose speed follows their CPU; containers are
-crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows
-memory everywhere, I/O rises as bubbles, and zombies float belly-up. Processes
-hidden by focus (`f`) or by `--limit` keep their seats and their cluster's place,
-and a hidden fish waits where it swam, so clearing the focus puts everything back. The reef
-keeps room for the clusters of hidden processes, so a limit that hides many leaves empty water,
-and focusing a subtree does not change the framing.
+The machine as a coral reef under a sea sky: system services are coral, your session's apps are fish, containers are crabs and kernel threads are plankton.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Coral colony | The cgroup of system processes (the kind and the cgroup path; the group where there is none) | One per cgroup; its polyps stand on a golden-angle spiral numbered by arrival, a stalk rising from the colony's base, taller near the middle |
+| Polyp | Process | A sphere on the stalk, which stands 1.5 + 5 × (1 − distance ÷ room) high |
+| Polyp size | Memory (RSS; the physical footprint on macOS) | min(0.18 + 0.32 × `mass_radius`, 0.75) × (0.3 + 0.7 × growth), breathing by ±8 % at 3 radians a second while CPU is above 1 % |
+| Polyp glow | CPU above 1 % | A glow of size × zoom × (2.2 + 2 × cpu / (cpu + 50)) and strength 0.3 + 0.5 × cpu / (cpu + 40) |
+| School | The cgroup of session processes | A boid school of the group's fish around a goal that drifts round the group's home, with separation (within 2.4 units), alignment and cohesion |
+| Fish | Process of your session | A body of length (1 + 2.2 × m ÷ (m + 300)) × (0.3 + 0.7 × growth), m in MiB, and girth 0.26 of it |
+| Fish speed | CPU | A speed limit of 0.8 + 5 × cpu / (cpu + 40) units a second; a fish never swims slower than 0.3 of it |
+| Fish glow | CPU above 5 % | A glow of length × zoom × 1.4 and strength 0.2 + 0.4 × cpu / (cpu + 50) |
+| Crab | Container process | A violet (178, 136, 232) body of size (0.35 + 0.5 × m ÷ (m + 200)) × (0.3 + 0.7 × growth), m in MiB, scuttling by up to 0.9 units about its seat on the sand round its container group's home |
+| Crab pace | CPU | The scuttle and the legs' stepping advance at 0.4 + 2 × cpu / (cpu + 40) radians a second (the legs six times as fast) |
+| Plankton | Kernel thread | Idle (CPU below 0.5 %): a faint glint that cannot be picked. Busy: a pickable mote of radius 0.05 of brightness 0.4 + 0.6 × cpu / (cpu + 5); its size is not memory |
+| Zombie | State Z | Grey (150, 150, 150). A fish floats belly-up and rises towards the surface at 0.3 units a second; a coral or a crab only turns grey |
+| Bubbles | Storage I/O (`io_rate`) above 4 KiB/s | 1 + ⌊3 × rate ÷ (rate + 1 MiB/s)⌋ bubbles rise from the creature to the surface every 4 s |
+
+**Decorative:** the colours of the coral and the fish, taken from a hash of the group's name (they tell groups apart and nothing else); the sand and its relief, the caustics, 28 strands of kelp and six light shafts; where a plankton drifts (from a hash of its pid) and its track; the goal a school follows; the sway of a polyp and the wag of a tail; the steps of a crab's legs. Stopped and uninterruptible-sleep processes have no look of their own here.
+
+Processes hidden by focus (`f`) or by `--limit` keep their seats and their cluster's place, and a hidden fish waits where it swam, so clearing the focus puts everything back. The reef keeps room for the clusters of hidden processes, so a limit that hides many leaves empty water, and focusing a subtree does not change the framing.
 
 ### Coop
 
@@ -854,28 +958,135 @@ Hardware interrupts as a cord telephone exchange, on Linux. Every IRQ line is a 
 
 The header reads like `48 lines | 41,203 irq/s | RES 2,114/s | 16 operators: 8 P, 8 E`.
 
+### Ouija
+
+![Ouija: a talking board by candlelight; a heart-shaped planchette over a lit letter, and below the board the journal line it is spelling, decoded in amber and not yet decoded in violet](docs/media/ouija.webp)
+
+The newest line of the system journal (on macOS, the unified log) spelled one letter at a time by the planchette of a talking board seen at an angle by candlelight, with the line decoding in a ribbon below the board as the planchette lands on its letters.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Where the planchette goes | The newest journal entries (`journalctl --follow --output=export`: `SYSLOG_IDENTIFIER`, else `_COMM`, then `_PID` and `MESSAGE`), as Matrix reads them | The line is uppercased and **only A to Z and 0 to 9 are kept: every other character is dropped, with no transliteration** (`I/O` is spelled `IO`, an accented letter is not spelled at all). A run of spaces, even one that dropped characters split, is one visit to the centre of the board, below the digits; none at the start or end of a line. At most 40 visits are spelled for a line, and the rest of its ribbon decodes at once. A line with nothing the board has visits the centre once |
+| Pace | Lines waiting to be spelled | Each visit takes max(0.06, 0.25 / (1 + queued / 4)) s: the first 60 % is a smoothstep glide along a path bowed to the left of its direction by 0.12 of its length, the rest a dwell. More than 8 queued: the oldest are dropped and counted as skipped |
+| Visit to NO | Syslog `PRIORITY` of 3 or lower (error, critical, alert, emergency), or `JOB_RESULT` of `failed`, `timeout`, `canceled` or `dependency` | The planchette goes to NO for 0.6 s before the line is spelled, once for a line |
+| Visit to YES | `JOB_RESULT` of `done`, on the entry that ends a systemd job | The planchette goes to YES for 0.6 s before the line is spelled, once for a line; an entry that is also an error goes to NO only |
+| Jitter | CPU pressure (`some avg10` in `/proc/pressure/cpu`) | The planchette trembles by 0.025 x percent / 100 board widths at most, the sum of sinusoids of 13.1, 29.3, 11.7 and 31.9 radians a second, normalised so each axis peaks at one. None where the machine reports no CPU pressure |
+| Lit letter | The mark under the planchette's window | Glows from 85 % through the glide until the planchette leaves; the letter, or YES, NO or GOODBYE, is drawn again bright |
+| Ribbon | The line being spelled, with its source, its severity and its job result | Up to 44 characters around the cursor: the characters the planchette has reached amber (the one that has just landed brighter), the others scrambled violet. The caption names the source (up to the first `[` or `:`), the severity and the job result. All text is cleaned like every other text, one printable ASCII character per cell, `?` for the rest |
+| Queue and skipped | Lines waiting and lines dropped | `N queued, M skipped` in the legend; the follower's own drops count as skipped too |
+| Status line | The newest line, whether it is spelled yet or not | ` > source[pid]: message` in place of the inspector |
+| GOODBYE | The `q` key in an interactive run | A glide of 0.85 s to GOODBYE and 0.15 s of dwell before the app ends; see below |
+
+**Decorative:** the board and the table: the wood and its grain, knots and worn edges, the border, the rules and the diamonds, the sun and the moon with its stars, the velvet and its folds; the candles, their flames and halos and the way they flicker (by up to 16 % in three sinusoids), which also set how bright the wood is; the shape of the planchette, its brass, its shadow and its slow sway of 2 degrees; the board's yaw of 4 degrees; the violet characters of the ribbon, which stand for text not yet decoded, are a hash of the line, the character's place and the time (8 times a second) and carry nothing of the line but its length. The layout of the letters is the board's own and never changes.
+
+**Quit effect.** The first `q` while the board is shown, in a session at a terminal, takes the quit: the planchette glides to GOODBYE, which lights, and a second later the app ends. `q` again during the glide quits at once, and Ctrl-C always does. Nothing starts it but that key: `--output`, `--benchmark` and `--duration` press no key, so the glide never plays there, and switching to another view during it cancels it. No other key is the board's.
+
+**Backlog.** The first lines to arrive after the board is shown are the follower's backlog (`--lines=200` at the start, or whatever gathered while another view was shown): only the newest is spelled, and the others are not counted as skipped. Lines after it are queued one by one.
+
+**Demo.** `--demo` writes the lines of Matrix's demo, one in 25 of them, and every 7 s a line that ends a job: `Finished backup.service - Nightly backup.` (priority 6, done) and `Failed to start mount-nas.service - NAS mount.` (priority 3, failed), alternately. A headless run plays the eight seconds of journal before `--time`, so a frame lands in the middle of a line.
+
+**What cannot be measured.** Without CPU pressure the planchette is steady and the legend says `no cpu pressure: planchette steady`. Where `journalctl` cannot be run or read, the line the board spells is the error isotop writes in its place, as in Matrix, and it goes to NO. A line longer than 4,096 bytes is cut, as in Matrix. The time of an entry is not drawn, and the board's pace is its own: a line takes up to ten seconds to spell when the board is idle, and the board lags the journal by as much, and more when it is behind.
+
+**Platform.** On Linux everything above. On macOS the unified log supplies the lines and their severities, so spelling and the visits to NO work, but the log has no `JOB_RESULT`, so the planchette never goes to YES, and macOS reports no CPU pressure, so it never trembles; the legend names both (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)).
+
+Ouija has no keys of its own, and the camera and process controls move only the camera. The board, the velvet and the letters are colour fields and Hershey strokes (`Frame::field`, `Frame::stroke_text`), so the CPU and the GPU draw the same frame.
+
+### Anthill
+
+![Anthill: a sandy slab at dusk with a heap of dark mounds in a clearing, piles of pebbles in the regions round it and streams of ants carrying pale and coral crumbs between them, over glowing trails](docs/media/anthill.webp)
+
+Syscalls as foraging ants: every process is a nest, every open regular file a pile of pebbles on a map of the filesystem, and one ant walks for every K read and write calls, carrying a crumb as big as the bytes in one call.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Mound (nest) | A process, and its memory (RSS; the physical footprint on macOS) | Radius 0.9 + 0.38 log2(max(MiB, 8) / 8) world units; a paraboloid 0.95 of its radius high, of 24 segments (12 under 8 px of radius) |
+| Where a nest stands | The first sample that had the process | The first place along a golden-angle spiral from the middle where the room it reserved fits: 1.15 times the radius it would have at twice its memory. It keeps the place until it outgrows that room, whatever its CPU, its memory below that, or the population do |
+| Mound colour, crater and entrances | The process's kind (kernel, system, session, container) and whether its descriptors were read | The kind's colour lights the crater and up to four entrances, one for each distinct destination (a file, a blanket, the nest at the other end of a tunnel), busiest first, each on the slope that faces it. A nest not read this sample sleeps: darker, with no crater glow and no entrances |
+| Pile | An open regular file (`IoDetail::files`, one pile for a device and inode however many processes hold it) | Radius 0.45 + 0.12 log2(size / 4096), from 0.45 to 3 world units, of 6 to 24 pebbles by its radius. At most 256 piles, the ones with the most attributed bytes a second first. A file deleted while it is open has cooler, greyer stone. A file that opens grows in over 1.5 s and one that closes fades over 1.5 s |
+| Where a pile stands | The file's path | A fixed pinwheel round the clearing: `/usr` (and `/lib`, `/bin`, `/sbin`, macOS `/System`, `/Library`, `/Applications`), `/var`, `/tmp` (and `/dev/shm`), `/home` (and `/Users`, `/root`) and everything else. Each second-level directory (`usr/lib`, `home/tom`) takes one 8-unit cell of its region, the first free one from where its name hashes to, and keeps it; the file stands at a spot its whole path hashes to (FNV-1a) inside the cell |
+| Ant | K read and write calls (`syscr` and `syscw`) | K is the smallest of 1, 2, 5, 10, 20, 50, ... for which the sum over streams of calls a second times seconds a round trip takes, over K, is at most 3,000. The first sample with anything to carry sets K; after that K changes only when three samples in a row ask for the same one. At most 3,750 ants, and the legend counts the ants the cap refused |
+| Ants sent to a file | The calls the process made, and the bytes its positions credit to each file | A read-only file gets the share of the process's read calls that its bytes are of all the bytes it read (`rchar`, which is the files' bytes plus what no file explains); a write-only file the same of its write calls; what is left of the calls is shared by the read-write files and what nothing explains, in proportion to their bytes. The shares add up to the calls the process made and never to more |
+| Ant direction and crumb colour | The descriptor's open flags | Pale (255, 238, 196): the ant comes home carrying what it read. Coral (255, 118, 92): it carries a write out. The colour between the two, carried both ways: a read-write file, whose direction is never split |
+| Crumb size | Bytes per call: `read_chars / reads`, `write_chars / writes`, or for a read-write file the mean over all of the process's calls | Radius 0.55 + 0.27 log2(bytes / 64) px, from 0.42 to 3.6, at a frame 1600 wide with the slab fitted to it, scaled with the zoom, and never under 1 px |
+| Tunnel | Pipes and FIFOs (`Snapshot::pipes`), Unix sockets and loopback TCP (`Snapshot::links`) between two drawn nests | An arch of dashes between the nests; the `c` key shows all of them, those of the highlighted processes or none. A pipe is one lane from its writer to its reader, sockets two lanes, one each way. The dashes slide at 1.2 log10(1 + calls a second) world units a second, scaled with the slab, where the calls are those of the bytes no file explains, shared over the process's tunnels by their measured traffic when every one has some and equally otherwise. A tunnel whose ends were not read is dotted, thin and still: unknown, not idle |
+| Blanket | A process that holds a terminal, has no tunnel at all and has unattributed I/O | A gingham blanket 5.4 units across in a corner of the clearing (four at most, to the processes with the most unattributed bytes, kept while they live). Its ants carry the read and write calls no file explains; their direction is the counters' when no read-write file took any bytes, otherwise unknown |
+| Labels | The paths of the piles, and the crumbs | The names of the regions, the file names of the 12 piles with the most attributed bytes a second, and the biggest and the smallest crumb among the streams (`128 KiB/read`, `64 B/write`) |
+| Pheromone glow | The ants' own deposits | Three channels, the colour of each nest's kind, four cells to the world unit and at most 256 along a side. An ant lays 1.0 a second while it carries a crumb and 0.45 while it does not; the grid evaporates as exp(-dt / 2.2) and then spreads with a three-tap blur; the glow saturates as 1 - exp(-2.2 x amount) |
+
+**Decorative:** the sand (its dunes, ripples, specks and the darkening of the rim), the tint and string outline of each region, the cut sides of the slab and their strata, the dusk sky, the facets, soil colour and crater of a mound, which pebble lies where in a pile and its shade, the bend of each route and the arch of each tunnel, the side a mound's ants leave by, the speed jitter (13 %), wander and heading of each ant and how it follows the pheromone, the ant's own shape, and the gingham. The routes are the colony's, the endpoints and the rates are the machine's: two runs with the same data show the same ants going to the same places by different paths.
+
+**Layout.** A square slab, 64 world units across to begin with: a clearing at the middle for the nests, with the five regions round it as a pinwheel (each of `/usr`, `/var` and `/tmp` an arm that reaches a corner, `/home` the arm between two corners of the clearing and `other` the square in the one corner of the slab the pinwheel leaves), the arms 16 units deep. Every sampled process has a place, drawn or not, so `--limit` and a focus move nothing. Only a clearing too small for its nests grows, in steps of 1.25 (the arms, the piles and the trails move then), and `Stage::bounds` is the slab's four corners.
+
+**Simulation.** The colony steps at a fixed 0.05 s (at most 10 steps a frame, a gap of more than 0.5 s counted as 0.5 s), whatever the frame rate, and holds still while paused; ants move 12 world units a second, between steps interpolated. An ant steers toward a carrot on a quadratic Bezier with a hashed bend for its stream, leans toward the side of its heading (plus or minus 0.5 rad) that smells stronger, and adds noise of order the square root of dt. Each ant is seeded from its nest, its goal and how many its stream had sent. A sample is taken in once, not each frame; demo anthill plays the ten seconds before `--time` as a live run would have drawn them, so the trails are laid.
+
+**Caps.** 256 piles, 24 pebbles to a pile, 3,750 ants, 4 entrances to a nest, 4 blankets and 512 tunnels; a thousand nests are placed in one walk along the spiral by a spatial index.
+
+**What cannot be measured.** A file's bytes are the growth of its descriptors' positions, so they are a lower bound: `pread`, `pwrite`, memory-mapped I/O, `io_uring`, and a file opened and closed between two background passes (about 2 s) are not seen, and a file opened for append says nothing of bytes (it is a pile with no ants). A file with no earlier reading of its descriptor is a pile with no ants too: unknown is not zero, and its card says so. What no file explains stays unattributed: it goes to the tunnels or the blanket or is counted in the legend, and is never given to a file. Which terminal a descriptor is cannot be told, only that a process holds one, so a blanket is a process's, not a terminal's. Only the 24 busiest processes (by syscalls a second) have their descriptors read: the rest sleep, and a process whose descriptors the platform refuses (another user's) sleeps too, counted as `fdinfo unreadable for N`. A process that has descriptors but no read and write counts on a platform that has them sends no ants and is counted as `syscall counts unreadable for N`. Until the first pass has read the descriptors (up to two seconds after the view opens) the legend says `reading open files`.
+
+**Platform.** On Linux everything above. On macOS the read and write calls are not counted (`Source::SyscallIo` is missing): an ant is K KiB moved, the direction is the open flags', the crumbs have one size and are unsized, nothing says what a process's files leave of its bytes (`Source::UnattributedIo` is missing), so tunnels show no rate and nothing goes to a blanket, and the processes read are the ones with the most disk I/O. The legend says `no syscall io: ant = K KiB moved, crumbs unsized` and `no unattributed io: tunnels show no rate, nothing goes to a blanket`. See [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it). Anthill has no keys of its own.
+
+### Plumbing
+
+![Plumbing: iron tanks with brass bands and pressure gauges stand in cgroup bays on a brick-walled floor, joined by copper pipes with windows of moving blue water, brass tubes overhead and a green hose, and one pipe has burst and sprays water on the floor](docs/media/plumbing.webp)
+
+The channels between processes as the plumbing of a boiler room: every process with a pipe, a Unix socket or a loopback connection is a tank, a pipe is a copper run with a window of water, a Unix socket is a brass tube overhead that holds its unread bytes as capsules, loopback TCP is a green hose, and a pipe nobody reads any more bursts.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Tank | A process with at least one drawn link: a pipe or FIFO (`Snapshot::pipes`), a Unix socket (`unix_links`) or a loopback TCP connection (`links`); the selected process | One tank per process, at most 256 (the most links, then the largest outflow, stay). It stays 10 s after its last link closes. A process with no link is not drawn |
+| Tank size | Memory (RSS; the physical footprint on macOS) | Radius 0.3 world units up to 2 MiB, then 0.085 for every doubling, to 0.9 at about 267 MiB; height 1.6 r + 0.55 |
+| Tank band | The process's kind (kernel, container, system, user) | The shared process-kind colour |
+| Bay | The process's cgroup (the app group on macOS) | A yellow-outlined floor patch for each cgroup, titled with its group. Its tanks stand on a square spiral of seats 3 world units apart; a tank keeps its seat while it is a tank, and a bay is reserved a whole n by n block of seats at a time |
+| Gauge needle | The process's attributed outflow (see **The flow rule**) | A log scale from 1 KiB/s to 64 MiB/s: 0 at or below the first, the whole sweep at the second. The inspector and the callout quote the rate; the gauge is never the fill of a pipe |
+| Gauge in the red, steam | The wait channel of the process (`Source::WaitChannel`) is a pipe write | The needle pins at the top in red and steam rises from the tank: the process is blocked writing to a full pipe |
+| Gauge face with a slash | A flow that was not measured | A grey face with a slash and no needle. Never a needle at 0: a measured zero has a needle at the bottom |
+| Copper run | A pipe or FIFO a process holds the write end of and another holds the read end of (`Pipe::writer`, `Pipe::reader`) | One run from writer to reader for all the pipes between them, the card counts them. Runs are found by A* on a 0.5-unit lattice round the tanks (a turn costs 2.5, reusing a node 7) and kept until an end moves or a tank stands on them. A FIFO both processes opened for reading and writing runs both ways |
+| Water in the window | The writer's outflow | Blue dashes run along the run at 0.6 + 0.45 log10(rate / 1 kB/s) floor cells (2 world units) a second, 0.6 at 1 kB/s and below, 2.76 at 64 MB/s; calm still water for a measured 0; grey still water for an unmeasured flow. The speed says faster or slower, never how much; a manifold's branches run at the rate over their number |
+| Packed window | The writer's wait channel is `pipe_write` | The glass bulges, packed with still water, labelled `writer blocked: pipe full`. The kernel does not say which of the writer's pipes is full, so every run of that writer shows it |
+| Dry window | The reader's wait channel is `pipe_read` | Empty glass with a few drops, labelled `reader waiting: pipe empty` |
+| Manifold, `split unknown` | The writer's outlets, from its descriptors (`IoDetail`, `Snapshot::pipe_holds`) | A brass manifold on the tank where the flow could have gone to two or more outlets, labelled `split unknown`; its branches are drawn equal, and no number is shown for any branch |
+| Burst | A pipe a process holds the write end of and no process holds the read end of (`Snapshot::severed`) that the view saw with a reader first | The open end sprays 56 droplets for 6 s and leaves a puddle, labelled `reader gone: EPIPE next` and `<writer> still writing`; after that it is a capped end |
+| Capped end | A severed pipe the view never saw a reader of | A copper stub with a cap and no spray: a reader that is another user's process, or one the pipe scan has not reached, looks the same, so it is not called gone |
+| Brass tube | A Unix socket between two drawn processes (`unix_links`, the receive queues of the sock_diag netlink reply) | An overhead tube from the valve of one tank to the other's, with a lane for each direction |
+| Capsule | The unread bytes in the receiving socket's queue (`Snapshot::unix_queues`) | One capsule for every started 4 KiB waiting in a lane, plus one while a datagram waits, at most 12 drawn; they wait still at the receiving end and never travel, since nothing measures how fast a queue is fed. The label counts them all: `3 capsules = 12 KiB unread` |
+| Green hose | Loopback TCP between two drawn processes | A hose on the floor between the tanks, with a lane of beads each way |
+| Hose beads | What each process sent the other over loopback (`Snapshot::loopback_sent`: the growth of the other end's received counter) | Beads run at the same speed law as the water, 0.6 + 0.45 log10(rate / 1 kB/s) cells a second; a measured 0 is a hose with no beads; an unmeasured rate is a grey hose. The label gives both rates |
+| Lit tank and runs | The selected, hovered or toured process | A glow round the tank and its runs and tubes brighten |
+
+**Decorative:** the brick walls, their arched windows and the slab, tile lines and dusk sky; the yellow paint of the bays and the order of the seats (which carries nothing but who came first); the iron, copper, brass and rubber colours, the rivets, the cap, the valve wheel and the collars and flanges; the position of a run's window in its longest leg; which side of a tank a run leaves by; the scatter of the droplets, which is seeded by the writer and the pipe; and which way an overhead tube turns its corner.
+
+**The flow rule.** A tank's flow is the growth of what its write calls moved (`wchar`) that no file position explains (`IoDetail::unattributed`, which already takes off what its write-only files advanced), less what it sent over TCP, loopback and remote, which is measured exactly. The outlets left for that remainder are every writable regular file, every pipe or FIFO it may write, every Unix socket pair, every other socket and a terminal; a TCP connection whose send rate was measured is already taken off, so it is not an outlet. With one outlet the remainder went through it, and the water, the gauge and the label are exact. With two or more the flow is known as a whole and its share of each is unknown: the manifold says `split unknown` and the card names the outlets. A writable file is an outlet whatever its position says, because `pwrite`, AIO and io_uring write to a file without moving it, so a process that holds one pipe and a file it may write is `split unknown` and a lone pipe is exact only when the process holds no writable file. A walk of the descriptors that a cap cut short (`IoDetail::partial`) is never exact. Descriptors of other kinds (character devices such as `/dev/null`, memfds, epoll, eventfd) are not counted as outlets, because isotop only counts them and cannot tell a readable one from a writable one, so "exact" means exact among the outlets isotop can see: a process that writes to `/dev/null` as well as a pipe still shows its whole remainder as the pipe's. I/O that is not attributed is never given to a file, a pipe or a socket.
+
+**Layout.** A tank's place depends on its cgroup and on when it became a tank, nothing else: CPU, memory and the other tanks never move it, and bays are placed again only when their block of seats is outgrown. Runs keep their route until an end moves or a new tank stands on it, and tanks are routed round at a fixed radius, so a change of memory moves no run. Water and beads move by the wall clock, whatever the frame rate, and stand still while paused.
+
+**Tour and inspector.** The Space tour visits the twelve tanks with the most links, heaviest first, and its callout gives the flow in a line. The inspector card of a pipe, a tube, a hose, a manifold or a severed pipe says what is known and what is not, and a tank's popup lines give its flow and where it is blocked.
+
+**Caps.** 256 tanks, 12 capsules to a lane, at most 32 new routes a frame (a run waits for its route as a plain elbow), 4,096 descriptor reads a pass for the pipes, and 256 wait channels a pass. The I/O detail covers the 24 busiest processes by syscall rate, so a quiet process has a gauge face with a slash and a pipe run of unmeasured water, never a flow of 0.
+
+**What cannot be measured.** How full a pipe is: Linux tells nothing of a pipe another process holds, so the window has no level, and a card quotes the bytes waiting only where the platform gives them (macOS, anonymous pipes). Which pipe of several a writer is blocked on. A flow that the I/O detail has not reached (a process outside the 24 busiest, another user's process), that has no remainder (the first reading, macOS), or that holds a TCP connection whose send rate is not yet measured: its water is grey, its gauge a slash, and the legend counts nothing as zero. Where a reader of a pipe is another user's process. How fast a Unix socket's queue was fed. The legend says `no pipes`, `no red or dry gauges`, `water unmeasured`, `water and gauges unmeasured` or `hoses unmeasured` when the source is not read.
+
+**Platform.** On Linux everything above; the wait channel is the kernel function of `/proc/<pid>/wchan`, which needs a kernel built with `CONFIG_KALLSYMS`, and a task that is running, or one this user may not inspect, reads 0 (the card says so, and it is not a wait). On macOS the pipes, Unix sockets, queues, bursts and layout are as on Linux, and the flow, the wait channel and the hoses are missing; see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
 
 How it works, and the science and history behind it: [docs/theory/matrix.md](docs/theory/matrix.md).
 
-The systemd journal decoded out of digital rain (on macOS, the unified log; see
-[macOS](#macos)). `journalctl -f` runs on a
-background thread from the moment the view is first shown, starting with the
-last 200 entries, and stops 30 seconds after you leave the view; coming back
-starts it again with the last 200 entries. The screen is a log of `source[pid]: message` lines written
-horizontally, newest at the bottom, coloured by severity: red for errors and
-worse, amber for warnings, green for notices and information, teal for debug.
-Each character resolves only when a falling stream of rain passes over it,
-flashing white before it settles; every new line brings a shower down onto its
-own characters, and anything the rain misses appears after three seconds.
-Between the lines falls cmatrix-style rain of flickering green glyphs. Lines
-are written one at a time, faster when they queue up; a flood that outruns the
-log is trimmed, and the status strip counts what was skipped. The camera and
-process controls do nothing here. Glyphs are the public-domain X11 misc-fixed
-7x14 font, and `--demo` writes synthetic entries. Without the `adm` or
-`systemd-journal` group, journalctl shows only your own user's journal.
+The systemd journal decoded out of digital rain (on macOS, the unified log; see [macOS](#macos)): a log of `source[pid]: message` lines, newest at the bottom, in which each character resolves only when a falling stream of rain passes over it.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Row of text | One journal entry (`journalctl --follow --lines=200 --output=export`: `SYSLOG_IDENTIFIER`, else `_COMM`, then `_PID` and `MESSAGE`) | `source[pid]: message`, with line breaks and tabs turned into spaces and each field cut at 4,096 bytes; wrapped after the last space that fits, continuation rows indented by two; the newest at the bottom, the rest scrolling up |
+| Line colour | Syslog severity (`PRIORITY`) | 0 to 3 red (255, 72, 60), 4 amber (255, 190, 60), 5 and 6 green (80, 255, 95), 7 teal (70, 160, 150), at 0.85 of full strength once decoded; an entry with no readable priority is read as 6 |
+| Pace of the log | Entries waiting in the queue | The next entry is written 0.5 s ÷ (1 + queued ÷ 3) after the last, so a queue empties faster the longer it is; the entries' own times are not drawn and do not set the pace |
+| Skipped count | Entries beyond two screens of rows (at least 32) waiting to be written, or beyond the follower's backlog of 2,048 | The oldest are dropped and counted in the legend: `N queued, M skipped` |
+| Shower and decode | The arrival of an entry | Each non-blank character gets a stream of its own that starts 1 to 11 rows above its row, falls at 14 to 26 rows a second and is 2 to 6 rows long, stopping at the character's row. The character flashes white where it is struck and settles into its colour with a time constant of 0.35 s; one never struck appears 3 s after its entry |
+| Newest entry | The most recent entry | Shown on the second status line in place of the inspector |
+
+**Decorative:** the ambient rain between the lines, all of it (about half a stream for every column, falling at 8 to 16 rows a second, 8 to 23 glyphs long, with a bright head and a glow, and glyphs that change six times a second out of step with their neighbours); the black sky; the 7x14 font. **The greeting** is not from the journal: the first time the view is shown it writes `Wake up, <your login>...`, `The Matrix has you...` and `Follow the white rabbit.` as three entries of severity 6, in the same green as a real one, ahead of the journal's own; ([#149](https://github.com/tfpickard/isotop/issues/149)) the demo's journal is also synthetic. The view draws no processes, so there is no pressure haze and the status line counts none as visible or collapsed.
+
+`journalctl -f` runs on a background thread from the moment the view is first shown, starting with the last 200 entries, and stops 30 seconds after you leave the view; coming back starts it again with the last 200 entries. Lines are written one at a time, faster when they queue up; a flood that outruns the log is trimmed, and the status strip counts what was skipped. The camera and process controls do nothing here. Glyphs are the public-domain X11 misc-fixed 7x14 font, and `--demo` writes synthetic entries every 0.35 s. **What cannot be measured.** Without the `adm` or `systemd-journal` group, journalctl shows only your own user's journal; if the follower cannot run, one red line says so.
 
 ### Links and weather
 
@@ -884,7 +1095,20 @@ and connected Unix-socket peers from the sock_diag netlink interface, matched to
 processes through `/proc/<pid>/fd`. Only processes whose descriptors isotop may
 read appear. In orbit, ripple and city they are cyan arcs with travelling pulses
 (`c` cycles all / highlighted / off); TCP connections to other machines rise as
-pink beams. Links of the selected, hovered or toured process glow.
+pink beams. Links of the selected, hovered or toured process glow. The tesseract
+draws every link too; flow, cores, cells, strata, globe, reef, the coop, ptolemy
+and arbor draw only the glowing ones; the necropolis, cortex, horizon and murmuration
+leave links to the view, and so do the anthill, whose tunnels follow `c` too, and the plumbing.
+
+The scene draws these over the views, and the table gives the transforms:
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Link arc | Pairs of processes joined by sockets (`Snapshot::links`, with the number n of sockets) | An arc between the two bodies that rises to 0.175 × their distance over the line (plus the registry row's `link_lift`), in 20 beams of weight min(0.1 + 0.05 × ln n, 0.3) in (80, 175, 235); (150, 232, 255) and weight 0.8 when the selected, hovered or toured process is an end |
+| Beam out of the machine | TCP connections whose far end is not a local socket (`Snapshot::outside`, n for the process) | A pink (255, 110, 200) beam rising 5 + 3 × ln(1 + n) units over the body, fading with height, at strength 0.45 (0.9 when the process is highlighted) |
+| Sky haze | CPU, memory and I/O pressure (`/proc/pressure`, some, 10 s average) | With c = cpu / (cpu + 20), m = memory / (memory + 10) and i = io / (io + 20) in percent, the sky gains (110 c + 140 m + 30 i, 70 c + 20 m + 50 i, 10 c + 60 m + 150 i) where a drifting field is dense: amber for CPU, crimson for memory, blue for I/O |
+
+**Decorative:** the pulse that travels each link arc (one glow once every 2.9 s, with a phase from the two pids, at strength 0.35, or 0.9 on a highlighted link) and the drifting pattern of the haze.
 
 Two more measurements ride on those links, for the views that draw them: the bytes waiting
 unread on each connected Unix socket (for a datagram socket only that a packet waits, since
@@ -893,8 +1117,26 @@ processes with their direction, from `/proc/<pid>/fd` and `fdinfo` (macOS: `proc
 which also counts the bytes waiting in a pipe). Linux gives no such count for a pipe another
 process holds. Only the pipes are read on demand; the existing views draw neither.
 
+Another, for the views that draw it, is where the busiest processes' I/O goes (`Process::io_detail`,
+read only while such a view is shown). For the 24 busiest processes (on Linux by syscalls per
+second; macOS counts none and ranks by the bytes that reached storage per second,
+`ri_diskio_bytesread` plus `ri_diskio_byteswritten`) isotop reads the regular files their
+descriptors hold, with each descriptor's position, from `/proc/<pid>/fd` and `fdinfo` (macOS:
+`proc_pidfdinfo`, `PROC_PIDFDVNODEPATHINFO`), at most 256 files per process and 4096 descriptors
+per pass, and counts their pipes, sockets, terminals and anonymous descriptors. A file is
+credited with how far a descriptor's position moved between two passes and with nothing else:
+by access mode, so a read-write descriptor's bytes are never split between reads and writes;
+nothing for a descriptor that is new, reopened, rewound or changed in its flags (no rate, which is
+not zero), or one opened to append, whose position is always the end of the file. On Linux the
+claims of a process are held to the growth of its `rchar` and `wchar` over the same interval,
+read just before and after the walk. The **unattributed** remainder is what those counters grew by
+and no file position explains: `pread` and `pwrite`, which name their own offset, memory-mapped
+I/O, pipes, sockets, terminals and files opened to append. A file's rate is therefore a lower
+bound on what the process did with it.
+
 The sky is tinted by pressure stall information from `/proc/pressure`: amber for
-CPU, crimson for memory, blue for I/O.
+CPU, crimson for memory, blue for I/O (the matrix has no haze, and a view's row can
+turn it off).
 
 NVIDIA GPU memory comes from NVML, loaded at run time. A runtime-suspended GPU has
 no processes, so isotop does not query it and never wakes a laptop's discrete GPU
@@ -904,7 +1146,11 @@ for monitoring.
 
 New processes fly out of their parent (orbit) or rise from their plot (city).
 The processes already running when isotop starts bloom in the same way. Exiting
-processes leave a brief flash and an expanding ring.
+processes leave a brief flash and an expanding ring. A process that appears grows in
+with a cubic ease-out over 0.9 s; an exit leaves a ring of radius 0.6 + 3.4 × age
+(age running from 0 to 1 over 1.2 s) fading from the colour (255, 196, 140), and a glow
+for the first 35 % of that time, where the process was last drawn. A view's registry
+row can turn the flash off.
 
 ### Fork, exec and exit events
 
@@ -952,46 +1198,58 @@ visit the next or a random process in the tour's own order and let it go on from
 
 ## Controls
 
+`isotop --keys` prints the tables below, and `isotop --help` ends with the same list. The
+in-app help (`?`) is made from the same table, so they agree.
+
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux) |
-| Shift + Tab | Previous view in the playlist |
-| `v` | Open the view picker (below) |
-| `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
-| Two-finger scroll / wheel | Pan (vertical and horizontal); on the globe, turn the earth (horizontal) and tilt it (vertical) |
-| Ctrl + scroll | Zoom towards the pointer |
-| Alt + scroll | Rotate |
-| Right or middle drag | Rotate (horizontal) and tilt (vertical) |
+| **Camera** | |
 | Arrows or WASD | Pan |
 | `+` / `-` | Zoom |
 | `Q` / `e` | Rotate a quarter turn counterclockwise / clockwise |
 | PgUp / PgDn | Tilt up / down |
 | `t` | Toggle top-down and isometric |
 | Home | Fit scene (in the tesseract, also the canonical 4D orientation, the lab frame and the drift) |
-| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again; in the tesseract, as Home |
+| **Views** | |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it; `--list-views` names them) |
+| Shift + Tab | Previous view in the playlist |
+| `v` | Open the view picker, which has its own keys |
+| `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
+| **Tour and visits** | |
+| `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
+| Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
+| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names. To tell Shift + Space apart isotop asks such a terminal to report every key as an escape code, so a character composed with AltGr, Option or a dead key reaches the search box as its base key (known limitation) |
+| **Pointer** | |
+| Two-finger scroll / wheel | Pan (vertical and horizontal); on the globe, turn the earth (horizontal) and tilt it (vertical) |
+| Ctrl + scroll | Zoom towards the pointer |
+| Alt + scroll | Rotate |
+| Right or middle drag | Rotate (horizontal) and tilt (vertical) |
 | Hover | Name and description of the process under the pointer, or the title of a thing a view draws |
 | Left click | Select the nearest process, or thing, and open its inspector popup |
 | Left click on empty space | Close the popup |
 | Left drag | Pan (on the globe too) |
-| `l` | Toggle labels |
-| `h` | Hide or show the status panel, giving the scene the whole terminal |
-| `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
-| Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
-| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names. To tell Shift + Space apart isotop asks such a terminal to report every key as an escape code, so a character composed with AltGr, Option or a dead key reaches the search box as its base key (known limitation) |
-| `c` | Socket links: all, highlighted only, off |
+| **Search, selection and focus** | |
 | `/` | Search name, command, or exact PID |
-| Tab while searching / `n` afterward | Next match |
-| Enter | Accept search |
+| `n` | Next match of the search |
 | `f` | Focus selected process and descendants |
-| Esc | Leave search, close the popup, or clear subtree focus |
+| Esc | Close the popup, then the selection, then clear subtree focus |
+| **Display** | |
+| `l` | Toggle labels |
+| `c` | Socket links: all, highlighted only, off |
+| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again; in the tesseract, as Home |
+| **History** | |
 | `P` (Shift + p) | Pause / resume |
 | `[` / `]` | Previous / next retained snapshot |
+| **View keys** | |
 | `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
 | `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
 | `b` | Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame |
 | `m` | Hr: fly the stars to the Hertzsprung-Russell diagram, and back to the sky |
-| `?` | Toggle help; the second line leads with the shown view's own keys |
-| `q` / Ctrl-C | Quit |
+| **Panels and quit** | |
+| `h` | Hide or show the status panel, giving the scene the whole terminal |
+| `?` | Toggle help; its first line leads with the shown view's own keys |
+| `q` | Quit; the shown view may play a short farewell first, and `q` again ends it |
+| Ctrl-C | Quit at once, whatever is open |
 
 On the globe, scrolling follows your fingers the way panning moves the other
 views: scrolling right carries the surface to the left, and scrolling down
@@ -1000,9 +1258,21 @@ Scrolling at all stops the earth's own turn, and a turned globe holds still unti
 `r` or `g`; the idle tour waits while it is held. Search keeps the hold and
 stands the earth upright on the match.
 
+**Search.** `/` opens the search line. It takes every key until it closes, except Ctrl-C,
+which quits:
+
+| Key | Action |
+| --- | --- |
+| Any character | Add it to the search; the first match is selected as you type |
+| Backspace | Delete the last character |
+| Enter | Accept the search and close the line |
+| Esc | Leave the search, keeping the selection |
+| Tab | Next match |
+
 **View picker.** `v` lists the views this platform supports, one row each, such as
 `> * 11 coop    COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
-the number the view's place in the list. The picker takes every key until it closes:
+the number the view's place in the list. The picker takes every key until it closes, except
+Ctrl-C, which quits:
 
 | Key | Action |
 | --- | --- |
@@ -1012,7 +1282,6 @@ the number the view's place in the list. The picker takes every key until it clo
 | Enter | Show the highlighted view, fitted, and close the picker (nothing happens when no view matches) |
 | Space | Add the highlighted view to the Tab playlist or remove it; the last view cannot be removed |
 | Esc | Close without switching |
-| Ctrl-C | Quit |
 
 A view picked with `v` that is not in the playlist is not part of the cycle: Tab goes to
 the first playlist view after it in the list, Shift+Tab to the last one before it, and
@@ -1052,7 +1321,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo switchboard plays the three seconds before `--time` as a live run would have drawn them (a sample a second, a frame every 0.1 s, none of them rasterized), so at `--time 12` the line irqbalance moved at 10.2 s is a second into its swing and the red lamp of cpu0 is lit; its table is a synthetic one of 48 lines on 16 CPUs. Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo hive plays the ten seconds before `--time` the same way (a frame every 0.05 s, none of them rasterized), so its bees are spread over the combs and its brood is measured against the sample before. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo hive plays the ten seconds before `--time` the same way (a frame every 0.05 s, none of them rasterized), so its bees are spread over the combs and its brood is measured against the sample before. Demo ouija feeds the journal for the eight seconds before `--time`, a frame every 0.05 s (matrix does the same), so `--time 12` lands in the middle of a line. Demo anthill plays the ten seconds before `--time` as a live run would have drawn them (a frame every 0.05 s), so its trails are laid and its ants are on their way. Demo plumbing plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so the water has travelled and a pipe whose reader let go at the tenth second is already spraying at `--time 12`. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
@@ -1064,7 +1333,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-74,243 lines of Rust (42,981 production, 31,262 test) in 75 files, 975 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+95,187 lines of Rust (56,525 production, 38,662 test) in 150 files, 1,292 tests, 24 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development
@@ -1093,6 +1362,10 @@ The Rust toolchain is pinned in `rust-toolchain.toml` (and `rust-version` in
 CI builds and tests on Linux and on macOS (`macos-15`, Apple Silicon). The macOS
 code can be type-checked from Linux with
 `cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings`.
+
+## Credits
+
+Stroke font: A. V. Hershey, Naval Weapons Laboratory, NWL Report 2101 (1967). The Usenet distribution's notice is reproduced verbatim in `src/hershey/NOTICE` as its terms require.
 
 ## Next milestones
 

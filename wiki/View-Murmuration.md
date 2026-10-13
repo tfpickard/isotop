@@ -146,7 +146,7 @@ Output of the first: `Wrote /tmp/murmuration.png (1600x900, 192 visible)`. The b
 * Replace the whole-flock pull by a small per-process term and see how close to 0.0012 islands begin to form.
 * Colour or arrange birds by thread name (workers, I/O threads).
 * How does the choice of 21 for cohesion depend on the flock's size at 8,000 birds?
-* [View Coop](View-Coop) is the other view in which processes flock. It uses a metric Vicsek radius of 4.0 world units (`NEIGHBOURHOOD` in `src/coop.rs`), keeps its flocks in henhouses, and sends a fox when the kernel's OOM killer acts; here a single falcon is released by the same event, and the birds are not kept.
+* [View Coop](View-Coop) is the other view in which processes flock. It uses a metric Vicsek radius of 4.0 world units (`NEIGHBOURHOOD` in `src/coop/sim.rs`), keeps its flocks in henhouses, and sends a fox when the kernel's OOM killer acts; here a single falcon is released by the same event, and the birds are not kept.
 
 ## References
 
