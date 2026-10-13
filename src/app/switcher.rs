@@ -80,6 +80,7 @@ impl App {
     /// drew them, so a selected or hovered one is let go.
     pub(crate) fn switch(&mut self, view: View) {
         self.view = view;
+        self.quitting = false;
         self.camera.refit();
         self.thing = None;
         self.pointer.forget_thing();

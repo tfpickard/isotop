@@ -215,7 +215,7 @@ writes back `stage.positions` (picking anchors, labels, the tour and the exit fl
 braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
 `stage.tour` (`TourTarget { id,
 position, weight }`, which the tour visits heaviest first) `stage.popup` (popup lines right
-after the process's own figures) and `stage.callout` (lines for the tour's callout of a process), and returns how many processes it showed; the rest count as
+after the process's own figures) and `stage.callout` (lines for the tour's callout of a process) and `stage.quit` (set once a farewell the view deferred a quit for is over; see `ViewKey::Quit`), and returns how many processes it showed; the rest count as
 collapsed. `Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection,
 time, limit, focus and whether the app is paused). The row (`ViewInfo`) holds
 everything else that sets the view apart, and `Scene`, `App` and the headless warm-up read it

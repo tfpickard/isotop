@@ -254,6 +254,7 @@ Orbit, flow and strata exceed even the line-dominant limit. They are known parit
 Rules:
 
 - `m` is the conventional key for a view's alternate mode.
+- `q` reaches the shown view's key hook as `ViewKey::Quit` first. A view with a farewell to play (an animation before the app ends) returns true to defer the quit, draws the farewell from `stage.dt` and sets `stage.quit` when it is over; a second `q` is offered again, and the view returns false to end at once. By default the hook returns false and the app quits as it always did. Ctrl-C never waits for a view, and a headless run presses no key, so a farewell never plays there.
 - Home, r or Esc may gain an extra view effect only if the global meaning still happens, at most one press later.
 - No new view gets a digit. Digits stay bound to the first ten registry rows; never reorder those rows. New views are reached by Tab within the playlist, the `v` picker, `--view` or `--views`.
 - List each view-local key in the view's README section, in `## Controls`, and on the `?` help line while the view is shown (the row's `keys`).

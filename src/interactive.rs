@@ -124,6 +124,8 @@ impl<'a> Live<'a> {
             let shown = self.present(&mut frame, render_ms)?;
             quit = self.input(frame_start + frame_interval, &frame, &shown)?;
             quit |= self.finish(frame);
+            // A view that deferred the quit has played its farewell in the frame just drawn.
+            quit |= self.app.farewell_over();
         }
         Ok(())
     }

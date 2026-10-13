@@ -47,11 +47,17 @@ impl App {
             match key {
                 ViewKey::Local(_) => return false,
                 ViewKey::Escape if consumed => return false,
-                ViewKey::Escape | ViewKey::Reset => {}
+                ViewKey::Escape | ViewKey::Reset | ViewKey::Quit => {}
             }
         }
         match code {
-            KeyCode::Char('q') => return true,
+            KeyCode::Char('q') => {
+                // A view may take the quit to play a farewell first; none does by default.
+                if !self.scene.key(self.view, ViewKey::Quit) {
+                    return true;
+                }
+                self.quitting = true;
+            }
             KeyCode::Tab => self.switch(self.cycle(true)),
             KeyCode::BackTab => self.switch(self.cycle(false)),
             KeyCode::Left | KeyCode::Char('a') => self.camera.goal.pan(-step, 0.0),
@@ -204,6 +210,56 @@ mod tests {
         assert!(!app.panel_shown(), "hidden again after the search");
         press(&mut app, 'h');
         assert!(app.panel_shown());
+    }
+
+    #[test]
+    fn a_view_can_defer_the_quit_until_its_farewell_is_over() {
+        let (farewell, probe) = (View::at(0), View::at(1));
+        let mut app = app_over(views::testing::FAREWELLS);
+        assert!(
+            !press(&mut app, KeyCode::Char('q')),
+            "the view took the quit"
+        );
+        assert!(app.quitting && !app.farewell_over());
+        for frame in 1..=testing::FAREWELL_FRAMES {
+            assert!(!app.farewell_over(), "frame {frame} is not the last");
+            app.render(320, 180, 512);
+        }
+        assert!(app.farewell_over(), "the view said it is done");
+        assert_eq!(
+            app.scene.legend(farewell, app.snapshot()),
+            format!(" farewell: {} frames", testing::FAREWELL_FRAMES)
+        );
+
+        // A second q during the farewell ends it at once, and Ctrl-C never waits for it.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(
+            press(&mut app, KeyCode::Char('q')),
+            "the view let the second q through"
+        );
+        let mut app = app_over(views::testing::FAREWELLS);
+        assert!(app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0));
+
+        // Switching away cancels the deferred quit, and a view that defers nothing quits at once.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('q'));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view, probe);
+        for _ in 0..=testing::FAREWELL_FRAMES {
+            app.render(320, 180, 512);
+        }
+        assert!(!app.farewell_over());
+        assert!(
+            press(&mut app, KeyCode::Char('q')),
+            "the default is to quit"
+        );
+
+        // Search and the picker take q as text before any view sees it.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!press(&mut app, KeyCode::Char('q')));
+        assert!(!app.quitting);
     }
 
     #[test]

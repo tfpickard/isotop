@@ -27,7 +27,11 @@ pub(crate) fn all_available() -> Vec<bool> {
 
 /// An app over the test module views of `views::testing::ROWS`, showing `probe`.
 pub(crate) fn probe_app() -> App {
-    let rows = views::testing::ROWS;
+    app_over(views::testing::ROWS)
+}
+
+/// An app over the test module views of `rows`, showing the first, drawn once.
+pub(crate) fn app_over(rows: &'static [views::ViewInfo]) -> App {
     let mut app = App::new(View::at(0), model::demo(1.0, 16), vec![true; rows.len()]);
     app.scene = Scene::with_rows(rows);
     app.render(320, 180, 512);

@@ -302,6 +302,7 @@ fn scene_has_no_view_specific_fields() {
         popup: _,
         callout: _,
         history: _,
+        quit: _,
         rows: _,
         modules: _,
         spare: _,
