@@ -1,12 +1,25 @@
 # Guide: Writing a view
 
-There is no plugin system. A view in isotop is one Rust module and one row of a table, compiled into the binary; "writing a plugin" means writing that module, adding that row and sending a pull request. This page is the recipe, and it is a complete one: it builds a new view from nothing, step by step, and every listing in it is the code that compiled, with clippy clean and its tests passing. The view is called `lissajous`. It is a toy in size (one file, about 540 lines before its tests and just over 800 with them) and deliberately not a toy in method: it reads the shared history, seats its plates so that they never move, steps a spring on a fixed clock, hands the app its picks, its labels and its tour, keeps a record hook, and is covered by the same harness as the fourteen views that ship. The last section is speculation about what a real plugin interface could look like, clearly labelled as such.
+There is no plugin system. A view in isotop is one Rust module and one row of a table, compiled into the binary; "writing a plugin" means writing that module, adding that row and sending a pull request. This page is the recipe, and it is a complete one: it builds a new view from nothing, step by step, and every listing in it is code that was applied to a clean checkout of `main` (commit a34733c, which includes the removal of `Hooks`) and built, with clippy clean and its tests passing; [The gates](#the-gates) says exactly which gates were run on that checkout. The view is called `lissajous`. It is a toy in size (one file, about 540 lines before its tests and just over 800 with them) and deliberately not a toy in method: it reads the shared history, seats its plates so that they never move, steps a spring on a fixed clock, hands the app its picks, its labels and its tour, keeps a record hook, and is covered by the same harness as the eighteen views that ship. The last section is speculation about what a real plugin interface could look like, clearly labelled as such.
 
 Read [Theory: Stable Layout](Theory-Stable-Layout), [Theory: History](Theory-History) and [Theory: Simulation Toolkit](Theory-Simulation-Toolkit) for the ideas the code leans on, and `AGENTS.md` and `docs/VIEW_CONVENTIONS.md` in the repository for the rules a pull request is held to. Where this page and those disagree, they win; where they and the code disagree, the code wins.
 
+## History
+
+Programs that draw while someone else is listening or idling have offered outsiders a way in for a long time, and almost every offer has been the same shape: a host that owns the window and the clock, and a small unit that is handed the time (or the sound) and asked for one frame.
+
+* **Screen savers.** Berkeley Systems released After Dark for the Macintosh in 1989 and for Windows in 1991; Wikipedia credits Jack Eastman and Patrick Beard, and its Flying Toasters are the best-known module. A Windows screen saver is an ordinary executable renamed `.scr` that the system starts with a switch for full screen, configure or preview (`/s`, `/c`, `/p`). The contract is a command line, which is as narrow as a contract can be.
+* **Light synthesizers.** Jeff Minter's Psychedelia (Llamasoft, 1984, Commodore 64) and Trip-a-Tron (1988, Atari ST) were not plug-ins; they were instruments that drew coloured light from a joystick. His Virtual Light Machine later shipped on the Atari Jaguar CD add-on. They matter here because they made the picture the product and the music optional.
+* **Winamp.** Visualization plug-ins were DLLs the player loaded; the player passed each one the current waveform and spectrum and asked it to render (the exact header is from memory, unverified). Ryan Geiss's Geiss plug-in dates from around 1998. Advanced Visualization Studio, designed by Winamp's author Justin Frankel, has an initial release dated March 2000 in Wikipedia; one source has it first shipping with Winamp 2.61, so the date varies by source. MilkDrop followed, released by Geiss on 5 November 2001 according to Wikipedia, built for GPU hardware; its source was released under a BSD licence in May 2005, after which Geoff Potter continued it. AVS made the extension a language: a preset is a list of effects with expressions in them, and its SuperScope draws a curve from an expression, which is to say an oscilloscope.
+* **The demoscene** took the opposite position. A production is one executable, often under a fixed size such as 64 kilobytes, and there is no host to be polite to.
+
+The pattern across these is that the contract tends to shrink to what the host can afford to trust: a command line, a pair of arrays, a preset. Whether to load strangers' code at all is a separate question; the speculative section at the end of this page takes it up and, on this project's terms, answers no.
+
+isotop's own contract is short enough to date from the repository (read-only `git log`, commit dates as recorded). The first commit is of 2026-10-07. The registry (`views::REGISTRY`, `ViewInfo`), the `ViewModule` trait, the `Stage` outputs, `FixedStep` and the harness that runs every row all arrived together in PR 120 on 2026-10-11, with a `Hooks` enum whose `BuiltIn` arm kept the eleven views that predated it in the scene's own match arms. PR 143 on 2026-10-12 removed `Hooks`, moved the built-in views (City, Orbit, Ripple, Flow, Matrix and Coop among them) onto `ViewModule`, and made a registry row `ViewInfo::new(name, title, backdrop, build)`. This page was written between those two, which is why its first version did not compile on `main`. By commit date, the views the harness records as predating it are at most four days older than it.
+
 ## What is true: views are compiled in
 
-The contract is the trait `views::ViewModule` and the row type `views::ViewInfo`. Everything else follows from them.
+The contract is the trait `views::ViewModule` and the row type `views::ViewInfo`. Every view in the registry, the original City, Orbit, Ripple and Flow included, is a `ViewModule` built by its row's `build`; there is no other path (the `Hooks` enum that once offered one was removed in PR 143). Everything else follows from them.
 
 ```rust
 // src/views.rs
@@ -44,6 +57,13 @@ pub trait ViewModule {
         None
     }
 
+    /// The view's state as `Any`, for `Scene::module`: a module's own tests read what its legend
+    /// and `Stage` outputs do not tell. None, the default, shows nothing.
+    #[cfg(test)]
+    fn state(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
     /// Where the view harness looks for each drawn process instead of where it is drawn, for a
     /// view whose bodies move by themselves: the place each one keeps, read after a frame. None,
     /// the default, checks `Scene::positions`.
@@ -61,6 +81,7 @@ pub trait ViewModule {
 | `legend` | `Scene::legend` | The third status line, while no process is inspected. It starts with a space |
 | `key` | `Scene::key`, from `App::command` | A key press while the view is shown and no search or picker is open: `ViewKey::Local(c)` for `c` in `views::LOCAL_KEYS` (`bijkmopuxyz,.;`), `ViewKey::Reset` for Home and `r` (the global reset happens as well), `ViewKey::Escape` (returning true consumes the press) |
 | `inspector_line`, `card` | the status line and the inspector popup | A view that draws no processes, or draws things that are not processes (`Frame::thing_pick`); this tutorial uses neither |
+| `state` | `Scene::module`, in tests only | A module's own tests read what its legend and `Stage` outputs do not tell; this tutorial's tests read through the legend instead, so it omits it |
 | `anchors` | the test harness only | A view whose bodies move by themselves returns the places they keep; this tutorial's plates do not move, so it omits it |
 
 What a view may read is `Stage`, the process slice and `&Snapshot`, and nothing else. It never reads `/proc`, opens a file or a socket, or touches the terminal. What it may write back is `Stage` outputs and the display list it records into `stage.frame`:
@@ -77,7 +98,7 @@ What a view may read is `Stage`, the process slice and `&Snapshot`, and nothing 
 | `notes`, `popup`, `callout` | write | Extra inspector lines after the sockets; extra lines right after the process's own figures; extra lines in the tour's callout |
 | `tour` | write | `TourTarget { id, position, weight }`: processes the tour visits, heaviest first |
 
-A view is made known to the app by one row of `views::REGISTRY`, built with `ViewInfo::new(name, title, backdrop, Hooks::Module(constructor))` and a struct update for the fields that differ from the defaults. Tab, Shift+Tab, the `v` picker, `--view`, `--views`, `--list-views` and `--verbose` all follow from the table. The first ten rows are bound to the digits and must never be reordered; a new view goes at the end.
+A view is made known to the app by one row of `views::REGISTRY`, built with `ViewInfo::new(name, title, backdrop, build)`, where `build` is a `views::Build` (`fn() -> Box<dyn ViewModule>`, usually a closure), and a struct update for the fields that differ from the defaults. Tab, Shift+Tab, the `v` picker, `--view`, `--views`, `--list-views` and `--verbose` all follow from the table. The first ten rows are bound to the digits and must never be reordered; a new view goes at the end.
 
 ## The view we build
 
@@ -198,7 +219,7 @@ const SELECTED: Color = [255, 235, 171];
 const PEAK: Color = [226, 240, 255];
 ```
 
-Three details already matter. `bounded` (from `model`) is the saturating transform $v/(v+k)$ that every view uses for "how busy" without letting a hot process leave its slot. `top_n` is the shared budgeted selection (largest key first, ties by `Identity`, NaN last), and its first caller has to delete the `#[expect(dead_code)]` it carried: the compiler reports an unfulfilled expectation otherwise, as the section on what to touch shows. And `Frame::hairline`, not `Frame::line`, draws every stroke: a new view uses thin triangles because both rasterizers fill them alike (the CPU/GPU parity rule), where one-pixel lines differ between the diamond-exit rule of hardware and the CPU's DDA.
+Three details already matter. `bounded` (from `model`) is the saturating transform $v/(v+k)$ that every view uses for "how busy" without letting a hot process leave its slot. `top_n` is the shared budgeted selection (largest key first, ties by `Identity`, NaN last), and the budget it describes is the reason a view never sorts the whole machine itself. And `Frame::hairline`, not `Frame::line`, draws every stroke: a new view uses thin triangles because both rasterizers fill them alike (the CPU/GPU parity rule), where one-pixel lines differ between the diamond-exit rule of hardware and the CPU's DDA.
 
 ### Step 2: time. `stage.dt` for the glow, `FixedStep` for the spring
 
@@ -773,12 +794,9 @@ Wiring the module in takes one `mod` line in `main.rs` and one row at the end of
             time: 40.0,
             ..Contract::DEFAULT
         },
-        ..ViewInfo::new(
-            "lissajous",
-            "LISSAJOUS",
-            Backdrop::Void,
-            Hooks::Module(|| Box::new(lissajous::Lissajous::default())),
-        )
+        ..ViewInfo::new("lissajous", "LISSAJOUS", Backdrop::Void, || {
+            Box::new(lissajous::Lissajous::default())
+        })
     },
 ```
 
@@ -789,7 +807,7 @@ Every other field keeps its default. The row's fields, as `ViewInfo` documents t
 | `name`, `title` | | `lissajous`, `LISSAJOUS`: the lowercase CLI name and the status-line title |
 | `backdrop` | | `Backdrop::Void`: black. The others are `Dusk`, `Space` and `Sea` |
 | `available` | everywhere | default. A runtime probe lives in `platform/` |
-| `hooks` | | `Hooks::Module(constructor)`; the scene builds the state once and owns it |
+| `build` | | A `views::Build`, here a closure that returns `Box::new(lissajous::Lissajous::default())`; the scene calls it once per row when it is created and owns the module from then on |
 | `warmup` | none | a `Phase::Replay` of 40 s under `When::DemoHeadless`: a headless demo frame needs the samples before it for its peak ticks. A phase that replays demo samples must be `DemoHeadless` (or `DemoOutput`), because a live run must not take in demo samples; a new view's own phases use `Headless` so `--benchmark` measures a settled scene |
 | `links` | `LinkRule::Quiet` | default: only the links of selected, hovered or toured processes, which join plate centres |
 | `link_strokes` | off | on, as a new view must: links as hairlines |
@@ -819,7 +837,7 @@ mod tests {
     use crate::model::demo;
     use crate::model::testing::process;
     use crate::render::{Backdrop, NONE, RenderInput, Scene, hiding};
-    use crate::views::{Hooks, View, ViewInfo, view};
+    use crate::views::{View, ViewInfo, view};
 
     /// The view on a row of its own with every optional field at its default, as `views::testing`
     /// builds its rows.
@@ -827,7 +845,7 @@ mod tests {
         "lissajous",
         "LISSAJOUS",
         Backdrop::Void,
-        Hooks::Module(|| Box::new(Lissajous::default())),
+        || Box::new(Lissajous::default()),
     )];
 
     /// A scene over `ROWS` that has taken in the demo's first `seconds` seconds, a sample a
@@ -1089,28 +1107,24 @@ mod tests {
 }
 ```
 
-The two tests that follow the conventions' model most closely are `a_bead_follows_the_same_path_at_ten_and_sixty_frames_per_second`, which compares states at equal step counts exactly (the model for any simulation view, after `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second` in the coop), and `plates_and_the_camera_envelope_ignore_what_focus_and_the_limit_hides`, which calls the shared `render::hiding` helpers on the registered view.
+The two tests that follow the conventions' model most closely are `a_bead_follows_the_same_path_at_ten_and_sixty_frames_per_second`, which compares states at equal step counts exactly (the model for any simulation view, after `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second` in the coop), and `plates_and_the_camera_envelope_ignore_what_focus_and_the_limit_hide`, which calls the shared `render::hiding` helpers on the registered view.
 
 ### Step 9: everything else you must touch
 
-The Rust is half of a view. This list is derived from what the compiler, clippy and the tests actually refused until it was done:
-
-The files below are exactly the ones `git status` showed after the view worked. Each row says what was refused until it was done.
+The Rust is half of a view. This list is what the compiler, the tests and the checks actually refused until it was done, on the checkout described under [The gates](#the-gates). `git status` there showed exactly these files, except where a row says it was not done.
 
 | File | Change | Refused until it was done |
 |---|---|---|
 | `src/lissajous.rs` | New: the module and its tests | |
 | `src/main.rs` | `mod lissajous;`, alphabetically among the other `mod` lines | Nothing compiles the file without it |
-| `src/views.rs` | `use crate::{..., lissajous, ...}`; the row appended at the end of `REGISTRY` | The view does not exist for Tab, `--view`, `--list-views` or the picker without it |
-| `src/views.rs` (tests) | `only_coop_records_and_only_matrix_replaces_the_inspector` asserts the exact list of module rows; `"lissajous"` appended | `cargo test` |
-| `src/main.rs` (tests) | Two picker tests assume the registry's length and last row: `"View: q_  0/14"` became `"View: q_  0/15"`, and `the_picker_scrolls_to_keep_the_highlight_visible` looks for `lissajous` where it looked for `necropolis` | `keys_typed_into_the_picker_do_not_reach_the_scene` and `the_picker_scrolls_to_keep_the_highlight_visible` failed |
-| `src/model.rs` | Deleted the `#[cfg_attr(not(test), expect(dead_code, ...))]` on `top_n`: this view is its first caller | rustc: `this lint expectation is unfulfilled`, which `clippy -D warnings` turns into an error |
+| `src/views.rs` | Add `lissajous` to the `use crate::{...}` list; append the row at the end of `REGISTRY` | The view does not exist for Tab, `--view`, `--list-views` or the picker without it |
 | `AGENTS.md` | A row for `lissajous.rs` in the file table | `agents_file_table_lists_every_source_file` |
-| `tests/golden.txt` | One line, added by `ISOTOP_BLESS=1 cargo test every_view_matches`; the other fourteen lines did not change, which is the proof that nothing shared was touched | `every_view_matches_its_golden_hash`: `lissajous: no golden hash` |
-| `scripts/smoke_terminal.py` | `"lissajous"` appended to `PICKER_VISITS`, so the smoke test visits the view through the `v` picker and asserts its `/ LISSAJOUS /` header | The conventions; the script skips names `--list-views` does not print |
-| `README.md` | A `### Lissajous` section under `## Worlds` (image, one sentence, the mapping table, **Decorative:**, the model, caps, what cannot be measured, keys); "fourteen views" became "fifteen" in the lede and in the Worlds paragraph; the `--view` list, the Tab line in Controls and the headless paragraph name the view; `m` is in the key table | The conventions' README section; the counts are generated, below |
-| `docs/media/lissajous.webp` | The README image: `--demo --view lissajous --time 40 --width 1600`, converted with ImageMagick | The conventions |
-| `docs/METRICS.md`, the README metrics block | Regenerated by `python3 scripts/code_report.py` (needs `tokei`) | `python3 scripts/code_report.py --check`, the last gate |
+| `tests/golden.txt` | One line, added by `ISOTOP_BLESS=1 cargo test every_view_matches`; the eighteen existing lines did not change, which is the proof that nothing shared was touched | `every_view_matches_its_golden_hash`: `lissajous: no golden hash` |
+| `scripts/smoke_terminal.py` | `"lissajous"` appended to `PICKER_VISITS`, so the smoke test visits the view through the `v` picker | The conventions; the script skips names `--list-views` does not print |
+| `README.md`, `docs/METRICS.md` | The metrics block and `docs/METRICS.md` regenerated by `python3 scripts/code_report.py` (needs `tokei`). A real view also needs a README `### Name` section under `## Worlds` (image, one sentence, the mapping table, **Decorative:**, the model, caps, what cannot be measured, keys), its name in the `--view` list, the Tab line in Controls and the headless paragraph, and its key in the key table, and the view counts the README states in prose. **Not done for the tutorial's view** except the regenerated blocks | `python3 scripts/code_report.py --check`, the last gate |
+| `docs/media/lissajous.webp` | The README image: `--demo --view lissajous --time 40 --width 1600`, converted with ImageMagick. **Not done** | The conventions |
+
+Two edits the first version of this page listed are no longer needed, and the reason is worth knowing. `top_n` no longer carries an `#[expect(dead_code)]`, so there is nothing to delete when a view first calls it (`status::sources_note` and `History::series` still carry one, and the first view to call either has that edit to make). And the two picker tests in `main.rs` no longer hard-code the registry's length and last row (they read `REGISTRY.len()` and `REGISTRY.last()`), so a new row needs no edit there. Likewise `every_row_builds_its_own_module_and_only_the_matrix_replaces_the_inspector` in `views.rs` checks every row generically; it needs no new entry for a view that draws processes.
 
 What did **not** need touching, and why: `.github/workflows/ci.yml` renders every view `--list-views` prints, so the new view is rendered by CI without an edit; Tab, Shift+Tab, `--view`, `--views` and the picker follow from the table; the digits stay bound to the first ten rows. A view that reads an optional source also needs a `Source` variant in `platform/mod.rs` and a read in the sampler; this one reads none.
 
@@ -1118,31 +1132,30 @@ Not done, and a pull request would have to: the CPU/GPU parity run (`scripts/com
 
 ## The gates
 
-Run in the order `AGENTS.md` gives, on the finished tree (Linux x86_64):
+The page was first written before PR 143. It was re-checked on a throwaway worktree of `main` at commit a34733c (Linux x86_64, run on 2026-10-13): the listings on this page were extracted and applied exactly as the steps say, and the gates run in the order `AGENTS.md` gives. What happened, in order:
 
-| Gate | Result |
+| Step | Result |
 |---|---|
-| `cargo fmt && cargo fmt --check` | clean |
-| `cargo clippy --all-targets -- -D warnings` | clean |
-| `cargo test` | `537 passed; 0 failed; 4 ignored`, ten of them the view's own (`lissajous::tests`) |
-| `cargo build --release` | built |
-| `python3 scripts/smoke_terminal.py ./target/release/isotop` | demo over shared memory and live over inline zlib both pass, with `lissajous` among the picker visits (`21 valid RGB frames`) |
-| `python3 scripts/code_report.py --check` | up to date after regenerating: 42,513 lines of Rust, 555 tests, 15 views |
+| Apply the page as first written | `cargo check --all-targets` failed twice: `no Hooks in views` in the registry row and again in the tests' `ROWS` (the `Hooks::Module(...)` wrapper is gone; the listings above now pass the closure directly) |
+| `cargo fmt --check` | Two diffs, both in `src/views.rs`: the long `use crate::{...}` line, and `ViewInfo::new(...)` laid out over several lines. `cargo fmt` fixed them; the listings above show the formatted form. `src/lissajous.rs` needed none |
+| `cargo clippy --all-targets -- -D warnings` | Clean, first time |
+| `cargo test lissajous` | `10 passed` |
+| `cargo test` | First run: 2 failed, 847 passed, 9 ignored: `agents_file_table_lists_every_source_file` (no row) and `every_view_matches_its_golden_hash` (`lissajous: no golden hash`). `every_view_satisfies_the_view_contract` passed with the new row, first time. After the AGENTS row and `ISOTOP_BLESS=1 cargo test every_view_matches`: `849 passed; 0 failed; 9 ignored` |
+| `cargo build --release` | Built |
+| `python3 scripts/smoke_terminal.py <release binary>` | Passed in demo mode (44 valid RGB frames over shared memory) and live mode (43 frames, inline zlib), with `lissajous` among the picker visits |
+| `python3 scripts/code_report.py --check` | Failed as expected before regenerating (the README block and `docs/METRICS.md` were stale); passed after `python3 scripts/code_report.py`: 64,874 lines of Rust, 878 tests, 19 views |
+| macOS clippy, CPU/GPU parity, a real Ghostty | **Not run** |
 
-Three things were refused on the way, and each taught something:
+Two further facts from the same run. Two renders of the same arguments are the same file (`cmp`), and the golden line the view added is `lissajous 12acd7b0d9b19af1 9b72d24fbf1bcb21 e9d31a91b1ccc61f`, the same as on the first version of this page. The CPU rasterizer measured 8.97 ms a frame at 192 processes (111 fps, `--width 1920`, `--demo`, `--benchmark 60`) and 19.03 ms a frame at `--processes 1000` (52 fps), against the conventions' budget of at least 10 and 5 fps; the machine differs from the first measurement (14.76 and 27.24 ms), so the two sets are not comparable.
 
-* **rustc**, on the first build: `this lint expectation is unfulfilled` at the `#[expect(dead_code)]` on `top_n`. A helper that no view uses yet carries an `expect` so the compiler keeps it honest; the first view to use it deletes the attribute. (`status::sources_note`, `Rng::normal`, `History::series` and `Frame::pick_disc` carry the same kind of expectation today, so the first view that needs one of them has the same edit to make.)
-* **The two picker tests** in `main.rs` (above): they encode how many views there are and which is last.
-* **The view harness**, on the first full `cargo test`:
+The first version of this page also recorded what the harness caught in the author's first draft, and that story is still the best illustration of the point:
 
 ```
 views break the view contract:
   lissajous: churn (76 of 173 surviving processes moved more than 1: pid 1112 by 146.29, ...)
 ```
 
-The first version of `disc_radius` rounded a group's seats up to the next power of two, so that a group would keep its disc until it doubled. In the demo every group has exactly 16 members, so a group that gained a single process doubled its reservation (radius about 1.3 times larger, more than the 15 % `Discs` allows), the disc was placed again, and all of its plates moved. The harness's churn run starts a tenth of the processes as siblings of survivors and caught it at once. The fix is the smoother radius in the listing above, which lets `Discs`' own headroom do the work: it is the kind of mistake the harness exists for, and it was made by the author of this page.
-
-Measured on the CPU rasterizer (4-core build machine, `--width 1920`, `--demo`): 14.76 ms a frame at 192 processes (67.8 fps) and 27.24 ms at `--processes 1000` (36.7 fps), against the conventions' budget of at least 10 and 5 fps. Two renders of the same arguments are the same file (`cmp`), and the golden line the view added is `lissajous 12acd7b0d9b19af1 9b72d24fbf1bcb21 e9d31a91b1ccc61f`.
+The first draft of `disc_radius` rounded a group's seats up to the next power of two, so that a group would keep its disc until it doubled. In the demo every group has exactly 16 members, so a group that gained a single process doubled its reservation (radius about 1.3 times larger, more than the 15 % `Discs` allows), the disc was placed again, and all of its plates moved. The harness's churn run starts a tenth of the processes as siblings of survivors and caught it at once. The fix is the smoother radius in the listing above, which lets `Discs`' own headroom do the work. (The listing passes today; this failure belongs to the draft it replaced.)
 
 ## Look at it
 
@@ -1204,3 +1217,5 @@ For: isolation is by process, so a crashing or slow view cannot take the host do
 ### What I would try first
 
 Not any of the three, yet. The cheapest honest step towards any of them is to make the contract literally a function: give `draw` an input struct and an output struct (the display list as a value, not as calls on a `&mut Frame`), and run the existing views through it. That costs nothing in features, can be tested by the existing golden hashes (the frames must not change), and it is the common prerequisite of every option above. After that, issue 97's codec gives the inputs a wire format, and a draw-list codec is the symmetrical half. Whether to expose that to anyone but the project's own agents is a separate decision about whether the project wants third-party code in the frame loop at all, which the owner's stated aim (maximalism for its own sake) does not obviously ask for. The reasonable status quo is the one this page documents: a view is a Rust module and one row of `REGISTRY`, and the way to add one is a pull request.
+
+The Lissajous view has no use, and ten tests.

@@ -27,7 +27,7 @@ terminal layer that speaks the Kitty graphics protocol. The rest arrived in this
 | 12 October, 00:02 | Cortex, Horizon and Murmuration |
 | 12 October, 11:03 | Arbor, the eighteenth view, four days and twelve hours after the first commit |
 
-On its first day the repository received seven commits. This wiki has more than ten times as many pages.
+On its first day the repository received seven commits. This wiki has nearly ten times as many pages.
 
 The dates are those of the commits that first added each view's file (`git log --diff-filter=A`). The history of the
 ideas behind the views is on each view's page, and the history of the project's central question is on the

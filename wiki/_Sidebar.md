@@ -43,18 +43,17 @@
 [Strata](View-Strata) &middot; [Globe](View-Globe) &middot; [Reef](View-Reef)<br>
 [Coop](View-Coop) &middot; [Matrix](View-Matrix)<br>
 [Ptolemy](View-Ptolemy) &middot; [Tesseract](View-Tesseract)<br>
-[Necropolis](View-Necropolis)
+[Necropolis](View-Necropolis) &middot; [Cortex](View-Cortex)<br>
+[Horizon](View-Horizon) &middot; [Murmuration](View-Murmuration)<br>
+[Arbor](View-Arbor)
 
 **Planned**
 
 [Mold](Planned-Mold) &middot; [Chamber](Planned-Chamber)<br>
-[Horizon](Planned-Horizon) &middot; [HR](Planned-HR)<br>
-[Hive](Planned-Hive) &middot; [Anthill](Planned-Anthill)<br>
-[Switchboard](Planned-Switchboard)<br>
+[HR](Planned-HR) &middot; [Hive](Planned-Hive)<br>
+[Anthill](Planned-Anthill) &middot; [Switchboard](Planned-Switchboard)<br>
 [Plumbing](Planned-Plumbing) &middot; [Morph](Planned-Morph)<br>
-[Murmuration](Planned-Murmuration)<br>
-[Cortex](Planned-Cortex) &middot; [Ouija](Planned-Ouija)<br>
-[Arbor](Planned-Arbor) &middot; [Canyon](Planned-Canyon)<br>
+[Ouija](Planned-Ouija) &middot; [Canyon](Planned-Canyon)<br>
 [Die](Planned-Die)
 
 **Guides**

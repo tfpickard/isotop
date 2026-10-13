@@ -67,7 +67,7 @@ pages on [sampling](Theory-Sampling-Linux), [the model](Theory-Model-and-Rates) 
 The metaphors are not arbitrary. A process is born by fork, lives by competing for a finite resource, and dies
 leaving a record; so does a particle in a bubble chamber ([Planned Chamber](Planned-Chamber)), a hypha in a
 slime mold ([Planned Mold](Planned-Mold)), a hen in a coop ([View Coop](View-Coop)). Memory pressure that ends
-in the kernel killing something is, at the level of structure, a horizon ([Planned Horizon](Planned-Horizon)).
+in the kernel killing something is, at the level of structure, a horizon ([View Horizon](View-Horizon)).
 The history of astronomy gave us a way of describing any periodic motion as a chain of circles
 ([View Ptolemy](View-Ptolemy)) long before Fourier made the idea exact. Where the correspondence is deep, the
 page says why. Where it is only a pleasing resemblance, the page says that too.

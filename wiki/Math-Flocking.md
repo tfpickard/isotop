@@ -85,7 +85,7 @@ disturbances. Neither is something isotop's flocks of tens of chickens can show.
 * **Couzin et al. (2002)** put three concentric *zones* around each agent: repulsion (innermost), orientation, attraction (outermost). Varying the zone widths produces four collective states: a swarm, a torus (milling), dynamic parallel motion, highly parallel motion, with hysteresis
   between them.
 * **Metric versus topological interaction.** Ballerini et al. (2008) found that starlings in large flocks keep interacting with a *fixed number* of nearest neighbours (about seven), whatever the distance, rather than with all neighbours within a radius. Cavagna et al. (2010) measured scale-free
-  correlations in such flocks. The [Murmuration](Planned-Murmuration) view uses seven-neighbour alignment for that reason.
+  correlations in such flocks. The [Murmuration](View-Murmuration) view uses seven-neighbour alignment for that reason.
 
 ## What the code does
 
@@ -133,7 +133,7 @@ $0.8 + 5\,c/(c + 40)$ units per second, and the step uses the frame's own time s
 
 ### Murmuration: the topological rule (`src/murmuration.rs`)
 
-The Murmuration view ([Murmuration](Planned-Murmuration)) uses the topological rule: one bird per thread, `Flock` stepped at a fixed 20 Hz (`STEP = 0.05`, through `FixedStep`), neighbours found with `SpatialHash3::nearest`. Alignment (`ALIGNMENT = 0.30`) pulls a bird's velocity towards the weighted mean velocity of its `NEIGHBOURS = 7` nearest, with same-process neighbours counting double; cohesion (`COHESION = 0.02`) pulls it towards the centroid of its `FAR_NEIGHBOURS = 21` nearest; separation (`SEPARATION = 0.4` inside `SEPARATION_RADIUS = 1.5`) pushes close neighbours apart; a roost and a falcon complete the forces. The comments in the source record three failures of the prototype that bear on this page: a per-process centroid pull of 0.0012 or more splits the flock into balls (so `FLOCK_PULL = 0.0006` pulls only the whole flock in); cohesion over only seven neighbours lets closed groups of eight split off as islands (hence 21); and a vertical damping of 0.22 flattens the flock into a pancake (`VERTICAL_DAMPING = 0.10`). The flock is thinned to `BIRD_CAP = 8000` birds. Unlike Coop it has no order parameter in its legend.
+The Murmuration view ([Murmuration](View-Murmuration)) uses the topological rule: one bird per thread, `Flock` stepped at a fixed 20 Hz (`STEP = 0.05`, through `FixedStep`), neighbours found with `SpatialHash3::nearest`. Alignment (`ALIGNMENT = 0.30`) pulls a bird's velocity towards the weighted mean velocity of its `NEIGHBOURS = 7` nearest, with same-process neighbours counting double; cohesion (`COHESION = 0.02`) pulls it towards the centroid of its `FAR_NEIGHBOURS = 21` nearest; separation (`SEPARATION = 0.4` inside `SEPARATION_RADIUS = 1.5`) pushes close neighbours apart; a roost and a falcon complete the forces. The comments in the source record three failures of the prototype that bear on this page: a per-process centroid pull of 0.0012 or more splits the flock into balls (so `FLOCK_PULL = 0.0006` pulls only the whole flock in); cohesion over only seven neighbours lets closed groups of eight split off as islands (hence 21); and a vertical damping of 0.22 flattens the flock into a pancake (`VERTICAL_DAMPING = 0.10`). The flock is thinned to `BIRD_CAP = 8000` birds. Unlike Coop it has no order parameter in its legend.
 
 ## Reading the picture
 
@@ -178,4 +178,4 @@ In a live coop (`--view coop`) select a chicken: the inspector line `flock X: ph
 * I. D. Couzin, J. Krause, R. James, G. D. Ruxton and N. R. Franks, "Collective memory and spatial sorting in animal groups", *Journal of Theoretical Biology* 218 (2002), 1-11.
 * M. Ballerini et al., "Interaction ruling animal collective behavior depends on topological rather than metric distance: evidence from a field study", *Proceedings of the National Academy of Sciences* 105 (2008), 1232-1237.
 * A. Cavagna et al., "Scale-free correlations in starling flocks", *Proceedings of the National Academy of Sciences* 107 (2010), 11865-11870.
-* See also [View Coop](View-Coop), [View Reef](View-Reef), [Murmuration](Planned-Murmuration), [Math Spatial Hashing](Math-Spatial-Hashing), [Theory Simulation Toolkit](Theory-Simulation-Toolkit).
+* See also [View Coop](View-Coop), [View Reef](View-Reef), [Murmuration](View-Murmuration), [Math Spatial Hashing](Math-Spatial-Hashing), [Theory Simulation Toolkit](Theory-Simulation-Toolkit).

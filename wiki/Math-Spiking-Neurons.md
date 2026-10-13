@@ -1,6 +1,6 @@
 # Math: Spiking Neurons
 
-A neuron is a leaky capacitor with voltage-gated conductances in parallel, and a spike is what that circuit does when the conductances push back hard enough. In 1952 Alan Hodgkin and Andrew Huxley wrote the circuit down for the squid giant axon in four coupled differential equations; since then the field has spent seventy years deciding how much of it can be thrown away. This page walks that ladder: Hodgkin-Huxley, the leaky integrate-and-fire neuron, and Izhikevich's two-variable model with its table of firing classes, with every trace and number simulated in pure Python (`docs/figures/`). The Izhikevich model is the engine of the [Cortex](Planned-Cortex) view, and section 6 says exactly what the code takes from this page.
+A neuron is a leaky capacitor with voltage-gated conductances in parallel, and a spike is what that circuit does when the conductances push back hard enough. In 1952 Alan Hodgkin and Andrew Huxley wrote the circuit down for the squid giant axon in four coupled differential equations; since then the field has spent seventy years deciding how much of it can be thrown away. This page walks that ladder: Hodgkin-Huxley, the leaky integrate-and-fire neuron, and Izhikevich's two-variable model with its table of firing classes, with every trace and number simulated in pure Python (`docs/figures/`). The Izhikevich model is the engine of the [Cortex](View-Cortex) view, and section 6 says exactly what the code takes from this page.
 
 ![Hodgkin-Huxley and four Izhikevich firing classes, simulated](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/spiking-models.svg)
 
@@ -117,7 +117,7 @@ For $N$ independent neurons the variance of the mean is $1/N$ of the single-cell
 
 ## 6. What isotop does with this
 
-The [Cortex](Planned-Cortex) view is implemented. The simulation is `src/neurons.rs` (pure, no drawing) and the layout and drawing are `src/cortex.rs`.
+The [Cortex](View-Cortex) view is implemented. The simulation is `src/neurons.rs` (pure, no drawing) and the layout and drawing are `src/cortex.rs`.
 
 * Each process is an Izhikevich neuron. `neurons::advance` takes one explicit Euler step of `STEP_MS = 0.5` ms, clamps $v$ at `PEAK = 30` mV and applies the reset when it sees $v \ge 30$ at the start of the next step (2,000 ticks per second, `TICKS_PER_SECOND`). The view steps its `Network` with `simulation::FixedStep::new(STEP_SECONDS, (CATCH_UP / STEP_SECONDS) as usize, CATCH_UP)` with `CATCH_UP = 0.1` s: at most 200 ticks, 100 ms, per frame.
 * Kind chooses the class (`Firing::of`): kernel threads FS, system services RS, session apps CH, containers IB, with the constants of the table in section 3. The pairing is a convention; in real neocortex IB cells are mostly deep-layer (layer V) pyramidal cells (unverified detail), and the view's layer bands are by kind, not by anatomy.
@@ -132,7 +132,7 @@ python3 docs/figures/spiking-models.py   # about a second; prints spike counts a
 ./target/release/isotop --demo --view cortex --width 1600 --output /tmp/cortex.png --renderer cpu
 ```
 
-Reusable simulators: `docs/figures/hh_w8.py` (RK4 Hodgkin-Huxley) and `docs/figures/izh_w8.py` (Euler Izhikevich, with the calibration routine used on the [Cortex](Planned-Cortex) page). The second command was not run for this page.
+Reusable simulators: `docs/figures/hh_w8.py` (RK4 Hodgkin-Huxley) and `docs/figures/izh_w8.py` (Euler Izhikevich, with the calibration routine used on the [Cortex](View-Cortex) page). The second command was not run for this page.
 
 ## 8. Where in the code
 

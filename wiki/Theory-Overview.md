@@ -6,9 +6,9 @@ isotop is a closed loop with four stages: it samples the operating system, recor
 
 ## History
 
-This is the history of the project's architecture, taken from the repository's own log (`git log`, 232 commits between 2026-10-07 and 2026-10-13 at the time of writing). The dates are commit dates; the order matters more than the pace.
+This is the history of the project's architecture, taken from the repository's own log (`git log`; the first commit is dated 2026-10-07). The dates are commit dates; the order matters more than the pace.
 
-* **2026-10-07.** The first day has seven commits: an empty `Initial commit`, then one commit of about 8,300 lines that already holds `model.rs`, `render.rs`, `gpu.rs`, `shaders.wgsl` and `terminal.rs`, one file for each stage of this page, then a pseudo-terminal smoke test, a README and an agent guide.
+* **2026-10-07.** The first day has seven commits: an `Initial commit` that holds only a licence and a `.gitignore`, then one commit of about 8,300 lines that already holds `model.rs`, `render.rs`, `gpu.rs`, `shaders.wgsl` and `terminal.rs`, one file for each stage of this page, then a pseudo-terminal smoke test, a README and an agent guide.
 * **2026-10-08.** Strata, Cores, Cells, Globe and Reef are added together, then a Matrix view of the systemd journal. Strata's history ring is made to record in every view, the first appearance of the rule that a view's record hook runs whichever view is shown.
 * **2026-10-09.** Operating-system access moves behind a `platform` module (`47d34fa`), and macOS support follows the same day: processes, CPUs, memory and sockets, the terminal probe, the unified-log follower for Matrix, and CI on both platforms. The boundary came first; the second platform made it real.
 * **2026-10-11.** Three architecture batches land: golden hashes, CI, lints and the agent guide (#109); typed sources, sampler correctness and "unknown is not zero" (#113); and the view registry, the `Stage` contract, demo options, `FixedStep`, source demand, the view picker and the view harness (#120). From here a view is a row plus a module, and what a view needs from the operating system is declared, not assumed. Ptolemy, Tesseract and Necropolis are the first views written that way (#123).

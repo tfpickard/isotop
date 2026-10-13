@@ -1,6 +1,6 @@
 # Math: Schwarzschild
 
-The Schwarzschild metric is the exact vacuum solution of Einstein's equations outside a spherical, non-rotating mass, and nearly everything the [Horizon](Planned-Horizon) view draws can be derived from it in a few lines: the radii 2M, 3M and 4M and 6M, the Kepler-exact orbital frequency, the bending and capture of light, the redshift of orbiting gas, the freezing of an infalling body, the tidal stretching, even the temperature of Hawking radiation. This page derives those results, checks the important ones numerically with the Python standard library, and separates what the theory says from what the view does with it. It has no view of its own: it is the mathematics page behind [Horizon](Planned-Horizon), and it is independent of isotop. Throughout, $G = c = 1$ and $M$ is the mass, so lengths and times are in units of $GM/c^2$ and $GM/c^3$; for the Sun $GM/c^2 = 1.4766$ km and $GM/c^3 = 4.925\ \mu$s.
+The Schwarzschild metric is the exact vacuum solution of Einstein's equations outside a spherical, non-rotating mass, and nearly everything the [Horizon](View-Horizon) view draws can be derived from it in a few lines: the radii 2M, 3M and 4M and 6M, the Kepler-exact orbital frequency, the bending and capture of light, the redshift of orbiting gas, the freezing of an infalling body, the tidal stretching, even the temperature of Hawking radiation. This page derives those results, checks the important ones numerically with the Python standard library, and separates what the theory says from what the view does with it. It has no view of its own: it is the mathematics page behind [Horizon](View-Horizon), and it is independent of isotop. Throughout, $G = c = 1$ and $M$ is the mass, so lengths and times are in units of $GM/c^2$ and $GM/c^3$; for the Sun $GM/c^2 = 1.4766$ km and $GM/c^3 = 4.925\ \mu$s.
 
 ## History
 
@@ -190,7 +190,7 @@ This is a quantum result and cannot be derived from the classical metric alone, 
 
 ## What "memory pressure as mass" could honestly mean
 
-The [Horizon](Planned-Horizon) view uses units in which $M = 1$: the mass sets the scale and nothing else, so no measured quantity is the mass of anything. The measured quantities enter elsewhere: `oom_score` ranks the orbits, memory pressure (`memory some avg10`, `snapshot.pressure[1]`) sets the *brightness* of the disk (a gain from 0.45 at no pressure to 1.35 at 100 %), and an OOM kill triggers a plunge. The honest physical content is therefore these:
+The [Horizon](View-Horizon) view uses units in which $M = 1$: the mass sets the scale and nothing else, so no measured quantity is the mass of anything. The measured quantities enter elsewhere: `oom_score` ranks the orbits, memory pressure (`memory some avg10`, `snapshot.pressure[1]`) sets the *brightness* of the disk (a gain from 0.45 at no pressure to 1.35 at 100 %), and an OOM kill triggers a plunge. The honest physical content is therefore these:
 
 * **Brightness is accretion rate.** The disk's luminosity is $\eta\dot M c^2$, so tying brightness to a pressure is tying it to a rate at which something is being consumed, which is a sound reading. It does not say how much has been consumed.
 * **Rank is not mass.** The orbit radius is a rank of `oom_score`, a monotone function; the metric's radii $6M$ to $30M$ are chosen, and the physical radius of any process is not a measurement.
@@ -198,7 +198,7 @@ The [Horizon](Planned-Horizon) view uses units in which $M = 1$: the mass sets t
 
 ## Where in the code
 
-The [Horizon](Planned-Horizon) view implements part of this page; the rest is theory that the view does not use (tides, Hawking temperature, the full proper-time infall).
+The [Horizon](View-Horizon) view implements part of this page; the rest is theory that the view does not use (tides, Hawking temperature, the full proper-time infall).
 
 * [`src/horizon/lens.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon/lens.rs): `LensTable` (the photon table of section "Lensing a scene by its vertices": 360 radii by 721 sweeps, traced with RK4 at `PHOTON_STEP = 0.002`), `trace_photon`, `beloborodov_impact_parameter`, `flux` (the closed form derived above, with the coefficient $\sqrt3/2$) and `disk_flux`, `angular_velocity` and `period`, `one_plus_z`, `disk_emission`, `PlungeTrack` and `plunge_brightness`; constants `HORIZON`, `ISCO`, `SHADOW_RADIUS`, `DISK_OUTER`, `PLUNGE_FLOOR`.
 * [`src/horizon/orbits.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon/orbits.rs): `rank_radius`, `band_radius`, `M_PER_SECOND`, `Orbits`; [`src/horizon.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon.rs): the view itself; [`src/horizon/disk.rs`](https://github.com/tfpickard/isotop/blob/main/src/horizon/disk.rs): the lensed disk, shadow and photon ring as triangles.

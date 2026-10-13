@@ -88,7 +88,7 @@ ten rows. [Guide: Writing a View](Guide-Writing-a-View).
 the view harness. [Theory: Stable Layout](Theory-Stable-Layout).
 
 **View module** *(isotop)*: a view implemented as a state struct plus `views::ViewModule`, with a registry row.
-Older views are `Hooks::BuiltIn` and being migrated. There is no dynamic plugin loading.
+Every view is one, built by the `views::Build` constructor its registry row holds. There is no dynamic plugin loading.
 [Guide: Writing a View](Guide-Writing-a-View).
 
 ## Operating system
@@ -144,7 +144,7 @@ geometrically by an epicycle. [View: Ptolemy](View-Ptolemy).
 outside one facet. [Math: Lorentz and Schlegel](Math-Lorentz-and-Schlegel).
 
 **Schwarzschild radius** *(general)*: `r_s = 2GM/c^2`, the horizon radius of a non-rotating mass.
-[Math: Schwarzschild](Math-Schwarzschild), [Planned: Horizon](Planned-Horizon).
+[Math: Schwarzschild](Math-Schwarzschild), [View Horizon](View-Horizon).
 
 **Stigmergy** *(general)*: coordination through traces left in a shared environment, as ants do with pheromone.
 [Planned: Anthill](Planned-Anthill).
