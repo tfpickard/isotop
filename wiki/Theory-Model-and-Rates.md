@@ -335,7 +335,7 @@ clock, no global state, so any `time`, in any order, including negative, gives t
   `Measured`, `Collector::sample`, `measure`, `restarted`, `IoBytes::rates`, `top_n`, `describe`, `demo_with`,
   `DemoOptions`, `demo_life`, `demo_events`, `DEMO_EPOCH`, `demo_cpu_integral`.
 * [`simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs): `smoothing`, `Rng`, `hash_identity`.
-* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `demo_snapshot`, the sample clock in `run`.
+* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `demo_snapshot`; [`src/interactive.rs`](https://github.com/tfpickard/isotop/blob/main/src/interactive.rs): the sample clock in `Live::sample`.
 * [`platform/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/mod.rs): `RawProcess`.
 * Figures: [`docs/figures/model-smoothing-step.py`](https://github.com/tfpickard/isotop/blob/main/docs/figures/model-smoothing-step.py),
   `model-smoothing-response.py`, `model-quantised-counters.py`, `model-sampling-alias.py`.

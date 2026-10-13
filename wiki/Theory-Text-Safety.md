@@ -166,7 +166,7 @@ never belongs there. The test is `sparkline_sanitizer_passes_braille_but_not_con
 | test | file | asserts |
 |---|---|---|
 | `process_text_cannot_inject_terminal_controls` | `terminal.rs` | `clean_text("bad\x1b[2J\nname", 80) == "bad?[2J?name"`, and `clean_text("abcdef", 3) == "abc"` |
-| `thing_card_text_cannot_inject_terminal_controls` | `main.rs` | a pickable "lantern" with a card title ending `\x1b]0;flare\x07` and a line `wick \x1b[2J\x07lit`: the bytes `draw_label` and `draw_popup` produce contain `lantern 100?]0;flare?` and `wick ?[2J?lit`, and contain none of `\x1b]0;`, `\x1b[2J`, `\x07` |
+| `thing_card_text_cannot_inject_terminal_controls` | `app/pointer.rs` | a pickable "lantern" with a card title ending `\x1b]0;flare\x07` and a line `wick \x1b[2J\x07lit`: the bytes `draw_label` and `draw_popup` produce contain `lantern 100?]0;flare?` and `wick ?[2J?lit`, and contain none of `\x1b]0;`, `\x1b[2J`, `\x07` |
 | `epitaphs_are_sanitized` | `necropolis.rs` | a process named `evil\u{1b}]0;pwned\u{7}name` has a grave card whose popup output contains `evil?]0;pwned?name-77` and no `\x1b]0;` or BEL |
 | `sparkline_sanitizer_passes_braille_but_not_controls_or_other_text` | `terminal.rs` | `clean_sparkline("⣿\x1b[2J\n⣿", 80) == "⣿?????⣿"`, `"a\u{27ff}\u{2900}\u{202e}"` becomes `????`, and the cut is in cells |
 | `cut_labels_survive_terminal_text_cleaning_unchanged` | `render.rs` | `label_name` output passes through `clean_text` unchanged (no `?`) and is at most 15 cells |
@@ -221,7 +221,7 @@ in those words and plans the type (section 6).
 
 ### 5.2 Byte widths in `place_lines`
 
-`place_panel(lines, ...)` in `main.rs` calls `place_lines`, which computes the popup width from the **byte**
+`place_panel(lines, ...)` in `app/screen.rs` calls `place_lines`, which computes the popup width from the **byte**
 length (`line.len()`) of the *uncleaned* lines, except for the lines flagged as braille, whose width is
 `chars().count()` (a braille cell is three bytes and one cell). The border and padding are then drawn with the
 cleaned, one-character-per-cell text. For ASCII the two agree; for non-ASCII text in an unflagged line the popup is
@@ -332,8 +332,9 @@ In a headless run the names appear only in the PNG (as bitmap text via `glyph`, 
 * [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `label_name`,
   `without_apple_prefix`, `LABEL_NAME_CELLS`; `Card` (its text "is untrusted"), `Stage::sparklines`.
 * [`src/glyphs.rs`](https://github.com/tfpickard/isotop/blob/main/src/glyphs.rs): `glyph`.
-* [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `place_panel` and `place_lines`, the label and
-  tag placement, `thing_card_text_cannot_inject_terminal_controls`.
+* [`src/app/screen.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/screen.rs): `place_panel` and `place_lines`;
+  [`src/app/overlay.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/overlay.rs): the label and tag placement;
+  [`src/app/pointer.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/pointer.rs): `thing_card_text_cannot_inject_terminal_controls`.
 * [`src/platform/linux/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/mod.rs):
   `parse_stat` (`rfind(')')`), `Texts::read` (lossy `cmdline`), `Sampler::processes` (the
   `read_to_string` and `continue`).

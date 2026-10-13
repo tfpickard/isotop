@@ -162,7 +162,7 @@ and the depth by the affine normalisation described in [Theory GPU and Parity](T
 |---|---|
 | `Camera`, `view`, `ground`, `pan`, `scale`, `scale_at`, `tilt`, `viewer`, `look_at`, `front`, `approach`, `hold`, `release`, `SCALE`, `ISOMETRIC`, `LOWEST_PITCH`, `ORIGIN_Y` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
 | `Frame::project`, `Frame::locate`, `Scene::fit` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
-| Goal and camera, key and mouse handling, the tour, `TOUR_STEP` | [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `App::command`, `pointer_event`, `update_tour`, `visit`, `face`, `run` |
+| Goal and camera, key and mouse handling, the tour, `TOUR_STEP` | [`src/app/camera.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/camera.rs): `CameraController`, `App::face`; [`src/app/input.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/input.rs): `App::command`; [`src/app/pointer.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/pointer.rs): `pointer_event`; [`src/app/tour.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/tour.rs): `update_tour`, `visit`, `TOUR_STEP` |
 | `smoothing` | [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs) |
 | Clip-space mapping | [`src/shaders.wgsl`](https://github.com/tfpickard/isotop/blob/main/src/shaders.wgsl): `clip`, `normalized` |
 

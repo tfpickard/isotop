@@ -29,7 +29,7 @@ isotop has two things called history and they are unrelated:
 | purpose | pause, rewind and step: the app draws `history[index]` | views that need the recent past |
 | read by | the main loop | views, through `Stage::history` |
 
-The rest of this page is the second. The first is a plain `VecDeque<Snapshot>` in `main.rs`; while paused the main
+The rest of this page is the second. The first is a `HistoryPlayer` (`app/player.rs`) over a `VecDeque<Snapshot>`; while paused the main
 loop stops sampling and the app draws an older snapshot from it, and the shared `History` ignores any snapshot that
 is not newer than its newest, so rewinding cannot corrupt it.
 
@@ -107,7 +107,7 @@ never seen, and nothing says why a process left. The exact and detailed alternat
 ## Warm-up: filling the history for a headless run
 
 A live run has its history by the time you press a key, because it has been recording. A headless render
-(`--output`, `--benchmark`) has no past, so `warm_up` in `main.rs` makes one:
+(`--output`, `--benchmark`) has no past, so `warm_up` in `headless.rs` makes one:
 
 1. **`replay_history`** (demo, headless runs only): record the demo samples of the `history::SERIES` = 60 whole seconds
    before `--time` (`at = time − back` for `back` from 60 down to 1, skipping `at < 0`), each with the life events since
@@ -172,8 +172,8 @@ described here.
   `CAPACITY`, `SERIES`.
 * [`render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::record`, `Scene::render`,
   `Stage::history`.
-* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `warm_up`, `replay_history`, `run_phases`,
-  `App::history` and `--history`.
+* [`headless.rs`](https://github.com/tfpickard/isotop/blob/main/src/headless.rs): `warm_up`, `replay_history`, `run_phases`;
+  [`app/player.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/player.rs): `HistoryPlayer`, `App::history` and `--history`.
 * [`strata.rs`](https://github.com/tfpickard/isotop/blob/main/src/strata.rs) and
   [`ptolemy.rs`](https://github.com/tfpickard/isotop/blob/main/src/ptolemy.rs): the readers;
   [`views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): `Phase`, `Warmup`, `When`.

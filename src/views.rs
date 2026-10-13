@@ -321,7 +321,7 @@ pub enum Phase {
     /// that second the whole history and rasterizes a frame at it; then leaves the history at the
     /// sample of `time`. It replays demo samples, so it belongs under `When::DemoOutput`. Every
     /// frame it rasterizes records its sample in the scene's history, so a row with a due
-    /// `History` phase skips `main.rs`'s replay of the shared history.
+    /// `History` phase skips `headless.rs`'s replay of the shared history.
     History { seconds: u32 },
     /// Feeds the demo samples of the `seconds` whole seconds before `time` to `Scene::record`,
     /// skipping those before 0, without rasterizing.

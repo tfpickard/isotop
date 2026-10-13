@@ -119,7 +119,7 @@ mod tests {
         app.render(320, 180, 512);
         assert_eq!(line(&app), " > waiting for the journal...");
 
-        // `main.rs` hands the frame's lines to the sample; the view takes them in when it draws.
+        // The app hands the frame's lines to the sample; the view takes them in when it draws.
         app.feed_journal(None, true, 0.0, 1.0);
         let lines = journal::demo(0.0, 1.0);
         assert_eq!(app.history.newest().journal.lines, lines);
