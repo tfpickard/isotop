@@ -564,7 +564,7 @@ Keys while the tesseract is shown: `,` and `.` turn a quarter turn back and forw
 
 ### Necropolis
 
-![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and the waning moon](docs/media/necropolis.webp)
+![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and the moon](docs/media/necropolis.webp)
 
 How it works, and the science and history behind it: [docs/theory/necropolis.md](docs/theory/necropolis.md).
 
@@ -586,7 +586,7 @@ Exited processes as headstones in a cemetery at night, one row per minute of dea
 | Ghost | A new process whose pid is that of a standing grave, with another start time | Five stacked glows over the grave rising for 4 s and fading for 2 s, labelled `pid N reused` and `name-pid rests below`; not pickable |
 | Fog | Memory pressure (stall percentage, 10 s average) | Each face blended towards the fog colour by its distance from the front of the plot as a share of its depth times 0.4 + 1.2 p / (p + 10), at most 0.6; 4 to 16 wisps (4 + 12 p / (p + 10)), Gaussian patches on the ground up to 12% of the frame wide, add up to 0.3 |
 | Sinking rows | The number of standing graves | Above 600 the oldest whole rows are dropped; from 450 the oldest row sinks by up to 1.5 and is fully fogged at 600, the second oldest half as much |
-| Moon | The date (`Snapshot::wall`) | age = (days since 2000-01-06 18:14 UTC) mod 29.530588853; lit = (1 − cos(2π age / 29.530588853)) / 2, the lit side on the right while waxing |
+| Moon | The date (`Snapshot::wall`) and the machine's place (`--home`, else the time zone's coordinates) | Phase and place from the Astronomical Almanac's low-precision series (`lunar.rs`, checked against PyEphem to 0.3 degrees): lit = (1 − cos elongation) / 2, the bright limb turned towards the sun as seen from that place. It is drawn in the strip of sky along the top edge, left to right across ±125 degrees of azimuth from due south (due north in the southern hemisphere) and higher with altitude, and not at all while it is below the horizon or out of that window; the legend says where it is. With no place known it stays in the top right corner, lit on the right while it waxes |
 
 **Decorative:** the fence and its gate, the gravel paths, the grass, the soil beds in front of the stones, the two bare oaks, the stars, the earthshine on the moon's dark side, the shapes of the stones (round, slab, gothic, cross, and an obelisk for some of the tallest, drawn from the identity), the lines engraved on them, a zombie's sway, and the fog's base density of 0.4.
 
@@ -1064,7 +1064,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-74,243 lines of Rust (42,981 production, 31,262 test) in 75 files, 975 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+74,628 lines of Rust (43,174 production, 31,454 test) in 76 files, 985 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

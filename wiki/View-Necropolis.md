@@ -61,29 +61,21 @@ process, and the grave remembers the old one.
 
 ### The moon
 
-The moon's age since the last new moon is computed as
+The moon is computed from the clock and, when the machine's place is known, from where it stands on the earth. `lunar::Moon::at` takes the Astronomical Almanac's low-precision series for the sun's and the moon's ecliptic longitude, the moon's ecliptic latitude and its horizontal parallax (six, four and four periodic terms), and from them:
 
-$$
-a(t) = \frac{t - t_0}{86400}\ \bmod\ 29.530588853,\qquad t_0 = 947\,182\,440\ \mathrm{s} = \text{2000-01-06 18:14 UTC (a new moon)},
-$$
+* **The phase.** With $\psi$ the angle between the moon and the sun, $\cos\psi = \coseta\,\cos(\lambda_	ext{moon} - \lambda_	ext{sun})$, the lit fraction of the disc is $f = (1 - \cos\psi)/2$ and the moon is waxing when its longitude is east of the sun's. A new moon is when the *longitudes* meet, so $f$ at the instant is not quite 0 (up to $eta^2/4 pprox 0.002$) and a full moon is not quite 1; `Moon::phase` names the state ("new moon" below 1 % lit, "full moon" above 99 %, quarters within 2 % of half).
+* **The place in the sky.** The sun's and moon's equatorial coordinates, the Greenwich sidereal time plus the east longitude for the hour angle $H$, then the altitude from $\sin h = \sinarphi\sin\delta + \cosarphi\cos\delta\cos H$ and the azimuth, taken from the north, from $\operatorname{atan2}(-\cos\delta\sin H,\ \sin\delta\cosarphi - \cos\delta\sinarphi\cos H)$. The altitude is then made topocentric, $\operatorname{atan2}(\sin h - \sin\pi,\ \cos h)$ for the parallax $\pi$ (about 0.95 degrees, which moves the horizon crossing by nearly two moon-widths); refraction (half a degree at the horizon) is not put back.
+* **The tilt of the crescent.** Meeus's position angle of the bright limb, $	an\chi = \cos\delta_\odot\sin(lpha_\odot-lpha)\,/\,(\sin\delta_\odot\cos\delta - \cos\delta_\odot\sin\delta\cos(lpha_\odot-lpha))$, less the parallactic angle $q$, $	an q = \sin H / (	anarphi\cos\delta - \sin\delta\cos H)$, is the angle of the limb from the direction of the zenith. That is why the same crescent is lit on the right and tilted down from a northern city and on the left and tilted up from a southern one.
 
-and the lit fraction of the disc as $f = \tfrac12\bigl(1 - \cos(2\pi a/29.530588853)\bigr)$. The first is the *mean synodic month*; the second assumes the moon-sun angular separation (elongation) $\psi$ advances uniformly, with $f = (1 - \cos\psi)/2$, the exact geometry for a spherical moon lit by a distant sun. The real moon's elongation is not uniform: its orbit is eccentric
-(0.055) and perturbed by the sun, so the true phase times differ from the mean ones by up to about half a day, the biggest terms being the *equation of centre* and the *evection*.
+**Accuracy, computed.** I compared `Moon::at` with PyEphem 4.2.1 (VSOP87 and ELP) at 300 random times between 2020 and 2030 at six places from Amsterdam to Reykjavik to Sydney. The altitude is within 0.26 degrees, the azimuth (above 5 degrees of altitude) within 0.6 and the lit fraction within 0.003. Six of the rows are in the test `the_position_agrees_with_an_independent_ephemeris`, and the phase is checked against the USNO's new, quarter and full moons of January 2024 and October 2026 in `the_phase_matches_known_new_quarter_and_full_moons`.
 
-**Accuracy, computed.** I compared the model with an independent low-precision ephemeris (the Astronomical Almanac's few-term series for the sun's and moon's ecliptic longitude and the moon's latitude; it reproduces known new, quarter and full moons of 2000, 2017, 2018, 2024 and 2026 to within 25 minutes). Over 2000 to 2040:
+**Why not the mean month.** The view used to compute the phase as the age in the mean synodic month, $f = 	frac12(1 - \cos(2\pi a/29.530588853))$ with $a$ counted from the new moon of 2000-01-06 18:14 UTC. That assumes the elongation advances uniformly; the moon's orbit is eccentric (0.055) and perturbed by the sun, so true phases differ from the mean ones by up to about half a day. Over 2000 to 2040 the true new moon minus the model's was from -17.5 to +10.0 h (rms 8.4 h) and the lit fraction was off by up to 0.103. The figure below is that comparison and is kept for the numbers; the view no longer uses the model.
 
-| Measure | Value |
-|---|---|
-| True new moon minus model's, 495 lunations | from -17.5 to +10.0 h, mean -3.8 h, rms 8.4 h |
-| True quarters minus model's (500 lunations each) | -23 to +16 h, rms 12 h |
-| Lit fraction error, hourly samples | rms 0.035, largest 0.103 |
-
-The mean offset is not a defect of the period but of the epoch: 2000-01-06 18:14 is a *true* new moon, 3.9 h after the *mean* new moon of that month, and the model measures from it as if it were a mean one. On the day this page was written, 2026-10-12 00:00 UTC, the model says age 0.62 d and 0.4 % lit (a new moon), while the reference puts the moon 1.4 days past a new moon of
-2026-10-10 15:50 UTC at about 2 % lit. The view's legend (`moon: new moon 0% lit`) is therefore good to a day, which is as good as a thin crescent can be told from a new moon by eye.
-
-![The eight phases the view draws, the lit fraction over six months for the model and the reference, and the phase-time error at each new moon 2000 to 2040](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/necropolis-moon.svg)
+![The eight phases the view draws, the lit fraction over six months for the mean-month model and the reference, and the phase-time error of the mean-month model at each new moon 2000 to 2040](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/necropolis-moon.svg)
 
 *Script: `docs/figures/necropolis-moon.py` (the reference series are in the script; the check against known moons is described in its docstring).*
+
+**Where it is drawn.** The camera looks down on the cemetery, which fills the frame, so there is no horizon to put a moon on; the sky is the strip along the top edge. The cemetery faces the equator (south for a northern place, north for a southern one, `facing`), where the sun and moon cross the sky. The moon's x is its azimuth relative to that, across $\pm125°$ (`SKY_WINDOW`), so east is on the left facing south and on the right facing north, as it is from the ground. Its y is its altitude, from 11 % of the frame's height at the horizon to 1.5 moon radii from the top at the zenith (`SKY_HORIZON`, `moon_center`). Below the horizon, or outside the window, it is not drawn, and the legend says where it is (`moon: waxing gibbous 82% lit, 32° up at 86°`, `, below the horizon`, `, out of view`). The lit part of the disc is rotated so that it faces the sun by the limb angle above (a rotation, so the terminator's half-ellipse is unchanged). With no place known (no `--home` and no time zone entry) it keeps the old corner and is lit on the right while waxing. The demo's place is Amsterdam, and its clock (`DEMO_EPOCH`, 04:12 UTC on 2026-10-10) is 11.6 hours before a new moon, so the demo's moon is a "new moon 0% lit" under the horizon; use `--time` to bring it round (about 7.5 days later, `--time 650800`, it is about 41 % lit on the meridian, ten degrees up).
 
 ## Mapping
 
@@ -104,7 +96,7 @@ The mean offset is not a defect of the period but of the epoch: 2000-01-06 18:14
 | Ghost | A new process whose pid is that of a standing grave, with a different start | Five stacked glows rising 4 s and fading 2 s, labelled `pid N reused`; at most four at once; not pickable |
 | Fog | Memory pressure (stall percentage, 10 s average) | Density $0.4 + 1.2\,p/(p + 10)$ times distance from the front, capped at 0.6; $4 + \mathrm{round}(12\,p/(p+10))$ wisps, at most 16 |
 | Sinking rows | Number of standing graves | Above 600 the oldest whole rows are dropped; from 450 the oldest row sinks by up to 1.5 and is fully fogged at 600 |
-| Moon | The date (`Snapshot::wall`) | Age and lit fraction above; lit side on the right while waxing |
+| Moon | The date (`Snapshot::wall`) and the home place (`Snapshot::home`) | Lit fraction from the elongation, position from altitude and azimuth, tilt from the bright limb's angle to the zenith, all above |
 
 **Cause of death, first rule that matches** (`Death::of`, with the OOM claim applied before it): SIGKILL (without core) while a cgroup's `oom_kills` rose in the same or the previous sample, "taken by the OOM killer", each rise claiming the largest victim by peak memory; a core dump, "dumped core"; another signal, "killed by SIGTERM" (Linux names, else "killed by signal N"); AFORK with exit 0, "forked, never exec'd"; a non-zero exit, "exited N"; exit 0,
 "exited peacefully"; otherwise "died between samples".
@@ -137,8 +129,8 @@ the rest are headstones: `dig` fixes everything the grave shows (names, cause, s
 
 **Mausoleums and caps.** `entomb` groups standing graves by cgroup (a `.service` leaf on Linux; any group where there are no cgroups) and, when no live process remains in it and three or more stand, moves them into a mausoleum at the left end of the row of the last death. `cap` drops the oldest whole rows (with their mausoleums and markers) while more than `CAP = 600` graves stand; `sinking_rows` eases the two oldest into the fog from 75 % of the cap.
 
-**Fog and sky.** `Fog::new` computes density from `snapshot.pressure[1]`; each face is blended towards the fog colour by its depth fraction. `draw_sky` places the stars and the moon from `snapshot.wall` (the system clock, or `DEMO_EPOCH` plus demo time): `draw_moon` fills a dark disc and then a lit region bounded by the limb and a half-ellipse terminator of half-width $k = 1 - 2f$ times the limb at each height
-(a quarter has a straight terminator, a full moon $k = -1$). Waxing is lit on the right, a northern-hemisphere view.
+**Fog and sky.** `Fog::new` computes density from `snapshot.pressure[1]`; each face is blended towards the fog colour by its depth fraction. `draw_sky` places the stars and the moon from `snapshot.wall` (the system clock, or `DEMO_EPOCH` plus demo time) and `snapshot.home`: `moon_over` asks `lunar::Moon::at` for the phase and the sky, `moon_center` places the disc as above and `draw_moon` fills a dark disc and then a lit region bounded by the limb and a half-ellipse terminator of half-width $k = 1 - 2f$ times the limb at each height
+(a quarter has a straight terminator, a full moon $k = -1$), in the disc's own frame with the lit side towards $+u$, then turns that frame to face the bright limb on the screen.
 
 **Picking and parity.** Graves and mausoleums are pickable `Thing`s (kinds `grave` and `mausoleum`) with inspector `Card`s built on demand; zombies are the live process. Stones are triangles shaded by moonlight direction and culled when facing away; at most about 40 triangles per grave. The row sets `links: DrawnByView`, `flash: false` (a reaped zombie sinks instead), `haze: false` (fog stands for memory pressure) and
 `tour: false` (the tour visits living processes, which this view does not draw). Epitaph text is sanitised like all process text ([Theory Text Safety](Theory-Text-Safety)).
@@ -148,11 +140,11 @@ the rest are headstones: `dig` fixes everything the grave shows (names, cause, s
 ## Reading the picture
 
 What I see in the demo render: a grey-violet plot seen from above at an isometric angle, about ten rows of headstones in lilac, sandstone and slate-green, in varied shapes (rounded, gothic arch, slab, small crosses) receding to the back where they disappear into pale violet fog; a pillared grey mausoleum at the left end of a middle row; a small field of tiny stones at the right (the unmarked markers); five pink figures in a line in front, standing in pits (the demo's
-zombies); two bare oaks against a starry sky; and, at the top right, a thin dark moon with a bright rim of crescent on its left: a waning crescent, since the demo's clock (`DEMO_EPOCH`) is the eve of a new moon (a test asserts age 28.0 to 28.6 days).
+zombies); two bare oaks against a starry sky; and no moon: the demo's clock (`DEMO_EPOCH`, 04:12 UTC on 2026-10-10) is 11.6 hours before a new moon and Amsterdam's horizon, so the legend says `moon: new moon 0% lit, below the horizon`. At `--time 650800` it is a waxing moon about 41 % lit, low in the south, lit on the right, behind the oak at the top of the frame.
 
 * **Measured:** the cause (a wait status or an OOM counter), lifetime CPU and peak memory (taskstats or last sample), the kind and cgroup of the process as last seen, the minute of death, the count of deaths per minute, the number of zombies, memory pressure.
 * **Derived:** the row and position (grouped by family), the choice of mass graves, the mausoleum (a unit with three or more graves and no survivors), the OOM attribution (a heuristic: a SIGKILL in a cgroup whose counter rose within one sample claims its largest victim), the ghost.
-* **Decorative:** the shape and engraving of a stone, the oaks, the moon's shading; the *moon itself is the date*, good to about a day.
+* **Decorative:** the shape and engraving of a stone, the oaks, the moon's shading and the strip of sky it travels in; *the moon itself is the date and the place*, good to a quarter of a degree and a fraction of a percent lit.
 * **Heights and widths are logarithmic.** Each extra unit of height means about 600 times more CPU time ($10^{1/0.36}$), and each extra unit of width about 100 times more memory ($2^{1/0.15}$); a stone twice as tall as its neighbour is not twice as busy.
 * **What the eye cannot tell:** one-minute resolution of death times (and "newest in front" only at the row level), sub-second order inside a row, what a process did while alive, and any death while another view was shown.
 * **A "died between samples" grave is not an unknown process dying**: it is a known process whose cause the source could not give; the unmarked marker is an unknown process.
@@ -170,17 +162,17 @@ Hover or click a headstone for its epitaph; the legend line ends with `moon: <ph
 
 ## Where in the code
 
-* `src/necropolis.rs`: `Necropolis` (`record`/`take_in`, `bury`, `dig`, `dig_mass`, `place`, `entomb`, `cap`, `raise_ghost`, `draw`, `legend`, `card`), `Death` (`of`, `text`), `Grave`, `Row`, `Mausoleum`, `Marker`, `Ghost`, `Fog`, `stone`, `mausoleum`, `draw_moon`, `moon_age`, `moon_lit`, `moon_phase`, `lifetime_text`, `stone_height`, `stone_width`; constants `ROW_SPACING`, `CAP`, `MASS_THRESHOLD`, `BURIAL_DELAY`, `NEW_MOON`, `SYNODIC_DAYS`, `FOG_*`.
+* `src/necropolis.rs`: `Necropolis` (`record`/`take_in`, `bury`, `dig`, `dig_mass`, `place`, `entomb`, `cap`, `raise_ghost`, `draw`, `legend`, `card`), `Death` (`of`, `text`), `Grave`, `Row`, `Mausoleum`, `Marker`, `Ghost`, `Fog`, `stone`, `mausoleum`, `moon_over`, `moon_center`, `in_window`, `facing`, `where_is`, `draw_moon`, `lifetime_text`, `stone_height`, `stone_width`; constants `ROW_SPACING`, `CAP`, `MASS_THRESHOLD`, `BURIAL_DELAY`, `SKY_WINDOW`, `SKY_HORIZON`, `HORIZON`, `FOG_*`; `src/lunar.rs`: `Moon` (`at`, `phase`), `Sky`, `wrap_degrees`.
 * `src/platform/mod.rs`: `Cause` (`of_status`, `signal_name`), `ExitRecord`, `LifeEvent`, `LifeKind`, `LifeSource`; `src/model.rs`: `Life` (the merge), `Snapshot::life`, `Snapshot::wall`; `src/platform/linux/events.rs`: the proc connector and taskstats thread; `src/platform/macos/events.rs`: kqueue.
 * `src/layout.rs`: `Seats` (pits); `src/palette.rs`: `stone_color`; `src/views.rs`: the `necropolis` row.
-* Tests: `exit_codes_and_flags_map_to_the_right_cause_of_death`, `a_sigkill_during_an_oom_kill_is_taken_by_the_oom_killer`, `many_deaths_from_one_parent_within_a_second_share_a_mass_grave`, `a_ghost_rises_when_a_new_process_reuses_a_buried_pid`, `the_cemetery_caps_at_six_hundred_graves_and_the_oldest_rows_sink_into_fog`, `a_service_whose_last_process_exits_gets_a_mausoleum`, `the_moon_phase_matches_known_new_and_full_moons`.
+* Tests: `exit_codes_and_flags_map_to_the_right_cause_of_death`, `a_sigkill_during_an_oom_kill_is_taken_by_the_oom_killer`, `many_deaths_from_one_parent_within_a_second_share_a_mass_grave`, `a_ghost_rises_when_a_new_process_reuses_a_buried_pid`, `the_cemetery_caps_at_six_hundred_graves_and_the_oldest_rows_sink_into_fog`, `a_service_whose_last_process_exits_gets_a_mausoleum`, `the_phase_matches_known_new_quarter_and_full_moons`, `the_position_agrees_with_an_independent_ephemeris`, `a_waxing_moon_is_lit_towards_the_sun_in_either_hemisphere`, `the_moon_crosses_the_sky_from_the_east_on_the_left_to_the_west_on_the_right`, `the_lit_limb_faces_the_way_the_observer_sees_the_sun`.
 * Design: `docs/briefs/views-2026-10.md` (section 6), `docs/mockups/necropolis.jpg`. Compile-time module; no plugin system.
 
 ## Variations and open questions
 
-1. **A better moon.** Replace the mean lunation by Meeus's corrected phase series (a dozen periodic terms); the error drops from hours to minutes. Is it worth the lines? The current error is invisible on a disc of 30 pixels.
-2. **A real epoch.** Start from the mean new moon of January 2000 (about 3.9 h before the true one used now) to centre the error on zero.
-3. **Hemisphere.** Mirror the lit side for the southern hemisphere, using the time zone (as `geo.rs` does for home).
+1. **Refraction and a real horizon.** Lift the moon by the half degree the air adds at the horizon, and give the sky a horizon by drawing the cemetery's own far fence line across it, so a low moon rises *behind* something instead of along a strip.
+2. **The sun.** The same module has the sun's position, so a day's sky is a few lines away: a dawn and dusk gradient, and the moon drawn in daylight as pale as it is. Whether a cemetery that is always at night is more or less true to the view is a taste question.
+3. **Libration and the maria.** The moon's face is a plain disc; its real face tilts and nods by up to 7 degrees, and the dark seas would say which way is up at a glance.
 4. **Epitaph channel capacity.** How many distinct epitaphs can a viewer tell apart by stone (height decile, width decile, tint, shape)? Is the stone a 6-bit or a 10-bit code?
 5. **Lifetime distributions.** Plot lifetime against CPU on a per-row Hertzsprung-style diagram; a machine's dead processes may fall on a main sequence.
 6. **Taskstats without privilege.** Read `/proc/<pid>/stat` just before death for processes with a known exit time to approximate `etime` when taskstats is not available.
