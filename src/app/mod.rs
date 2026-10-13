@@ -31,6 +31,8 @@ pub(crate) use screen::Layout;
 use search::Search;
 use tour::{Cursor, Tour};
 
+/// The interactive application: what is shown and selected, and the components that handle the
+/// camera, the history, the search, the pointer, the tour, the rasterizer and the journal.
 pub(crate) struct App {
     pub(crate) scene: Scene,
     pub(crate) camera: CameraController,

@@ -130,7 +130,6 @@ impl App {
     }
 }
 
-/// What a key press offers the shown view's key hook, if anything.
 /// The key as legacy terminals would have typed it. Reporting every key as an escape code sends
 /// a letter typed with Caps Lock on as the lowercase key with a lock state, where the legacy
 /// encoding sent the capital.
@@ -147,6 +146,7 @@ pub(crate) fn typed(key: &event::KeyEvent) -> (KeyCode, KeyModifiers) {
     }
 }
 
+/// What a key press offers the shown view's key hook, if anything.
 pub(super) fn view_key(code: KeyCode) -> Option<ViewKey> {
     match code {
         KeyCode::Char(character) if LOCAL_KEYS.contains(character) => {
