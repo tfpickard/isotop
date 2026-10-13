@@ -1,13 +1,13 @@
 # isotop
 
-A living picture of your machine inside the terminal, in twenty-one views: a process
+A living picture of your machine inside the terminal, in twenty-two views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, a chicken yard, a geocentric
 cosmos of Fourier epicycles, the system log (the systemd journal, or the unified log on
 macOS) as Matrix rain, a minute of process worldlines in a tesseract whose fourth
 axis is time, a moonlit cemetery of the processes that exited, and a black hole whose orbits rank the
-processes the OOM killer will take next. Written in
+processes the OOM killer will take next, and a roll of arms whose cadency describes the process tree. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -33,7 +33,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux)
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), armorial
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ./target/release/isotop --view hr --hr-diagram # hr starts on its Hertzsprung-Russell diagram; `m` flies between it and the sky
@@ -188,6 +188,7 @@ cache is stale.
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
 | Memory detail (hive) | Hive is never skipped. `memory detail` is always missing, so every frame is unsplit: one pale-nectar kind counted from the physical footprint, never sealed, and the legend says `no memory detail: cells = memory footprint`. Hives are apps instead of cgroups (`hive = app`). Brood still comes from the growth of the footprint, and threads and their CPU are read as on Linux, but another user's processes are unreadable without sudo: their bees stand in the idle cluster and the legend counts them (`N without thread CPU`) |
+| cgroups and missing historical parents (armorial) | Houses use the app/user group instead of a cgroup path; memory is the physical footprint. Cadency uses the reported parent and sampled start time. A parent absent from the sample starts a new observed armorial path; missing siblings and earlier ancestry are not invented. No optional source is required |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -220,8 +221,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the twenty-one views in order (twenty on macOS), the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive and (on Linux) the switchboard are reached with Tab, Shift+Tab,
+the twenty-two views in order (twenty-one on macOS), the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive and (on Linux) the switchboard, and armorial are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -854,6 +855,34 @@ Hardware interrupts as a cord telephone exchange, on Linux. Every IRQ line is a 
 
 The header reads like `48 lines | 41,203 irq/s | RES 2,114/s | 16 operators: 8 P, 8 E`.
 
+### Armorial
+
+![Armorial: the process tree as banners of arms along a candlelit nave](docs/media/armorial.webp)
+
+The process tree as a roll of arms: houses occupy reserved wall bays, and descendants bear the house's arms with English cadency marks.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| House | `Process::cgroup`, or `Process::group` without cgroups | The full path seeds the decorative arms; one reserved bay per house |
+| Cadency | Parent pid, start time, then pid | Siblings sorted by `started`, then pid: label, crescent, mullet, martlet, annulet, fleur-de-lis, rose, cross moline, octofoil; later ordinals repeat the cycle and remain numeric in the blazon |
+| Nested difference | Ancestry within the house | A grandchild's mark is painted on its parent's; at most two painted levels, with deeper levels described in the blazon |
+| Banner size | Memory in MiB (RSS; physical footprint on macOS) | `s = min(1.1 + 0.055 sqrt(MiB), 2.8) / 2.8`; full cloth height `3.6 s`, with width held inside its reserved column |
+| Sway | CPU, percent of one core | `c = cpu / (cpu + 100)`; amplitude `0.08 c` before perspective compression, frequency factor `0.6 + 1.4 c`; idle cloth is still |
+| Charges | Thread count | One for 0 or 1, two for 2, three for 3 to 7, a fixed strewn arrangement (semy) for 8 or more |
+| Helm | Process kind | Kernel: gold barred affronté; System: silver barred; Container: open steel visor; Session: closed steel profile |
+| Funeral hatchment | State Z | A lozenge board with a black mourning surround |
+| Furled cloth | State T | Height reduced from `3.6 s` to `0.5 s` |
+| Abatement | Positive nice | A small tenne point; historical use of abatements was rare (unverified) |
+| Unfurling and lowering | First observation and disappearance | One-second smoothstep easing; lowering gathers the cloth inside its own reservation |
+
+**Decorative:** the hash-granted field, ordinary, charge type, arrangement and tinctures; stone walls, pillars, stall canopies, pavement, barrel vault, east window, poles, candles and warm glows. The grant conveys no service function or privilege. The rule of tincture is enforced by counterchanging each generated layer against the one directly beneath it; the blazon names a solid tincture when that layer is solid.
+
+**Layout and caps.** Seats are keyed by `Identity`, with disjoint columns and tiers in a projectively compressed nave. CPU, memory and population changes never relocate a survivor. At most 48 banners are drawn, including those lowering after exit; lowering banners reserve part of that budget before memory-ranked admission through `model::top_n`. Hidden live processes count as collapsed. Sway, unfurling and lowering are closed forms of scene time and hold still while paused. The texture has 121 nodes a side, on a mesh capped at 13 vertices a side.
+
+**What cannot be measured.** Sampling can miss exited parents and short-lived siblings, and reparenting changes the observed tree. Cadency describes the sampled ancestry, not a complete birth history; a missing parent is not invented. Arms may collide because the grammar has fewer combinations than the house hash. Abatements are described by heraldic writers but were almost never borne (unverified).
+
+**Platform.** Linux uses the cgroup path where present. macOS uses the app/user group, physical memory footprint, and its reported parent and start time; no additional source or privilege is required. Armorial has no local keys. Select a banner for its wrapped blazon and parent/cadency line. The wiki gives the history and theory: [View Armorial](https://github.com/tfpickard/isotop/wiki/View-Armorial).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -954,7 +983,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux) |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), armorial |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -1064,7 +1093,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-74,243 lines of Rust (42,981 production, 31,262 test) in 75 files, 975 tests, 21 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+75,843 lines of Rust (44,244 production, 31,599 test) in 76 files, 987 tests, 22 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development
