@@ -15,12 +15,12 @@
 | Stone tint | its kind (kernel, system, session, container) |
 | The epitaph | how it died, and how long it lived |
 | A mass grave | more than 8 deaths from one parent within 1 s (a fork bomb, a build, a crashed supervisor) |
-| A mausoleum | a systemd unit or cgroup whose processes are all gone |
+| A mausoleum | a unit with no process left and at least three graves: on Linux a cgroup ending in `.service`, elsewhere any group; its graves move into the mausoleum |
 | A zombie in an open pit | a process that has exited but whose parent has not yet reaped it |
 | A ghost | a new process that has taken the pid of a buried one |
 | The fog | memory pressure |
 | The moon | the real phase of the real moon, from the clock. This one carries no process data. |
-| Unmarked markers | deaths with no recorded identity (at most 120 drawn, all counted) |
+| Unmarked markers | processes that lived and died between two samples, known only from fork and exit events and so with nothing to engrave (at most 120 drawn, all counted) |
 
 ## History
 
