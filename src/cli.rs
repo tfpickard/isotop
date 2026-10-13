@@ -4,9 +4,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use clap::Parser;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
+use clap::{CommandFactory, FromArgMatches, Parser};
 
+use crate::keys;
 use crate::picker;
 use crate::views::{REGISTRY, View};
 
@@ -44,6 +45,9 @@ pub(crate) struct Options {
     /// Print the views this platform supports, one per line, and exit
     #[arg(long)]
     pub(crate) list_views: bool,
+    /// Print the controls as the Markdown tables of the README's Controls section, and exit
+    #[arg(long)]
+    pub(crate) keys: bool,
     /// Print startup notes to stderr, such as each view this platform does not support
     #[arg(long)]
     pub(crate) verbose: bool,
@@ -118,6 +122,14 @@ impl Options {
     }
 }
 
+/// Parses the command line. The controls the keymap lists end `--help`.
+pub(crate) fn parse() -> Options {
+    let matches = Options::command()
+        .after_long_help(keys::summary())
+        .get_matches();
+    Options::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 /// Parses `--view` from the registry's names, so its help lists them and any other name is a
 /// usage error.
 fn view_parser() -> impl TypedValueParser<Value = View> {
@@ -153,7 +165,8 @@ pub(crate) enum Preflight {
 }
 
 /// The startup before the terminal is touched. With `--verbose` it names each view this platform
-/// does not support on `err`; `--list-views` lists the supported ones on `out`. A headless run
+/// does not support on `err`; `--list-views` lists the supported ones on `out` and `--keys` the
+/// controls. A headless run
 /// of an unsupported `--view` fails with status 1. An interactive one, and any run without
 /// `--view` whose default (city) is unsupported, starts on the first supported view instead (the
 /// first of `--views` when given). `--views` with no supported name fails with status 1. `available` holds each registry row's answer.
@@ -173,6 +186,10 @@ pub(crate) fn preflight(
                 view.name()
             );
         }
+    }
+    if options.keys {
+        let _ = write!(out, "{}", keys::markdown());
+        return Preflight::Exit(0);
     }
     if options.list_views {
         for view in View::all().filter(|&view| supported(view)) {
@@ -294,6 +311,30 @@ mod tests {
         assert_eq!(
             every.lines().collect::<Vec<_>>(),
             View::all().map(View::name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn keys_prints_the_keymap_tables_and_exits() {
+        let (result, out, err) = preflight_with(&["--keys", "--output", "x.png"], &[]);
+        assert_eq!(result, Preflight::Exit(0));
+        assert_eq!(out, keys::markdown());
+        assert_eq!(err, "");
+        assert!(out.contains("| `Q` / `e` | Rotate a quarter turn"), "{out}");
+    }
+
+    #[test]
+    fn help_ends_with_the_controls_from_the_keymap() {
+        let help = Options::command()
+            .after_long_help(keys::summary())
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("Q / e"), "{help}");
+        assert!(help.contains("--keys"), "{help}");
+        assert!(
+            help.trim_end()
+                .ends_with(keys::summary().lines().last().unwrap()),
+            "{help}"
         );
     }
 

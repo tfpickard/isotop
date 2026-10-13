@@ -370,13 +370,10 @@ const SETTLE: Warmup = Warmup {
     when: When::Output,
 };
 
-/// The keys a view may claim for itself. Every other key is global.
-pub const LOCAL_KEYS: &str = "bijkmopuxyz,.;";
-
 /// A key press offered to the shown view, while no search is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKey {
-    /// One of `LOCAL_KEYS`, which have no global meaning.
+    /// One of `keys::LOCAL_KEYS`, which have no global meaning.
     Local(char),
     /// Home or `r`. The global reset happens as well, whatever the hook returns.
     Reset,

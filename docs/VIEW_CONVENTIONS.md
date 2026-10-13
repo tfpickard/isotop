@@ -249,7 +249,8 @@ Orbit, flow and strata exceed even the line-dominant limit. They are known parit
 
 - the view is shown;
 - no search or picker is open;
-- the key arrives through the registry row's key hook, never through a new arm in `App::command`.
+- the key arrives through the registry row's key hook, never through a new arm in `App::command`;
+- the key is listed in `src/keys.rs`: its character is in `keys::LOCAL_KEYS`, and an `Action::ViewLocal` row of `KEYMAP` documents it, which is where the README's Controls table gets it (`readme_controls_match_the_keymap`).
 
 Rules:
 

@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::keys::Action;
 use crate::picker::{self, Entry, Toggle};
 use crate::terminal::Popup;
 use crate::views::View;
@@ -30,24 +31,29 @@ impl App {
     }
 
     /// Handles a key while the picker is open: it takes every key, so nothing reaches the scene
-    /// or the shown view. Returns whether to quit.
-    pub(super) fn picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    /// or the shown view. `action` is what the keymap makes of the press. Returns whether to quit.
+    pub(super) fn picker_key(
+        &mut self,
+        action: Option<Action>,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> bool {
         let entries = self.entries();
         let Some(picker) = self.picker.as_mut() else {
             return false;
         };
-        match code {
-            KeyCode::Esc => self.picker = None,
-            KeyCode::Enter => {
+        match action {
+            Some(Action::PickerClose) => self.picker = None,
+            Some(Action::PickerShow) => {
                 if let Some(view) = picker.highlighted(&entries) {
                     self.picker = None;
                     self.switch(view);
                 }
             }
-            KeyCode::Up => picker.step(&entries, false),
-            KeyCode::Down => picker.step(&entries, true),
-            KeyCode::Backspace => picker.backspace(&entries),
-            KeyCode::Char(' ') => match picker.highlighted(&entries) {
+            Some(Action::PickerUp) => picker.step(&entries, false),
+            Some(Action::PickerDown) => picker.step(&entries, true),
+            Some(Action::PickerErase) => picker.backspace(&entries),
+            Some(Action::PickerPlaylist) => match picker.highlighted(&entries) {
                 Some(view) => {
                     if picker::toggle(&mut self.playlist, view) == Toggle::Refused {
                         picker.refuse();
@@ -57,11 +63,14 @@ impl App {
                 }
                 None => picker.quiet(),
             },
-            KeyCode::Char(character)
-                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
-            {
-                picker.type_character(&entries, character);
-            }
+            Some(Action::PickerType) => match code {
+                KeyCode::Char(character)
+                    if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+                {
+                    picker.type_character(&entries, character);
+                }
+                _ => picker.quiet(),
+            },
             _ => picker.quiet(),
         }
         false

@@ -18,6 +18,7 @@ mod history;
 mod horizon;
 mod interactive;
 mod journal;
+mod keys;
 mod layout;
 mod matrix;
 mod medium;
@@ -44,8 +45,6 @@ mod views;
 use std::error::Error;
 use std::io;
 use std::time::Duration;
-
-use clap::Parser;
 
 use app::{App, Renderer};
 use cli::{Options, Preflight, preflight};
@@ -144,7 +143,7 @@ fn demo_snapshot(row: &ViewInfo, previous: f64, time: f64, count: usize) -> Snap
 }
 
 fn main() {
-    match run(Options::parse()) {
+    match run(cli::parse()) {
         Ok(0) => {}
         Ok(status) => std::process::exit(status),
         Err(error) => {
