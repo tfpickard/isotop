@@ -11,6 +11,8 @@ use crate::render::{Camera, Color, Frame, Item, Point};
 
 const GIBIBYTE: u64 = 1 << 30;
 const MEBIBYTE: u64 = 1 << 20;
+/// The memory below which `magnitude` reads the same: a star holding less is no fainter.
+pub const MEMORY_FLOOR: u64 = MEBIBYTE;
 
 /// A star's flux is 1 at this magnitude, the faintest the prototype draws as a visible star.
 const FLUX_ONE_MAGNITUDE: f32 = 7.0;

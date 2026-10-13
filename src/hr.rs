@@ -37,7 +37,7 @@ use crate::render::{
 };
 use crate::simulation::Rng;
 use crate::status::missing_note;
-use crate::stellar::{Flash, exit_flash, flash, magnitude, spread};
+use crate::stellar::{Flash, MEMORY_FLOOR, exit_flash, flash, magnitude, spread};
 use crate::views::{ViewKey, ViewModule, ViewOptions};
 
 /// The sky window in sky units: the part of the dome the camera frames.
@@ -237,10 +237,11 @@ pub fn star_magnitude(memory: u64) -> f32 {
     }
 }
 
-/// Whether a star's magnitude says something about it: it holds memory and is not at a limit of
+/// Whether a star's magnitude says something about it: it holds at least the memory
+/// `stellar::magnitude` floors at (below it every process reads alike) and is not at a limit of
 /// the range, so it may inform the main-sequence fit.
 fn is_measured(memory: u64) -> bool {
-    memory > 0 && {
+    memory >= MEMORY_FLOOR && {
         let raw = magnitude(memory);
         raw > MAGNITUDE_TOP && raw < MAGNITUDE_BOTTOM
     }
@@ -2358,6 +2359,18 @@ mod tests {
         let lonely = snapshot(10.0, vec![star(1, 5.0, GIB, "a"), star(2, 50.0, GIB, "a")]);
         assert_eq!(main_sequence(&lonely), None);
         assert_eq!(classification(5000.0, 1.0, None), "K1");
+        // Processes below the 1 MiB floor all read the same faint magnitude whatever they hold,
+        // so they stay out of the fit, as the processes with none do.
+        assert!(!is_measured(1024) && !is_measured(MEMORY_FLOOR - 1) && is_measured(MEMORY_FLOOR));
+        let mut crowded = population();
+        crowded.extend(
+            (0..40).map(|index| star(2000 + index, 2.0 * index as f32, 100 * 1024, "tiny")),
+        );
+        assert_eq!(
+            main_sequence(&snapshot(10.0, crowded)),
+            Some(fit),
+            "forty processes under a mebibyte leave the line alone"
+        );
     }
 
     #[test]
