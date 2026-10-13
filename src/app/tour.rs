@@ -1,9 +1,9 @@
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::model::{Identity, Process};
-use crate::render::Point;
+use crate::render::{Point, TourTarget};
 
 use super::App;
 
@@ -36,24 +36,34 @@ pub(crate) struct Cursor {
     pub(crate) id: Identity,
 }
 
-impl App {
-    /// Notable processes to visit while idle: the view's own targets (a module view's
-    /// `Stage::tour`, which leaves out what has no callout to show, such as the
-    /// hub of an Orbit system), heaviest first, then the busiest and the largest.
-    pub(super) fn tour_targets(&self) -> Vec<Identity> {
+/// The processes a frame offers the tour, and where it centres the camera on each. It reads
+/// nothing of the view that drew them: a view's own targets arrive as `Stage::tour`.
+struct Candidates<'a> {
+    /// The shown sample's processes.
+    processes: &'a [Process],
+    /// Where the frame drew each of them.
+    positions: &'a HashMap<Identity, Point>,
+    /// The view's own targets with their weights (a module view's `Stage::tour`, which leaves
+    /// out what has no callout to show, such as the hub of an Orbit system).
+    stars: &'a [TourTarget],
+}
+
+impl Candidates<'_> {
+    /// Notable processes to visit while idle: the view's own targets, heaviest first, then the
+    /// busiest and the largest of those drawn, up to six of each, interleaved and without
+    /// repeats.
+    fn targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
-            .snapshot()
             .processes
             .iter()
-            .filter(|p| self.scene.positions.contains_key(&p.id))
+            .filter(|p| self.positions.contains_key(&p.id))
             .collect();
         let mut busiest = visible.clone();
         busiest.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         let mut largest = visible;
         largest.sort_by_key(|p| Reverse(p.memory));
         let mut stars: Vec<(Identity, f32)> = self
-            .scene
-            .tour
+            .stars
             .iter()
             .map(|target| (target.id, target.weight))
             .collect();
@@ -74,21 +84,52 @@ impl App {
         targets
     }
 
-    /// The processes Space steps through and the tour walks: `tour_targets`, then every other
+    /// The processes Space steps through and the tour walks: `targets`, then every other
     /// visible process by ascending identity, so each appears once.
-    pub(super) fn visit_cycle(&self) -> Vec<Identity> {
-        let mut cycle = self.tour_targets();
+    fn cycle(&self) -> Vec<Identity> {
+        let mut cycle = self.targets();
         let listed: HashSet<Identity> = cycle.iter().copied().collect();
         let mut rest: Vec<Identity> = self
-            .snapshot()
             .processes
             .iter()
             .map(|p| p.id)
-            .filter(|id| self.scene.positions.contains_key(id) && !listed.contains(id))
+            .filter(|id| self.positions.contains_key(id) && !listed.contains(id))
             .collect();
         rest.sort_unstable();
         cycle.extend(rest);
         cycle
+    }
+
+    /// Where the tour shows `id`: the point the view gave with it as a target, or else where the
+    /// process is drawn; None once it is neither.
+    fn point(&self, id: Identity) -> Option<Point> {
+        self.stars
+            .iter()
+            .find(|target| target.id == id)
+            .map(|target| target.position)
+            .or_else(|| self.positions.get(&id).copied())
+    }
+}
+
+impl App {
+    /// What the tour can visit in the frame just drawn.
+    fn candidates(&self) -> Candidates<'_> {
+        Candidates {
+            processes: &self.snapshot().processes,
+            positions: &self.scene.positions,
+            stars: &self.scene.tour,
+        }
+    }
+
+    /// Notable processes to visit while idle: see `Candidates::targets`.
+    #[cfg(test)]
+    pub(super) fn tour_targets(&self) -> Vec<Identity> {
+        self.candidates().targets()
+    }
+
+    /// The processes Space steps through and the tour walks: see `Candidates::cycle`.
+    pub(super) fn visit_cycle(&self) -> Vec<Identity> {
+        self.candidates().cycle()
     }
 
     /// Where the cursor stands in `cycle`, which is not empty: at the process it was left on, or
@@ -145,15 +186,9 @@ impl App {
         }
     }
 
-    /// Where the tour shows `id`: the point the view gave with it as a tour target, or else
-    /// where the process is drawn; None once it is neither.
+    /// Where the tour shows `id`: see `Candidates::point`.
     pub(super) fn tour_point(&self, id: Identity) -> Option<Point> {
-        self.scene
-            .tour
-            .iter()
-            .find(|target| target.id == id)
-            .map(|target| target.position)
-            .or_else(|| self.scene.positions.get(&id).copied())
+        self.candidates().point(id)
     }
 
     /// Visits the process `step` names in the cycle, as a tour step does: nothing selected, the
@@ -197,6 +232,112 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::fixtures::*;
+    use crate::model::testing::process;
+
+    fn candidate(pid: u32, cpu: f32, memory: u64) -> Process {
+        let mut process = process(pid, 1);
+        process.cpu = cpu;
+        process.memory = memory;
+        process
+    }
+
+    fn drawn(processes: &[Process]) -> HashMap<Identity, Point> {
+        processes
+            .iter()
+            .map(|p| (p.id, [p.id.pid as f32, 0.0, 0.0]))
+            .collect()
+    }
+
+    fn pids(ids: &[Identity]) -> Vec<u32> {
+        ids.iter().map(|id| id.pid).collect()
+    }
+
+    #[test]
+    fn the_targets_lead_with_the_views_heaviest_then_interleave_the_busiest_and_the_largest() {
+        let processes = [
+            candidate(1, 90.0, 10),
+            candidate(2, 50.0, 500),
+            candidate(3, 10.0, 900),
+            candidate(4, 0.0, 1),
+        ];
+        let positions = drawn(&processes);
+        let stars = [
+            TourTarget {
+                id: processes[3].id,
+                position: [4.0, 0.0, 9.0],
+                weight: 1.0,
+            },
+            TourTarget {
+                id: processes[2].id,
+                position: [3.0, 0.0, 9.0],
+                weight: 5.0,
+            },
+        ];
+        let candidates = Candidates {
+            processes: &processes,
+            positions: &positions,
+            stars: &stars,
+        };
+        // Round one: star 3, busiest 1, largest 3 (already listed); round two: star 4, busiest 2,
+        // largest 2 (already listed); round three: nothing more.
+        assert_eq!(pids(&candidates.targets()), [3, 1, 4, 2]);
+    }
+
+    #[test]
+    fn processes_the_view_did_not_draw_are_never_offered() {
+        let processes = [candidate(1, 90.0, 10), candidate(2, 50.0, 500)];
+        let mut positions = drawn(&processes);
+        positions.remove(&processes[0].id);
+        let candidates = Candidates {
+            processes: &processes,
+            positions: &positions,
+            stars: &[],
+        };
+        assert_eq!(pids(&candidates.targets()), [2]);
+        assert_eq!(pids(&candidates.cycle()), [2]);
+    }
+
+    #[test]
+    fn the_cycle_adds_every_other_drawn_process_once_in_ascending_order() {
+        let processes: Vec<Process> = (1..=20)
+            .rev()
+            .map(|pid| candidate(pid, pid as f32, u64::from(pid)))
+            .collect();
+        let positions = drawn(&processes);
+        let candidates = Candidates {
+            processes: &processes,
+            positions: &positions,
+            stars: &[],
+        };
+        let targets = candidates.targets();
+        let cycle = candidates.cycle();
+        assert_eq!(cycle[..targets.len()], targets[..]);
+        let rest = pids(&cycle[targets.len()..]);
+        assert!(rest.windows(2).all(|pair| pair[0] < pair[1]));
+        let mut all = pids(&cycle);
+        all.sort_unstable();
+        assert_eq!(all, (1..=20).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn a_target_is_shown_where_the_view_put_it_and_other_processes_where_they_are_drawn() {
+        let processes = [candidate(1, 1.0, 1), candidate(2, 1.0, 1)];
+        let positions = drawn(&processes);
+        let stars = [TourTarget {
+            id: processes[1].id,
+            position: [2.0, 0.0, 7.0],
+            weight: 1.0,
+        }];
+        let candidates = Candidates {
+            processes: &processes,
+            positions: &positions,
+            stars: &stars,
+        };
+        assert_eq!(candidates.point(processes[0].id), Some([1.0, 0.0, 0.0]));
+        assert_eq!(candidates.point(processes[1].id), Some([2.0, 0.0, 7.0]));
+        let gone = Identity { pid: 99, start: 1 };
+        assert_eq!(candidates.point(gone), None);
+    }
 
     #[test]
     fn the_tour_passes_over_hubs_and_opens_on_a_process_with_a_callout() {
