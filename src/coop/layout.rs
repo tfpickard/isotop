@@ -1,13 +1,14 @@
 //! Where things stand: flock keys, house discs, perches, nests, feeders and the fence, all
 //! stable under changes of CPU, memory and population.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::OnceLock;
 
-use crate::model::{CoreKind, Cpu, Kind, Measured, Process, Snapshot};
-use crate::platform::DeletedFile;
+use crate::model::{CoreKind, Cpu, Identity, Kind, Measured, Process, Snapshot};
+use crate::platform::{DeletedFile, Source};
 
-use super::Coop;
+use super::sim::Home;
+use super::{Coop, Drawn};
 
 /// Brooding hens sit on straw pads PAD_HEIGHT high beside the nest box, clear of its eggs, and
 /// hens blocked on a lock queue after them; seats are NEST_GAP apart, and close up to at least
@@ -348,7 +349,148 @@ pub(super) fn place_feeders(
     (feeders, (row + 1) as f32 * FEEDER_ROW)
 }
 
+/// What a drawn flock is made of this sample.
+struct Group {
+    label: String,
+    members: usize,
+    nest: Nest,
+}
+
+/// The drawn processes grouped by flock, in key order, with each flock's label, member count and
+/// nest.
+fn group_flocks(drawn: &Drawn) -> BTreeMap<String, Group> {
+    let mut groups: BTreeMap<String, Group> = BTreeMap::new();
+    for process in drawn.iter() {
+        let group = groups.entry(flock_key(process)).or_insert_with(|| Group {
+            label: flock_label(process),
+            members: 0,
+            nest: Nest::default(),
+        });
+        group.members += 1;
+        group.nest.add(process);
+    }
+    groups
+}
+
 impl Coop {
+    /// Lays out the yard for the drawn processes: reserves the seats and house discs, sets the
+    /// fence, places the feeders along it and founds a flock for each group. Returns the index of
+    /// each flock by key.
+    pub(super) fn arrange(&mut self, drawn: &Drawn, snapshot: &Snapshot) -> HashMap<String, usize> {
+        let groups = group_flocks(drawn);
+        let centers = self.reserve_houses(drawn, snapshot);
+        let (low, high) = self.grow_fence(&centers);
+        self.lay_feeders(snapshot, low, high);
+        self.found_flocks(&groups, &centers)
+    }
+
+    /// Reserves seats and house discs for every sampled process, drawn or not, so focusing a
+    /// subtree, or the process limit (and a selection swapped across it) hiding some, does not
+    /// free their seats or their flock's place: clearing it brings everyone back to where they
+    /// were. Only the drawn flocks get houses afterwards. Returns the disc centre of each flock.
+    fn reserve_houses(&mut self, drawn: &Drawn, snapshot: &Snapshot) -> HashMap<String, [f32; 2]> {
+        let mut members: Vec<(Identity, String)> = snapshot
+            .processes
+            .iter()
+            .map(|process| (process.id, flock_key(process)))
+            .collect();
+        members.extend(
+            drawn
+                .iter()
+                .filter(|process| !drawn.sampled(process.id))
+                .map(|process| (process.id, flock_key(process))),
+        );
+        self.seats
+            .assign(members.iter().map(|(id, key)| (*id, key.as_str())));
+        let keys: BTreeSet<&str> = members.iter().map(|(_, key)| key.as_str()).collect();
+        let needs: Vec<(String, f32)> = keys
+            .into_iter()
+            .map(|key| (key.to_owned(), house_radius(self.seats.span(key))))
+            .collect();
+        self.discs.arrange(&needs)
+    }
+
+    /// The fence hugs the houses' reserved discs, and only grows: a flock at the edge arriving
+    /// or leaving must not move the fence, the feeders along it or the fox eyes around it.
+    /// The discs of hidden flocks count too, so a process limit that hides many flocks gives
+    /// a yard larger than the houses drawn in it; that is the price of a fence that does not
+    /// move when focus or the limit changes what is drawn. It is at least MIN_YARD wide for
+    /// the feeders. Returns the corners of the fence before the feeder band is added.
+    fn grow_fence(&mut self, centers: &HashMap<String, [f32; 2]>) -> ([f32; 2], [f32; 2]) {
+        let (mut low, mut high) = self.extent.unwrap_or(([f32::MAX; 2], [f32::MIN; 2]));
+        for (key, center) in centers {
+            let reserved = self.discs.reserved(key);
+            for axis in 0..2 {
+                low[axis] = low[axis].min(center[axis] - reserved - YARD_MARGIN);
+                high[axis] = high[axis].max(center[axis] + reserved + YARD_MARGIN);
+            }
+        }
+        if low[0] > high[0] {
+            (low, high) = ([-MIN_YARD * 0.5; 2], [MIN_YARD * 0.5; 2]);
+        } else {
+            self.extent = Some((low, high));
+        }
+        for axis in 0..2 {
+            let spare = (MIN_YARD - (high[axis] - low[axis])).max(0.0) * 0.5;
+            low[axis] -= spare;
+            high[axis] += spare;
+        }
+        (low, high)
+    }
+
+    /// Places the feeders in the band south of the houses and moves the yard's southern edge
+    /// out to the deepest band so far.
+    fn lay_feeders(&mut self, snapshot: &Snapshot, low: [f32; 2], high: [f32; 2]) {
+        self.trough_shared = snapshot.missing.contains(Source::LastCpu);
+        let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1], self.trough_shared);
+        self.feeders = feeders;
+        self.band_top = low[1];
+        self.band = self.band.max(band);
+        self.yard.low = [low[0], low[1] - self.band];
+        self.yard.high = high;
+    }
+
+    /// Founds a flock around each group's disc and gives the simulation its houses. Returns the
+    /// index of each flock by key.
+    fn found_flocks(
+        &mut self,
+        groups: &BTreeMap<String, Group>,
+        centers: &HashMap<String, [f32; 2]>,
+    ) -> HashMap<String, usize> {
+        self.flocks = groups
+            .iter()
+            .map(|(key, group)| {
+                let span = self.seats.span(key);
+                Flock {
+                    key: key.clone(),
+                    label: group.label.clone(),
+                    members: group.members,
+                    center: centers.get(key).copied().unwrap_or([0.0, 0.0]),
+                    span,
+                    reserved: self.discs.reserved(key),
+                    nest: group.nest.clone(),
+                }
+            })
+            .collect();
+        self.yard.homes = self
+            .flocks
+            .iter()
+            .map(|flock| {
+                let radius = house_radius(flock.span);
+                Home {
+                    center: [flock.center[0], flock.center[1] + HOUSE_Y],
+                    footprint: 0.6 * radius,
+                    range: home_range(radius),
+                }
+            })
+            .collect();
+        self.flocks
+            .iter()
+            .enumerate()
+            .map(|(index, flock)| (flock.key.clone(), index))
+            .collect()
+    }
+
     /// A point `outside` units beyond the fence at fraction `t` of the way round it.
     pub(super) fn perimeter(&self, t: f32, outside: f32) -> [f32; 2] {
         let (low, high) = (self.yard.low, self.yard.high);

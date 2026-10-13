@@ -70,6 +70,51 @@ fn plural(count: u64, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
 }
 
+/// The processes a decision pass covers: those drawn, in identity order, each read from the
+/// measured sample where that has an entry for it.
+struct Drawn<'a> {
+    processes: &'a [&'a Process],
+    order: &'a [usize],
+    measured: HashMap<Identity, &'a Process>,
+}
+
+impl<'a> Drawn<'a> {
+    fn new(processes: &'a [&'a Process], order: &'a [usize], snapshot: &'a Snapshot) -> Self {
+        Self {
+            processes,
+            order,
+            measured: snapshot.processes.iter().map(|p| (p.id, p)).collect(),
+        }
+    }
+
+    /// The process at `index` of the slice the view was handed, as measured.
+    fn process(&self, index: usize) -> &'a Process {
+        self.measured
+            .get(&self.processes[index].id)
+            .copied()
+            .unwrap_or(self.processes[index])
+    }
+
+    /// The `position`th drawn process, as measured.
+    fn at(&self, position: usize) -> &'a Process {
+        self.process(self.order[position])
+    }
+
+    /// The drawn processes in order, as measured.
+    fn iter(&self) -> impl Iterator<Item = &'a Process> + '_ {
+        self.order.iter().map(|&index| self.process(index))
+    }
+
+    fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Whether the measured sample has `id`, drawn or not.
+    fn sampled(&self, id: Identity) -> bool {
+        self.measured.contains_key(&id)
+    }
+}
+
 /// The persistent coop view.
 #[derive(Default)]
 pub struct Coop {

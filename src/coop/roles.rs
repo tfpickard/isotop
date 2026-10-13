@@ -1,6 +1,6 @@
 //! The per-sample decisions: each chicken's role, target, speed, noise and peers.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::f32::consts::{PI, TAU};
 
 use crate::layout::spin;
@@ -11,12 +11,11 @@ use crate::simulation::Rng;
 use crate::simulation::hash::unit_from as fraction;
 
 use super::layout::{
-    FEEDER_ROW, Flock, HOUSE_Y, MIN_YARD, NEST_GAP, NEST_HALF, Nest, PAD_HEIGHT, SLOT, YARD_MARGIN,
-    body_radius, flock_key, flock_label, home_range, house_radius, nest_seats, place_feeders,
-    seat_offset,
+    FEEDER_ROW, Feeder, Flock, NEST_GAP, NEST_HALF, PAD_HEIGHT, SLOT, body_radius, flock_key,
+    nest_seats, seat_offset,
 };
-use super::sim::{Chicken, Home, Role, keep_inside, noise, peer_weight, speed};
-use super::{Coop, DUST_RATE, plural, puffs};
+use super::sim::{Chicken, Role, keep_inside, noise, peer_weight, speed};
+use super::{Coop, DUST_RATE, Drawn, plural, puffs};
 
 /// Roosting hysteresis in percent CPU: roost below ENTER, leave above LEAVE; a newcomer roosts
 /// below NEWCOMER.
@@ -47,10 +46,47 @@ fn rate(value: f32) -> String {
     bytes(value.max(0.0) as u64)
 }
 
+/// What one decision pass reads besides the yard: the drawn processes as measured, the sample
+/// and the flock each key belongs to.
+struct Pass<'a> {
+    drawn: Drawn<'a>,
+    snapshot: &'a Snapshot,
+    /// Whether the sample is new, as opposed to the same sample drawn again for a changed set.
+    fresh: bool,
+    /// The index of each drawn flock by key.
+    flock_of: HashMap<String, usize>,
+    /// Every sampled process by pid, for lock holders.
+    by_pid: HashMap<u32, &'a Process>,
+}
+
+impl Pass<'_> {
+    /// The flock the process belongs to.
+    fn flock(&self, process: &Process) -> usize {
+        self.flock_of[flock_key(process).as_str()]
+    }
+}
+
+/// The chickens of one decision pass, in drawing order.
+struct Roll {
+    chickens: Vec<Chicken>,
+    /// Whether each hatched in this pass.
+    newcomers: Vec<bool>,
+    /// Whether each came back from hiding, its role decided for an older sample.
+    returning: Vec<bool>,
+    /// Whether the yard held no chicken, hidden or drawn, before this pass.
+    first: bool,
+}
+
+/// The chickens queueing or eating at one feeder: priority, identity and index in the roll.
+type Line = Vec<(i32, Identity, usize)>;
+
+/// The strongest pull on each chicken: weight, the chicken it comes from and the measured
+/// traffic, when there is one.
+type Strongest = Vec<Option<(f32, usize, Option<f32>)>>;
+
 impl Coop {
     /// Lays out houses, perches and feeders and decides each chicken's role, target, speed, noise
     /// and peers from the measured sample. Runs once per new sample or when the drawn set changes.
-    #[expect(clippy::too_many_lines, reason = "split in #78 (A19)")]
     pub(super) fn decide(
         &mut self,
         processes: &[&Process],
@@ -58,111 +94,39 @@ impl Coop {
         snapshot: &Snapshot,
         fresh: bool,
     ) {
-        let raw: HashMap<Identity, &Process> =
-            snapshot.processes.iter().map(|p| (p.id, p)).collect();
-        let measured =
-            |i: usize| -> &Process { raw.get(&processes[i].id).copied().unwrap_or(processes[i]) };
-        // Each drawn flock's label, members and nest.
-        let mut groups: BTreeMap<String, (String, Vec<Identity>, Nest)> = BTreeMap::new();
-        for &i in order {
-            let process = measured(i);
-            let group = groups
-                .entry(flock_key(process))
-                .or_insert_with(|| (flock_label(process), Vec::new(), Nest::default()));
-            group.1.push(process.id);
-            group.2.add(process);
-        }
-        // Seats and house discs are reserved for every sampled process, drawn or not, so focusing
-        // a subtree, or the process limit (and a selection swapped across it) hiding some, does
-        // not free their seats or their flock's place: clearing it brings everyone back to where
-        // they were. Only the drawn flocks get houses below.
-        let mut members: Vec<(Identity, String)> = snapshot
-            .processes
-            .iter()
-            .map(|process| (process.id, flock_key(process)))
-            .collect();
-        members.extend(
-            order
+        let drawn = Drawn::new(processes, order, snapshot);
+        let flock_of = self.arrange(&drawn, snapshot);
+        let pass = Pass {
+            by_pid: snapshot
+                .processes
                 .iter()
-                .map(|&i| measured(i))
-                .filter(|process| !raw.contains_key(&process.id))
-                .map(|process| (process.id, flock_key(process))),
-        );
-        self.seats
-            .assign(members.iter().map(|(id, key)| (*id, key.as_str())));
-        let keys: BTreeSet<&str> = members.iter().map(|(_, key)| key.as_str()).collect();
-        let needs: Vec<(String, f32)> = keys
-            .into_iter()
-            .map(|key| (key.to_owned(), house_radius(self.seats.span(key))))
-            .collect();
-        let centers = self.discs.arrange(&needs);
-        // The fence hugs the houses' reserved discs, and only grows: a flock at the edge arriving
-        // or leaving must not move the fence, the feeders along it or the fox eyes around it.
-        // The discs of hidden flocks count too, so a process limit that hides many flocks gives
-        // a yard larger than the houses drawn in it; that is the price of a fence that does not
-        // move when focus or the limit changes what is drawn. It is at least MIN_YARD wide for
-        // the feeders.
-        let (mut low, mut high) = self.extent.unwrap_or(([f32::MAX; 2], [f32::MIN; 2]));
-        for (key, center) in &centers {
-            let reserved = self.discs.reserved(key);
-            for axis in 0..2 {
-                low[axis] = low[axis].min(center[axis] - reserved - YARD_MARGIN);
-                high[axis] = high[axis].max(center[axis] + reserved + YARD_MARGIN);
-            }
+                .map(|process| (process.id.pid, process))
+                .collect(),
+            drawn,
+            snapshot,
+            fresh,
+            flock_of,
+        };
+        let mut roll = self.call_roll(&pass);
+        self.note_missing(snapshot);
+        let nest_of = self.judge(&pass, &mut roll);
+        let eating = self.roost_and_gather(&pass, &mut roll.chickens);
+        self.queue_feeders(&pass, &mut roll.chickens, eating);
+        self.seat_nests(&mut roll.chickens, &nest_of);
+        self.describe(&pass, &mut roll.chickens, &nest_of);
+        if roll.first {
+            self.place_first(&mut roll.chickens);
         }
-        if low[0] > high[0] {
-            (low, high) = ([-MIN_YARD * 0.5; 2], [MIN_YARD * 0.5; 2]);
-        } else {
-            self.extent = Some((low, high));
-        }
-        for axis in 0..2 {
-            let spare = (MIN_YARD - (high[axis] - low[axis])).max(0.0) * 0.5;
-            low[axis] -= spare;
-            high[axis] += spare;
-        }
-        self.trough_shared = snapshot.missing.contains(Source::LastCpu);
-        let (feeders, band) = place_feeders(snapshot, low[0], high[0], low[1], self.trough_shared);
-        self.feeders = feeders;
-        self.band_top = low[1];
-        self.band = self.band.max(band);
-        self.yard.low = [low[0], low[1] - self.band];
-        self.yard.high = high;
-        self.flocks = groups
-            .iter()
-            .map(|(key, (label, ids, nest))| {
-                let span = self.seats.span(key);
-                Flock {
-                    key: key.clone(),
-                    label: label.clone(),
-                    members: ids.len(),
-                    center: centers.get(key).copied().unwrap_or([0.0, 0.0]),
-                    span,
-                    reserved: self.discs.reserved(key),
-                    nest: nest.clone(),
-                }
-            })
-            .collect();
-        self.yard.homes = self
-            .flocks
-            .iter()
-            .map(|flock| {
-                let radius = house_radius(flock.span);
-                Home {
-                    center: [flock.center[0], flock.center[1] + HOUSE_Y],
-                    footprint: 0.6 * radius,
-                    range: home_range(radius),
-                }
-            })
-            .collect();
-        let flock_of: HashMap<&str, usize> = self
-            .flocks
-            .iter()
-            .enumerate()
-            .map(|(index, flock)| (flock.key.as_str(), index))
-            .collect();
+        pull_peers(&pass, &mut roll.chickens);
+        self.count_unreadable(&pass);
+        self.yard.chickens = roll.chickens;
+        self.raise_eyes(snapshot);
+    }
 
-        // Every chicken drawn so far joins the hidden ones, the drawn set is taken back out of
-        // them, and what is left waits there unchanged while its process is still sampled.
+    /// Every chicken drawn so far joins the hidden ones, the drawn set is taken back out of
+    /// them, and what is left waits there unchanged while its process is still sampled. A
+    /// process with no chicken hatches one.
+    fn call_roll(&mut self, pass: &Pass) -> Roll {
         let first = self.yard.chickens.is_empty() && self.hidden.is_empty();
         let before: HashSet<Identity> = self.yard.chickens.iter().map(|c| c.id).collect();
         self.hidden.extend(
@@ -170,201 +134,200 @@ impl Coop {
                 .into_iter()
                 .map(|chicken| (chicken.id, chicken)),
         );
-        let mut chickens: Vec<Chicken> = Vec::with_capacity(order.len());
-        let mut newcomers: Vec<bool> = Vec::with_capacity(order.len());
-        // Chickens back from hiding, whose roles were decided for an older sample.
-        let mut returning: Vec<bool> = Vec::with_capacity(order.len());
-        for &i in order {
-            let process = measured(i);
-            let flock = flock_of[flock_key(process).as_str()];
+        let mut roll = Roll {
+            chickens: Vec::with_capacity(pass.drawn.len()),
+            newcomers: Vec::with_capacity(pass.drawn.len()),
+            returning: Vec::with_capacity(pass.drawn.len()),
+            first,
+        };
+        for process in pass.drawn.iter() {
             if let Some(chicken) = self.hidden.remove(&process.id) {
-                returning.push(!before.contains(&process.id));
-                chickens.push(chicken);
-                newcomers.push(false);
+                roll.returning.push(!before.contains(&process.id));
+                roll.chickens.push(chicken);
+                roll.newcomers.push(false);
                 continue;
             }
-            returning.push(false);
-            // Newcomers hatch at their flock's gathering spot beyond the perches, close enough
-            // to their mates to align with them; the spot's direction is fixed by the flock name.
-            let mut rng = Rng::for_identity(process.id, 0xc0_0b);
-            let home = self.yard.homes[flock];
-            let toward = spin(&self.flocks[flock].key);
-            let spot = home.footprint + 2.5;
-            let scatter = 1.0 + 0.35 * (self.flocks[flock].members as f32).sqrt();
-            let (angle, distance) = (rng.unit() * TAU, scatter * rng.unit().sqrt());
-            let position = [
-                home.center[0] + spot * toward.cos() + distance * angle.cos(),
-                home.center[1] + spot * toward.sin() + distance * angle.sin(),
-            ];
-            let theta = rng.unit() * TAU;
-            chickens.push(Chicken::new(process.id, flock, position, theta, rng));
-            newcomers.push(true);
+            roll.returning.push(false);
+            roll.chickens.push(self.hatch(process, pass.flock(process)));
+            roll.newcomers.push(true);
         }
-        self.hidden.retain(|id, _| raw.contains_key(id));
+        self.hidden.retain(|id, _| pass.drawn.sampled(*id));
+        roll
+    }
 
-        let psi = snapshot.pressure[0];
+    /// A newcomer hatches at its flock's gathering spot beyond the perches, close enough to its
+    /// mates to align with them; the spot's direction is fixed by the flock name.
+    fn hatch(&self, process: &Process, flock: usize) -> Chicken {
+        let mut rng = Rng::for_identity(process.id, 0xc0_0b);
+        let home = self.yard.homes[flock];
+        let toward = spin(&self.flocks[flock].key);
+        let spot = home.footprint + 2.5;
+        let scatter = 1.0 + 0.35 * (self.flocks[flock].members as f32).sqrt();
+        let (angle, distance) = (rng.unit() * TAU, scatter * rng.unit().sqrt());
+        let position = [
+            home.center[0] + spot * toward.cos() + distance * angle.cos(),
+            home.center[1] + spot * toward.sin() + distance * angle.sin(),
+        ];
+        let theta = rng.unit() * TAU;
+        Chicken::new(process.id, flock, position, theta, rng)
+    }
+
+    /// Records what the platform could not measure, for the legend and the notes.
+    fn note_missing(&mut self, snapshot: &Snapshot) {
         self.pressure_missing = snapshot.missing.contains(Source::CpuPressure);
         self.cgroups_missing = snapshot.missing.contains(Source::Cgroups);
         self.locks_missing = snapshot.missing.contains(Source::FileLocks);
-        let by_pid: HashMap<u32, &Process> = snapshot
-            .processes
-            .iter()
-            .map(|process| (process.id.pid, process))
-            .collect();
-        // The flock whose nest each chicken goes to: the lock holder's for a waiting one.
-        let mut nest_of: Vec<usize> = Vec::with_capacity(order.len());
-        for (k, &i) in order.iter().enumerate() {
-            let process = measured(i);
-            let chicken = &mut chickens[k];
-            chicken.flock = flock_of[flock_key(process).as_str()];
+    }
+
+    /// Gives each chicken its flock, role, lock holder, body, speed, noise and notes from its
+    /// process. Returns the flock whose nest each chicken goes to: the lock holder's for a
+    /// waiting one.
+    fn judge(&self, pass: &Pass, roll: &mut Roll) -> Vec<usize> {
+        let psi = pass.snapshot.pressure[0];
+        let mut nest_of: Vec<usize> = Vec::with_capacity(pass.drawn.len());
+        for (k, process) in pass.drawn.iter().enumerate() {
+            let chicken = &mut roll.chickens[k];
+            chicken.flock = pass.flock(process);
             if process.state == 'R' {
                 chicken.quiet = 0;
-            } else if fresh {
+            } else if pass.fresh {
                 chicken.quiet = chicken.quiet.saturating_add(1);
             }
-            if fresh || newcomers[k] || returning[k] {
-                let previous = (!newcomers[k]).then_some(chicken.role);
-                let role = match process.state {
-                    'Z' => Role::Zombie,
-                    'T' | 't' => Role::Frozen,
-                    'D' => Role::Stuck,
-                    // A request blocked on a lock sleeps (S), so a running process the lock
-                    // table, read up to 2 s ago, still shows as blocked has been granted it.
-                    'R' => Role::Feeding,
-                    _ if process.blocked_on.is_some() => Role::Waiting,
-                    // The feeding hold: a chicken leaves the feeder only after two samples in a
-                    // row without running, so R/S flicker on 1 s samples does not shuttle it.
-                    _ if previous == Some(Role::Feeding) && chicken.quiet < 2 => Role::Feeding,
-                    _ if process.locks_held.known().is_some_and(|&held| held > 0) => Role::Brooding,
-                    _ => {
-                        let threshold = match previous {
-                            None => ROOST_NEWCOMER,
-                            Some(Role::Roosting) => ROOST_LEAVE,
-                            Some(_) => ROOST_ENTER,
-                        };
-                        let idle = if previous == Some(Role::Roosting) {
-                            process.cpu <= threshold
-                        } else {
-                            process.cpu < threshold
-                        };
-                        if idle { Role::Roosting } else { Role::Foraging }
-                    }
-                };
-                if role != chicken.role || newcomers[k] {
-                    chicken.arrived = false;
-                    if matches!(role, Role::Zombie | Role::Stuck) {
-                        chicken.perch = 0.0;
-                    }
-                    if role == Role::Foraging {
-                        chicken.perch = 0.0;
-                    }
-                }
-                chicken.role = role;
+            if pass.fresh || roll.newcomers[k] || roll.returning[k] {
+                let previous = (!roll.newcomers[k]).then_some(chicken.role);
+                let role = next_role(process, previous, chicken.quiet);
+                change_role(chicken, role, roll.newcomers[k]);
             }
             let holder = match process.blocked_on {
-                Some(Blocker::Process(pid)) => by_pid.get(&pid).copied(),
+                Some(Blocker::Process(pid)) => pass.by_pid.get(&pid).copied(),
                 Some(Blocker::Unnamed) | None => None,
             };
             chicken.holder = holder.map(|holder| holder.id);
             nest_of.push(
                 holder
                     .filter(|_| chicken.role == Role::Waiting)
-                    .and_then(|holder| flock_of.get(flock_key(holder).as_str()).copied())
+                    .and_then(|holder| pass.flock_of.get(flock_key(holder).as_str()).copied())
                     .unwrap_or(chicken.flock),
             );
-            chicken.radius = body_radius(process.memory as f32);
-            chicken.speed = speed(process.cpu);
-            chicken.chicks = process.threads.saturating_sub(1).min(MAX_CHICKS);
-            let cv = variation(self.history.get(&process.id));
-            chicken.noise = noise(cv, psi);
-            chicken.peers.clear();
-            let mut notes = Vec::new();
-            notes.push(String::new());
-            notes.push(format!(
-                "noise +/-{:.0} deg (CPU variation CV {cv:.2}, CPU pressure {})",
-                chicken.noise * 0.5 * 180.0 / PI,
-                if self.pressure_missing {
-                    "unavailable".to_owned()
-                } else {
-                    format!("{psi:.0}%")
-                }
-            ));
-            match &process.files {
-                Measured::Known(files) => {
-                    let (about, at_least) = if files.partial {
-                        ("about ", "at least ")
-                    } else {
-                        ("", "")
-                    };
-                    notes.push(format!(
-                        "{about}{} (eggs in the {} nest)",
-                        plural(files.open.into(), "open file", "open files"),
-                        self.flocks[chicken.flock].label
-                    ));
-                    if !files.deleted.is_empty() {
-                        notes.push(format!(
-                            "{at_least}{} still open, {} held (rotten eggs)",
-                            plural(files.deleted.len() as u64, "deleted file", "deleted files"),
-                            bytes(files.deleted_bytes())
-                        ));
-                    }
-                }
-                Measured::Unreadable => notes.push("open files unreadable (permissions)".into()),
-                Measured::Pending => notes.push("open files not read yet".into()),
-            }
-            if let Some(&held) = process.locks_held.known().filter(|&&held| held > 0) {
-                notes.push(format!(
-                    "holds {}",
-                    plural(held.into(), "file lock", "file locks")
-                ));
-            }
-            match process.written {
-                Some(written) => {
-                    let mut line = format!("{} written since it started", bytes(written));
-                    if let Some(rate) = process.write_rate.filter(|&r| r > 0.0) {
-                        line.push_str(&format!(", writing {}/s", self::rate(rate)));
-                    }
-                    notes.push(line);
-                }
-                None => notes.push("I/O unreadable".into()),
-            }
-            if let Some(read) = process.read_rate.filter(|&r| r > DUST_RATE) {
-                notes.push(format!(
-                    "dust bathing: {} puff{} (reading {}/s)",
-                    puffs(read),
-                    if puffs(read) == 1 { "" } else { "s" },
-                    rate(read)
-                ));
-            }
-            if process.threads > 1 {
-                notes.push(format!(
-                    "chicks {} (threads {})",
-                    chicken.chicks, process.threads
-                ));
-            }
-            chicken.notes = notes;
+            let cv = self.measure(chicken, process, psi);
+            chicken.notes = self.measurement_notes(chicken, process, cv, psi);
         }
+        nest_of
+    }
 
-        let seat_of = |id: Identity, flock: &Flock| -> ([f32; 2], f32) {
-            let (offset, height) = seat_offset(self.seats.seat(id).unwrap_or(0));
-            (
-                [flock.center[0] + offset[0], flock.center[1] + offset[1]],
-                height,
-            )
-        };
-        let mut eating: Vec<Vec<(i32, Identity, usize)>> = vec![Vec::new(); self.feeders.len()];
+    /// Sizes the chicken from its process's memory, threads, CPU and CPU history, and clears its
+    /// peers. Returns the coefficient of variation of its CPU.
+    fn measure(&self, chicken: &mut Chicken, process: &Process, psi: f32) -> f32 {
+        chicken.radius = body_radius(process.memory as f32);
+        chicken.speed = speed(process.cpu);
+        chicken.chicks = process.threads.saturating_sub(1).min(MAX_CHICKS);
+        let cv = variation(self.history.get(&process.id));
+        chicken.noise = noise(cv, psi);
+        chicken.peers.clear();
+        cv
+    }
+
+    /// The inspector lines of a chicken from its measurements; the first, left empty here, is
+    /// for what the chicken is doing.
+    fn measurement_notes(
+        &self,
+        chicken: &Chicken,
+        process: &Process,
+        cv: f32,
+        psi: f32,
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
+        notes.push(String::new());
+        notes.push(format!(
+            "noise +/-{:.0} deg (CPU variation CV {cv:.2}, CPU pressure {})",
+            chicken.noise * 0.5 * 180.0 / PI,
+            if self.pressure_missing {
+                "unavailable".to_owned()
+            } else {
+                format!("{psi:.0}%")
+            }
+        ));
+        match &process.files {
+            Measured::Known(files) => {
+                let (about, at_least) = if files.partial {
+                    ("about ", "at least ")
+                } else {
+                    ("", "")
+                };
+                notes.push(format!(
+                    "{about}{} (eggs in the {} nest)",
+                    plural(files.open.into(), "open file", "open files"),
+                    self.flocks[chicken.flock].label
+                ));
+                if !files.deleted.is_empty() {
+                    notes.push(format!(
+                        "{at_least}{} still open, {} held (rotten eggs)",
+                        plural(files.deleted.len() as u64, "deleted file", "deleted files"),
+                        bytes(files.deleted_bytes())
+                    ));
+                }
+            }
+            Measured::Unreadable => notes.push("open files unreadable (permissions)".into()),
+            Measured::Pending => notes.push("open files not read yet".into()),
+        }
+        if let Some(&held) = process.locks_held.known().filter(|&&held| held > 0) {
+            notes.push(format!(
+                "holds {}",
+                plural(held.into(), "file lock", "file locks")
+            ));
+        }
+        match process.written {
+            Some(written) => {
+                let mut line = format!("{} written since it started", bytes(written));
+                if let Some(rate) = process.write_rate.filter(|&r| r > 0.0) {
+                    line.push_str(&format!(", writing {}/s", self::rate(rate)));
+                }
+                notes.push(line);
+            }
+            None => notes.push("I/O unreadable".into()),
+        }
+        if let Some(read) = process.read_rate.filter(|&r| r > DUST_RATE) {
+            notes.push(format!(
+                "dust bathing: {} puff{} (reading {}/s)",
+                puffs(read),
+                if puffs(read) == 1 { "" } else { "s" },
+                rate(read)
+            ));
+        }
+        if process.threads > 1 {
+            notes.push(format!(
+                "chicks {} (threads {})",
+                chicken.chicks, process.threads
+            ));
+        }
+        notes
+    }
+
+    /// Where a roosting chicken's seat is: the ground point on its flock's perches and the
+    /// perch height.
+    fn seat_of(&self, id: Identity, flock: &Flock) -> ([f32; 2], f32) {
+        let (offset, height) = seat_offset(self.seats.seat(id).unwrap_or(0));
+        (
+            [flock.center[0] + offset[0], flock.center[1] + offset[1]],
+            height,
+        )
+    }
+
+    /// Sends roosting chickens to their seats and gathers the feeding ones at the feeder of the
+    /// CPU they ran on (the shared trough where the OS cannot say). Returns each feeder's line.
+    fn roost_and_gather(&self, pass: &Pass, chickens: &mut [Chicken]) -> Vec<Line> {
+        let mut eating: Vec<Line> = vec![Vec::new(); self.feeders.len()];
         let feeder_of: HashMap<u32, usize> = self
             .feeders
             .iter()
             .enumerate()
             .map(|(index, feeder)| (feeder.cpu, index))
             .collect();
-        for (k, &i) in order.iter().enumerate() {
-            let process = measured(i);
+        for (k, process) in pass.drawn.iter().enumerate() {
             let chicken = &mut chickens[k];
             match chicken.role {
                 Role::Roosting => {
-                    let (seat, height) = seat_of(chicken.id, &self.flocks[chicken.flock]);
+                    let (seat, height) = self.seat_of(chicken.id, &self.flocks[chicken.flock]);
                     if seat != chicken.target {
                         chicken.arrived = false;
                     }
@@ -385,224 +348,173 @@ impl Coop {
                 _ => {}
             }
         }
-        for (index, line) in eating.iter_mut().enumerate() {
+        eating
+    }
+
+    /// Lines the feeding chickens up at their feeders, highest priority first.
+    fn queue_feeders(&self, pass: &Pass, chickens: &mut [Chicken], eating: Vec<Line>) {
+        for (index, mut line) in eating.into_iter().enumerate() {
             line.sort();
-            let feeder = &self.feeders[index];
-            let queue_start = feeder.eating_line() - 1.3;
-            let floor = (feeder.center[1] - (FEEDER_ROW - 1.2)).max(self.yard.low[1]);
-            // The queue runs south behind the eating line and wraps into at most QUEUE_COLUMNS
-            // columns within the feeder's own lane (straight back, then right, then left), so
-            // neighbouring feeders' queues never meet. A queue too long for them packs tighter.
-            let needed: f32 = line
-                .iter()
-                .skip(feeder.slots)
-                .map(|&(_, _, k)| 2.0 * chickens[k].radius + 0.25)
-                .sum();
-            let room = QUEUE_COLUMNS as f32 * (queue_start - floor).max(0.1);
-            let packing = if needed > room { room / needed } else { 1.0 };
-            let (mut cursor, mut column) = (queue_start, 0_usize);
-            for (rank, &(priority, _, k)) in line.iter().enumerate() {
-                let process = measured(order[k]);
-                let chicken = &mut chickens[k];
-                let target = if rank < feeder.slots {
-                    feeder.slot(rank)
-                } else {
-                    let step = (2.0 * chicken.radius + 0.25) * packing;
-                    if cursor - step < floor - 0.01
-                        && cursor < queue_start
-                        && column + 1 < QUEUE_COLUMNS
-                    {
-                        column += 1;
-                        cursor = queue_start;
-                    }
-                    let side = if column % 2 == 1 { 1.0 } else { -1.0 };
-                    let across = column.div_ceil(2) as f32 * SLOT * side;
-                    cursor -= step * 0.5;
-                    let spot = [feeder.center[0] + across, cursor];
-                    cursor -= step * 0.5;
-                    spot
-                };
-                let target = keep_inside(target, chicken.radius, self.yard.low, self.yard.high);
-                if target != chicken.target {
-                    chicken.arrived = false;
-                }
-                chicken.target = target;
-                chicken.perch = 0.0;
-                let standing = if process.nice != 0 || priority >= 0 {
-                    format!("priority {priority} (nice {})", process.nice)
-                } else {
-                    format!("priority {priority} (real-time)")
-                };
-                let place = if feeder.shared {
-                    "the shared trough (no last CPU on this OS)".to_owned()
-                } else {
-                    format!("cpu{} ({})", feeder.cpu, core_name(feeder.kind))
-                };
-                let mut note = format!(
-                    "feeding at {place}, pecking rank {} of {} by {standing}",
-                    rank + 1,
-                    line.len()
-                );
-                if rank >= feeder.slots {
-                    note.push_str(", waiting in line");
-                }
-                if let Some(core) = process
-                    .core
-                    .filter(|&core| !feeder.shared && feeder.cpu != core)
+            self.queue_line(pass, index, &line, chickens);
+        }
+    }
+
+    /// Gives each chicken in the line of feeder `index` its slot at the trough or its place in
+    /// the queue behind it.
+    fn queue_line(
+        &self,
+        pass: &Pass,
+        index: usize,
+        line: &[(i32, Identity, usize)],
+        chickens: &mut [Chicken],
+    ) {
+        let feeder = &self.feeders[index];
+        let queue_start = feeder.eating_line() - 1.3;
+        let floor = (feeder.center[1] - (FEEDER_ROW - 1.2)).max(self.yard.low[1]);
+        // The queue runs south behind the eating line and wraps into at most QUEUE_COLUMNS
+        // columns within the feeder's own lane (straight back, then right, then left), so
+        // neighbouring feeders' queues never meet. A queue too long for them packs tighter.
+        let needed: f32 = line
+            .iter()
+            .skip(feeder.slots)
+            .map(|&(_, _, k)| 2.0 * chickens[k].radius + 0.25)
+            .sum();
+        let room = QUEUE_COLUMNS as f32 * (queue_start - floor).max(0.1);
+        let packing = if needed > room { room / needed } else { 1.0 };
+        let (mut cursor, mut column) = (queue_start, 0_usize);
+        for (rank, &(priority, _, k)) in line.iter().enumerate() {
+            let process = pass.drawn.at(k);
+            let chicken = &mut chickens[k];
+            let target = if rank < feeder.slots {
+                feeder.slot(rank)
+            } else {
+                let step = (2.0 * chicken.radius + 0.25) * packing;
+                if cursor - step < floor - 0.01
+                    && cursor < queue_start
+                    && column + 1 < QUEUE_COLUMNS
                 {
-                    note.push_str(&format!(" (ran on cpu{core}, which has no feeder)"));
+                    column += 1;
+                    cursor = queue_start;
                 }
-                if process.state != 'R' {
-                    note.push_str(" (held: not running for one sample)");
-                }
+                let side = if column % 2 == 1 { 1.0 } else { -1.0 };
+                let across = column.div_ceil(2) as f32 * SLOT * side;
+                cursor -= step * 0.5;
+                let spot = [feeder.center[0] + across, cursor];
+                cursor -= step * 0.5;
+                spot
+            };
+            let target = keep_inside(target, chicken.radius, self.yard.low, self.yard.high);
+            if target != chicken.target {
+                chicken.arrived = false;
+            }
+            chicken.target = target;
+            chicken.perch = 0.0;
+            chicken.notes[0] = feeding_note(feeder, process, rank, line.len(), priority);
+        }
+    }
+
+    /// Writes what each chicken not at a feeder is doing as the first line of its notes.
+    fn describe(&self, pass: &Pass, chickens: &mut [Chicken], nest_of: &[usize]) {
+        for (k, chicken) in chickens.iter_mut().enumerate() {
+            let process = pass.drawn.at(k);
+            if let Some(note) = self.role_note(pass, chicken.role, process, nest_of[k]) {
                 chicken.notes[0] = note;
             }
         }
-        self.seat_nests(&mut chickens, &nest_of);
-        for (k, chicken) in chickens.iter_mut().enumerate() {
-            let process = measured(order[k]);
-            chicken.notes[0] = match chicken.role {
-                Role::Feeding => continue,
-                Role::Foraging => "foraging".into(),
-                Role::Roosting => "roosting".into(),
-                Role::Brooding => format!(
-                    "brooding by the nest: not running while holding {}",
-                    plural(
-                        process.locks_held.known().copied().unwrap_or(0).into(),
-                        "file lock",
-                        "file locks"
-                    )
-                ),
-                Role::Waiting => {
-                    let pid = match process.blocked_on {
-                        Some(Blocker::Process(pid)) => Some(pid),
-                        Some(Blocker::Unnamed) | None => None,
-                    };
-                    match pid.map(|pid| (pid, by_pid.get(&pid))) {
-                        None => "waiting for a file lock no process can be named \
-                                               for (an OFD lock, or a holder in another pid \
-                                               namespace), at its own nest"
-                            .into(),
-                        Some((pid, Some(holder)))
-                            if flock_key(holder) == self.flocks[nest_of[k]].key =>
-                        {
-                            format!(
-                                "waiting for a file lock held by {} (pid {pid})",
-                                holder.name
-                            )
-                        }
-                        Some((pid, Some(holder))) => format!(
-                            "waiting for a file lock held by {} (pid {pid}), at its own nest \
-                             because the holder's flock is not drawn",
-                            holder.name
-                        ),
-                        Some((pid, None)) => format!(
-                            "waiting for a file lock held by pid {pid}, which was not sampled, \
-                             at its own nest"
-                        ),
-                    }
-                }
-                Role::Zombie => "feet up: zombie, waiting for its parent to reap it".into(),
-                Role::Frozen => "frozen: stopped (tonic immobility)".into(),
-                Role::Stuck => "stuck in the mud: uninterruptible sleep (D)".into(),
-            };
-        }
-        if first {
-            // The first population starts where it belongs rather than walking in from home.
-            for chicken in &mut chickens {
-                if chicken.walking() {
-                    chicken.position = keep_inside(
-                        chicken.target,
-                        chicken.radius,
-                        self.yard.low,
-                        self.yard.high,
-                    );
-                    chicken.previous = chicken.position;
-                    chicken.arrived = true;
-                    chicken.theta = chicken.role.resting_heading();
-                }
-            }
-        }
+    }
 
-        let index_of: HashMap<Identity, usize> = chickens
-            .iter()
-            .enumerate()
-            .map(|(k, c)| (c.id, k))
-            .collect();
-        let mut strongest: Vec<Option<(f32, usize, Option<f32>)>> = vec![None; chickens.len()];
-        let mut pairs: Vec<(Identity, Identity)> = snapshot
-            .links
-            .iter()
-            .map(|&(a, b, _)| if a < b { (a, b) } else { (b, a) })
-            .collect();
-        pairs.sort();
-        pairs.dedup();
-        for (a, b) in pairs {
-            let (Some(&i), Some(&j)) = (index_of.get(&a), index_of.get(&b)) else {
-                continue;
-            };
-            if i == j || chickens[i].role != Role::Foraging || chickens[j].role != Role::Foraging {
-                continue;
-            }
-            let traffic = snapshot
-                .link_traffic
-                .get(&(a, b))
-                .or_else(|| snapshot.link_traffic.get(&(b, a)))
-                .copied();
-            let unix =
-                snapshot.unix_links.contains(&(a, b)) || snapshot.unix_links.contains(&(b, a));
-            // A pair can talk over TCP and Unix sockets at once, and measured TCP traffic says
-            // nothing about the Unix sockets, so the stronger of the two pulls. A pair known by
-            // neither (TCP not measured yet, or a platform that does not tell the protocols
-            // apart) falls back to co-activity.
-            let together = peer_weight(None, measured(order[i]).cpu, measured(order[j]).cpu);
-            let (weight, traffic) = match traffic {
-                Some(rate) => {
-                    let tcp = peer_weight(Some(rate), 0.0, 0.0);
-                    if unix && together > tcp {
-                        (together, None)
-                    } else {
-                        (tcp, Some(rate))
-                    }
-                }
-                None => (together, None),
-            };
-            if weight <= 0.0 {
-                continue;
-            }
-            chickens[i].peers.push((j, weight));
-            chickens[j].peers.push((i, weight));
-            for (me, other) in [(i, j), (j, i)] {
-                if strongest[me].is_none_or(|(w, _, _)| weight > w) {
-                    strongest[me] = Some((weight, other, traffic));
-                }
-            }
-        }
-        for (k, best) in strongest.into_iter().enumerate() {
-            if let Some((_, other, traffic)) = best {
-                let how = match traffic {
-                    Some(rate) => format!("{}/s over TCP", self::rate(rate)),
-                    None => "both busy".into(),
-                };
-                let name = &measured(order[other]).name;
-                chickens[k].notes.push(format!("walks with {name} ({how})"));
-            }
-        }
-        self.unreadable = order
-            .iter()
-            .filter(|&&i| measured(i).written.is_none())
-            .count();
-        self.no_files = order
-            .iter()
-            .filter(|&&i| measured(i).files == Measured::Unreadable)
-            .count();
-        self.no_locks = order
-            .iter()
-            .filter(|&&i| measured(i).locks_held == Measured::Unreadable)
-            .count();
-        self.unattributed_locks = snapshot.unattributed_locks;
-        self.yard.chickens = chickens;
+    /// What a chicken in `role` is doing, or `None` for a feeding one, whose note says where it
+    /// stands in line.
+    fn role_note(&self, pass: &Pass, role: Role, process: &Process, nest: usize) -> Option<String> {
+        Some(match role {
+            Role::Feeding => return None,
+            Role::Foraging => "foraging".into(),
+            Role::Roosting => "roosting".into(),
+            Role::Brooding => format!(
+                "brooding by the nest: not running while holding {}",
+                plural(
+                    process.locks_held.known().copied().unwrap_or(0).into(),
+                    "file lock",
+                    "file locks"
+                )
+            ),
+            Role::Waiting => self.waiting_note(pass, process, nest),
+            Role::Zombie => "feet up: zombie, waiting for its parent to reap it".into(),
+            Role::Frozen => "frozen: stopped (tonic immobility)".into(),
+            Role::Stuck => "stuck in the mud: uninterruptible sleep (D)".into(),
+        })
+    }
 
+    /// Who a waiting chicken is blocked on, and whose nest it queues at.
+    fn waiting_note(&self, pass: &Pass, process: &Process, nest: usize) -> String {
+        let pid = match process.blocked_on {
+            Some(Blocker::Process(pid)) => Some(pid),
+            Some(Blocker::Unnamed) | None => None,
+        };
+        match pid.map(|pid| (pid, pass.by_pid.get(&pid))) {
+            None => {
+                "waiting for a file lock no process can be named for (an OFD lock, or a holder \
+                     in another pid namespace), at its own nest"
+                    .into()
+            }
+            Some((pid, Some(holder))) if flock_key(holder) == self.flocks[nest].key => {
+                format!(
+                    "waiting for a file lock held by {} (pid {pid})",
+                    holder.name
+                )
+            }
+            Some((pid, Some(holder))) => format!(
+                "waiting for a file lock held by {} (pid {pid}), at its own nest \
+                 because the holder's flock is not drawn",
+                holder.name
+            ),
+            Some((pid, None)) => format!(
+                "waiting for a file lock held by pid {pid}, which was not sampled, \
+                 at its own nest"
+            ),
+        }
+    }
+
+    /// The first population starts where it belongs rather than walking in from home.
+    fn place_first(&self, chickens: &mut [Chicken]) {
+        for chicken in chickens {
+            if chicken.walking() {
+                chicken.position = keep_inside(
+                    chicken.target,
+                    chicken.radius,
+                    self.yard.low,
+                    self.yard.high,
+                );
+                chicken.previous = chicken.position;
+                chicken.arrived = true;
+                chicken.theta = chicken.role.resting_heading();
+            }
+        }
+    }
+
+    /// Counts the drawn processes whose I/O, descriptor tables or lock state could not be read,
+    /// and the locks that name no process, for the legend.
+    fn count_unreadable(&mut self, pass: &Pass) {
+        self.unreadable = pass
+            .drawn
+            .iter()
+            .filter(|process| process.written.is_none())
+            .count();
+        self.no_files = pass
+            .drawn
+            .iter()
+            .filter(|process| process.files == Measured::Unreadable)
+            .count();
+        self.no_locks = pass
+            .drawn
+            .iter()
+            .filter(|process| process.locks_held == Measured::Unreadable)
+            .count();
+        self.unattributed_locks = pass.snapshot.unattributed_locks;
+    }
+
+    /// Fox eyes round the fence, more of them and nearer the higher the memory pressure.
+    fn raise_eyes(&mut self, snapshot: &Snapshot) {
         let psi_memory = snapshot.pressure[1];
         self.yard.eyes.clear();
         if psi_memory > 0.5 {
@@ -654,6 +566,174 @@ impl Coop {
                     0.0
                 };
             }
+        }
+    }
+}
+
+/// The role a process earns, given the role its chicken had (`None` for a newcomer) and the
+/// samples in a row it has not been running.
+fn next_role(process: &Process, previous: Option<Role>, quiet: u8) -> Role {
+    match process.state {
+        'Z' => Role::Zombie,
+        'T' | 't' => Role::Frozen,
+        'D' => Role::Stuck,
+        // A request blocked on a lock sleeps (S), so a running process the lock
+        // table, read up to 2 s ago, still shows as blocked has been granted it.
+        'R' => Role::Feeding,
+        _ if process.blocked_on.is_some() => Role::Waiting,
+        // The feeding hold: a chicken leaves the feeder only after two samples in a
+        // row without running, so R/S flicker on 1 s samples does not shuttle it.
+        _ if previous == Some(Role::Feeding) && quiet < 2 => Role::Feeding,
+        _ if process.locks_held.known().is_some_and(|&held| held > 0) => Role::Brooding,
+        _ => {
+            let threshold = match previous {
+                None => ROOST_NEWCOMER,
+                Some(Role::Roosting) => ROOST_LEAVE,
+                Some(_) => ROOST_ENTER,
+            };
+            let idle = if previous == Some(Role::Roosting) {
+                process.cpu <= threshold
+            } else {
+                process.cpu < threshold
+            };
+            if idle { Role::Roosting } else { Role::Foraging }
+        }
+    }
+}
+
+/// Gives the chicken its new role; one that changes role, or hatches, must walk to its place.
+fn change_role(chicken: &mut Chicken, role: Role, newcomer: bool) {
+    if role != chicken.role || newcomer {
+        chicken.arrived = false;
+        if matches!(role, Role::Zombie | Role::Stuck) {
+            chicken.perch = 0.0;
+        }
+        if role == Role::Foraging {
+            chicken.perch = 0.0;
+        }
+    }
+    chicken.role = role;
+}
+
+/// What a feeding chicken says about its place in the `line` of chickens at `feeder`.
+fn feeding_note(
+    feeder: &Feeder,
+    process: &Process,
+    rank: usize,
+    line: usize,
+    priority: i32,
+) -> String {
+    let standing = if process.nice != 0 || priority >= 0 {
+        format!("priority {priority} (nice {})", process.nice)
+    } else {
+        format!("priority {priority} (real-time)")
+    };
+    let place = if feeder.shared {
+        "the shared trough (no last CPU on this OS)".to_owned()
+    } else {
+        format!("cpu{} ({})", feeder.cpu, core_name(feeder.kind))
+    };
+    let mut note = format!(
+        "feeding at {place}, pecking rank {} of {line} by {standing}",
+        rank + 1
+    );
+    if rank >= feeder.slots {
+        note.push_str(", waiting in line");
+    }
+    if let Some(core) = process
+        .core
+        .filter(|&core| !feeder.shared && feeder.cpu != core)
+    {
+        note.push_str(&format!(" (ran on cpu{core}, which has no feeder)"));
+    }
+    if process.state != 'R' {
+        note.push_str(" (held: not running for one sample)");
+    }
+    note
+}
+
+/// The linked pairs of the sample, each ordered, sorted and without repeats.
+fn linked_pairs(snapshot: &Snapshot) -> Vec<(Identity, Identity)> {
+    let mut pairs: Vec<(Identity, Identity)> = snapshot
+        .links
+        .iter()
+        .map(|&(a, b, _)| if a < b { (a, b) } else { (b, a) })
+        .collect();
+    pairs.sort();
+    pairs.dedup();
+    pairs
+}
+
+/// The pull between two foraging chickens whose processes are linked, with the measured TCP
+/// traffic it comes from when that decided it; `None` when there is no pull.
+fn pair_pull(
+    snapshot: &Snapshot,
+    (a, b): (Identity, Identity),
+    (cpu_a, cpu_b): (f32, f32),
+) -> Option<(f32, Option<f32>)> {
+    let traffic = snapshot
+        .link_traffic
+        .get(&(a, b))
+        .or_else(|| snapshot.link_traffic.get(&(b, a)))
+        .copied();
+    let unix = snapshot.unix_links.contains(&(a, b)) || snapshot.unix_links.contains(&(b, a));
+    // A pair can talk over TCP and Unix sockets at once, and measured TCP traffic says
+    // nothing about the Unix sockets, so the stronger of the two pulls. A pair known by
+    // neither (TCP not measured yet, or a platform that does not tell the protocols
+    // apart) falls back to co-activity.
+    let together = peer_weight(None, cpu_a, cpu_b);
+    let (weight, traffic) = match traffic {
+        Some(rate) => {
+            let tcp = peer_weight(Some(rate), 0.0, 0.0);
+            if unix && together > tcp {
+                (together, None)
+            } else {
+                (tcp, Some(rate))
+            }
+        }
+        None => (together, None),
+    };
+    if weight <= 0.0 {
+        return None;
+    }
+    Some((weight, traffic))
+}
+
+/// Makes the foraging chickens of linked processes peers, and notes whom each walks with.
+fn pull_peers(pass: &Pass, chickens: &mut [Chicken]) {
+    let index_of: HashMap<Identity, usize> = chickens
+        .iter()
+        .enumerate()
+        .map(|(k, c)| (c.id, k))
+        .collect();
+    let mut strongest: Strongest = vec![None; chickens.len()];
+    for (a, b) in linked_pairs(pass.snapshot) {
+        let (Some(&i), Some(&j)) = (index_of.get(&a), index_of.get(&b)) else {
+            continue;
+        };
+        if i == j || chickens[i].role != Role::Foraging || chickens[j].role != Role::Foraging {
+            continue;
+        }
+        let cpus = (pass.drawn.at(i).cpu, pass.drawn.at(j).cpu);
+        let Some((weight, traffic)) = pair_pull(pass.snapshot, (a, b), cpus) else {
+            continue;
+        };
+        chickens[i].peers.push((j, weight));
+        chickens[j].peers.push((i, weight));
+        for (me, other) in [(i, j), (j, i)] {
+            if strongest[me].is_none_or(|(w, _, _)| weight > w) {
+                strongest[me] = Some((weight, other, traffic));
+            }
+        }
+    }
+    for (k, best) in strongest.into_iter().enumerate() {
+        if let Some((_, other, traffic)) = best {
+            let how = match traffic {
+                Some(rate) => format!("{}/s over TCP", self::rate(rate)),
+                None => "both busy".into(),
+            };
+            let name = &pass.drawn.at(other).name;
+            chickens[k].notes.push(format!("walks with {name} ({how})"));
         }
     }
 }
