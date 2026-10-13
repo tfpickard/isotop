@@ -1,6 +1,6 @@
 """A small, deterministic, standard-library SVG plotting kit.
 
-Shared by the figure scripts of the Planned-Switchboard, Planned-Plumbing, Planned-Morph,
+Shared by the figure scripts of the View-Switchboard, Planned-Plumbing, Planned-Morph,
 Planned-Murmuration, Planned-Cortex, Planned-Ouija, Planned-Arbor, Planned-Canyon, Planned-Die,
 Math-Reaction-Diffusion and Math-Spiking-Neurons wiki pages. Every figure carries its own dark
 background (#0e1116) with light strokes and text (#c9d1d9) so it reads in both GitHub themes.

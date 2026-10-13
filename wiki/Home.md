@@ -91,7 +91,7 @@ plainly that it describes a design.
 | | | |
 |---|---|---|
 | [Mold](Planned-Mold) | [Chamber](Planned-Chamber) | [HR](Planned-HR) |
-| [Hive](Planned-Hive) | [Anthill](Planned-Anthill) | [Switchboard](Planned-Switchboard) |
+| [Hive](Planned-Hive) | [Anthill](Planned-Anthill) | [Switchboard](View-Switchboard) |
 | [Plumbing](Planned-Plumbing) | [Morph](Planned-Morph) | [Ouija](Planned-Ouija) |
 | [Canyon](Planned-Canyon) | [Die](Planned-Die) | |
 
