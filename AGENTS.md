@@ -380,6 +380,7 @@ match your own shell.
 - Prefer the standard library. Add a dependency only when it replaces substantial,
   error-prone code.
 - Suppress lints with `#[expect(lint, reason = "...")]` only, never `#[allow]`.
+- A view with a page in `docs/theory/` has its constants and function names quoted there. Change them together, check any claim you touch against `src/`, and run `python3 scripts/code_report.py` (Markdown counts in the report). `docs/theory/figures/make_figures.py` regenerates the page diagrams; it needs matplotlib and numpy, which no gate does.
 
 ## Shell notes
 

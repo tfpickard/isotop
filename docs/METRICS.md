@@ -9,12 +9,13 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
 | Rust | 66 | 64,155 | 1,465 | 3,702 |
-| Python | 28 | 12,282 | 634 | 1,412 |
+| SVG | 13 | 13,254 | 9 | 0 |
+| Python | 29 | 12,637 | 644 | 1,454 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 6 | 0 | 2,504 | 523 |
+| Markdown | 15 | 0 | 3,155 | 919 |
 | Plain Text | 7 | 0 | 303 | 0 |
-| **Total** | **112** | **76,758** | **4,934** | **5,688** |
+| **Total** | **135** | **90,367** | **5,604** | **6,126** |
 
 ## Rust by module
 
