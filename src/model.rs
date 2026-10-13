@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
+pub(crate) mod exchange;
 pub(crate) mod kernel;
 
 use crate::geo;
@@ -2563,6 +2564,17 @@ pub struct DemoOptions {
     /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
     /// `unreadable` 0, as in `demo`.
     pub unreadable_parent: bool,
+    /// Synthesizes the interrupt table a telephone exchange draws (`Snapshot::interrupts` and
+    /// `softirqs`, with each line's effective affinity) in place of `kernel_counters`' smaller
+    /// one, for the 16 CPUs: 48 numbered lines (`nvme0q0` to `nvme0q8`, `eth0-rx-0` to
+    /// `eth0-tx-3`, `iwlwifi` and its seven queues and the rest of the prototype's list) at about
+    /// 41,000 events a second in all, each served by one CPU; `eth0-rx-2` moves between cpu3 and
+    /// cpu9 at 10.2 s and every 30 s after; the named rows `NMI` (one event on cpu0 every 45 s from
+    /// 10.7 s), `LOC`, `RES` (330 a second times the CPU's busy share), `CAL` and `TLB`; and all
+    /// ten softirqs, with `NET_RX`, `NET_TX` and `BLOCK` following the lines that raise them.
+    /// `oom_kills` stays None. Counts grow from a day of uptime and rates are pure functions of
+    /// `time`. Off, the fields are what `kernel_counters` says.
+    pub exchange: bool,
 }
 
 impl DemoOptions {
@@ -2581,6 +2593,7 @@ impl DemoOptions {
         oom_cycle: false,
         thread_churn: false,
         unreadable_parent: false,
+        exchange: false,
     };
 }
 
@@ -3625,7 +3638,10 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     if options.oom_and_memory_detail {
         demo_oom_and_memory_detail(&mut processes, count);
     }
-    let (interrupts, softirqs, oom_kills) = if options.kernel_counters {
+    let (interrupts, softirqs, oom_kills) = if options.exchange {
+        let (interrupts, softirqs) = exchange::demo(time, &cpus);
+        (interrupts, softirqs, None)
+    } else if options.kernel_counters {
         let (interrupts, softirqs) = kernel::demo(time, cpus.len());
         let kills = units.values().filter_map(|unit| unit.oom_kills).sum();
         (interrupts, softirqs, Some(kills))

@@ -1171,10 +1171,6 @@ pub(crate) struct Stage<'a> {
     pub time: f32,
     /// The target frame rate (`--fps`), for a view that animates faster than a frame can show
     /// and caps it there, as the switchboard caps a lamp's flicker.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first read by the switchboard view")
-    )]
     pub fps: u32,
     /// Frames the scene has rendered, this one included, whichever view was shown. A view that
     /// must tell a frame that follows its own last frame from one after a gap (another view was

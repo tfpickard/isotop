@@ -29,13 +29,13 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, switchboard (Linux)
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
 
 Each view knows whether it runs on the platform; every view runs on Linux and macOS
-today. Tab, Shift+Tab and the number keys pass over a view that does not. `--view`
+today except the switchboard, which is Linux only. Tab, Shift+Tab and the number keys pass over a view that does not. `--view`
 with such a view starts on the first view that does instead, except in a headless
 `--output` or `--benchmark` run, which exits with status 1 and says why.
 `--list-views` prints the supported views in Tab order and exits, and `--verbose`
@@ -175,6 +175,7 @@ cache is stale.
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
 | Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
+| Interrupt table (switchboard) | The switchboard is unavailable: macOS exposes no unprivileged per-IRQ or per-CPU interrupt counters (`powermetrics` needs root, and IOReport is private). Tab, Shift+Tab and the number keys pass over it, the `v` picker and `--list-views` do not list it, `--verbose` prints `skipping view switchboard: not supported on this platform`, and there is no "not supported" screen. The module still compiles there |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
@@ -212,8 +213,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the nineteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor and (on Linux) the switchboard are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -706,6 +707,42 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Switchboard
+
+![Switchboard: sixteen operators in chairs at a wooden cord switchboard, forty-eight interrupt lines as jacks with amber lamps, coloured cords hanging in catenaries from each jack to the operator's keyshelf, a clock and two inter-office lamps on each operator's rail and a softirq board of ten rows to the right](docs/media/switchboard.webp)
+
+Hardware interrupts as a cord telephone exchange, on Linux. Every IRQ line is a jack with a lamp, every CPU is an operator, and the cord of a line runs to the operator whose CPU serviced most of its interrupts in the last interval. No process is drawn; the view reads only `/proc/interrupts` (with each line's `effective_affinity_list`) and `/proc/softirqs`, through the per-CPU rates the sampler works out from the change of each count between two passes, so a paused or rewound frame shows the sample it was.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Jack | A numbered row of `/proc/interrupts` (an IRQ line) | The device is the first action name with a trailing queue suffix removed (`[-:_]?(q\|rx-\|tx-\|TxRx-)?\d+$`), so `nvme0q0` to `nvme0q8` are the device `nvme0`; devices stand together in rows ordered by their lowest IRQ number, with a divider between them and one label each (a device of one line is labelled with the line's name). The board has clamp(ceil(sqrt(3 n)), 12, 16) columns for the n lines it first sees and grows rows, never columns. A line keeps its seat for as long as it exists, and a freed seat goes to the next newcomer, lowest first |
+| Jack lamp brightness | The line's rate: the per-CPU rates of the interval, summed | log10(rate + 1) / log10(8000), at most 1, in amber. A rate that is not measured yet (a first pass, a new CPU, a count that went backwards) lights nothing and is never read as zero |
+| Lamp flicker | The same rate | Event k flashes at (k + jitter(irq, k)) / f, with f = min(rate, 0.9 x `--fps`) and the jitter a hash of the line and k, so a lamp never flickers faster than a frame shows, and the same frame is drawn at the same time. A flash decays with a time constant of 50 ms. The inspector shows the true rate and says how far the flicker is capped |
+| Cord's operator | The per-CPU rates of the line, **not the cumulative counts** | The CPU with the largest rate in the interval (the lowest CPU on a tie; with more than 64 CPUs a seat adds the CPUs it covers). A line with no events keeps its cord where it was; a line never seen to be serviced has none |
+| Cord swing | The line's `effective_affinity_list` and its servicing CPU | The cord swings the moment the effective affinity changes, and after a new servicing CPU has persisted for 2 samples in a row. The plug lifts for 0.35 s, swings over on an arced smoothstep for 1.05 s and seats for 0.25 s, on the wall clock; the cord's colour crossfades from the old operator's to the new one's and the lamp flutters while it is out. A frame after a gap (another view, a rewind) puts every cord where the sample says and swings none |
+| Cord shape | The line's number | A true catenary of 24 segments, solved by bisection (`switchboard::cord::catenary`) for a cord of length chord x slack, with slack from 1.02 to 1.07 hashed from the IRQ number, and hung again only when an end moves. Where the sag would hang more than 3 design pixels below both ends the slack is cut |
+| Cord width | The line's rate | (0.6 + 0.5 log10(rate + 1), 0.6 to 3.0 design pixels) x 1.6, which reads thin beside the lamps otherwise |
+| Cord colour | The operator's CPU kind and number | A warm cloth dye for performance cores, a cool one for efficiency cores and cores of unknown kind, the same table for every cord that runs to an operator |
+| Operator | A CPU | Seated performance cores first, then efficiency cores, then unknown, by CPU number within each, labelled `cpu3 P`; at most 64 seats, above that each covers ceil(n / 64) CPUs and the legend says so. Her head and arm sway and reach with the CPU's busy share |
+| Operator's clock | `LOC` (on arm64 the `arch_timer` row) | The hand makes one turn per 6,000 counts, ticking in sixtieths of a turn and interpolated between samples from the rate. Without a timer row the clocks stop at twelve and the legend says so |
+| Operator's telephone | `RES` (on arm64 the `Rescheduling` IPI row) | Rattles while the CPU's rate is at least 1 a second |
+| Operator's green lamp | `CAL` and `TLB` (arm64 `Function call` and TLB rows), summed | log10(rate + 1) / log10(1000), at most 1 |
+| Operator's red lamp | `NMI` | Lit for 2 s by an increase of the count |
+| Softirq board | `/proc/softirqs`, ten rows | One lamp per operator per softirq, in the kernel's order, the rate being the change in count per second: log10(rate + 1) / log10(5000), at most 1, dark under half an event a second. A rate that is not known (the first pass) is a darker lamp than a measured zero |
+| Picking and inspector | The line | A jack, its lamp, its socket and its cord pick the line: name, IRQ, chip, rate, servicing CPU, affinity and effective affinity, the last move and how long ago, and the three CPUs with the most of its events as shares. Operators and softirq lamps are not pickable |
+
+**Decorative:** the wood of the board, the cornice, the ivory strips and the bakelite panels they sit on, the keyshelf and the cabinet under it, the floor, the operators' figures, hair, dresses and chairs, the telephones' bodies, the brass of the sockets, plugs and rails, the cords' dark edges and the room's lighting. **The wood, the chairs and the figures carry no data.**
+
+**Named rows that are not drawn.** `/proc/interrupts` has rows that are not lines: of those, only `LOC`, `RES`, `CAL`, `TLB` and `NMI` (and their arm64 counterparts) are shown, on the operators. The others are not drawn: `SPU` (spurious), `PMI` (performance monitoring), `IWI` (IRQ work), `RTR` (APIC ICR read retries), `TRM` and `THR` (thermal and threshold events), `DFR`, `MCE` and `MCP` (machine checks), `HYP`, `HRE` and `HVS` (hypervisor), `PIN`, `NPI` and `PIW` (posted interrupts), `ERR` and `MIS`, and on arm64 the other `IPI` rows (timer broadcast, CPU stop, IRQ work, CPU backtrace, wake-up). Interrupts between CPUs have no known sender, so **nothing is ever drawn between two operators**.
+
+**Caps.** 128 jacks. Above that, lines whose count has not changed since the view began watching go first, then each device of more than 8 lines folds into one jack named like `nvme0q* (33)` that sums its rates; the legend says how many lines were folded. At most 64 operators. At most 128 cords of 24 segments (a board of up to 64 cords also has a dark edge on each, which costs a second ribbon), and lamp glows of at most 12 pixels at 1080 lines.
+
+**What cannot be measured.** Each missing source is named in the legend. Without `/proc/interrupts` the board stays dark (no jack, no cord) and the header says so; without the effective affinities only a change of servicing CPU swings a cord (`no irq affinity`); without `/proc/softirqs` the softirq board stays dark; without a timer row the clocks stop. A kernel that routes a line to several CPUs shows the one that serviced it, and a line whose CPUs are all unmeasured has no cord.
+
+**Platform.** Linux only. On macOS the view is unavailable (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)). The switchboard has no keys of its own, and no tour: `l` hides the labels.
+
+The header reads like `48 lines | 41,203 irq/s | RES 2,114/s | 16 operators: 8 P, 8 E`.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -804,7 +841,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, switchboard (Linux) |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -901,7 +938,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo switchboard plays the three seconds before `--time` as a live run would have drawn them (a sample a second, a frame every 0.1 s, none of them rasterized), so at `--time 12` the line irqbalance moved at 10.2 s is a second into its swing and the red lamp of cpu0 is lit; its table is a synthetic one of 48 lines on 16 CPUs. Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and

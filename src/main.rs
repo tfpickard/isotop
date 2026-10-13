@@ -32,6 +32,7 @@ mod simulation;
 mod status;
 mod stellar;
 mod strata;
+mod switchboard;
 mod terminal;
 mod tesseract;
 mod threads;

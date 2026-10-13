@@ -25,7 +25,7 @@ use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
     arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    reef, strata, switchboard, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -727,6 +727,43 @@ pub static REGISTRY: &[ViewInfo] = &[
         },
         ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
             Box::new(arbor::Arbor::default())
+        })
+    },
+    ViewInfo {
+        // Interrupts are a Linux table; macOS has no unprivileged per-IRQ or per-CPU counters.
+        available: switchboard::available,
+        // No process is drawn, so there are no sockets to link.
+        links: LinkRule::DrawnByView,
+        // The board faces the viewer; a slight shear is built into its layout.
+        pitch: Some(0.45),
+        // The view draws no processes, so there is nothing for the tour to visit.
+        tour: false,
+        // Only the interrupt table is read, and only while the view is shown.
+        sources: Sources::of(&[Source::Interrupts, Source::Softirqs, Source::IrqAffinity]),
+        // The header is the view's own: lines, rate, RES and operators.
+        header: Some(|_| (0, 0)),
+        haze: false,
+        flash: false,
+        // Three seconds of the demo as a live run drew them, so the frame at 12 s finds the
+        // cord that irqbalance moved at 10.2 s a second into its swing.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 3,
+                step: 0.1,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            exchange: true,
+            ..DemoOptions::NONE
+        },
+        // The board draws interrupt lines, not processes.
+        contract: Contract {
+            draws_processes: false,
+            ..Contract::DEFAULT
+        },
+        ..ViewInfo::new("switchboard", "SWITCHBOARD", Backdrop::Dusk, || {
+            Box::new(switchboard::Switchboard::default())
         })
     },
 ];
@@ -1482,7 +1519,7 @@ mod tests {
     }
 
     #[test]
-    fn every_row_builds_its_own_module_and_only_the_matrix_replaces_the_inspector() {
+    fn every_row_builds_its_own_module_and_only_views_without_processes_replace_the_inspector() {
         let scene = Scene::new();
         let snapshot = Snapshot::default();
         let replacing: Vec<&str> = View::all()
@@ -1491,7 +1528,7 @@ mod tests {
             .collect();
         assert_eq!(
             replacing,
-            ["matrix"],
+            ["matrix", "switchboard"],
             "a view replaces the inspector line through ViewModule, and only a view that draws no \
              processes has reason to"
         );
