@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in eighteen views: a process
+A living picture of your machine inside the terminal, in nineteen views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, the system log (the systemd
@@ -8,8 +8,9 @@ journal, or the unified log on macOS) as Matrix rain, a chicken yard, a geocentr
 cosmos of Fourier epicycles, a minute of process worldlines in a tesseract whose fourth
 axis is time, a moonlit cemetery of the processes that exited, a slice of cortex
 whose neurons fire with CPU, a black hole whose orbits rank the processes the OOM
-killer will take next, a murmuration of starlings with one bird for each thread, and
-the process tree as a tree. Written in
+killer will take next, a murmuration of starlings with one bird for each thread,
+the process tree as a tree, and a boiler room whose pipes, tubes and hoses are the
+channels between processes. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -23,6 +24,7 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 | ![Matrix](docs/media/matrix.webp)<br>**10 Matrix** | ![Coop](docs/media/coop.webp)<br>**11 Coop** | ![Ptolemy](docs/media/ptolemy.webp)<br>**12 Ptolemy** |
 | ![Tesseract](docs/media/tesseract.webp)<br>**13 Tesseract** | ![Necropolis](docs/media/necropolis.webp)<br>**14 Necropolis** | ![Cortex](docs/media/cortex.webp)<br>**15 Cortex** |
 | ![Horizon](docs/media/horizon.webp)<br>**16 Horizon** | ![Murmuration](docs/media/murmuration.webp)<br>**17 Murmuration** | ![Arbor](docs/media/arbor.webp)<br>**18 Arbor** |
+| ![Plumbing](docs/media/plumbing.webp)<br>**19 Plumbing** | | |
 
 The numbers are the views' places in the Tab order (the registry's, which
 `isotop --list-views` prints); the keys 1 to 9 and 0 jump to the first ten.
@@ -42,7 +44,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, plumbing
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -194,6 +196,7 @@ cache is stale.
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
+| Pipes, outflow and wait channels (plumbing) | Pipes are read as on Linux, and `Pipe::buffered` says how many bytes wait in an anonymous pipe, which the pipe's card quotes (the window has no fill level either way). There is no `/proc/<pid>/wchan`, so `Source::WaitChannel` is missing: no gauge pins in the red, no window runs dry or packed, and the legend says "no wait channel: no red or dry gauges". Without `rchar` and `wchar` there is no remainder to attribute (see Unattributed I/O above), so every tank's flow is unmeasured: grey still water in the windows, a grey face with a slash on every gauge, and the legend says "no unattributed io: water and gauges unmeasured". Loopback connections have no byte counters, so the hoses are grey with no beads ("no socket traffic: hoses unmeasured") and a process holding a loopback connection has no flow either. Pipes, Unix sockets with their queues, bursts, manifolds' absence (no flow to split) and the layout are as on Linux |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -228,8 +231,8 @@ The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. The view registry
 (`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
 truth for the list of views, their Tab order and their digits: Tab cycles
-the eighteen views in that order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the nineteen views in that order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor and plumbing are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -819,6 +822,48 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Plumbing
+
+![Plumbing: iron tanks with brass bands and pressure gauges stand in cgroup bays on a brick-walled floor, joined by copper pipes with windows of moving blue water, brass tubes overhead and a green hose, and one pipe has burst and sprays water on the floor](docs/media/plumbing.webp)
+
+The channels between processes as the plumbing of a boiler room: every process with a pipe, a Unix socket or a loopback connection is a tank, a pipe is a copper run with a window of water, a Unix socket is a brass tube overhead that holds its unread bytes as capsules, loopback TCP is a green hose, and a pipe nobody reads any more bursts.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Tank | A process with at least one drawn link: a pipe or FIFO (`Snapshot::pipes`), a Unix socket (`unix_links`) or a loopback TCP connection (`links`); the selected process | One tank per process, at most 256 (the most links, then the largest outflow, stay). It stays 10 s after its last link closes. A process with no link is not drawn |
+| Tank size | Memory (RSS; the physical footprint on macOS) | Radius 0.3 world units up to 2 MiB, then 0.085 for every doubling, to 0.9 at about 267 MiB; height 1.6 r + 0.55 |
+| Tank band | The process's kind (kernel, container, system, user) | The shared process-kind colour |
+| Bay | The process's cgroup (the app group on macOS) | A yellow-outlined floor patch for each cgroup, titled with its group. Its tanks stand on a square spiral of seats 3 world units apart; a tank keeps its seat while it is a tank, and a bay is reserved a whole n by n block of seats at a time |
+| Gauge needle | The process's attributed outflow (see **The flow rule**) | A log scale from 1 KiB/s to 64 MiB/s: 0 at or below the first, the whole sweep at the second. The inspector and the callout quote the rate; the gauge is never the fill of a pipe |
+| Gauge in the red, steam | The wait channel of the process (`Source::WaitChannel`) is a pipe write | The needle pins at the top in red and steam rises from the tank: the process is blocked writing to a full pipe |
+| Gauge face with a slash | A flow that was not measured | A grey face with a slash and no needle. Never a needle at 0: a measured zero has a needle at the bottom |
+| Copper run | A pipe or FIFO a process holds the write end of and another holds the read end of (`Pipe::writer`, `Pipe::reader`) | One run from writer to reader for all the pipes between them, the card counts them. Runs are found by A* on a 0.5-unit lattice round the tanks (a turn costs 2.5, reusing a node 7) and kept until an end moves or a tank stands on them. A FIFO both processes opened for reading and writing runs both ways |
+| Water in the window | The writer's outflow | Blue dashes run along the run at 0.6 + 0.45 log10(rate / 1 kB/s) floor cells (2 world units) a second, 0.6 at 1 kB/s and below, 2.76 at 64 MB/s; calm still water for a measured 0; grey still water for an unmeasured flow. The speed says faster or slower, never how much; a manifold's branches run at the rate over their number |
+| Packed window | The writer's wait channel is `pipe_write` | The glass bulges, packed with still water, labelled `writer blocked: pipe full`. The kernel does not say which of the writer's pipes is full, so every run of that writer shows it |
+| Dry window | The reader's wait channel is `pipe_read` | Empty glass with a few drops, labelled `reader waiting: pipe empty` |
+| Manifold, `split unknown` | The writer's outlets, from its descriptors (`IoDetail`, `Snapshot::pipe_holds`) | A brass manifold on the tank where the flow could have gone to two or more outlets, labelled `split unknown`; its branches are drawn equal, and no number is shown for any branch |
+| Burst | A pipe a process holds the write end of and no process holds the read end of (`Snapshot::severed`) that the view saw with a reader first | The open end sprays 56 droplets for 6 s and leaves a puddle, labelled `reader gone: EPIPE next` and `<writer> still writing`; after that it is a capped end |
+| Capped end | A severed pipe the view never saw a reader of | A copper stub with a cap and no spray: a reader that is another user's process, or one the pipe scan has not reached, looks the same, so it is not called gone |
+| Brass tube | A Unix socket between two drawn processes (`unix_links`, the receive queues of the sock_diag netlink reply) | An overhead tube from the valve of one tank to the other's, with a lane for each direction |
+| Capsule | The unread bytes in the receiving socket's queue (`Snapshot::unix_queues`) | One capsule for every started 4 KiB waiting in a lane, plus one while a datagram waits, at most 12 drawn; they wait still at the receiving end and never travel, since nothing measures how fast a queue is fed. The label counts them all: `3 capsules = 12 KiB unread` |
+| Green hose | Loopback TCP between two drawn processes | A hose on the floor between the tanks, with a lane of beads each way |
+| Hose beads | What each process sent the other over loopback (`Snapshot::loopback_sent`: the growth of the other end's received counter) | Beads run at the same speed law as the water, 0.6 + 0.45 log10(rate / 1 kB/s) cells a second; a measured 0 is a hose with no beads; an unmeasured rate is a grey hose. The label gives both rates |
+| Lit tank and runs | The selected, hovered or toured process | A glow round the tank and its runs and tubes brighten |
+
+**Decorative:** the brick walls, their arched windows and the slab, tile lines and dusk sky; the yellow paint of the bays and the order of the seats (which carries nothing but who came first); the iron, copper, brass and rubber colours, the rivets, the cap, the valve wheel and the collars and flanges; the position of a run's window in its longest leg; which side of a tank a run leaves by; the scatter of the droplets, which is seeded by the writer and the pipe; and which way an overhead tube turns its corner.
+
+**The flow rule.** A tank's flow is the growth of what its write calls moved (`wchar`) that no file position explains (`IoDetail::unattributed`, which already takes off what its write-only files advanced), less what it sent over TCP, loopback and remote, which is measured exactly. The outlets left for that remainder are every writable regular file, every pipe or FIFO it may write, every Unix socket pair, every other socket and a terminal; a TCP connection whose send rate was measured is already taken off, so it is not an outlet. With one outlet the remainder went through it, and the water, the gauge and the label are exact. With two or more the flow is known as a whole and its share of each is unknown: the manifold says `split unknown` and the card names the outlets. A writable file is an outlet whatever its position says, because `pwrite`, AIO and io_uring write to a file without moving it, so a process that holds one pipe and a file it may write is `split unknown` and a lone pipe is exact only when the process holds no writable file. A walk of the descriptors that a cap cut short (`IoDetail::partial`) is never exact. Descriptors of other kinds (epoll, eventfd) are not counted, so the outlets of a process that writes to such an object are understated. I/O that is not attributed is never given to a file, a pipe or a socket.
+
+**Layout.** A tank's place depends on its cgroup and on when it became a tank, nothing else: CPU, memory and the other tanks never move it, and bays are placed again only when their block of seats is outgrown. Runs keep their route until an end moves or a new tank stands on it, and tanks are routed round at a fixed radius, so a change of memory moves no run. Water and beads move by the wall clock, whatever the frame rate, and stand still while paused.
+
+**Tour and inspector.** The Space tour visits the twelve tanks with the most links, heaviest first, and its callout gives the flow in a line. The inspector card of a pipe, a tube, a hose, a manifold or a severed pipe says what is known and what is not, and a tank's popup lines give its flow and where it is blocked.
+
+**Caps.** 256 tanks, 12 capsules to a lane, at most 32 new routes a frame (a run waits for its route as a plain elbow), 4,096 descriptor reads a pass for the pipes, and 256 wait channels a pass. The I/O detail covers the 24 busiest processes by syscall rate, so a quiet process has a gauge face with a slash and a pipe run of unmeasured water, never a flow of 0.
+
+**What cannot be measured.** How full a pipe is: Linux tells nothing of a pipe another process holds, so the window has no level, and a card quotes the bytes waiting only where the platform gives them (macOS, anonymous pipes). Which pipe of several a writer is blocked on. A flow that the I/O detail has not reached (a process outside the 24 busiest, another user's process), that has no remainder (the first reading, macOS), or that holds a TCP connection whose send rate is not yet measured: its water is grey, its gauge a slash, and the legend counts nothing as zero. Where a reader of a pipe is another user's process. How fast a Unix socket's queue was fed. The legend says `no pipes`, `no red or dry gauges`, `water unmeasured`, `water and gauges unmeasured` or `hoses unmeasured` when the source is not read.
+
+**Platform.** On Linux everything above; the wait channel is the kernel function of `/proc/<pid>/wchan`, which needs a kernel built with `CONFIG_KALLSYMS`, and a task that is running, or one this user may not inspect, reads 0 (the card says so, and it is not a wait). On macOS the pipes, Unix sockets, queues, bursts and layout are as on Linux, and the flow, the wait channel and the hoses are missing; see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -849,8 +894,8 @@ read appear. In orbit, ripple and city they are cyan arcs with travelling pulses
 (`c` cycles all / highlighted / off); TCP connections to other machines rise as
 pink beams. Links of the selected, hovered or toured process glow. The tesseract
 draws every link too; flow, cores, cells, strata, globe, reef, the coop, ptolemy
-and arbor draw only the glowing ones; the necropolis, cortex, horizon and murmuration
-leave links to the view.
+and arbor draw only the glowing ones; the necropolis, cortex, horizon, murmuration and
+plumbing leave links to the view.
 
 The scene draws these over the views, and the table gives the transforms:
 
@@ -1072,7 +1117,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo plumbing plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so the water has travelled and a pipe whose reader let go at the tenth second is already spraying at `--time 12`. Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and
