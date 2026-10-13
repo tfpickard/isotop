@@ -82,6 +82,7 @@ Eighteen exist today.
 | [Coop](View-Coop) | [Matrix](View-Matrix) | [Ptolemy](View-Ptolemy) |
 | [Tesseract](View-Tesseract) | [Necropolis](View-Necropolis) | [Cortex](View-Cortex) |
 | [Horizon](View-Horizon) | [Murmuration](View-Murmuration) | [Arbor](View-Arbor) |
+| [HR](View-HR) | | |
 
 ### Planned views
 
@@ -90,7 +91,7 @@ plainly that it describes a design.
 
 | | | |
 |---|---|---|
-| [Mold](Planned-Mold) | [Chamber](Planned-Chamber) | [HR](Planned-HR) |
+| [Mold](Planned-Mold) | [Chamber](Planned-Chamber) | |
 | [Hive](Planned-Hive) | [Anthill](Planned-Anthill) | [Switchboard](Planned-Switchboard) |
 | [Plumbing](Planned-Plumbing) | [Morph](Planned-Morph) | [Ouija](Planned-Ouija) |
 | [Canyon](Planned-Canyon) | [Die](Planned-Die) | |

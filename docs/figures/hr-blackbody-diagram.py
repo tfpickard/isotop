@@ -78,10 +78,20 @@ def temperature(cpu_percent):
     return min(2400.0 * (1.0 + cpu_percent / 5.0) ** 0.47, 40000.0)
 
 
+MIB = 1024.0**2
+
+
 def magnitude(memory_bytes):
+    """stellar::magnitude (memory floored at 1 MiB) clamped to [-6, +9]; no memory is +9."""
     if memory_bytes <= 0:
         return 9.0
-    return min(max(-2.5 * math.log10(memory_bytes / GIB), -6.0), 9.0)
+    return min(max(-2.5 * math.log10(max(memory_bytes, MIB) / GIB), -6.0), 9.0)
+
+
+def measured(memory_bytes):
+    """hr::is_measured: at least the 1 MiB floor and not at either limit of the range."""
+    raw = -2.5 * math.log10(max(memory_bytes, MIB) / GIB)
+    return memory_bytes >= MIB and -6.0 < raw < 9.0
 
 
 def spectral_class(t):
@@ -149,13 +159,15 @@ def main():
         mid = math.sqrt(low * min(high, 45000.0))
         axes.label(0.011, mid, letter, size=11.5, fill=P.TEXT, dx=4, dy=4)
     axes.dots([100.0], [temperature(100.0)], fill=P.AQUA, radius=4)
-    axes.label(100.0, temperature(100.0), "one core: %.0f K (A0)" % temperature(100.0), size=10.5,
-               dx=-8, dy=18, anchor="end")
+    letter, digit = spectral_class(temperature(100.0))
+    axes.label(100.0, temperature(100.0), "one core: %.0f K (%s%d)" % (temperature(100.0), letter, digit),
+               size=10.5, dx=-8, dy=18, anchor="end")
 
     stars = population()
     xs = [math.log10(temperature(c)) for c, _ in stars]
     ys = [magnitude(m) for _, m in stars]
-    intercept, slope = theil_sen(xs, ys)
+    fitted = [(x, y) for x, y, (_, memory) in zip(xs, ys, stars) if measured(memory)]
+    intercept, slope = theil_sen([x for x, _ in fitted], [y for _, y in fitted])
     axes2 = P.Axes(svg, 560, top, 580, h, (45000, 2250), (9, -6), xlog=True,
                    xlabel="temperature (K), hot on the left", ylabel="magnitude m (bright at the top)",
                    title="A synthetic machine", xticks=[40000, 20000, 10000, 7000, 5000, 3500],

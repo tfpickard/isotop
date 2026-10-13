@@ -1,7 +1,7 @@
 # Stellar photometry
 
 Astronomers measure how bright a star looks with a logarithmic scale of *magnitudes*, a historical accident that turned out to match the eye. isotop borrows the scale wholesale: memory is the star's brightness, 1 GiB is magnitude 0, and `src/stellar.rs` turns a magnitude into a
-sharp core inside a soft halo and turns births and exits into flashes. [View Ptolemy](View-Ptolemy) draws every steady process as such a star, and the sky of the planned [Planned HR](Planned-HR) view is specified to build on the same module. This page derives the magnitude scale, explains the point-spread function behind the "star" look, lists exactly
+sharp core inside a soft halo and turns births and exits into flashes. [View Ptolemy](View-Ptolemy) draws every steady process as such a star, and the sky of [View HR](View-HR) builds on the same module. This page derives the magnitude scale, explains the point-spread function behind the "star" look, lists exactly
 what the code does and where it saturates, and compares the nova, fade and supernova timelines with the real things.
 
 ![Memory to magnitude, halo profile, nova and fade, and supernova curves](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/stellar-photometry.svg)
@@ -50,7 +50,7 @@ only the wings continue to grow, so the *apparent size* of a bright star in a ph
 
 * A **nova** is a white dwarf in a binary that ignites accreted hydrogen: a rise of many magnitudes in about a day, then a decline over weeks to months, classified by $t_2$ and $t_3$, the times to fall 2 and 3 magnitudes from maximum (Payne-Gaposchkin, 1957).
 * A **supernova** is a stellar explosion that can outshine its host galaxy; its debris shell expands, and in the adiabatic (Sedov-Taylor) phase the radius grows as $R \propto (Et^2/\rho)^{1/5} \propto t^{2/5}$ (Taylor 1950; Sedov 1959).
-* The **Hertzsprung-Russell diagram** (Hertzsprung 1911; Russell 1913) plots stellar luminosity (or absolute magnitude) against temperature or spectral class; stars fall in bands (the main sequence, giants, white dwarfs). The specified [Planned HR](Planned-HR) view will place processes on such a diagram.
+* The **Hertzsprung-Russell diagram** (Hertzsprung 1911; Russell 1913) plots stellar luminosity (or absolute magnitude) against temperature or spectral class; stars fall in bands (the main sequence, giants, white dwarfs). [View HR](View-HR) places processes on such a diagram.
 
 ## What the code does
 
@@ -103,14 +103,14 @@ core strength are saturated and only the core radius keeps growing (to 3.2 px at
 * **Supernova** (an exit of more than 1 GiB, chosen by `exit_flash`): $-6$ magnitudes (a flux of 251) linearly over 0.5 s, after which the star is not drawn at all (opacity 0) while a shell grows as $1 - e^{-t/1.1}$ of its final radius, fades with alpha $e^{-t/1.6}$, and warms from blue-white to red as $\min(t/1.5, 1)$; over at 8 s. The shell's saturating exponential is a stylisation: a real remnant
   expands as a power law in time.
 
-**Who uses it.** [View Ptolemy](View-Ptolemy) draws fixed stars with `magnitude`, `spread` and `Frame::star`, flashes births as `Flash::Nova` and fades exits with `Flash::Fade`. **The supernova timeline and `exit_flash` are implemented and tested but no shipped view calls them**: they wait for the planned HR sky (the module's own attributes say "first used by a star view").
+**Who uses it.** [View Ptolemy](View-Ptolemy) draws fixed stars with `magnitude`, `spread` and `Frame::star`, flashes births as `Flash::Nova` and fades exits with `Flash::Fade`. **The supernova timeline and `exit_flash` are used by [View HR](View-HR)**, which draws a supernova for an exit above 1 GiB and a fade below it.
 Nothing else in isotop uses the magnitude scale; other views size by their own saturating curves (see `model::bounded`).
 
 ## Reading the picture
 
 * **Measured:** memory (RSS; the physical footprint on macOS) is the only input to a star's brightness; birth and exit times (from consecutive samples of the shared history) drive the flashes.
 * **Derived:** the magnitude, the core and halo sizes, the colour mix toward white.
-* **Decorative:** the *colour* of a star (the process's kind) is not a temperature: there is no spectral information. In the planned HR view a temperature will come from CPU use; here colour carries kind only.
+* **Decorative:** the *colour* of a star (the process's kind) is not a temperature: there is no spectral information. In [View HR](View-HR) a temperature comes from CPU use; here colour carries kind only.
 * **Saturation.** Brightness is compressed twice, by the logarithm and by the display's caps: the visible range is about 1 MiB (core 1.25 px, no halo) to about 1 GiB (halo strength at its cap), 7.5 magnitudes or ten doublings; below about 6 MiB there is no halo, above 1 GiB almost nothing changes.
 * **Flashes are age-only.** A nova at 0.3 s is $-4$ magnitudes whatever the process; a supernova needs more than 1 GiB (not 1 GiB exactly). A short-lived process appears and fades inside the 8 s window the view looks back over; a process that exits and whose exit lies outside that window is not shown fading.
 * **Size means flux^0.2, not area.** The core radius grows as the fifth root of flux (a factor 1.58 per 2.5 magnitudes at the bright end), so a thousand-fold memory ratio is a factor of four in the scaling part of the radius.
@@ -134,9 +134,9 @@ Watch the outer ring of the Ptolemy view in the live demo for a newly started pr
 
 ## Variations and open questions
 
-1. **Colour as temperature.** Map CPU use to a blackbody colour, as the planned HR view does; the star's colour would then carry a measurement.
-2. **Twinkle.** The planned view makes a star's twinkle amplitude the coefficient of variation of its CPU: scintillation as a stability measure.
-3. **Constellations.** Join the stars of a cgroup with stick figures, as the planned view proposes; the figure's legibility depends on the halo cap above.
+1. **Colour as temperature.** Map CPU use to a blackbody colour, as [View HR](View-HR) does; the star's colour would then carry a measurement.
+2. **Twinkle.** [View HR](View-HR) makes a star's twinkle amplitude the coefficient of variation of its CPU: scintillation as a stability measure.
+3. **Constellations.** Join the stars of a cgroup with stick figures, as [View HR](View-HR) does; the figure's legibility depends on the halo cap above.
 4. **Lift the cap.** Let the halo radius keep growing with flux until the core and halo strengths saturate, restoring a visible difference between 1 and 16 GiB.
 5. **Real light curves.** Use a power-law decline (linear in magnitude) for the nova; the current exponential-in-magnitude decay is flatter at late times.
 6. **The Sun.** Solving $-2.5\log_{10}(\text{memory}/1\,\mathrm{GiB}) = -26.7$ gives about $5.1\times10^{19}$ bytes, 2.8 times a 64-bit address space. `magnitude` takes a `u64`, so the brightest star it can draw is $-25.6$, at a memory of $2^{64}$ bytes; no process can outshine that, and none can be the Sun.
@@ -151,4 +151,4 @@ Watch the outer ring of the Ptolemy view in the live demo for a newly started pr
 * C. Payne-Gaposchkin, *The Galactic Novae* (North-Holland, 1957).
 * G. I. Taylor, "The formation of a blast wave by a very intense explosion", *Proceedings of the Royal Society A* 201 (1950), 159-186; L. I. Sedov, *Similarity and Dimensional Methods in Mechanics* (Academic Press, 1959).
 * E. Hertzsprung (1911) and H. N. Russell (1913) on the luminosity-spectral-type relation (details of the original papers unverified here).
-* [View Ptolemy](View-Ptolemy), [Planned HR](Planned-HR), [Math Fourier Epicycles](Math-Fourier-Epicycles), [Theory Colour](Theory-Colour), [Theory Rasterization](Theory-Rasterization).
+* [View Ptolemy](View-Ptolemy), [View HR](View-HR), [Math Fourier Epicycles](Math-Fourier-Epicycles), [Theory Colour](Theory-Colour), [Theory Rasterization](Theory-Rasterization).
