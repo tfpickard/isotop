@@ -22,7 +22,7 @@
     not(test),
     expect(
         dead_code,
-        reason = "no view places a field on a grid or displaces it yet; hr uses corners and flat relief"
+        reason = "no view places a field on a grid or displaces it yet; hr and hive use corners and flat relief (hive also a shading)"
     )
 )]
 
