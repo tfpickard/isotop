@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 420" width="980" height="420" font-family="system-ui, sans-serif" role="img">
+<title>From CPU use to ridge height</title>
+<desc>The saturating height map and the response of the smoothed CPU use to a step and to a one-second burst.</desc>
+<rect width="980" height="420" fill="#0e1116"/>
+<line x1="80" y1="60" x2="80" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="80" y1="330" x2="80" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="80" y="347" font-size="11" text-anchor="middle" fill="#8b949e">0</text>
+<line x1="125" y1="60" x2="125" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="125" y1="330" x2="125" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="125" y="347" font-size="11" text-anchor="middle" fill="#8b949e">100</text>
+<line x1="170" y1="60" x2="170" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="170" y1="330" x2="170" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="170" y="347" font-size="11" text-anchor="middle" fill="#8b949e">200</text>
+<line x1="260" y1="60" x2="260" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="260" y1="330" x2="260" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="260" y="347" font-size="11" text-anchor="middle" fill="#8b949e">400</text>
+<line x1="350" y1="60" x2="350" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="350" y1="330" x2="350" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="350" y="347" font-size="11" text-anchor="middle" fill="#8b949e">600</text>
+<line x1="440" y1="60" x2="440" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="440" y1="330" x2="440" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="440" y="347" font-size="11" text-anchor="middle" fill="#8b949e">800</text>
+<line x1="80" y1="330" x2="440" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="330" x2="80" y2="330" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="334" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="80" y1="266.47" x2="440" y2="266.47" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="266.47" x2="80" y2="266.47" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="270.47" font-size="11" text-anchor="end" fill="#8b949e">4</text>
+<line x1="80" y1="202.94" x2="440" y2="202.94" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="202.94" x2="80" y2="202.94" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="206.94" font-size="11" text-anchor="end" fill="#8b949e">8</text>
+<line x1="80" y1="139.41" x2="440" y2="139.41" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="139.41" x2="80" y2="139.41" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="143.41" font-size="11" text-anchor="end" fill="#8b949e">12</text>
+<line x1="80" y1="75.88" x2="440" y2="75.88" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="76" y1="75.88" x2="80" y2="75.88" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="72" y="79.88" font-size="11" text-anchor="end" fill="#8b949e">16</text>
+<rect x="80" y="60" width="360" height="270" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="260" y="366" font-size="12" text-anchor="middle" fill="#c9d1d9">CPU use (% of one core)</text>
+<text x="36" y="195" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 36 195)">ridge height (world units)</text>
+<text x="80" y="46" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">(a) height = 0.15 + 16 cpu / (cpu + 60)</text>
+<polyline points="80,327.62 81.8,311.74 83.6,297.72 85.4,285.26 87.2,274.12 89,264.09 90.8,255.01 92.6,246.76 94.4,239.23 96.2,232.32 98,225.97 99.8,220.11 101.6,214.68 103.4,209.63 105.2,204.94 107,200.56 108.8,196.46 110.6,192.62 112.4,189.01 114.2,185.61 116,182.41 117.8,179.38 119.6,176.52 121.4,173.81 123.2,171.24 125,168.79 126.8,166.47 128.6,164.26 130.4,162.15 132.2,160.13 134,158.21 135.8,156.36 137.6,154.6 139.4,152.91 141.2,151.29 143,149.74 144.8,148.24 146.6,146.8 148.4,145.42 150.2,144.09 152,142.8 153.8,141.57 155.6,140.37 157.4,139.22 159.2,138.11 161,137.03 162.8,135.99 164.6,134.98 166.4,134 168.2,133.06 170,132.14 171.8,131.25 173.6,130.39 175.4,129.56 177.2,128.74 179,127.95 180.8,127.19 182.6,126.44 184.4,125.72 186.2,125.01 188,124.32 189.8,123.65 191.6,123 193.4,122.37 195.2,121.75 197,121.15 198.8,120.56 200.6,119.98 202.4,119.42 204.2,118.88 206,118.34 207.8,117.82 209.6,117.31 211.4,116.82 213.2,116.33 215,115.85 216.8,115.39 218.6,114.93 220.4,114.49 222.2,114.05 224,113.62 225.8,113.21 227.6,112.8 229.4,112.4 231.2,112 233,111.62 234.8,111.24 236.6,110.87 238.4,110.51 240.2,110.15 242,109.8 243.8,109.46 245.6,109.12 247.4,108.79 249.2,108.47 251,108.15 252.8,107.84 254.6,107.53 256.4,107.23 258.2,106.94 260,106.65 261.8,106.36 263.6,106.08 265.4,105.8 267.2,105.53 269,105.26 270.8,105 272.6,104.74 274.4,104.49 276.2,104.24 278,103.99 279.8,103.75 281.6,103.51 283.4,103.28 285.2,103.05 287,102.82 288.8,102.6 290.6,102.38 292.4,102.16 294.2,101.95 296,101.74 297.8,101.53 299.6,101.32 301.4,101.12 303.2,100.92 305,100.73 306.8,100.53 308.6,100.34 310.4,100.16 312.2,99.97 314,99.79 315.8,99.61 317.6,99.43 319.4,99.26 321.2,99.08 323,98.91 324.8,98.74 326.6,98.58 328.4,98.41 330.2,98.25 332,98.09 333.8,97.93 335.6,97.78 337.4,97.63 339.2,97.47 341,97.32 342.8,97.18 344.6,97.03 346.4,96.89 348.2,96.74 350,96.6 351.8,96.46 353.6,96.32 355.4,96.19 357.2,96.05 359,95.92 360.8,95.79 362.6,95.66 364.4,95.53 366.2,95.41 368,95.28 369.8,95.16 371.6,95.04 373.4,94.91 375.2,94.79 377,94.68 378.8,94.56 380.6,94.44 382.4,94.33 384.2,94.22 386,94.1 387.8,93.99 389.6,93.88 391.4,93.78 393.2,93.67 395,93.56 396.8,93.46 398.6,93.35 400.4,93.25 402.2,93.15 404,93.05 405.8,92.95 407.6,92.85 409.4,92.75 411.2,92.65 413,92.56 414.8,92.46 416.6,92.37 418.4,92.28 420.2,92.19 422,92.09 423.8,92 425.6,91.91 427.4,91.83 429.2,91.74 431,91.65 432.8,91.57 434.6,91.48 436.4,91.4 438.2,91.31 440,91.23" fill="none" stroke="#ecb25c" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="80,73.5 440,73.5" fill="none" stroke="#8b949e" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="4 3"/>
+<text x="435.5" y="87.5" font-size="11" text-anchor="end" fill="#8b949e">ceiling 16.15</text>
+<line x1="125" y1="330" x2="125" y2="168.79" fill="none" stroke="#48b7c7" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
+<circle cx="125" cy="168.79" r="3.5" fill="#48b7c7" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="131" y="184.79" font-size="11" text-anchor="start" fill="#48b7c7">100 %: 10.2</text>
+<line x1="260" y1="330" x2="260" y2="106.65" fill="none" stroke="#48b7c7" stroke-width="1" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="3 3"/>
+<circle cx="260" cy="106.65" r="3.5" fill="#48b7c7" stroke="#0e1116" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="266" y="122.65" font-size="11" text-anchor="start" fill="#48b7c7">400 %: 14.1</text>
+<line x1="560" y1="60" x2="560" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="560" y1="330" x2="560" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="560" y="347" font-size="11" text-anchor="middle" fill="#8b949e">0</text>
+<line x1="620" y1="60" x2="620" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="620" y1="330" x2="620" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="620" y="347" font-size="11" text-anchor="middle" fill="#8b949e">2</text>
+<line x1="680" y1="60" x2="680" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="680" y1="330" x2="680" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="680" y="347" font-size="11" text-anchor="middle" fill="#8b949e">4</text>
+<line x1="740" y1="60" x2="740" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="740" y1="330" x2="740" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="740" y="347" font-size="11" text-anchor="middle" fill="#8b949e">6</text>
+<line x1="800" y1="60" x2="800" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="800" y1="330" x2="800" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="800" y="347" font-size="11" text-anchor="middle" fill="#8b949e">8</text>
+<line x1="860" y1="60" x2="860" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="860" y1="330" x2="860" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="860" y="347" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="920" y1="60" x2="920" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="920" y1="330" x2="920" y2="334" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="920" y="347" font-size="11" text-anchor="middle" fill="#8b949e">12</text>
+<line x1="560" y1="330" x2="920" y2="330" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="330" x2="560" y2="330" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="334" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="560" y1="262.5" x2="920" y2="262.5" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="262.5" x2="560" y2="262.5" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="266.5" font-size="11" text-anchor="end" fill="#8b949e">25</text>
+<line x1="560" y1="195" x2="920" y2="195" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="195" x2="560" y2="195" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="199" font-size="11" text-anchor="end" fill="#8b949e">50</text>
+<line x1="560" y1="127.5" x2="920" y2="127.5" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="127.5" x2="560" y2="127.5" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="131.5" font-size="11" text-anchor="end" fill="#8b949e">75</text>
+<line x1="560" y1="60" x2="920" y2="60" fill="none" stroke="#222a33" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="556" y1="60" x2="560" y2="60" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="552" y="64" font-size="11" text-anchor="end" fill="#8b949e">100</text>
+<rect x="560" y="60" width="360" height="270" rx="0" fill="none" stroke="#4b5563" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="740" y="366" font-size="12" text-anchor="middle" fill="#c9d1d9">samples after the change (1 s apart)</text>
+<text x="516" y="195" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 516 195)">smoothed CPU use (%)</text>
+<text x="560" y="46" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">(b) response of the stored CPU use, tau = 1.5 s</text>
+<polyline points="560,330 590,198.62 620,131.17 650,96.54 680,78.76 710,69.63 740,64.95 770,62.54 800,61.3 830,60.67 860,60.34 890,60.18 920,60.09" fill="none" stroke="#ecb25c" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="560" cy="330" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="590" cy="198.62" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="620" cy="131.17" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="650" cy="96.54" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="680" cy="78.76" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="710" cy="69.63" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="740" cy="64.95" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="770" cy="62.54" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="800" cy="61.3" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="830" cy="60.67" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="860" cy="60.34" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="890" cy="60.18" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920" cy="60.09" r="3.2" fill="#ecb25c" stroke="#0e1116" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<rect x="552" y="330" width="16" height="0" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="582" y="198.62" width="16" height="131.38" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="612" y="262.55" width="16" height="67.45" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="642" y="295.37" width="16" height="34.63" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="672" y="312.22" width="16" height="17.78" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="702" y="320.87" width="16" height="9.13" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="732" y="325.31" width="16" height="4.69" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="762" y="327.59" width="16" height="2.41" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="792" y="328.76" width="16" height="1.24" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="822" y="329.37" width="16" height="0.63" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="852" y="329.67" width="16" height="0.33" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="882" y="329.83" width="16" height="0.17" rx="0" fill="#48b7c7" opacity="0.7"/>
+<rect x="912" y="329.91" width="16" height="0.09" rx="0" fill="#48b7c7" opacity="0.7"/>
+<text x="752" y="84.4" font-size="11" text-anchor="start" fill="#ecb25c">step to 100 %: 49, 74, 87, 93 ...</text>
+<text x="650" y="249" font-size="11" text-anchor="start" fill="#48b7c7">one second at 100 %:</text>
+<text x="650" y="263" font-size="11" text-anchor="start" fill="#48b7c7">49, 25, 13, 7 ... (sums to 100)</text>
+<text x="80" y="392" font-size="11" text-anchor="start" fill="#8b949e">weight per sample alpha = 1 - exp(-1 / 1.5) = 0.4866; the filter conserves area, so a ridge's area is its CPU time, smeared forward by about 1.5 s.</text>
+</svg>

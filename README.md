@@ -23,6 +23,10 @@ The video at the top is a live session on a real machine, touring the views. The
 other screenshots and recordings are of Ghostty running `isotop --demo`, the
 synthetic workload; the coop image is a crop of a headless `--demo --output` render.
 
+The [wiki](https://github.com/tfpickard/isotop/wiki) is the academic companion: the theory of operation, the
+mathematics and physics behind every view (and the fifteen views still planned), media, and recipes. Its
+sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to `main`.
+
 ## Run
 
 ```sh

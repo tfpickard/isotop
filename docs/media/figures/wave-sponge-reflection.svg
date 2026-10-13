@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 455" width="1100" height="455" font-family="system-ui, sans-serif">
+<title>The pond's absorbing border</title>
+<desc>Left: the damping rate against distance from the border, 0.35 per second plus a quadratic sponge of 6 per second over ten cells. Right: the amplitude reflection coefficient measured with the exact scheme at normal incidence, between 0.46 at 0.35 hertz and 0.18 at 0.8 hertz.</desc>
+<defs><clipPath id="clip1"><rect x="70" y="90" width="400" height="270"/></clipPath><clipPath id="clip2"><rect x="620" y="90" width="440" height="270"/></clipPath></defs>
+<rect width="1100" height="455" fill="#0e1116"/>
+<text x="20" y="28" font-size="16" text-anchor="start" fill="#c9d1d9" font-weight="600">A sponge, not a perfect absorber</text>
+<text x="20" y="47" font-size="12" text-anchor="start" fill="#8b949e">Damping profile of Wave::new and the reflection it leaves at normal incidence (measured with the same scheme).</text>
+<line x1="70" y1="90" x2="70" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="153.33" y1="90" x2="153.33" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="236.67" y1="90" x2="236.67" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="320" y1="90" x2="320" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="403.33" y1="90" x2="403.33" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="360" x2="470" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="321.43" x2="470" y2="321.43" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="282.86" x2="470" y2="282.86" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="244.29" x2="470" y2="244.29" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="205.71" x2="470" y2="205.71" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="167.14" x2="470" y2="167.14" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="128.57" x2="470" y2="128.57" stroke="#262c36" stroke-width="1"/>
+<line x1="70" y1="90" x2="470" y2="90" stroke="#262c36" stroke-width="1"/>
+<rect x="70" y="90" width="400" height="270" fill="none" stroke="#6e7681" stroke-width="1"/>
+<line x1="70" y1="360" x2="70" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="70" y="377" font-size="11" text-anchor="middle" fill="#8b949e">0</text>
+<line x1="153.33" y1="360" x2="153.33" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="153.33" y="377" font-size="11" text-anchor="middle" fill="#8b949e">5</text>
+<line x1="236.67" y1="360" x2="236.67" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="236.67" y="377" font-size="11" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="320" y1="360" x2="320" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="320" y="377" font-size="11" text-anchor="middle" fill="#8b949e">15</text>
+<line x1="403.33" y1="360" x2="403.33" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="403.33" y="377" font-size="11" text-anchor="middle" fill="#8b949e">20</text>
+<line x1="66" y1="360" x2="70" y2="360" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="364" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="66" y1="321.43" x2="70" y2="321.43" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="325.43" font-size="11" text-anchor="end" fill="#8b949e">1</text>
+<line x1="66" y1="282.86" x2="70" y2="282.86" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="286.86" font-size="11" text-anchor="end" fill="#8b949e">2</text>
+<line x1="66" y1="244.29" x2="70" y2="244.29" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="248.29" font-size="11" text-anchor="end" fill="#8b949e">3</text>
+<line x1="66" y1="205.71" x2="70" y2="205.71" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="209.71" font-size="11" text-anchor="end" fill="#8b949e">4</text>
+<line x1="66" y1="167.14" x2="70" y2="167.14" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="171.14" font-size="11" text-anchor="end" fill="#8b949e">5</text>
+<line x1="66" y1="128.57" x2="70" y2="128.57" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="132.57" font-size="11" text-anchor="end" fill="#8b949e">6</text>
+<line x1="66" y1="90" x2="70" y2="90" stroke="#6e7681" stroke-width="1"/>
+<text x="62" y="94" font-size="11" text-anchor="end" fill="#8b949e">7</text>
+<text x="270" y="396" font-size="12" text-anchor="middle" fill="#c9d1d9">distance from the border (cells)</text>
+<text x="24" y="225" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 24 225)">damping rate gamma (1/s)</text>
+<text x="70" y="80" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">Damping profile</text>
+<g clip-path="url(#clip1)">
+<polyline points="70,115.07 71.67,119.68 73.33,124.24 75,128.75 76.67,133.22 78.33,137.64 80,142.01 81.67,146.34 83.33,150.62 85,154.85 86.67,159.04 88.33,163.19 90,167.28 91.67,171.33 93.33,175.34 95,179.29 96.67,183.2 98.33,187.07 100,190.89 101.67,194.66 103.33,198.39 105,202.07 106.67,205.7 108.33,209.29 110,212.83 111.67,216.32 113.33,219.77 115,223.17 116.67,226.53 118.33,229.84 120,233.1 121.67,236.32 123.33,239.49 125,242.61 126.67,245.69 128.33,248.72 130,251.71 131.67,254.65 133.33,257.54 135,260.39 136.67,263.19 138.33,265.94 140,268.65 141.67,271.31 143.33,273.92 145,276.49 146.67,279.02 148.33,281.49 150,283.92 151.67,286.31 153.33,288.64 155,290.93 156.67,293.18 158.33,295.38 160,297.53 161.67,299.64 163.33,301.7 165,303.71 166.67,305.68 168.33,307.6 170,309.47 171.67,311.3 173.33,313.08 175,314.82 176.67,316.51 178.33,318.15 180,319.75 181.67,321.3 183.33,322.8 185,324.26 186.67,325.67 188.33,327.04 190,328.36 191.67,329.63 193.33,330.86 195,332.04 196.67,333.17 198.33,334.26 200,335.3 201.67,336.29 203.33,337.24 205,338.15 206.67,339 208.33,339.81 210,340.58 211.67,341.29 213.33,341.96 215,342.59 216.67,343.17 218.33,343.7 220,344.19 221.67,344.63 223.33,345.02 225,345.37 226.67,345.67 228.33,345.92 230,346.13 231.67,346.29 233.33,346.41 235,346.48 236.67,346.5 238.33,346.5 240,346.5 241.67,346.5 243.33,346.5 245,346.5 246.67,346.5 248.33,346.5 250,346.5 251.67,346.5 253.33,346.5 255,346.5 256.67,346.5 258.33,346.5 260,346.5 261.67,346.5 263.33,346.5 265,346.5 266.67,346.5 268.33,346.5 270,346.5 271.67,346.5 273.33,346.5 275,346.5 276.67,346.5 278.33,346.5 280,346.5 281.67,346.5 283.33,346.5 285,346.5 286.67,346.5 288.33,346.5 290,346.5 291.67,346.5 293.33,346.5 295,346.5 296.67,346.5 298.33,346.5 300,346.5 301.67,346.5 303.33,346.5 305,346.5 306.67,346.5 308.33,346.5 310,346.5 311.67,346.5 313.33,346.5 315,346.5 316.67,346.5 318.33,346.5 320,346.5 321.67,346.5 323.33,346.5 325,346.5 326.67,346.5 328.33,346.5 330,346.5 331.67,346.5 333.33,346.5 335,346.5 336.67,346.5 338.33,346.5 340,346.5 341.67,346.5 343.33,346.5 345,346.5 346.67,346.5 348.33,346.5 350,346.5 351.67,346.5 353.33,346.5 355,346.5 356.67,346.5 358.33,346.5 360,346.5 361.67,346.5 363.33,346.5 365,346.5 366.67,346.5 368.33,346.5 370,346.5 371.67,346.5 373.33,346.5 375,346.5 376.67,346.5 378.33,346.5 380,346.5 381.67,346.5 383.33,346.5 385,346.5 386.67,346.5 388.33,346.5 390,346.5 391.67,346.5 393.33,346.5 395,346.5 396.67,346.5 398.33,346.5 400,346.5 401.67,346.5 403.33,346.5 405,346.5 406.67,346.5 408.33,346.5 410,346.5 411.67,346.5 413.33,346.5 415,346.5 416.67,346.5 418.33,346.5 420,346.5 421.67,346.5 423.33,346.5 425,346.5 426.67,346.5 428.33,346.5 430,346.5 431.67,346.5 433.33,346.5 435,346.5 436.67,346.5 438.33,346.5 440,346.5 441.67,346.5 443.33,346.5 445,346.5 446.67,346.5 448.33,346.5 450,346.5 451.67,346.5 453.33,346.5 455,346.5 456.67,346.5 458.33,346.5 460,346.5 461.67,346.5 463.33,346.5 465,346.5 466.67,346.5 468.33,346.5 470,346.5" fill="none" stroke="#3987e5" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<line x1="70" y1="346.5" x2="470" y2="346.5" stroke="#8b949e" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="278.33" y="342.5" font-size="11" text-anchor="start" fill="#8b949e">background 0.35</text>
+<line x1="236.67" y1="90" x2="236.67" y2="360" stroke="#8b949e" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="243.33" y="144" font-size="11" text-anchor="start" fill="#8b949e">sponge ends at 10 cells</text>
+<text x="78.33" y="101.57" font-size="11" text-anchor="start" fill="#8b949e">frame (never updated)</text>
+<line x1="620" y1="90" x2="620" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="693.33" y1="90" x2="693.33" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="815.56" y1="90" x2="815.56" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="937.78" y1="90" x2="937.78" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="1060" y1="90" x2="1060" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="620" y1="360" x2="1060" y2="360" stroke="#262c36" stroke-width="1"/>
+<line x1="620" y1="292.5" x2="1060" y2="292.5" stroke="#262c36" stroke-width="1"/>
+<line x1="620" y1="225" x2="1060" y2="225" stroke="#262c36" stroke-width="1"/>
+<line x1="620" y1="157.5" x2="1060" y2="157.5" stroke="#262c36" stroke-width="1"/>
+<line x1="620" y1="90" x2="1060" y2="90" stroke="#262c36" stroke-width="1"/>
+<rect x="620" y="90" width="440" height="270" fill="none" stroke="#6e7681" stroke-width="1"/>
+<line x1="620" y1="360" x2="620" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="620" y="377" font-size="11" text-anchor="middle" fill="#8b949e">0.2</text>
+<line x1="693.33" y1="360" x2="693.33" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="693.33" y="377" font-size="11" text-anchor="middle" fill="#8b949e">0.5</text>
+<line x1="815.56" y1="360" x2="815.56" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="815.56" y="377" font-size="11" text-anchor="middle" fill="#8b949e">1</text>
+<line x1="937.78" y1="360" x2="937.78" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="937.78" y="377" font-size="11" text-anchor="middle" fill="#8b949e">1.5</text>
+<line x1="1060" y1="360" x2="1060" y2="364" stroke="#6e7681" stroke-width="1"/>
+<text x="1060" y="377" font-size="11" text-anchor="middle" fill="#8b949e">2</text>
+<line x1="616" y1="360" x2="620" y2="360" stroke="#6e7681" stroke-width="1"/>
+<text x="612" y="364" font-size="11" text-anchor="end" fill="#8b949e">0</text>
+<line x1="616" y1="292.5" x2="620" y2="292.5" stroke="#6e7681" stroke-width="1"/>
+<text x="612" y="296.5" font-size="11" text-anchor="end" fill="#8b949e">0.2</text>
+<line x1="616" y1="225" x2="620" y2="225" stroke="#6e7681" stroke-width="1"/>
+<text x="612" y="229" font-size="11" text-anchor="end" fill="#8b949e">0.4</text>
+<line x1="616" y1="157.5" x2="620" y2="157.5" stroke="#6e7681" stroke-width="1"/>
+<text x="612" y="161.5" font-size="11" text-anchor="end" fill="#8b949e">0.6</text>
+<line x1="616" y1="90" x2="620" y2="90" stroke="#6e7681" stroke-width="1"/>
+<text x="612" y="94" font-size="11" text-anchor="end" fill="#8b949e">0.8</text>
+<text x="840" y="396" font-size="12" text-anchor="middle" fill="#c9d1d9">frequency (Hz)</text>
+<text x="574" y="225" font-size="12" text-anchor="middle" fill="#c9d1d9" transform="rotate(-90 574 225)">amplitude reflection coefficient</text>
+<text x="620" y="80" font-size="13" text-anchor="start" fill="#c9d1d9" font-weight="600">Reflection at normal incidence</text>
+<rect x="656.67" y="90" width="220" height="270" fill="#199e70" fill-opacity="0.16"/>
+<text x="766.67" y="343.12" font-size="11" text-anchor="middle" fill="#199e70">pebble pitches</text>
+<g clip-path="url(#clip2)">
+<polyline points="620,148.45 632.22,165.15 644.44,184.34 656.67,203.66 668.89,222.05 681.11,238.97 693.33,254.1 705.56,267.25 717.78,278.24 730,286.94 742.22,293.32 754.44,297.47 766.67,299.68 778.89,300.4 791.11,300.13 803.33,299.35 815.56,298.43 827.78,297.63 840,297.11 852.22,296.93 864.44,297.09 876.67,297.53 888.89,298.19 901.11,298.97 913.33,299.79 925.56,300.56 937.78,301.25 950,301.82 962.22,302.28 974.44,302.65 986.67,302.96 998.89,303.27 1011.11,303.61 1023.33,304 1035.56,304.46 1047.78,304.99 1060,305.58" fill="none" stroke="#d95926" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g clip-path="url(#clip2)">
+<circle cx="620" cy="148.45" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="632.22" cy="165.15" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="644.44" cy="184.34" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="656.67" cy="203.66" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="668.89" cy="222.05" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="681.11" cy="238.97" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="693.33" cy="254.1" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="705.56" cy="267.25" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="717.78" cy="278.24" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="730" cy="286.94" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="742.22" cy="293.32" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="754.44" cy="297.47" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="766.67" cy="299.68" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="778.89" cy="300.4" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="791.11" cy="300.13" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="803.33" cy="299.35" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="815.56" cy="298.43" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="827.78" cy="297.63" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="840" cy="297.11" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="852.22" cy="296.93" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="864.44" cy="297.09" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="876.67" cy="297.53" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="888.89" cy="298.19" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="901.11" cy="298.97" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="913.33" cy="299.79" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="925.56" cy="300.56" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="937.78" cy="301.25" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="950" cy="301.82" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="962.22" cy="302.28" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="974.44" cy="302.65" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="986.67" cy="302.96" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="998.89" cy="303.27" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="1011.11" cy="303.61" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="1023.33" cy="304" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="1035.56" cy="304.46" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="1047.78" cy="304.99" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+<circle cx="1060" cy="305.58" r="2.5" fill="#d95926" stroke="#0e1116" stroke-width="1"/>
+</g>
+<line x1="620" y1="297.01" x2="1060" y2="297.01" stroke="#8b949e" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="840" y="293.01" font-size="11" text-anchor="start" fill="#8b949e">geometric-optics estimate 0.19</text>
+<text x="70" y="428" font-size="11" text-anchor="start" fill="#8b949e">Measured: 0.46 at 0.35 Hz, 0.31 at 0.5 Hz, 0.18 at 0.8 Hz. At high pitch the layer simply attenuates (round trip exp(-(10/c)(0.35 + 2)) = 0.19);</text>
+<text x="70" y="444" font-size="11" text-anchor="start" fill="#8b949e">at low pitch the damping changes too fast for the wavelength and the layer reflects like a partial mirror.</text>
+</svg>
