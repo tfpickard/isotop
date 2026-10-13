@@ -250,6 +250,12 @@ struct Seen {
 #[derive(Default)]
 pub struct IoScan {
     seen: HashMap<Identity, Seen>,
+    /// The process the last pass stopped before, because its descriptor budget ran out. The next
+    /// pass starts there, so a process with thousands of descriptors cannot keep every later
+    /// target unread.
+    resume: Option<Identity>,
+    /// The latest result for each target, handed out again for a target a pass did not reach.
+    last: HashMap<Identity, Measured<Arc<IoDetail>>>,
 }
 
 impl IoScan {
@@ -265,8 +271,9 @@ impl IoScan {
     /// A pass with its own caps and clock. `targets` come in the order the caller wants them
     /// read (the frame thread decides it, so the pass never sorts), and the pass stops when
     /// `caps.per_pass` descriptors are examined: the process it stops in is cut short, and every
-    /// process after it is not read, which leaves it `Pending` with the caller. A process that is
-    /// gone is absent from the result and forgotten.
+    /// process after it is not read; the next pass starts at the first of those (`resume`), and
+    /// meanwhile such a process keeps its latest result, or has none if it never had one. A
+    /// process that is gone is absent from the result and forgotten.
     ///
     /// What the pass remembers of a process it did not reach is kept, so the next reading
     /// compares with the last one that exists over the longer interval between them. A process
@@ -281,8 +288,15 @@ impl IoScan {
         let counted = reader.counts_bytes();
         let mut remaining = caps.per_pass;
         let mut found = HashMap::with_capacity(targets.len());
-        for &id in targets {
+        let start = self
+            .resume
+            .and_then(|resume| targets.iter().position(|&id| id == resume))
+            .unwrap_or(0);
+        self.resume = None;
+        let order = targets[start..].iter().chain(&targets[..start]);
+        for &id in order {
             if remaining == 0 {
+                self.resume = Some(id);
                 break;
             }
             let began = clock();
@@ -293,6 +307,7 @@ impl IoScan {
             match reader.read(id, budget) {
                 Reading::Gone => {
                     self.seen.remove(&id);
+                    self.last.remove(&id);
                 }
                 Reading::Unreadable => {
                     self.seen.remove(&id);
@@ -309,6 +324,19 @@ impl IoScan {
             }
         }
         self.seen.retain(|id, _| targets.contains(id));
+        self.last.retain(|id, _| targets.contains(id));
+        for &id in targets {
+            match found.get(&id) {
+                Some(result) => {
+                    self.last.insert(id, result.clone());
+                }
+                None => {
+                    if let Some(result) = self.last.get(&id) {
+                        found.insert(id, result.clone());
+                    }
+                }
+            }
+        }
         found
     }
 
@@ -316,6 +344,8 @@ impl IoScan {
     /// measured rather than averaging over the gap.
     pub fn forget(&mut self) {
         self.seen.clear();
+        self.last.clear();
+        self.resume = None;
     }
 
     /// Only tests ask: whether any reading is remembered.
@@ -624,14 +654,16 @@ mod tests {
         let mut scan = IoScan::default();
         let mut clock = seconds();
         let both = [id(1), id(2)];
-        scan.pass_with(&both, &mut fake, Caps::DEFAULT, &mut clock);
+        let first = scan.pass_with(&both, &mut fake, Caps::DEFAULT, &mut clock);
         // Room for one process only: the second is not reached.
         let short = Caps {
             per_pass: 6,
             per_process: FILES_PER_PROCESS,
         };
         let second = scan.pass_with(&both, &mut fake, short, &mut clock);
-        assert!(second.contains_key(&id(1)) && !second.contains_key(&id(2)));
+        assert!(second.contains_key(&id(1)));
+        // Not reached, it is handed out with the result it had, not as unread.
+        assert_eq!(second[&id(2)], first[&id(2)]);
         // Reached again, it compares with the reading from two passes ago, over the longer time.
         let third = scan.pass_with(&[id(2)], &mut fake, Caps::DEFAULT, &mut clock);
         let flow = detail_of(&third, 2).files[0].flow;
@@ -642,6 +674,36 @@ mod tests {
         // Process 1 stopped being a target, so what was kept of it is gone: it starts afresh.
         let fourth = scan.pass_with(&both, &mut fake, Caps::DEFAULT, &mut clock);
         assert_eq!(detail_of(&fourth, 1).files[0].flow, Flow::Unmeasured);
+    }
+
+    #[test]
+    fn a_process_that_spends_the_whole_budget_does_not_starve_the_ones_after_it() {
+        // Three processes of ten descriptors each and room for ten: one is read a pass.
+        let reading = || {
+            let mut taken = held(vec![file(3, 10, AccessMode::Read, 0)], 0, 0);
+            taken.examined = 10;
+            Reading::Taken(taken)
+        };
+        let mut fake = Fake::new([
+            (1, vec![reading(), reading()]),
+            (2, vec![reading(), reading()]),
+            (3, vec![reading(), reading()]),
+        ]);
+        let caps = Caps {
+            per_pass: 10,
+            per_process: FILES_PER_PROCESS,
+        };
+        let targets = [id(1), id(2), id(3)];
+        let mut scan = IoScan::default();
+        let mut clock = seconds();
+        scan.pass_with(&targets, &mut fake, caps, &mut clock);
+        scan.pass_with(&targets, &mut fake, caps, &mut clock);
+        let third = scan.pass_with(&targets, &mut fake, caps, &mut clock);
+        let asked: Vec<u32> = fake.asked.iter().map(|(pid, _)| *pid).collect();
+        assert_eq!(asked, [1, 2, 3], "each pass resumes where the last one stopped");
+        for pid in [1, 2, 3] {
+            assert!(third.contains_key(&id(pid)), "{pid} has a result");
+        }
     }
 
     #[test]
