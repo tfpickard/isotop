@@ -122,11 +122,11 @@ impl App {
         self.selected = Some(id);
         self.thing = None;
         if let Some(&p) = self.scene.positions.get(&id) {
-            self.goal.center = [p[0], p[1]];
+            self.camera.goal.center = [p[0], p[1]];
             self.face(p);
         } else {
             self.focus = Some(id);
-            self.fit = true;
+            self.camera.refit();
         }
     }
 }
@@ -236,13 +236,16 @@ mod tests {
         app.render(640, 360, 512);
         let target = *app.scene.positions.keys().next().unwrap();
         app.select_match(target);
-        assert!(app.goal.globe_held, "the found process must not drift away");
-        assert_eq!(app.goal.globe_tilt, 0.0);
-        let goal = app.goal.clone();
-        app.camera.approach(&goal, 1.0);
-        app.camera = app.goal.clone();
+        assert!(
+            app.camera.goal.globe_held,
+            "the found process must not drift away"
+        );
+        assert_eq!(app.camera.goal.globe_tilt, 0.0);
+        let goal = app.camera.goal.clone();
+        app.camera.current.approach(&goal, 1.0);
+        app.camera.current = app.camera.goal.clone();
         let frame = app.render(640, 360, 512);
-        let at = frame.project(&app.camera, app.scene.positions[&target]);
+        let at = frame.project(&app.camera.current, app.scene.positions[&target]);
         assert!((at[0] - 320.0).abs() < 1.5 && (at[1] - 360.0 * ORIGIN_Y).abs() < 1.5);
     }
 }

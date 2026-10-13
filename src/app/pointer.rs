@@ -64,9 +64,9 @@ impl App {
         if self.picker.is_some() {
             return;
         }
-        let before = self.goal.clone();
+        let before = self.camera.goal.clone();
         self.pointer_event(mouse, layout, frame, panels, pixels);
-        self.follow(&before);
+        self.camera.follow(&before);
     }
 
     pub(super) fn pointer_event(
@@ -96,17 +96,18 @@ impl App {
                     pointer.frame[1] - layout.height as f32 * ORIGIN_Y,
                 ];
                 let factor = 1.1_f32.powf(-(x + y));
-                self.both(|c| c.scale_at(factor, offset[0], offset[1]));
+                self.camera
+                    .both(|c| c.scale_at(factor, offset[0], offset[1]));
             } else if mouse.modifiers.contains(KeyModifiers::ALT) {
-                self.both(|c| c.rotation += 0.08 * (x + y));
+                self.camera.both(|c| c.rotation += 0.08 * (x + y));
             } else if let Some(turn) = self.row().turn {
                 // The surface follows the fingers the way panning moves content: scrolling right
                 // moves it left, which turns it westward, and scrolling down moves it up, which
                 // brings the south up. The angle moves the surface under the pointer by `step`.
                 let step = layout.height as f32 * 0.04;
-                let angle = (step / (turn.radius * SCALE * self.camera.zoom)).min(0.25);
+                let angle = (step / (turn.radius * SCALE * self.camera.current.zoom)).min(0.25);
                 let time = self.render_time();
-                self.both(|c| {
+                self.camera.both(|c| {
                     c.hold(time);
                     c.globe_turn = (c.globe_turn + x * angle).rem_euclid(TAU);
                     c.globe_tilt =
@@ -114,7 +115,7 @@ impl App {
                 });
             } else {
                 let step = layout.height as f32 * 0.04;
-                self.both(|c| c.pan(x * step, y * step));
+                self.camera.both(|c| c.pan(x * step, y * step));
             }
             return;
         }
@@ -146,10 +147,10 @@ impl App {
                     let dx = pointer.frame[0] - last[0];
                     let dy = pointer.frame[1] - last[1];
                     if button == MouseButton::Left {
-                        self.both(|c| c.pan(-dx, -dy));
+                        self.camera.both(|c| c.pan(-dx, -dy));
                         self.pointer.dismiss = false;
                     } else {
-                        self.both(|c| {
+                        self.camera.both(|c| {
                             c.rotation += dx * 0.01;
                             c.tilt(dy * 0.008);
                         });
@@ -194,7 +195,7 @@ mod tests {
     /// Where lantern `index` is drawn in `frame`.
     fn lantern_at(app: &App, frame: &Frame, index: usize) -> [f32; 2] {
         frame
-            .locate(&app.camera, testing::Lanterns::position(index))
+            .locate(&app.camera.current, testing::Lanterns::position(index))
             .expect("the lantern is on screen")
     }
 
@@ -371,17 +372,17 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         };
-        let center = app.goal.center;
+        let center = app.camera.goal.center;
         press(&mut app, KeyCode::Char('v'));
         app.mouse(scroll, &layout, &frame, &[], false);
         assert_eq!(
-            (app.goal.center, app.pointer.hover.is_none()),
+            (app.camera.goal.center, app.pointer.hover.is_none()),
             (center, true)
         );
         press(&mut app, KeyCode::Esc);
         app.mouse(scroll, &layout, &frame, &[], false);
         assert_ne!(
-            app.goal.center, center,
+            app.camera.goal.center, center,
             "the same event pans once it is closed"
         );
     }
@@ -396,7 +397,7 @@ mod tests {
             (MouseEventKind::ScrollUp, false),
         ] {
             let mut app = globe_at(0.0);
-            let centre = app.goal.center;
+            let centre = app.camera.goal.center;
             let before = home_on_screen(&mut app);
             let point = app.scene.places[0].0;
             let (dx, dy) = match kind {
@@ -406,7 +407,7 @@ mod tests {
                 _ => (0.0, -step),
             };
             // What panning by the same scroll does to the same point is the way it must move.
-            let by_pan = panned_by(&app.camera, point, dx, dy);
+            let by_pan = panned_by(&app.camera.current, point, dx, dy);
             let pan_moves = [by_pan[0] - before[0], by_pan[1] - before[1]];
             scroll(&mut app, kind, 1);
             let after = home_on_screen(&mut app);
@@ -423,10 +424,10 @@ mod tests {
                 "{kind:?} drifted {moved:?}"
             );
             assert!(
-                app.goal.globe_held && app.camera.globe_held,
+                app.camera.goal.globe_held && app.camera.current.globe_held,
                 "{kind:?} holds"
             );
-            assert!(app.goal.center == centre, "{kind:?} panned");
+            assert!(app.camera.goal.center == centre, "{kind:?} panned");
         }
     }
 
@@ -435,7 +436,7 @@ mod tests {
         let step = SCENE.height as f32 * 0.04;
         for zoom in [1.0, 5.0, 30.0] {
             let mut app = globe_at(0.0);
-            app.both(|c| c.zoom = zoom);
+            app.camera.both(|c| c.zoom = zoom);
             let before = home_on_screen(&mut app);
             scroll(&mut app, MouseEventKind::ScrollRight, 1);
             let after = home_on_screen(&mut app);
@@ -453,11 +454,11 @@ mod tests {
     fn the_tilt_stops_at_the_poles_for_the_camera_it_is_clamped_against() {
         let mut app = globe_at(0.0);
         scroll(&mut app, MouseEventKind::ScrollDown, 80);
-        let pitch = app.camera.pitch;
-        assert!((app.camera.globe_tilt - (pitch + FRAC_PI_2)).abs() < 1e-5);
+        let pitch = app.camera.current.pitch;
+        assert!((app.camera.current.globe_tilt - (pitch + FRAC_PI_2)).abs() < 1e-5);
         scroll(&mut app, MouseEventKind::ScrollUp, 160);
-        assert!((app.camera.globe_tilt - (pitch - FRAC_PI_2)).abs() < 1e-5);
-        assert_eq!(app.camera.globe_tilt, app.goal.globe_tilt);
+        assert!((app.camera.current.globe_tilt - (pitch - FRAC_PI_2)).abs() < 1e-5);
+        assert_eq!(app.camera.current.globe_tilt, app.camera.goal.globe_tilt);
     }
 
     #[test]
@@ -470,7 +471,7 @@ mod tests {
             row: 5,
             modifiers: KeyModifiers::NONE,
         };
-        let centre = app.goal.center;
+        let centre = app.camera.goal.center;
         for event in [
             mouse(MouseEventKind::Down(MouseButton::Left), 10),
             mouse(MouseEventKind::Drag(MouseButton::Left), 14),
@@ -478,10 +479,13 @@ mod tests {
         ] {
             app.mouse(event, &SCENE, &frame, &[], false);
         }
-        assert_ne!(app.goal.center, centre, "dragging pans");
-        assert_eq!(app.goal.globe_turn, 0.0);
-        assert_eq!(app.goal.globe_tilt, 0.0);
-        assert!(!app.goal.globe_held, "dragging leaves the earth turning");
+        assert_ne!(app.camera.goal.center, centre, "dragging pans");
+        assert_eq!(app.camera.goal.globe_turn, 0.0);
+        assert_eq!(app.camera.goal.globe_tilt, 0.0);
+        assert!(
+            !app.camera.goal.globe_held,
+            "dragging leaves the earth turning"
+        );
     }
 
     #[test]
@@ -489,7 +493,7 @@ mod tests {
         for view in ["city", "orbit", "reef"].map(view) {
             let mut app = App::new(view, model::demo(1.0, 64), all_available());
             let frame = app.render(SCENE.width, SCENE.height, 512);
-            let mut expected = app.camera.clone();
+            let mut expected = app.camera.current.clone();
             let step = SCENE.height as f32 * 0.04;
             expected.pan(step, -step);
             for kind in [MouseEventKind::ScrollRight, MouseEventKind::ScrollUp] {
@@ -503,13 +507,13 @@ mod tests {
             }
             for k in 0..2 {
                 assert!(
-                    (app.goal.center[k] - expected.center[k]).abs() < 1e-3,
+                    (app.camera.goal.center[k] - expected.center[k]).abs() < 1e-3,
                     "{view:?}: {:?} against {:?}",
-                    app.goal.center,
+                    app.camera.goal.center,
                     expected.center
                 );
             }
-            assert!(!app.goal.globe_held, "{view:?}");
+            assert!(!app.camera.goal.globe_held, "{view:?}");
         }
     }
 }

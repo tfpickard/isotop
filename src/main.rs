@@ -167,12 +167,11 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                 };
                 app.push_sample(snapshot, options.history as usize);
                 last_sample = Instant::now();
-                if app.framed && app.tour.is_none() && app.scene.bounded() {
-                    app.fit = true;
+                if app.camera.is_framed() && app.tour.is_none() && app.scene.bounded() {
+                    app.camera.refit();
                 }
             }
         }
-        let goal = app.goal.clone();
         if !options.demo {
             if !app.journal_wanted(Instant::now()) {
                 // Dropping it stops the follower and its reader.
@@ -190,8 +189,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                 fed = now;
             }
         }
-        app.camera
-            .approach(&goal, simulation::smoothing(elapsed, 0.2));
+        app.camera.approach(elapsed);
         app.update_tour(tour_after);
         let mut frame = app.render(layout.width, layout.height, limit);
         let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;

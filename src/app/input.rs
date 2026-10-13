@@ -3,7 +3,7 @@ use std::f32::consts::FRAC_PI_2;
 use crossterm::event::{self, KeyCode, KeyModifiers};
 
 use crate::picker::Picker;
-use crate::render::{Camera, ISOMETRIC};
+use crate::render::ISOMETRIC;
 use crate::views::{LOCAL_KEYS, View, ViewKey};
 
 use super::App;
@@ -20,19 +20,10 @@ impl App {
         ) {
             return false;
         }
-        let before = self.goal.clone();
+        let before = self.camera.goal.clone();
         let quit = self.command(code, modifiers, step);
-        self.follow(&before);
+        self.camera.follow(&before);
         quit
-    }
-
-    /// Moving the camera by hand stops it following the view; fitting it again resumes.
-    pub(super) fn follow(&mut self, before: &Camera) {
-        if self.fit {
-            self.framed = true;
-        } else if self.goal != *before {
-            self.framed = false;
-        }
     }
 
     pub(super) fn command(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
@@ -63,18 +54,18 @@ impl App {
             KeyCode::Char('q') => return true,
             KeyCode::Tab => self.switch(self.cycle(true)),
             KeyCode::BackTab => self.switch(self.cycle(false)),
-            KeyCode::Left | KeyCode::Char('a') => self.goal.pan(-step, 0.0),
-            KeyCode::Right | KeyCode::Char('d') => self.goal.pan(step, 0.0),
-            KeyCode::Up | KeyCode::Char('w') => self.goal.pan(0.0, -step),
-            KeyCode::Down | KeyCode::Char('s') => self.goal.pan(0.0, step),
-            KeyCode::Char('+') | KeyCode::Char('=') => self.goal.scale(1.15),
-            KeyCode::Char('-') => self.goal.scale(1.0 / 1.15),
-            KeyCode::Char('e') => self.goal.rotation += FRAC_PI_2,
-            KeyCode::Char('Q') => self.goal.rotation -= FRAC_PI_2,
-            KeyCode::PageUp => self.goal.tilt(0.12),
-            KeyCode::PageDown => self.goal.tilt(-0.12),
+            KeyCode::Left | KeyCode::Char('a') => self.camera.goal.pan(-step, 0.0),
+            KeyCode::Right | KeyCode::Char('d') => self.camera.goal.pan(step, 0.0),
+            KeyCode::Up | KeyCode::Char('w') => self.camera.goal.pan(0.0, -step),
+            KeyCode::Down | KeyCode::Char('s') => self.camera.goal.pan(0.0, step),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.camera.goal.scale(1.15),
+            KeyCode::Char('-') => self.camera.goal.scale(1.0 / 1.15),
+            KeyCode::Char('e') => self.camera.goal.rotation += FRAC_PI_2,
+            KeyCode::Char('Q') => self.camera.goal.rotation -= FRAC_PI_2,
+            KeyCode::PageUp => self.camera.goal.tilt(0.12),
+            KeyCode::PageDown => self.camera.goal.tilt(-0.12),
             KeyCode::Char('t') => {
-                self.goal.pitch = if self.goal.pitch > 1.2 {
+                self.camera.goal.pitch = if self.camera.goal.pitch > 1.2 {
                     ISOMETRIC
                 } else {
                     FRAC_PI_2
@@ -104,17 +95,10 @@ impl App {
             // Shift+Space where the terminal cannot tell it from Space.
             KeyCode::Char('*') if self.row().tour => self.visit(Step::Random, touring),
             KeyCode::Char('c') => self.scene.links.cycle(),
-            KeyCode::Home => self.fit = true,
+            KeyCode::Home => self.camera.refit(),
             KeyCode::Char('r') => {
-                // Release first: the camera must stop being held before it eases to the default
-                // camera, or it would copy the goal's release and spin a second time.
-                let time = self.render_time();
-                self.camera.release(time);
-                self.goal = Camera::default();
-                if let Some(pitch) = self.row().pitch {
-                    self.goal.pitch = pitch;
-                }
-                self.fit = true;
+                let (time, pitch) = (self.render_time(), self.row().pitch);
+                self.camera.reset(time, pitch);
             }
             KeyCode::Char('?') => self.show_help = !self.show_help,
             KeyCode::Char('/') => self.search.open(),
@@ -126,13 +110,13 @@ impl App {
             KeyCode::Char('f') => {
                 if self.selected.is_some() {
                     self.focus = self.selected;
-                    self.fit = true;
+                    self.camera.refit();
                 }
             }
             KeyCode::Esc => {
                 if self.selected.take().is_none() {
                     self.focus = None;
-                    self.fit = true;
+                    self.camera.refit();
                 }
             }
             KeyCode::Char('P') => {
@@ -235,9 +219,12 @@ mod tests {
         for character in "x,z".chars() {
             press(&mut app, KeyCode::Char(character));
         }
-        let center = app.goal.center;
+        let center = app.camera.goal.center;
         press(&mut app, KeyCode::Char('a'));
-        assert_ne!(app.goal.center, center, "a global key keeps its meaning");
+        assert_ne!(
+            app.camera.goal.center, center,
+            "a global key keeps its meaning"
+        );
         assert_eq!(
             (keys(&app, probe), keys(&app, quiet)),
             ("x,z".into(), "".into())
@@ -259,9 +246,9 @@ mod tests {
             "x,z",
             "nothing reached the view during the search"
         );
-        app.fit = false;
+        app.camera.fit = false;
         press(&mut app, KeyCode::Char('r'));
-        assert!(app.fit, "the global reset happens as well");
+        assert!(app.camera.fit_pending(), "the global reset happens as well");
         press(&mut app, KeyCode::Home);
         assert_eq!(keys(&app, probe), "x,zRR");
         // The probe's mode takes the first Esc; the next one closes the selection as usual.

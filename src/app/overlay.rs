@@ -11,7 +11,7 @@ use super::screen::{Board, Layout, place_lines, place_panel};
 impl App {
     pub(super) fn screen(&self, frame: &Frame, id: Identity) -> Option<[f32; 2]> {
         let &p = self.scene.positions.get(&id)?;
-        frame.locate(&self.camera, p)
+        frame.locate(&self.camera.current, p)
     }
 
     /// The selected process, unless the view draws no processes and shows a line of its own in
@@ -34,7 +34,7 @@ impl App {
                 let mut lines = vec![card.title];
                 lines.extend(card.lines);
                 lines.push("Esc close".into());
-                (lines, frame.locate(&self.camera, card.at))
+                (lines, frame.locate(&self.camera.current, card.at))
             }
             None => (
                 vec![
@@ -147,10 +147,10 @@ impl App {
         reach: f32,
         text: String,
     ) -> Option<Label> {
-        let at = frame.locate(&self.camera, star)?;
+        let at = frame.locate(&self.camera.current, star)?;
         let width = text.chars().count() as u16;
         let edge = frame
-            .locate(&self.camera, self.camera.front(star, reach))
+            .locate(&self.camera.current, self.camera.current.front(star, reach))
             .filter(|edge| edge[1] - at[1] < layout.cell_size()[1] * 6.0)
             .unwrap_or(at);
         let (column, row) = layout.cell_of([at[0], edge[1]]);
@@ -191,7 +191,7 @@ impl App {
             && let Some(p) = lookup.get(&tour.target)
             && let Some(anchor) = self
                 .tour_point(tour.target)
-                .and_then(|point| frame.locate(&self.camera, point))
+                .and_then(|point| frame.locate(&self.camera.current, point))
         {
             let mut lines = vec![
                 p.name.clone(),
@@ -265,7 +265,7 @@ impl App {
             return (labels, panels);
         }
         for (point, text) in &self.scene.places {
-            if let Some(at) = frame.locate(&self.camera, *point) {
+            if let Some(at) = frame.locate(&self.camera.current, *point) {
                 let width = text.chars().count() as u16;
                 let (column, row) = layout.cell_of(at);
                 let column = column.saturating_sub(width / 2);
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(titles.len(), 1, "{:?}", app.scene.titles);
         assert!(matches!(titles[0].tone, Tone::Bright));
         let seat = frame
-            .locate(&app.camera, app.scene.positions[&last])
+            .locate(&app.camera.current, app.scene.positions[&last])
             .expect("the seat is on screen");
         let (_, row) = layout.cell_of(seat);
         assert!(titles[0].row > row, "just below the star's own row");

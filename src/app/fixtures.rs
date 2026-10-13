@@ -103,7 +103,7 @@ pub(crate) fn globe_at(time: f32) -> App {
 /// Where the globe's home marker falls on screen with the camera as it stands.
 pub(crate) fn home_on_screen(app: &mut App) -> [f32; 2] {
     let frame = app.render(SCENE.width, SCENE.height, 512);
-    let at = frame.project(&app.camera, app.scene.places[0].0);
+    let at = frame.project(&app.camera.current, app.scene.places[0].0);
     [at[0], at[1]]
 }
 

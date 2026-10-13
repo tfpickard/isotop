@@ -37,18 +37,6 @@ pub(crate) struct Cursor {
 }
 
 impl App {
-    /// Lets a held globe turn with time again from where it stands, and stands it upright.
-    /// Does nothing unless the earth was held, or in a view with no sphere to turn, where a
-    /// tour must leave the hold for the next visit to the globe.
-    pub(super) fn release_globe(&mut self) {
-        if self.row().turn.is_none() {
-            return;
-        }
-        let time = self.render_time();
-        self.both(|c| c.release(time));
-        self.goal.globe_tilt = 0.0;
-    }
-
     /// Notable processes to visit while idle: the view's own targets (a module view's
     /// `Stage::tour`, which leaves out what has no callout to show, such as the
     /// hub of an Orbit system), heaviest first, then the busiest and the largest.
@@ -124,7 +112,7 @@ impl App {
         let idle = || {
             after.is_some_and(|after| now.duration_since(self.last_input) >= after)
                 // A globe held by hand stays where it was put until r or g.
-                && !(self.row().turn.is_some() && self.goal.globe_held)
+                && !(self.row().turn.is_some() && self.camera.goal.globe_held)
         };
         match &self.tour {
             Some(tour) if tour.running => {
@@ -151,7 +139,7 @@ impl App {
         if let Some(tour) = &self.tour
             && let Some(p) = self.tour_point(tour.target)
         {
-            self.goal.center = [p[0], p[1]];
+            self.camera.goal.center = [p[0], p[1]];
             self.release_globe();
             self.face(p);
         }
@@ -166,29 +154,6 @@ impl App {
             .find(|target| target.id == id)
             .map(|target| target.position)
             .or_else(|| self.scene.positions.get(&id).copied())
-    }
-
-    /// In a view whose row can face a point, turns the camera so `point` is on the near side
-    /// and centres the point itself. On the globe the world spins, so a process above home is
-    /// behind the earth for half of every turn, and it floats far above the ground the camera
-    /// otherwise centres on.
-    ///
-    /// The point was drawn by `rendered`, whose lean the camera is still easing away from, so
-    /// on a sphere the wheel can lean the goal aims at where the point will be once the sphere
-    /// stands upright.
-    pub(super) fn face(&mut self, point: Point) {
-        let Some(face) = self.row().face else {
-            return;
-        };
-        let point = match self.row().turn {
-            Some(turn) => {
-                self.goal.globe_tilt = 0.0;
-                (turn.upright)(point, &self.rendered)
-            }
-            None => point,
-        };
-        (self.goal.rotation, self.goal.pitch) = face(point, &self.goal);
-        self.goal.look_at(point);
     }
 
     /// Visits the process `step` names in the cycle, as a tour step does: nothing selected, the
@@ -224,7 +189,7 @@ impl App {
         });
         self.selected = None;
         self.thing = None;
-        self.goal.zoom = self.fit_zoom * 2.2;
+        self.camera.zoom_to_visit();
     }
 }
 
@@ -291,7 +256,7 @@ mod tests {
         let target = app.tour.as_ref().expect("g starts the tour").target;
         app.update_tour(None);
         let at = app.scene.positions[&target];
-        assert_eq!(app.goal.center, [at[0], at[1]]);
+        assert_eq!(app.camera.goal.center, [at[0], at[1]]);
         let tour = app.tour.as_mut().unwrap();
         tour.since = tour.since.checked_sub(TOUR_STEP).unwrap();
         app.update_tour(None);
@@ -376,7 +341,7 @@ mod tests {
             .expect("the flock has a centroid");
         assert!(flock[2] > 5.0, "it flies above the ground: {flock:?}");
         // The point itself, not the ground below it, is where the camera looks.
-        let goal = &app.goal;
+        let goal = &app.camera.goal;
         let middle = frame.project(goal, [goal.center[0], goal.center[1], 0.0]);
         let seen = frame.project(goal, flock);
         assert!(
@@ -463,7 +428,7 @@ mod tests {
         assert!(!app.tour.as_ref().unwrap().running);
         assert!(app.text(0.0, "test", 20, 512)[0].contains("/ LIVE"));
         assert!(app.selected.is_none());
-        assert_eq!(app.goal.zoom, app.fit_zoom * 2.2);
+        assert_eq!(app.camera.goal.zoom, app.camera.fit_zoom * 2.2);
         age_the_step(&mut app);
         app.update_tour(None);
         assert_eq!(visited(&app), first, "a visit by hand holds still");
@@ -596,10 +561,10 @@ mod tests {
                 .expect("the globe has processes to visit")
                 .target;
             app.update_tour(None);
-            app.camera = app.goal.clone();
+            app.camera.current = app.camera.goal.clone();
             let frame = app.render(640, 360, 512);
             let at = frame
-                .locate(&app.camera, app.scene.positions[&target])
+                .locate(&app.camera.current, app.scene.positions[&target])
                 .expect("the target is on screen");
             assert_eq!(
                 frame.pick_near(at[0], at[1], 3.0),
@@ -615,7 +580,7 @@ mod tests {
         let press = |app: &mut App, code: KeyCode| app.key(code, KeyModifiers::NONE, 10.0);
         press(&mut app, KeyCode::Char('g'));
         assert!(app.tour.is_some(), "the probe takes part in the tour");
-        let pitch = app.goal.pitch;
+        let pitch = app.camera.goal.pitch;
         app.view = View::at(1);
         app.update_tour(Some(Duration::ZERO));
         assert!(
@@ -626,16 +591,19 @@ mod tests {
         assert!(app.tour.is_none());
         press(&mut app, KeyCode::Tab);
         assert_eq!(
-            (app.view, app.goal.pitch),
+            (app.view, app.camera.goal.pitch),
             (View::at(0), pitch),
             "no pitch of its own"
         );
         press(&mut app, KeyCode::Tab);
-        assert_eq!(app.goal.pitch, FRAC_PI_2, "switching sets the row's pitch");
+        assert_eq!(
+            app.camera.goal.pitch, FRAC_PI_2,
+            "switching sets the row's pitch"
+        );
         press(&mut app, KeyCode::Char('t'));
-        assert_eq!(app.goal.pitch, ISOMETRIC);
+        assert_eq!(app.camera.goal.pitch, ISOMETRIC);
         press(&mut app, KeyCode::Char('r'));
-        assert_eq!(app.goal.pitch, FRAC_PI_2, "so does r");
+        assert_eq!(app.camera.goal.pitch, FRAC_PI_2, "so does r");
         let rows = views::testing::ROWS;
         let started = App::with_scene(
             Scene::with_rows(rows),
@@ -643,7 +611,10 @@ mod tests {
             model::demo(1.0, 16),
             vec![true; rows.len()],
         );
-        assert_eq!(started.goal.pitch, FRAC_PI_2, "and so does starting on it");
+        assert_eq!(
+            started.camera.goal.pitch, FRAC_PI_2,
+            "and so does starting on it"
+        );
         app.render(320, 180, 512);
         app.selected = Some(app.snapshot().processes[0].id);
         let text = app.text(0.0, "test", 20, 512);
@@ -681,7 +652,7 @@ mod tests {
         app.update_tour(None);
         let seat = app.scene.positions[&last];
         assert_eq!(
-            app.goal.center,
+            app.camera.goal.center,
             [seat[0], 3.0],
             "the camera goes to the point the view gave, beside the seat"
         );
@@ -715,7 +686,7 @@ mod tests {
         // A hold left on the globe does not stop other views touring.
         let mut app = App::new(view("city"), model::demo(1.0, 64), all_available());
         app.render(SCENE.width, SCENE.height, 512);
-        app.goal.globe_held = true;
+        app.camera.goal.globe_held = true;
         app.last_input = long_ago;
         app.update_tour(Some(idle));
         assert!(app.tour.is_some());
@@ -728,13 +699,13 @@ mod tests {
         assert!(app.tour.is_some());
         // A hold that arrives without the input handler ending the tour first.
         let time = app.render_time();
-        app.both(|c| {
+        app.camera.both(|c| {
             c.hold(time);
             c.globe_tilt = 0.4;
         });
         app.update_tour(None);
-        assert!(!app.goal.globe_held && !app.camera.globe_held);
-        assert_eq!(app.goal.globe_tilt, 0.0);
+        assert!(!app.camera.goal.globe_held && !app.camera.current.globe_held);
+        assert_eq!(app.camera.goal.globe_tilt, 0.0);
     }
 
     #[test]
@@ -742,19 +713,19 @@ mod tests {
         let mut app = globe_at(20.0);
         scroll(&mut app, MouseEventKind::ScrollDown, 3);
         scroll(&mut app, MouseEventKind::ScrollRight, 3);
-        let tilt = app.goal.globe_tilt;
-        assert!(app.goal.globe_held && tilt > 0.0);
+        let tilt = app.camera.goal.globe_tilt;
+        assert!(app.camera.goal.globe_held && tilt > 0.0);
         app.view = view("city");
         app.render(SCENE.width, SCENE.height, 512);
         app.update_tour(Some(Duration::ZERO));
         assert!(app.tour.is_some(), "an idle City tours");
         app.update_tour(None);
-        assert!(app.goal.globe_held && app.camera.globe_held);
-        assert_eq!(app.goal.globe_tilt, tilt);
+        assert!(app.camera.goal.globe_held && app.camera.current.globe_held);
+        assert_eq!(app.camera.goal.globe_tilt, tilt);
         app.tour = None;
         app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
         assert!(app.tour.is_some());
-        assert!(app.goal.globe_held && app.goal.globe_tilt == tilt);
+        assert!(app.camera.goal.globe_held && app.camera.goal.globe_tilt == tilt);
     }
 
     #[test]
@@ -770,19 +741,19 @@ mod tests {
         );
         app.render(SCENE.width, SCENE.height, 512);
         scroll(&mut app, MouseEventKind::ScrollDown, 3);
-        assert!(app.goal.globe_held);
+        assert!(app.camera.goal.globe_held);
         app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
         assert!(app.tour.is_none(), "no talkers, no tour");
-        assert!(!app.goal.globe_held && !app.camera.globe_held);
-        assert_eq!(app.goal.globe_tilt, 0.0);
+        assert!(!app.camera.goal.globe_held && !app.camera.current.globe_held);
+        assert_eq!(app.camera.goal.globe_tilt, 0.0);
     }
 
     /// The world point of the tour's target, and where the goal camera puts it on screen.
     fn target_on_screen(app: &mut App) -> ([f32; 2], Option<Identity>) {
-        app.camera = app.goal.clone();
+        app.camera.current = app.camera.goal.clone();
         let frame = app.render(640, 360, 512);
         let target = app.tour.as_ref().expect("a tour").target;
-        let at = frame.project(&app.camera, app.scene.positions[&target]);
+        let at = frame.project(&app.camera.current, app.scene.positions[&target]);
         let picked = frame.pick_near(at[0], at[1], 3.0);
         ([at[0], at[1]], picked)
     }
@@ -794,7 +765,7 @@ mod tests {
                 let mut app = globe_at(time);
                 scroll(&mut app, MouseEventKind::ScrollRight, 4);
                 scroll(&mut app, kind, 7);
-                assert!(app.camera.globe_tilt.abs() > 0.5);
+                assert!(app.camera.current.globe_tilt.abs() > 0.5);
                 app.render(640, 360, 512);
                 app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
                 app.update_tour(None);
@@ -819,9 +790,12 @@ mod tests {
         app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
         // The loop's order: the camera eases, then the tour aims, then the frame is drawn, so
         // the positions the tour reads were drawn by a camera that has since moved.
-        let goal = app.goal.clone();
-        app.camera.approach(&goal, 0.25);
-        assert!(app.camera.globe_tilt > 0.1 && app.camera.globe_tilt != app.rendered.globe_tilt);
+        let goal = app.camera.goal.clone();
+        app.camera.current.approach(&goal, 0.25);
+        assert!(
+            app.camera.current.globe_tilt > 0.1
+                && app.camera.current.globe_tilt != app.camera.rendered.globe_tilt
+        );
         app.update_tour(None);
         let ([x, y], _) = target_on_screen(&mut app);
         let (cx, cy) = (320.0, 360.0 * ORIGIN_Y);

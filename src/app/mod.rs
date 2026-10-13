@@ -18,10 +18,11 @@ use crate::journal::{self, Journal};
 use crate::model::{Demand, Identity, Snapshot};
 use crate::picker::{self, Picker};
 use crate::platform::Source;
-use crate::render::{Camera, Frame, RenderInput, Scene, Thing};
+use crate::render::{Frame, RenderInput, Scene, Thing};
 use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
 
+use camera::CameraController;
 pub(crate) use input::typed;
 use player::HistoryPlayer;
 use pointer::Pointer;
@@ -37,10 +38,7 @@ pub(crate) const JOURNAL_LINGER: Duration = Duration::from_secs(30);
 
 pub(crate) struct App {
     pub(crate) scene: Scene,
-    pub(crate) camera: Camera,
-    pub(crate) goal: Camera,
-    /// The camera that drew `scene.positions`, which the camera has since moved on from.
-    pub(crate) rendered: Camera,
+    pub(crate) camera: CameraController,
     pub(crate) view: View,
     pub(crate) selected: Option<Identity>,
     /// The selected thing; never Some while a process is selected.
@@ -48,11 +46,6 @@ pub(crate) struct App {
     pub(crate) focus: Option<Identity>,
     pub(crate) history: HistoryPlayer,
     pub(crate) search: Search,
-    pub(crate) fit: bool,
-    /// The camera still frames the whole view, so views that grow are refitted as they do.
-    pub(crate) framed: bool,
-    pub(crate) snap: bool,
-    pub(crate) fit_zoom: f32,
     pub(crate) show_help: bool,
     /// The status panel is wanted; `h` hides it so the scene fills the terminal.
     pub(crate) panel: bool,
@@ -93,19 +86,13 @@ impl App {
     ) -> Self {
         let mut app = Self {
             scene,
-            camera: Camera::default(),
-            goal: Camera::default(),
-            rendered: Camera::default(),
+            camera: CameraController::default(),
             view,
             selected: None,
             thing: None,
             focus: None,
             history: HistoryPlayer::new(snapshot),
             search: Search::default(),
-            fit: true,
-            framed: true,
-            snap: true,
-            fit_zoom: 5.0,
             show_help: false,
             panel: true,
             labels: true,
@@ -159,11 +146,6 @@ impl App {
         self.history.snapshot()
     }
 
-    pub(super) fn both(&mut self, change: impl Fn(&mut Camera)) {
-        change(&mut self.camera);
-        change(&mut self.goal);
-    }
-
     /// The time the scene is drawn at: the sample's own while paused or rewound, else the
     /// animation clock.
     pub(super) fn render_time(&self) -> f32 {
@@ -192,10 +174,9 @@ impl App {
         self.renderer = renderer;
     }
 
-    /// Records the frame's display list, which `render` then rasterizes: everything that moves a
-    /// view's state, without the pixels.
-    pub(super) fn draw(&mut self, width: u32, height: u32, limit: usize) -> Frame {
-        let time = self.render_time();
+    /// Records the frame's display list, which `rasterize` then turns into pixels: everything
+    /// that moves a view's state, without the pixels.
+    pub(crate) fn draw(&mut self, width: u32, height: u32, limit: usize) -> Frame {
         self.scene.highlight = [
             self.selected,
             self.pointer.hovered,
@@ -204,34 +185,38 @@ impl App {
         .into_iter()
         .flatten()
         .collect();
-        let mut input = RenderInput {
+        let mut frame = self.record(width, height, limit, false);
+        if self.camera.fit_to(&self.scene, width, height) {
+            // The camera snaps to the fitted goal, and this frame is drawn from there.
+            frame = self.record(width, height, limit, true);
+            self.camera.snap_to_goal();
+        }
+        self.camera.drawn();
+        frame
+    }
+
+    /// The scene's display list for the shown sample, seen from the camera, or from its goal.
+    fn record(&mut self, width: u32, height: u32, limit: usize, from_goal: bool) -> Frame {
+        let camera = if from_goal {
+            &self.camera.goal
+        } else {
+            &self.camera.current
+        };
+        let input = RenderInput {
             snapshot: self.history.snapshot(),
             view: self.view,
-            camera: &self.camera,
+            camera,
             width,
             height,
             selected: self.selected,
             thing: self.thing.or(self.pointer.hovered_thing),
-            time,
+            time: self.render_time(),
             limit,
             focus: self.focus,
             paused: self.history.is_paused(),
             toured: self.tour.as_ref().map(|tour| tour.target),
         };
-        let mut frame = self.scene.render(&input);
-        if self.fit {
-            self.scene.fit(&mut self.goal, width, height);
-            self.fit_zoom = self.goal.zoom;
-            self.fit = false;
-            if std::mem::take(&mut self.snap) {
-                // The camera snaps to the fitted goal, and this frame is drawn from there.
-                input.camera = &self.goal;
-                frame = self.scene.render(&input);
-                self.camera = self.goal.clone();
-            }
-        }
-        self.rendered = self.camera.clone();
-        frame
+        self.scene.render(&input)
     }
 
     pub(super) fn touch(&mut self) {

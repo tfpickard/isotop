@@ -80,11 +80,11 @@ impl App {
     /// drew them, so a selected or hovered one is let go.
     pub(crate) fn switch(&mut self, view: View) {
         self.view = view;
-        self.fit = true;
+        self.camera.refit();
         self.thing = None;
         self.pointer.forget_thing();
         if let Some(pitch) = self.row().pitch {
-            self.goal.pitch = pitch;
+            self.camera.goal.pitch = pitch;
         }
     }
 }
@@ -170,11 +170,11 @@ mod tests {
         available[view("orbit").index()] = false;
         let mut app = App::new(view("cells"), model::demo(1.0, 16), available);
         app.render(320, 180, 512);
-        assert!(!app.fit);
+        assert!(!app.camera.fit_pending());
         app.key(KeyCode::Char('2'), KeyModifiers::NONE, 10.0);
-        assert_eq!((app.view, app.fit), (view("cells"), false));
+        assert_eq!((app.view, app.camera.fit_pending()), (view("cells"), false));
         app.key(KeyCode::Char('3'), KeyModifiers::NONE, 10.0);
-        assert_eq!((app.view, app.fit), (view("ripple"), true));
+        assert_eq!((app.view, app.camera.fit_pending()), (view("ripple"), true));
     }
 
     /// Opens the picker, types `name` and presses Enter, as the smoke test does.
@@ -241,10 +241,10 @@ mod tests {
         let lines = picker_lines(&app, 31);
         assert_eq!(lines[1], "no view matches", "{lines:?}");
         assert_eq!(lines.len(), 3);
-        assert!(!app.fit);
+        assert!(!app.camera.fit_pending());
         press(&mut app, KeyCode::Enter);
         assert!(app.picker.is_some(), "Enter keeps the picker open");
-        assert_eq!((app.view, app.fit), (view("orbit"), false));
+        assert_eq!((app.view, app.camera.fit_pending()), (view("orbit"), false));
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(
@@ -376,7 +376,7 @@ mod tests {
         let legend = |app: &App| app.scene.legend(View::at(0), app.snapshot());
         let before = (
             legend(&app),
-            app.goal.clone(),
+            app.camera.goal.clone(),
             (app.labels, app.panel, app.history.is_paused()),
         );
         press(&mut app, KeyCode::Char('v'));
@@ -408,7 +408,7 @@ mod tests {
         let lines = picker_lines(&app, 31);
         assert!(lines[0].starts_with("View: qxam1/+lh_"), "{lines:?}");
         assert_eq!(legend(&app), before.0, "the view saw no key");
-        assert!(app.goal == before.1, "the camera did not move");
+        assert!(app.camera.goal == before.1, "the camera did not move");
         assert_eq!((app.labels, app.panel, app.history.is_paused()), before.2);
         assert!(
             app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0),
@@ -441,11 +441,14 @@ mod tests {
         assert!(app.demand().is_empty());
         pick(&mut app, "matrix");
         assert_eq!(app.view, view("matrix"));
-        assert!(app.picker.is_none() && app.fit);
+        assert!(app.picker.is_none() && app.camera.fit_pending());
         assert_eq!(app.demand(), Demand::from(view("matrix").info().sources));
         assert!(app.demand().contains(Source::Journal));
         pick(&mut app, "ripple");
-        assert_eq!(app.goal.pitch, app.row().pitch.unwrap_or(app.goal.pitch));
+        assert_eq!(
+            app.camera.goal.pitch,
+            app.row().pitch.unwrap_or(app.camera.goal.pitch)
+        );
         assert!(app.demand().is_empty());
     }
 
