@@ -2,6 +2,7 @@
 
 use crossterm::event::KeyCode;
 
+use crate::keys::Action;
 use crate::model::{Identity, Process};
 
 use super::App;
@@ -99,16 +100,18 @@ fn matching(processes: &[Process], query: &str) -> Vec<Identity> {
 impl App {
     /// Handles a key while the search line is open: it takes every key, so nothing reaches the
     /// scene or the shown view.
-    pub(super) fn search_key(&mut self, code: KeyCode) {
+    pub(super) fn search_key(&mut self, action: Option<Action>, code: KeyCode) {
         let processes = &self.history.snapshot().processes;
-        let found = match code {
-            KeyCode::Esc | KeyCode::Enter => {
+        let found = match (action, code) {
+            (Some(Action::SearchClose), _) => {
                 self.search.close();
                 None
             }
-            KeyCode::Backspace => self.search.backspace(processes),
-            KeyCode::Tab => self.search.next(),
-            KeyCode::Char(character) => self.search.type_character(character, processes),
+            (Some(Action::SearchErase), _) => self.search.backspace(processes),
+            (Some(Action::SearchNext), _) => self.search.next(),
+            (Some(Action::SearchType), KeyCode::Char(character)) => {
+                self.search.type_character(character, processes)
+            }
             _ => None,
         };
         if let Some(id) = found {

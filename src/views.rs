@@ -370,19 +370,22 @@ const SETTLE: Warmup = Warmup {
     when: When::Output,
 };
 
-/// The keys a view may claim for itself. Every other key is global.
-pub const LOCAL_KEYS: &str = "bijkmopuxyz,.;";
-
 /// A key press offered to the shown view, while no search is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKey {
-    /// One of `LOCAL_KEYS`, which have no global meaning.
+    /// One of `keys::LOCAL_KEYS`, which have no global meaning.
     Local(char),
     /// Home or `r`. The global reset happens as well, whatever the hook returns.
     Reset,
     /// Esc. When the hook returns true the press is consumed; the view then leaves the next Esc
     /// to its global meaning.
     Escape,
+    /// `q`, the quit key, while the view is shown and no search or picker is open. Return true to
+    /// defer the quit: the app then stays open until the view sets `Stage::quit`, and a second
+    /// offer (another `q`) lets the view end it early by returning false. Return false, the
+    /// default, and the app quits at once. Ctrl-C is not offered: it always quits. A headless run
+    /// presses no key, so nothing is ever deferred there.
+    Quit,
 }
 
 /// A view that the scene draws, records and asks for its legend through this trait. Its state
@@ -810,9 +813,55 @@ pub mod testing {
                     self.keys.push('E');
                     std::mem::take(&mut self.mode)
                 }
+                ViewKey::Quit => false,
             }
         }
     }
+
+    /// How many frames `Farewell` plays after the first `q` before it lets the app quit.
+    pub const FAREWELL_FRAMES: u32 = 3;
+
+    /// A module view that defers the quit, as a view with a goodbye animation would: the first
+    /// `q` starts a farewell of `FAREWELL_FRAMES` frames, after which it sets `Stage::quit`, and
+    /// a second `q` during it quits at once. Its legend counts the farewell frames drawn.
+    #[derive(Default)]
+    pub struct Farewell {
+        leaving: bool,
+        frames: u32,
+    }
+
+    impl ViewModule for Farewell {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            if self.leaving {
+                self.frames += 1;
+                *stage.quit = self.frames >= FAREWELL_FRAMES;
+            }
+            Probe::default().draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" farewell: {} frames", self.frames)
+        }
+
+        fn key(&mut self, key: ViewKey) -> bool {
+            key == ViewKey::Quit && !std::mem::replace(&mut self.leaving, true)
+        }
+    }
+
+    /// `farewell`, which defers the quit, then `probe`, which does not.
+    pub static FAREWELLS: &[ViewInfo] = &[
+        ViewInfo::new("farewell", "FAREWELL", Backdrop::Space, || {
+            Box::new(Farewell::default())
+        }),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
+    ];
 
     /// The same as `Probe`, except that it replaces the inspector line.
     #[derive(Default)]

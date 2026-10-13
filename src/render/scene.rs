@@ -126,6 +126,9 @@ pub struct Scene {
     /// created. Every module is built up front, not on first show, because `record` feeds every
     /// sample to every view and a view built late would miss the samples before it opened.
     modules: Vec<Box<dyn ViewModule>>,
+    /// The last frame's `Stage::quit`: whether the shown view has finished the farewell it
+    /// deferred a quit for. Frame-wide because the app, not the view, ends the run.
+    pub(crate) quit: bool,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
     /// How many processes the shown view drew in the last frame: the status line's count.
@@ -167,6 +170,7 @@ impl Scene {
             popup: Vec::new(),
             callout: Vec::new(),
             history: History::default(),
+            quit: false,
             rows,
             modules: rows.iter().map(|row| (row.build)()).collect(),
             spare: Buffers::default(),
@@ -348,6 +352,7 @@ impl Scene {
         // A view that stands things on the ground reports their height again every frame it is
         // shown.
         self.headroom = 0.0;
+        self.quit = false;
         self.draw_view(&mut frame, input, &processes, dt);
         let lift = row.link_lift;
         self.splashes.clear();
@@ -482,6 +487,7 @@ impl Scene {
             callout: &mut self.callout,
             titles: &mut self.titles,
             headroom: &mut self.headroom,
+            quit: &mut self.quit,
         };
         let shown = self.modules[view.index()].draw(&mut stage, processes, snapshot);
         self.visible = shown;

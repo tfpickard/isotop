@@ -932,45 +932,57 @@ visit the next or a random process in the tour's own order and let it go on from
 
 ## Controls
 
+`isotop --keys` prints the tables below, and `isotop --help` ends with the same list. The
+in-app help (`?`) is made from the same table, so they agree.
+
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor |
-| Shift + Tab | Previous view in the playlist |
-| `v` | Open the view picker (below) |
-| `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
-| Two-finger scroll / wheel | Pan (vertical and horizontal); on the globe, turn the earth (horizontal) and tilt it (vertical) |
-| Ctrl + scroll | Zoom towards the pointer |
-| Alt + scroll | Rotate |
-| Right or middle drag | Rotate (horizontal) and tilt (vertical) |
+| **Camera** | |
 | Arrows or WASD | Pan |
 | `+` / `-` | Zoom |
 | `Q` / `e` | Rotate a quarter turn counterclockwise / clockwise |
 | PgUp / PgDn | Tilt up / down |
 | `t` | Toggle top-down and isometric |
 | Home | Fit scene (in the tesseract, also the canonical 4D orientation, the lab frame and the drift) |
-| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again; in the tesseract, as Home |
+| **Views** | |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it; `--list-views` names them) |
+| Shift + Tab | Previous view in the playlist |
+| `v` | Open the view picker, which has its own keys |
+| `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
+| **Tour and visits** | |
+| `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
+| Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
+| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names. To tell Shift + Space apart isotop asks such a terminal to report every key as an escape code, so a character composed with AltGr, Option or a dead key reaches the search box as its base key (known limitation) |
+| **Pointer** | |
+| Two-finger scroll / wheel | Pan (vertical and horizontal); on the globe, turn the earth (horizontal) and tilt it (vertical) |
+| Ctrl + scroll | Zoom towards the pointer |
+| Alt + scroll | Rotate |
+| Right or middle drag | Rotate (horizontal) and tilt (vertical) |
 | Hover | Name and description of the process under the pointer, or the title of a thing a view draws |
 | Left click | Select the nearest process, or thing, and open its inspector popup |
 | Left click on empty space | Close the popup |
 | Left drag | Pan (on the globe too) |
-| `l` | Toggle labels |
-| `h` | Hide or show the status panel, giving the scene the whole terminal |
-| `g` | Start the guided tour now, from the process last visited; `g` again (or any other input) ends it; on the globe it also lets a turned earth spin again |
-| Space | Visit the next process: the camera zooms to it and shows its callout, as a tour step does. A running tour goes on from there; with no tour the visit just holds. The order is the tour's notable processes, then every other visible process by identity. A view that opts out of the tour ignores it |
-| Shift + Space, or `*` | Visit a random other process; a running tour goes on from it. Shift + Space needs a terminal with the Kitty keyboard protocol (Ghostty and Kitty have it); without it, Shift + Space arrives as Space, so use `*`, which the help line then names. To tell Shift + Space apart isotop asks such a terminal to report every key as an escape code, so a character composed with AltGr, Option or a dead key reaches the search box as its base key (known limitation) |
-| `c` | Socket links: all, highlighted only, off |
+| **Search, selection and focus** | |
 | `/` | Search name, command, or exact PID |
-| Tab while searching / `n` afterward | Next match |
-| Enter | Accept search |
+| `n` | Next match of the search |
 | `f` | Focus selected process and descendants |
-| Esc | Leave search, close the popup, or clear subtree focus |
+| Esc | Close the popup, then the selection, then clear subtree focus |
+| **Display** | |
+| `l` | Toggle labels |
+| `c` | Socket links: all, highlighted only, off |
+| `r` | Reset camera and fit; on the globe, also lets a turned earth spin again; in the tesseract, as Home |
+| **History** | |
 | `P` (Shift + p) | Pause / resume |
 | `[` / `]` | Previous / next retained snapshot |
+| **View keys** | |
 | `,` / `.` | Tesseract: a quarter turn back / forward in the current 4D plane (stops the drift) |
 | `;` | Tesseract: cycle the 4D plane, XW, YW, ZW (stops the drift) |
 | `b` | Tesseract: boost into the selected process's rest frame; `b` again or Esc returns to the lab frame |
-| `?` | Toggle help; the second line leads with the shown view's own keys |
-| `q` / Ctrl-C | Quit |
+| **Panels and quit** | |
+| `h` | Hide or show the status panel, giving the scene the whole terminal |
+| `?` | Toggle help; its first line leads with the shown view's own keys |
+| `q` | Quit; the shown view may play a short farewell first, and `q` again ends it |
+| Ctrl-C | Quit at once, whatever is open |
 
 On the globe, scrolling follows your fingers the way panning moves the other
 views: scrolling right carries the surface to the left, and scrolling down
@@ -979,9 +991,21 @@ Scrolling at all stops the earth's own turn, and a turned globe holds still unti
 `r` or `g`; the idle tour waits while it is held. Search keeps the hold and
 stands the earth upright on the match.
 
+**Search.** `/` opens the search line. It takes every key until it closes, except Ctrl-C,
+which quits:
+
+| Key | Action |
+| --- | --- |
+| Any character | Add it to the search; the first match is selected as you type |
+| Backspace | Delete the last character |
+| Enter | Accept the search and close the line |
+| Esc | Leave the search, keeping the selection |
+| Tab | Next match |
+
 **View picker.** `v` lists the views this platform supports, one row each, such as
 `> * 11 coop    COOP`: `>` marks the highlighted row, `*` a view in the Tab playlist and
-the number the view's place in the list. The picker takes every key until it closes:
+the number the view's place in the list. The picker takes every key until it closes, except
+Ctrl-C, which quits:
 
 | Key | Action |
 | --- | --- |
@@ -991,7 +1015,6 @@ the number the view's place in the list. The picker takes every key until it clo
 | Enter | Show the highlighted view, fitted, and close the picker (nothing happens when no view matches) |
 | Space | Add the highlighted view to the Tab playlist or remove it; the last view cannot be removed |
 | Esc | Close without switching |
-| Ctrl-C | Quit |
 
 A view picked with `v` that is not in the playlist is not part of the cycle: Tab goes to
 the first playlist view after it in the list, Shift+Tab to the last one before it, and
@@ -1043,7 +1066,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-66,282 lines of Rust (38,894 production, 27,388 test) in 99 files, 906 tests, 18 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+67,446 lines of Rust (39,701 production, 27,745 test) in 100 files, 918 tests, 18 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

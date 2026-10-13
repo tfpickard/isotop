@@ -1,3 +1,4 @@
+use crate::keys::{self, Context, Expand, Line};
 use crate::model::{Snapshot, bytes};
 use crate::platform::{self, Source};
 use crate::render::Links;
@@ -57,6 +58,10 @@ impl App {
             ),
             known_bytes(s.memory_total)
         )];
+        let expand = Expand {
+            random: if self.keyboard { "Shift-Space" } else { "*" },
+            turn: row.turn.is_some(),
+        };
         let inspector = if let Some(line) = self.scene.inspector_line(self.view) {
             line
         } else if let Some(id) = self.inspected() {
@@ -93,26 +98,30 @@ impl App {
         );
         if let Some(query) = self.search.query() {
             lines.push(format!(
-                " /{query}_  {} matches | Enter accept | Esc cancel | Tab next",
-                self.search.found()
+                " /{query}_  {} matches | {}",
+                self.search.found(),
+                keys::line(Context::Search, Line::Prompt, expand)
             ));
         } else if self.picker.is_some() {
-            lines.push(" Type to filter views | Up/Down move | Enter show | Space add or remove from the Tab playlist | Esc close".into());
+            lines.push(format!(
+                " {}",
+                keys::line(Context::Picker, Line::Prompt, expand)
+            ));
         } else if self.show_help {
             // The shown view's own keys lead, so they survive a narrow terminal.
-            let keys = match row.keys {
+            let own = match row.keys {
                 "" => String::new(),
-                keys => format!(" {keys} |"),
+                own => format!(" {own} |"),
             };
-            let random = if self.keyboard { "Shift-Space" } else { "*" };
-            lines.push(format!("{keys} Arrows/WASD pan | +/- zoom | Q/E rotate | PgUp/PgDn tilt | t top-down | Home fit | Tab/Shift-Tab or 0-9 view | v views | g tour | Space next process | {random} random | f focus | l labels | c links"));
+            lines.push(format!(
+                "{own} {}",
+                keys::line(Context::Global, Line::Keys, expand)
+            ));
         } else {
-            let scroll = if self.row().turn.is_some() {
-                "scroll turn/tilt | drag pan"
-            } else {
-                "scroll pan"
-            };
-            lines.push(format!(" Tab next view | v views | g tour | Space visit | {scroll} | Ctrl-scroll zoom | click inspect | / search | c links | P pause | h hide panel | ? help | q quit"));
+            lines.push(format!(
+                " {}",
+                keys::line(Context::Global, Line::Brief, expand)
+            ));
         }
         let links = match self.scene.links {
             Links::All => "",
@@ -120,12 +129,7 @@ impl App {
             Links::Off => " | links: off",
         };
         lines.push(if self.show_help {
-            let scroll = if self.row().turn.is_some() {
-                "Scroll turn/tilt | drag pan"
-            } else {
-                "Scroll pan"
-            };
-            format!(" {scroll} | Ctrl-scroll zoom | Alt-scroll or right-drag rotate/tilt | n next match | [/] rewind | r reset | Ctrl-C quit")
+            format!(" {}", keys::line(Context::Global, Line::More, expand))
         } else { format!(" {render_ms:.1}ms {} | {transport} | target {fps}fps | {} samples | t={:.1}s | cap {limit} | {}{links}{}",
             self.renderer.kind(), self.history.len(), s.elapsed, pressure_text(s),
             if self.focus.is_some() { " | SUBTREE FOCUS" } else { "" }) });

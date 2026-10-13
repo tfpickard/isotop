@@ -186,6 +186,18 @@ pub(crate) struct Stage<'a> {
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
     /// nothing rises.
     pub headroom: &'a mut f32,
+    /// Set to true by a view that deferred `ViewKey::Quit` once it is done (its farewell has
+    /// played): the app then quits. Start at false each frame; a frame that leaves it false while
+    /// a quit is pending keeps the app open. Nothing else reads it, so a view that never defers a
+    /// quit never touches it.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no view defers a quit yet; the first with a farewell writes it"
+        )
+    )]
+    pub quit: &'a mut bool,
 }
 
 impl Stage<'_> {

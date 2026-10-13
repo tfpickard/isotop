@@ -66,6 +66,9 @@ pub(crate) struct App {
     pub(crate) playlist: Vec<View>,
     /// The view picker, while `v` has it open.
     pub(crate) picker: Option<Picker>,
+    /// The shown view took a `q` and deferred the quit (`ViewKey::Quit`): the app ends when the
+    /// view reports it is done (`Stage::quit`), or when the view lets a second `q` through.
+    pub(crate) quitting: bool,
 }
 
 impl App {
@@ -103,6 +106,7 @@ impl App {
             journal: JournalFeed::default(),
             playlist: picker::playlist(&[], &available),
             picker: None,
+            quitting: false,
             available,
         };
         app.switch(view);
@@ -218,6 +222,12 @@ impl App {
             toured: self.tour.as_ref().map(|tour| tour.target),
         };
         self.scene.render(&input)
+    }
+
+    /// Whether a quit the shown view deferred is over: it set `Stage::quit` in the frame just
+    /// drawn.
+    pub(crate) fn farewell_over(&self) -> bool {
+        self.quitting && self.scene.quit
     }
 
     pub(super) fn touch(&mut self) {

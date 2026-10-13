@@ -2,9 +2,10 @@ use std::f32::consts::FRAC_PI_2;
 
 use crossterm::event::{self, KeyCode, KeyModifiers};
 
+use crate::keys::{self, Action, Context, LOCAL_KEYS};
 use crate::picker::Picker;
 use crate::render::ISOMETRIC;
-use crate::views::{LOCAL_KEYS, View, ViewKey};
+use crate::views::{View, ViewKey};
 
 use super::App;
 use super::tour::Step;
@@ -29,101 +30,118 @@ impl App {
     pub(super) fn command(&mut self, code: KeyCode, modifiers: KeyModifiers, step: f32) -> bool {
         let touring = self.tour.as_ref().is_some_and(|tour| tour.running);
         self.touch();
-        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c') {
+        let context = if self.picker.is_some() {
+            Context::Picker
+        } else if self.search.is_open() {
+            Context::Search
+        } else {
+            Context::Global
+        };
+        let action = keys::lookup(context, code, modifiers);
+        if action == Some(Action::Interrupt) {
             return true;
         }
-        if self.picker.is_some() {
-            return self.picker_key(code, modifiers);
+        match context {
+            Context::Picker => return self.picker_key(action, code, modifiers),
+            Context::Search => {
+                self.search_key(action, code);
+                return false;
+            }
+            Context::Global | Context::Any => {}
         }
-        if self.search.is_open() {
-            self.search_key(code);
+        if action == Some(Action::Escape) && self.thing.take().is_some() {
             return false;
         }
-        if code == KeyCode::Esc && self.thing.take().is_some() {
-            return false;
-        }
-        if let Some(key) = view_key(code) {
+        if let Some(key) = view_key(code, action) {
             let consumed = self.scene.key(self.view, key);
             match key {
                 ViewKey::Local(_) => return false,
                 ViewKey::Escape if consumed => return false,
-                ViewKey::Escape | ViewKey::Reset => {}
+                _ => {}
             }
         }
-        match code {
-            KeyCode::Char('q') => return true,
-            KeyCode::Tab => self.switch(self.cycle(true)),
-            KeyCode::BackTab => self.switch(self.cycle(false)),
-            KeyCode::Left | KeyCode::Char('a') => self.camera.goal.pan(-step, 0.0),
-            KeyCode::Right | KeyCode::Char('d') => self.camera.goal.pan(step, 0.0),
-            KeyCode::Up | KeyCode::Char('w') => self.camera.goal.pan(0.0, -step),
-            KeyCode::Down | KeyCode::Char('s') => self.camera.goal.pan(0.0, step),
-            KeyCode::Char('+') | KeyCode::Char('=') => self.camera.goal.scale(1.15),
-            KeyCode::Char('-') => self.camera.goal.scale(1.0 / 1.15),
-            KeyCode::Char('e') => self.camera.goal.rotation += FRAC_PI_2,
-            KeyCode::Char('Q') => self.camera.goal.rotation -= FRAC_PI_2,
-            KeyCode::PageUp => self.camera.goal.tilt(0.12),
-            KeyCode::PageDown => self.camera.goal.tilt(-0.12),
-            KeyCode::Char('t') => {
+        action.is_some_and(|action| self.perform(action, code, step, touring))
+    }
+
+    /// Carries out a global action; returns whether it quits. `touring` is whether a tour was
+    /// running when the key arrived.
+    fn perform(&mut self, action: Action, code: KeyCode, step: f32, touring: bool) -> bool {
+        match action {
+            Action::Quit => {
+                // A view may take the quit to play a farewell first; none does by default.
+                if !self.scene.key(self.view, ViewKey::Quit) {
+                    return true;
+                }
+                self.quitting = true;
+            }
+            Action::NextView => self.switch(self.cycle(true)),
+            Action::PreviousView => self.switch(self.cycle(false)),
+            Action::PanLeft => self.camera.goal.pan(-step, 0.0),
+            Action::PanRight => self.camera.goal.pan(step, 0.0),
+            Action::PanUp => self.camera.goal.pan(0.0, -step),
+            Action::PanDown => self.camera.goal.pan(0.0, step),
+            Action::ZoomIn => self.camera.goal.scale(1.15),
+            Action::ZoomOut => self.camera.goal.scale(1.0 / 1.15),
+            Action::RotateClockwise => self.camera.goal.rotation += FRAC_PI_2,
+            Action::RotateCounterclockwise => self.camera.goal.rotation -= FRAC_PI_2,
+            Action::TiltUp => self.camera.goal.tilt(0.12),
+            Action::TiltDown => self.camera.goal.tilt(-0.12),
+            Action::TopDown => {
                 self.camera.goal.pitch = if self.camera.goal.pitch > 1.2 {
                     ISOMETRIC
                 } else {
                     FRAC_PI_2
                 };
             }
-            KeyCode::Char('v') => {
+            Action::Picker => {
                 self.picker = Some(Picker::open(&self.entries(), self.view));
             }
-            KeyCode::Char('l') => self.labels = !self.labels,
-            KeyCode::Char('h') => self.panel = !self.panel,
-            KeyCode::Char(digit @ '0'..='9') => {
-                // 1 to 9 pick the first nine rows and 0 the tenth.
-                let index = (digit as usize + 10 - '1' as usize) % 10;
-                if self.available.get(index) == Some(&true) {
-                    self.switch(View::at(index));
+            Action::Labels => self.labels = !self.labels,
+            Action::Panel => self.panel = !self.panel,
+            Action::Jump => {
+                if let KeyCode::Char(digit) = code {
+                    // 1 to 9 pick the first nine rows and 0 the tenth.
+                    let index = (digit as usize + 10 - '1' as usize) % 10;
+                    if self.available.get(index) == Some(&true) {
+                        self.switch(View::at(index));
+                    }
                 }
             }
-            KeyCode::Char('g') if !touring && self.row().tour => self.visit(Step::Stay, true),
-            KeyCode::Char(' ') if self.row().tour => {
-                let step = if modifiers.contains(KeyModifiers::SHIFT) {
-                    Step::Random
-                } else {
-                    Step::Next
-                };
-                self.visit(step, touring);
-            }
-            // Shift+Space where the terminal cannot tell it from Space.
-            KeyCode::Char('*') if self.row().tour => self.visit(Step::Random, touring),
-            KeyCode::Char('c') => self.scene.links.cycle(),
-            KeyCode::Home => self.camera.refit(),
-            KeyCode::Char('r') => {
+            Action::Tour if !touring && self.row().tour => self.visit(Step::Stay, true),
+            Action::VisitNext if self.row().tour => self.visit(Step::Next, touring),
+            Action::VisitRandom if self.row().tour => self.visit(Step::Random, touring),
+            Action::Links => self.scene.links.cycle(),
+            Action::Fit => self.camera.refit(),
+            Action::Reset => {
                 let (time, pitch) = (self.render_time(), self.row().pitch);
                 self.camera.reset(time, pitch);
             }
-            KeyCode::Char('?') => self.show_help = !self.show_help,
-            KeyCode::Char('/') => self.search.open(),
-            KeyCode::Char('n') => {
+            Action::Help => self.show_help = !self.show_help,
+            Action::Search => self.search.open(),
+            Action::NextMatch => {
                 if let Some(id) = self.search.next() {
                     self.select_match(id);
                 }
             }
-            KeyCode::Char('f') => {
+            Action::Focus => {
                 if self.selected.is_some() {
                     self.focus = self.selected;
                     self.camera.refit();
                 }
             }
-            KeyCode::Esc => {
+            Action::Escape => {
                 if self.selected.take().is_none() {
                     self.focus = None;
                     self.camera.refit();
                 }
             }
-            KeyCode::Char('P') => {
+            Action::Pause => {
                 self.history.toggle_pause();
             }
-            KeyCode::Char('[') => self.history.rewind(),
-            KeyCode::Char(']') => self.history.forward(),
+            Action::Rewind => self.history.rewind(),
+            Action::Forward => self.history.forward(),
+            // The tour and the visits when the view opts out of them, keys a view reads itself,
+            // gestures the pointer handles, and the modal contexts' own actions do nothing here.
             _ => {}
         }
         false
@@ -146,14 +164,15 @@ pub(crate) fn typed(key: &event::KeyEvent) -> (KeyCode, KeyModifiers) {
     }
 }
 
-/// What a key press offers the shown view's key hook, if anything.
-pub(super) fn view_key(code: KeyCode) -> Option<ViewKey> {
-    match code {
-        KeyCode::Char(character) if LOCAL_KEYS.contains(character) => {
+/// What a key press offers the shown view's key hook, if anything. `action` is what the keymap
+/// makes of the press.
+pub(super) fn view_key(code: KeyCode, action: Option<Action>) -> Option<ViewKey> {
+    match (code, action) {
+        (KeyCode::Char(character), _) if LOCAL_KEYS.contains(character) => {
             Some(ViewKey::Local(character))
         }
-        KeyCode::Home | KeyCode::Char('r') => Some(ViewKey::Reset),
-        KeyCode::Esc => Some(ViewKey::Escape),
+        (_, Some(Action::Fit | Action::Reset)) => Some(ViewKey::Reset),
+        (_, Some(Action::Escape)) => Some(ViewKey::Escape),
         _ => None,
     }
 }
@@ -204,6 +223,87 @@ mod tests {
         assert!(!app.panel_shown(), "hidden again after the search");
         press(&mut app, 'h');
         assert!(app.panel_shown());
+    }
+
+    #[test]
+    fn the_rotation_keys_are_the_ones_the_help_names() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        app.show_help = true;
+        let help = app.text(0.0, "test", 20, 512)[3].clone();
+        assert!(help.contains("| Q/e rotate |"), "{help}");
+        let turned = |app: &mut App, character: char| {
+            let before = app.camera.goal.rotation;
+            let quit = press(app, KeyCode::Char(character));
+            (app.camera.goal.rotation - before, quit)
+        };
+        assert_eq!(turned(&mut app, 'e'), (FRAC_PI_2, false));
+        assert_eq!(turned(&mut app, 'Q'), (-FRAC_PI_2, false));
+        assert_eq!(turned(&mut app, 'E'), (0.0, false), "E is not bound");
+        assert_eq!(turned(&mut app, 'q'), (0.0, true), "q quits");
+    }
+
+    #[test]
+    fn a_modifier_the_keymap_does_not_name_changes_nothing() {
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        let center = app.camera.goal.center;
+        app.key(KeyCode::Char('a'), KeyModifiers::ALT, 10.0);
+        assert_ne!(app.camera.goal.center, center, "Alt-a pans as a does");
+        let mut app = App::new(view("city"), model::demo(1.0, 16), all_available());
+        assert!(
+            app.key(KeyCode::Char('q'), KeyModifiers::CONTROL, 10.0),
+            "Ctrl-q quits as q does"
+        );
+        assert!(app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0));
+    }
+
+    #[test]
+    fn a_view_can_defer_the_quit_until_its_farewell_is_over() {
+        let (farewell, probe) = (View::at(0), View::at(1));
+        let mut app = app_over(views::testing::FAREWELLS);
+        assert!(
+            !press(&mut app, KeyCode::Char('q')),
+            "the view took the quit"
+        );
+        assert!(app.quitting && !app.farewell_over());
+        for frame in 1..=testing::FAREWELL_FRAMES {
+            assert!(!app.farewell_over(), "frame {frame} is not the last");
+            app.render(320, 180, 512);
+        }
+        assert!(app.farewell_over(), "the view said it is done");
+        assert_eq!(
+            app.scene.legend(farewell, app.snapshot()),
+            format!(" farewell: {} frames", testing::FAREWELL_FRAMES)
+        );
+
+        // A second q during the farewell ends it at once, and Ctrl-C never waits for it.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(
+            press(&mut app, KeyCode::Char('q')),
+            "the view let the second q through"
+        );
+        let mut app = app_over(views::testing::FAREWELLS);
+        assert!(app.key(KeyCode::Char('c'), KeyModifiers::CONTROL, 10.0));
+
+        // Switching away cancels the deferred quit, and a view that defers nothing quits at once.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('q'));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view, probe);
+        for _ in 0..=testing::FAREWELL_FRAMES {
+            app.render(320, 180, 512);
+        }
+        assert!(!app.farewell_over());
+        assert!(
+            press(&mut app, KeyCode::Char('q')),
+            "the default is to quit"
+        );
+
+        // Search and the picker take q as text before any view sees it.
+        let mut app = app_over(views::testing::FAREWELLS);
+        press(&mut app, KeyCode::Char('/'));
+        assert!(!press(&mut app, KeyCode::Char('q')));
+        assert!(!app.quitting);
     }
 
     #[test]
