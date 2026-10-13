@@ -131,6 +131,16 @@ impl Camera {
         [across * c + along * s, along * c - across * s]
     }
 
+    /// The screen offset, in frame pixels over `zoom`, that a displacement of the ground plane
+    /// makes: the inverse of [`Camera::ground`] at a zoom of one. A view that keeps its own
+    /// picture of the pan (a sky that must not turn about the ground origin) accumulates it.
+    pub(crate) fn ground_offset(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        let (s, c) = (self.rotation + FRAC_PI_4).sin_cos();
+        let across = x * c - y * s;
+        let along = x * s + y * c;
+        [across * SCALE, along * SCALE * self.pitch.sin()]
+    }
+
     pub fn pan(&mut self, dx: f32, dy: f32) {
         let [x, y] = self.ground(dx, dy);
         self.center[0] += x;

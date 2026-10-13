@@ -957,11 +957,20 @@ pub struct Hr {
     /// sky's opacity in 255ths.
     field: Option<Field>,
     built: Option<(usize, u32)>,
+    /// How far the camera has panned the sky, in sky units: the sky point at the middle of the
+    /// screen. It is the sum of the camera centre's moves, each taken as the screen offset it made
+    /// at the rotation and tilt of that frame, so turning or tilting the camera leaves the dome
+    /// on its pixels whatever the centre.
+    pan: [f32; 2],
+    /// The camera centre and the scene's frame count at the last draw.
+    followed: Option<([f32; 2], u64)>,
 }
 
 /// The sky-plane to world and screen mapping of one frame.
 struct Plot<'a> {
     camera: &'a Camera,
+    /// The sky point at the middle of the screen.
+    pan: [f32; 2],
     /// Pixel sizes are scaled by the frame's height over the prototype's 720.
     scale: f32,
     /// How far a flat thing is lifted toward the viewer so it is drawn over the dome, in the
@@ -970,12 +979,14 @@ struct Plot<'a> {
 }
 
 impl Plot<'_> {
-    /// The ground point whose screen offset from the camera's centre is the sky point `at`, so
-    /// the dome faces the viewer whatever the rotation and tilt.
+    /// The ground point whose screen offset from the middle of the screen is the sky point `at`
+    /// less the pan, so the dome faces the viewer whatever the rotation and tilt.
     fn world(&self, at: [f32; 2]) -> Point {
         let zoom = self.camera.zoom;
-        let [x, y] = self.camera.ground(at[0] * zoom, at[1] * zoom);
-        [x, y, 0.0]
+        let [x, y] = self
+            .camera
+            .ground((at[0] - self.pan[0]) * zoom, (at[1] - self.pan[1]) * zoom);
+        [self.camera.center[0] + x, self.camera.center[1] + y, 0.0]
     }
 
     /// The frame position of a sky point, lifted over the dome.
@@ -1045,6 +1056,23 @@ struct Star<'a> {
 }
 
 impl Hr {
+    /// Adds what the camera's centre moved since the last frame to the pan. After a gap (another
+    /// view was shown) the sky starts again at the middle of the screen.
+    fn follow(&mut self, camera: &Camera, frames: u64) {
+        let continued = self
+            .followed
+            .is_some_and(|(_, before)| frames == before + 1 || frames == before);
+        if let (Some((centre, _)), true) = (self.followed, continued) {
+            let moved =
+                camera.ground_offset([camera.center[0] - centre[0], camera.center[1] - centre[1]]);
+            self.pan[0] += moved[0];
+            self.pan[1] += moved[1];
+        } else {
+            self.pan = [0.0; 2];
+        }
+        self.followed = Some((camera.center, frames));
+    }
+
     /// Brings the layout, the records of the stars and the main sequence up to `snapshot`, once per
     /// sample.
     fn observe(&mut self, snapshot: &Snapshot) {
@@ -1963,9 +1991,11 @@ impl ViewModule for Hr {
         let diagram_opacity = smoothstep(0.38, 1.0, progress);
 
         let camera = stage.camera;
+        self.follow(camera, stage.frames);
         let frame_height = stage.frame.height;
         let plot = Plot {
             camera,
+            pan: self.pan,
             scale: frame_height as f32 / REFERENCE_HEIGHT,
             lift: LINE_DEPTH_BIAS,
         };
@@ -2901,6 +2931,63 @@ mod tests {
         assert!(run(false) == run(false), "the sky");
         assert!(run(true) == run(true), "the diagram");
         assert!(run(false) != run(true), "the two modes differ");
+    }
+
+    #[test]
+    fn a_panned_camera_that_turns_or_tilts_leaves_every_star_on_its_pixel() {
+        let machine = snapshot(10.0, population());
+        for diagram in [false, true] {
+            let mut scene = Scene::new();
+            scene.configure(&ViewOptions {
+                hr_diagram: diagram,
+            });
+            draw(&mut scene, &snapshot(9.0, population()), 9.0);
+            let mut camera = Camera::default();
+            let screen = |scene: &mut Scene, camera: &Camera| -> Vec<[f32; 2]> {
+                let input = RenderInput {
+                    width: 960,
+                    height: 540,
+                    ..RenderInput::small(&machine, hr_view(), camera, 10.5)
+                };
+                let frame = scene.render(&input);
+                machine
+                    .processes
+                    .iter()
+                    .filter(|process| scene.positions.contains_key(&process.id))
+                    .map(|process| {
+                        let at = frame.project(camera, scene.positions[&process.id]);
+                        [at[0], at[1]]
+                    })
+                    .collect()
+            };
+            let centred = screen(&mut scene, &camera);
+            camera.pan(40.0, 25.0);
+            let panned = screen(&mut scene, &camera);
+            let moved = centred
+                .iter()
+                .zip(&panned)
+                .map(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]))
+                .fold(0.0_f32, f32::max);
+            assert!(
+                moved > 20.0,
+                "diagram {diagram}: the pan moved the sky {moved} px"
+            );
+            assert!(camera.center != [0.0, 0.0]);
+            camera.rotation += 0.6;
+            let turned = screen(&mut scene, &camera);
+            camera.tilt(-0.25);
+            let tilted = screen(&mut scene, &camera);
+            for (name, after) in [("turn", &turned), ("tilt", &tilted)] {
+                assert_eq!(after.len(), panned.len());
+                for (before, after) in panned.iter().zip(after) {
+                    let off = (before[0] - after[0]).hypot(before[1] - after[1]);
+                    assert!(
+                        off < 0.5,
+                        "diagram {diagram}: a {name} moved a star {off} px"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
