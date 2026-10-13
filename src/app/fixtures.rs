@@ -10,6 +10,7 @@ pub(crate) use crossterm::event::{
 pub(crate) use crate::app::App;
 pub(crate) use crate::app::pointer::Pointer;
 pub(crate) use crate::app::screen::Layout;
+pub(crate) use crate::cli::Options;
 pub(crate) use crate::model::{self, Demand, Identity, bytes};
 pub(crate) use crate::platform::{self, Source};
 pub(crate) use crate::render::{self, Camera, Frame, ISOMETRIC, ORIGIN_Y, Scene, Thing};
@@ -17,6 +18,7 @@ pub(crate) use crate::simulation::Rng;
 pub(crate) use crate::terminal::{Label, Tone};
 pub(crate) use crate::views::{self, REGISTRY, View, testing, view};
 pub(crate) use crate::{demo_snapshot, globe, journal, picker, terminal};
+pub(crate) use clap::Parser;
 
 /// Every registered view available, as on Linux and macOS today.
 pub(crate) fn all_available() -> Vec<bool> {
@@ -129,4 +131,9 @@ pub(crate) fn visiting_app() -> App {
     app.rng = Rng::new(7);
     app.render(320, 180, 512);
     app
+}
+
+/// Options as `isotop` parses `arguments`.
+pub(crate) fn options(arguments: &[&str]) -> Options {
+    Options::parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
 }
