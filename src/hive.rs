@@ -901,11 +901,15 @@ impl Comb {
     }
 }
 
-/// A cgroup's processes in the slice.
+/// A cgroup's processes in the sample.
 struct Group<'a> {
     name: &'a str,
+    /// The memory of all its processes, however many the scene admits: hives are chosen and
+    /// placed by the sample, so focus and `--limit` only hide.
     memory: u64,
     members: Vec<&'a Process>,
+    /// How many of the members the scene admits to this frame.
+    admitted: usize,
 }
 
 /// One frame to draw this frame.
@@ -1452,22 +1456,34 @@ fn draw_beam(frame: &mut Frame, camera: &Camera, [hx, hy]: [f32; 2], kind: Color
 // ---------------------------------------------------------------------------------------------
 // The view
 
-/// The slice's processes by cgroup, each as the sample says it and not as the scene eased it:
+/// The sample's processes by cgroup, each as the sample says it and not as the scene eased it:
 /// cells follow the sample, so a comb is repainted when a sample arrives and not on every frame
-/// between.
+/// between. Processes the scene does not admit (a focus, `--limit`) are members all the same,
+/// so hiding them moves no hive and no frame; a process the scene still draws although the
+/// sample no longer has it (one that just exited) is a member for as long as it is drawn.
 fn grouped<'a>(processes: &[&'a Process], snapshot: &'a Snapshot) -> BTreeMap<&'a str, Group<'a>> {
     let sampled: HashMap<Identity, &Process> =
         snapshot.processes.iter().map(|p| (p.id, p)).collect();
+    let admitted: HashSet<Identity> = processes.iter().map(|p| p.id).collect();
     let mut groups = BTreeMap::new();
-    for &process in processes {
-        let process = sampled.get(&process.id).copied().unwrap_or(process);
+    let mut join = |process: &'a Process, shown: bool| {
         let group = groups.entry(cell_name(process)).or_insert_with(|| Group {
             name: cell_name(process),
             memory: 0,
             members: Vec::new(),
+            admitted: 0,
         });
         group.memory = group.memory.saturating_add(process.memory);
         group.members.push(process);
+        group.admitted += usize::from(shown);
+    };
+    for &process in processes {
+        join(sampled.get(&process.id).copied().unwrap_or(process), true);
+    }
+    for process in &snapshot.processes {
+        if !admitted.contains(&process.id) {
+            join(process, false);
+        }
     }
     groups
 }
@@ -1483,13 +1499,16 @@ impl Hive {
         snapshot: &Snapshot,
     ) -> Plan<'a> {
         self.choose(groups);
+        let admitted: HashSet<Identity> = processes.iter().map(|p| p.id).collect();
         let needs: Vec<(String, f32)> = self
             .shown
             .iter()
             .map(|name| (name.clone(), HIVE_RADIUS))
             .collect();
         let discs = self.discs.arrange(&needs);
-        let centers: Centers = self
+        // Every shown hive keeps its disc, drawn or not; only those with a process the scene
+        // admits stand.
+        let placed: Centers = self
             .shown
             .iter()
             .filter_map(|name| discs.get(name).map(|&center| (name.clone(), center)))
@@ -1500,13 +1519,19 @@ impl Hive {
         let before = previous_sample(history, snapshot.elapsed);
         let mut hives = Vec::new();
         let mut standing = Vec::new();
-        for (name, center) in &centers {
+        for (name, center) in &placed {
             let group = &groups[name.as_str()];
+            // Slots follow the sample, so a hive keeps its frames where they were while a focus
+            // hides some of them.
             let seats = self.seat(name, &group.members);
+            if group.admitted == 0 {
+                continue;
+            }
             let mut framed = 0;
             for (slot, id) in seats.iter().enumerate() {
-                let Some(process) =
-                    id.and_then(|id| group.members.iter().copied().find(|p| p.id == id))
+                let Some(process) = id
+                    .filter(|id| admitted.contains(id))
+                    .and_then(|id| group.members.iter().copied().find(|p| p.id == id))
                 else {
                     continue;
                 };
@@ -1538,10 +1563,14 @@ impl Hive {
                 trim,
             });
         }
+        let centers: Centers = hives
+            .iter()
+            .map(|hive| (hive.group.name.to_owned(), hive.center))
+            .collect();
         Plan {
             hives,
             standing,
-            hidden: groups.len() - centers.len(),
+            hidden: groups.values().filter(|group| group.admitted > 0).count() - centers.len(),
             centers,
         }
     }
@@ -1672,7 +1701,7 @@ impl ViewModule for Hive {
             counted: plan
                 .hives
                 .iter()
-                .map(|hive| hive.group.members.len() - hive.framed)
+                .map(|hive| hive.group.admitted - hive.framed)
                 .sum(),
             ..Summary::default()
         };
@@ -1683,7 +1712,7 @@ impl ViewModule for Hive {
             .tour
             .sort_by(|a, b| b.weight.total_cmp(&a.weight).then(a.id.cmp(&b.id)));
         for hive in &plan.hives {
-            let more = hive.group.members.len() - hive.framed;
+            let more = hive.group.admitted - hive.framed;
             let name = short(hive.group.name);
             stage.titles.push(Title {
                 at: [hive.center[0], hive.center[1], 0.0],
@@ -2654,6 +2683,7 @@ mod tests {
             name,
             memory,
             members: Vec::new(),
+            admitted: 0,
         }
     }
 
@@ -2791,6 +2821,55 @@ mod tests {
                 }
             }
             assert!(stayed >= 12, "{stayed} frames stayed");
+        }
+    }
+
+    /// Draws `snapshot` with a focus or a limit and the camera of a plain frame.
+    fn draw_hidden(scene: &mut Scene, snapshot: &Snapshot, focus: Option<Identity>, limit: usize) {
+        let camera = Camera::default();
+        scene.render(&RenderInput {
+            focus,
+            limit,
+            ..input(snapshot, &camera, 12.0)
+        });
+    }
+
+    #[test]
+    fn focus_and_limit_only_hide_hives_and_frames_and_never_move_them() {
+        let base = demo(12.0);
+        let mut scene = Scene::new();
+        draw(&mut scene, &base, 12.0);
+        let (hives, frames) = places(&scene);
+        let positions = scene.positions.clone();
+        assert!(hives.len() >= 4, "{} hives", hives.len());
+        // A process that stands alone in its cgroup among the frames: focus leaves one hive.
+        let mut hidden_some = 0;
+        for process in base.processes.iter().filter(|p| frames.contains_key(&p.id)) {
+            let mut scene = Scene::new();
+            draw(&mut scene, &base, 12.0);
+            draw_hidden(&mut scene, &base, Some(process.id), 512);
+            let (during, _) = places(&scene);
+            hidden_some += usize::from(during.len() < hives.len());
+            draw_hidden(&mut scene, &base, None, 512);
+            let (after, frames_after) = places(&scene);
+            assert_eq!(after, hives, "focus on {:?} and back", process.id);
+            assert_eq!(frames_after, frames);
+            assert_eq!(scene.positions, positions);
+        }
+        assert!(hidden_some > 0, "focus never hid a hive");
+        for limit in [3, 40, 90] {
+            let mut scene = Scene::new();
+            draw(&mut scene, &base, 12.0);
+            draw_hidden(&mut scene, &base, None, limit);
+            let (during, _) = places(&scene);
+            assert!(during.len() <= hives.len());
+            for (name, center) in &during {
+                assert_eq!(hives[name], *center, "hive {name} at limit {limit}");
+            }
+            draw_hidden(&mut scene, &base, None, 512);
+            let (after, frames_after) = places(&scene);
+            assert_eq!(after, hives, "limit {limit} and back");
+            assert_eq!(frames_after, frames);
         }
     }
 
