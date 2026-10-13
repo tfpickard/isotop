@@ -1096,6 +1096,10 @@ CI builds and tests on Linux and on macOS (`macos-15`, Apple Silicon). The macOS
 code can be type-checked from Linux with
 `cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings`.
 
+## Credits
+
+Stroke font: A. V. Hershey, Naval Weapons Laboratory, NWL Report 2101 (1967). The Usenet distribution's notice is reproduced verbatim in `src/hershey/NOTICE` as its terms require.
+
 ## Next milestones
 
 - Zoom-dependent aggregation for very dense systems.

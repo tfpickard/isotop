@@ -298,7 +298,7 @@ Assignments:
 | Per-thread CPU and names | [B7 (#34)](https://github.com/tfpickard/isotop/issues/34) |
 | Per-file I/O attribution | [B8 (#35)](https://github.com/tfpickard/isotop/issues/35) |
 | Non-process pickables and cards | [B9 (#36)](https://github.com/tfpickard/isotop/issues/36) |
-| Hershey stroke text | [B10 (#37)](https://github.com/tfpickard/isotop/issues/37) |
+| Hershey stroke text (`Frame::stroke_text`, `hershey::font` for glyphs and layout) | [B10 (#37)](https://github.com/tfpickard/isotop/issues/37) |
 | Persistent view state | [B11 (#38)](https://github.com/tfpickard/isotop/issues/38) |
 | Thermal sensors, topology, throttle counts, package power | [B12 (#39)](https://github.com/tfpickard/isotop/issues/39) |
 | Stable seats and group discs | `layout::Seats`, `layout::Discs` (today) |

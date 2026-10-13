@@ -14,6 +14,7 @@ mod scene;
 pub mod shared;
 mod stage;
 pub(crate) mod strokes;
+mod text;
 
 pub type Color = [u8; 3];
 pub type Point = [f32; 3];
