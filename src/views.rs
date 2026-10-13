@@ -385,6 +385,15 @@ pub enum ViewKey {
     Escape,
 }
 
+/// Command-line settings that only some views read, handed to every module once, before its first
+/// frame, through `ViewModule::configure`. A view takes the fields it knows and ignores the rest;
+/// a new view's flag adds a field here and one line in `Options::view_options`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewOptions {
+    /// `--hr-diagram`: the hr view starts in diagram mode instead of the sky.
+    pub hr_diagram: bool,
+}
+
 /// A view that the scene draws, records and asks for its legend through this trait. Its state
 /// lives in the implementing type, which the registry row's `build` makes.
 pub trait ViewModule {
@@ -393,6 +402,10 @@ pub trait ViewModule {
     /// `stage.bounds` when the content moves by itself. Step by `stage.dt`, and tell the app
     /// anything else only through the other `Stage` outputs, such as `tour` and `popup`.
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize;
+
+    /// Takes in the command-line settings once, before the first frame, whichever view is shown.
+    /// A view that has none of its own leaves it.
+    fn configure(&mut self, _options: &ViewOptions) {}
 
     /// Takes in each new sample, whichever view is shown, for history the view needs when it
     /// opens.
@@ -752,11 +765,17 @@ pub mod testing {
         records: usize,
         keys: String,
         mode: bool,
+        /// The command-line settings `configure` took in, if it was called.
+        configured: Option<ViewOptions>,
     }
 
     impl ViewModule for Probe {
         fn state(&self) -> Option<&dyn std::any::Any> {
             Some(self)
+        }
+
+        fn configure(&mut self, options: &ViewOptions) {
+            self.configured = Some(*options);
         }
 
         fn draw(
@@ -787,8 +806,11 @@ pub mod testing {
         }
 
         fn legend(&self, _snapshot: &Snapshot) -> String {
+            let configured = self
+                .configured
+                .map_or_else(String::new, |options| format!(" | {options:?}"));
             format!(
-                " probe: {} draws | {} records | keys [{}]",
+                " probe: {} draws | {} records | keys [{}]{configured}",
                 self.draws, self.records, self.keys
             )
         }
@@ -830,6 +852,10 @@ pub mod testing {
 
         fn record(&mut self, snapshot: &Snapshot, time: f32) {
             self.0.record(snapshot, time);
+        }
+
+        fn configure(&mut self, options: &ViewOptions) {
+            self.0.configure(options);
         }
 
         fn legend(&self, snapshot: &Snapshot) -> String {

@@ -8,7 +8,7 @@ use crate::model::{Identity, Process, Snapshot, bounded};
 use crate::palette::tint;
 use crate::simulation::{growth, hash, smoothing};
 use crate::views::systems::Orbit;
-use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule};
+use crate::views::{LinkRule, REGISTRY, View, ViewInfo, ViewKey, ViewModule, ViewOptions};
 use crate::{globe, glyphs};
 
 pub mod field;
@@ -1432,6 +1432,13 @@ impl Scene {
         self.modules[view.index()].card(thing, snapshot)
     }
 
+    /// Hands every module the command-line settings, once, before the first frame.
+    pub fn configure(&mut self, options: &ViewOptions) {
+        for module in &mut self.modules {
+            module.configure(options);
+        }
+    }
+
     /// Offers a key to `view`, the shown view; see `ViewKey` for what the result means.
     pub fn key(&mut self, view: View, key: ViewKey) -> bool {
         self.modules[view.index()].key(key)
@@ -2538,6 +2545,21 @@ mod tests {
             scene.legend(quiet, &snapshot),
             " probe: 1 draws | 1 records | keys []"
         );
+    }
+
+    #[test]
+    fn the_scene_hands_every_module_the_command_line_settings() {
+        let snapshot = demo(10.0, 8);
+        let (probe, quiet) = (View::at(0), View::at(1));
+        let mut scene = Scene::with_rows(testing::ROWS);
+        scene.configure(&ViewOptions { hr_diagram: true });
+        for view in [probe, quiet] {
+            assert_eq!(
+                scene.legend(view, &snapshot),
+                " probe: 0 draws | 0 records | keys [] | ViewOptions { hr_diagram: true }",
+                "a module takes the settings whether or not it is the shown view"
+            );
+        }
     }
 
     #[test]

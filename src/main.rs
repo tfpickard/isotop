@@ -61,7 +61,7 @@ use render::{
 };
 use simulation::Rng;
 use terminal::{Label, Popup, Terminal, Tone};
-use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, Warmup, When};
+use views::{LOCAL_KEYS, Phase, REGISTRY, View, ViewInfo, ViewKey, ViewOptions, Warmup, When};
 
 const TOUR_STEP: Duration = Duration::from_secs(6);
 /// How long the journal follower keeps running after the demand last contained
@@ -160,6 +160,9 @@ struct Options {
     /// This machine's location as LAT,LON for the globe; defaults to the system time zone's city
     #[arg(long, value_parser = parse_home, allow_hyphen_values = true)]
     home: Option<(f32, f32)>,
+    /// Start the hr view as a Hertzsprung-Russell diagram instead of the sky (m toggles)
+    #[arg(long)]
+    hr_diagram: bool,
 }
 
 impl Options {
@@ -176,6 +179,13 @@ impl Options {
     /// `--sample-ms` in seconds: how far back the sample before the first one is.
     fn sample_seconds(&self) -> f64 {
         f64::from(self.sample_ms) / 1000.0
+    }
+
+    /// The settings the view modules read, taken once at startup.
+    fn view_options(&self) -> ViewOptions {
+        ViewOptions {
+            hr_diagram: self.hr_diagram,
+        }
     }
 }
 
@@ -1881,6 +1891,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     }
     let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
+    app.scene.configure(&options.view_options());
     app.playlist = playlist;
     app.choose_renderer(options.renderer, options.gpu_power)?;
     let limit = options.limit as usize;
@@ -3293,6 +3304,12 @@ mod tests {
     /// Options as `isotop` parses `arguments`.
     fn options(arguments: &[&str]) -> Options {
         Options::parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
+    }
+
+    #[test]
+    fn view_options_come_from_the_command_line_and_default_to_off() {
+        assert_eq!(options(&[]).view_options(), ViewOptions::default());
+        assert!(options(&["--hr-diagram"]).view_options().hr_diagram);
     }
 
     /// What `preflight` returns and writes to standard output and error for `arguments`, with
