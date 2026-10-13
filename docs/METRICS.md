@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 75 | 73,779 | 1,663 | 4,259 |
+| Rust | 75 | 73,783 | 1,664 | 4,259 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 22,916 | 832 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 82 | 0 | 14,011 | 4,981 |
 | Plain Text | 7 | 0 | 306 | 0 |
-| **Total** | **379** | **136,936** | **16,849** | **12,364** |
+| **Total** | **379** | **136,940** | **16,850** | **12,364** |
 
 ## Rust by module
 
@@ -48,7 +48,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/macos/logic.rs` | 587 | 807 |
 | `src/platform/linux/events.rs` | 581 | 317 |
 | `src/render/field.rs` | 575 | 719 |
-| `src/views.rs` | 572 | 701 |
+| `src/views.rs` | 572 | 705 |
 | `src/neurons.rs` | 569 | 333 |
 | `src/horizon.rs` | 565 | 630 |
 | `src/cells.rs` | 523 | 540 |
@@ -98,7 +98,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 570 |
-| **Total** | **42,877** | **30,920** |
+| **Total** | **42,877** | **30,924** |
 
 ## Largest files
 

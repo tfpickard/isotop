@@ -1567,7 +1567,12 @@ mod tests {
         assert_eq!(View::named("Orbit"), None, "names are exact");
         assert_eq!(format!("{orbit:?}"), "orbit");
         assert_eq!(View::all().count(), REGISTRY.len());
-        assert_eq!(availability(), vec![true; REGISTRY.len()]);
+        // Every view runs everywhere except the switchboard, which reads Linux's interrupt table.
+        let expected: Vec<bool> = REGISTRY
+            .iter()
+            .map(|row| row.name != "switchboard" || cfg!(target_os = "linux"))
+            .collect();
+        assert_eq!(availability(), expected);
     }
 
     #[test]
