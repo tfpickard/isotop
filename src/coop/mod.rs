@@ -3,7 +3,9 @@
 //! the CPU they ran on, and lock holders brood by the nest. Eggs, rotten eggs, chicks, dust and
 //! foxes stand for open files, deleted files still open, threads, reads and OOM kills.
 
+mod creatures;
 mod draw;
+mod feeding;
 #[cfg(test)]
 mod fixtures;
 mod layout;
