@@ -85,8 +85,6 @@ impl Session {
         let options = Options::parse_from(arguments);
         let mut app = App::new(view, snapshot, vec![true; rows.len()]);
         app.scene = Scene::with_rows(rows);
-        // The matrix greets `$USER`, which differs between machines.
-        app.scene.matrix.user = Some("Neo".into());
         warm_up(&mut app, &options, None);
         let mut session = Session { app, options };
         let first = session.frame(time as f32);

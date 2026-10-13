@@ -23,45 +23,28 @@ Work items are referred to by ID: P1 to P5 (prerequisites), S1 to S6 (shared pre
 
 ## Adding a view
 
-### Today (before [P1 (#17)](https://github.com/tfpickard/isotop/issues/17))
-
-`AGENTS.md` ("A new view is a module view") lists what a view touches today:
-
-- a module `src/<name>.rs` with a `draw(&mut Stage, ...)` and a `mod` line in `main.rs`;
-- in `render.rs`, the `View` variant, `View::ALL`, `View::backdrop`, a `Scene` field and the arms in `Scene::render`;
-- in `main.rs`, the title and legend arms in `App::text` and any headless warm-up in `warm_up`;
-- outside `src/`, the README, the view loop in CI and `tests/golden.txt`.
-
-`View::next`, Tab, the number keys and `--view` follow from `View::ALL`.
-
-No new view is built this way. Every view issue depends on [P1 (#17)](https://github.com/tfpickard/isotop/issues/17).
-
-### After [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)
-
-A view is one module plus one registry row. Do not add arms to `Scene::render`, `App::text`, the headless warm-ups or `App::command`. [P1 (#17)](https://github.com/tfpickard/isotop/issues/17) also rewrites the paragraph in `AGENTS.md`.
+A view is one module plus one registry row, and there is no other way to write one. Do not add a `Scene` field, an arm to `Scene::render`, or a branch to `App::text`, the headless warm-ups or `App::command`: `Scene` holds only frame-wide state and reaches the view through `ViewModule`, and `scene_has_no_view_specific_fields` does not compile until a new field is listed in it, and a field needs a doc comment saying why it is frame-wide. `AGENTS.md` ("The view contract" and "A new view is one module plus one registry row") says the same.
 
 1. Create `src/<name>.rs` with a `#[derive(Default)]` state struct. Keep pure simulation state free of drawing, either in that file or in a pure helper module, as `medium.rs` does. Add a row for each new module to the file table in `AGENTS.md`.
-2. Add one registry row (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)). Set only the fields you need; the defaults reproduce existing behaviour. The row carries:
+2. Add one registry row (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)). Set only the fields you need; the defaults are those of a plain view. The row carries:
    - name (lowercase CLI name) and title (status-line text, e.g. `COOP`)
    - backdrop
    - `available()`
-   - legend
-   - per-sample record hook
+   - `build`, the constructor of the module (`|| Box::new(<Name>::default())`), whose `ViewModule` methods are the view's legend, per-sample record hook and view-local key hook
    - headless warm-up (see "Demo synthesis")
-   - links rule: all, quiet, or drawn by the view, and whether the scene draws the links as hairlines (`link_strokes`)
+   - links rule: all, quiet, or drawn by the view, and whether the scene draws the links as hairlines (`link_strokes`) and how high it lifts them above the drawn positions (`link_lift`, 0 by default)
    - generic birth and death flash, on or off
    - pressure haze, on or off
    - default pitch
    - tour participation
    - header-count override
-   - view-local key hook
    - `sources` (from [S6 (#27)](https://github.com/tfpickard/isotop/issues/27))
    - `demo` options (from [S4 (#25)](https://github.com/tfpickard/isotop/issues/25))
    - the harness `contract` (from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)): whether it draws processes, its stability tolerance, the demo time it is checked at, and anchors for creatures that wander (a module view returns them from `ViewModule::anchors`)
 3. Draw with the signature the module views already use (`cells.rs`, `cores.rs`, `strata.rs`, `reef.rs`, `coop.rs`):
    `draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize`.
    The return value is the number of processes shown; the rest count as collapsed. The trait's other hooks, each with a default, are `record`, `key`, `inspector_line` and `card(&self, Thing, &Snapshot) -> Option<Card>` (the inspector card of a thing the view drew; see "Picking"). A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the platform could not measure is `snapshot.missing`; `Stage` does not copy it.
-4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets), generated braille lines in `stage.sparklines` (after the notes; only U+2800 to U+28FF and spaces, which `terminal::clean_sparkline` lets through), and extra tour callout lines in `stage.callout`. A row with `LinkRule::DrawnByView` follows the `c` key through `stage.links` and draws the links of `stage.highlight` when it says focused. `stage.toured` names the process the tour is visiting, `stage.focus` the root of a focused subtree and `stage.limit` the `--limit` a view keeps within when it draws more than the slice (exited processes).
+4. Fill `stage.positions` for every drawn process. Picking anchors, the tour and the generic exit flash depend on it. If the content moves on its own, fill `stage.bounds` with a fixed envelope so the camera fit does not follow the simulation. A view that stands things on the ground and gives no bounds reports how high they rise in `stage.headroom`, which the camera fit leaves room for. A view that draws systems (a cluster, an orbit system, a well) names them in `stage.titles` as `Title { at, reach, text }`, which the app labels just under the outer edge of the disc of `reach` world units around `at`. A medium that reacts to births and exits reads `stage.splashes` and `stage.newborn`, and a view that must tell the next frame from one after a gap compares `stage.frames` with the number it last drew at. Processes the tour should visit go in `stage.tour` as `TourTarget { id, position, weight }`, heaviest first; extra inspector lines go in `stage.popup` (right after the process's own figures) or `stage.notes` (after its sockets), generated braille lines in `stage.sparklines` (after the notes; only U+2800 to U+28FF and spaces, which `terminal::clean_sparkline` lets through), and extra tour callout lines in `stage.callout`. A row with `LinkRule::DrawnByView` follows the `c` key through `stage.links` and draws the links of `stage.highlight` when it says focused. `stage.toured` names the process the tour is visiting, `stage.focus` the root of a focused subtree and `stage.limit` the `--limit` a view keeps within when it draws more than the slice (exited processes).
 5. Add a smoke-test line, a README section and the key help. See "Tests", "README section" and "Keys".
 
 `isotop --list-views` (from [P1 (#17)](https://github.com/tfpickard/isotop/issues/17)) prints the views available on the running platform. [S1 (#22)](https://github.com/tfpickard/isotop/issues/22) and the smoke test use it.
@@ -241,7 +224,7 @@ Orbit, flow and strata exceed even the line-dominant limit. They are known parit
 ## Tests
 
 - Tests live in a `tests` module at the bottom of the file. Name them as sentences about behaviour, e.g. `worldlines_keep_their_seat_when_resources_change`. Rendering tests use `model::demo` or the `process(pid, parent)` helper in `render.rs`.
-- Every view is covered by the view harness (`harness.rs`, from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)) by being registered. `every_view_satisfies_the_view_contract` checks that the same inputs give the same pixels and picks, that the demo shows processes with positions and something to click, that every pick names a process, that an empty machine draws, and layout stability: no surviving process moves more than the row's tolerance (1 world unit over the ground by default) when every CPU is scaled by 0.25 to 4 and every memory by 0.5 to 2, or when a tenth of the processes exit and as many start. A view whose creatures wander has anchors, and the harness checks those instead of the drawn positions: a module view returns them from `ViewModule::anchors`, a built-in view declares `anchors` on its row's `contract` (Coop's seats). The harness runs each view at its row's `contract.time`, 12 s by default. A new view never lands with a `known_unstable` entry.
+- Every view is covered by the view harness (`harness.rs`, from [A2 (#61)](https://github.com/tfpickard/isotop/issues/61)) by being registered. `every_view_satisfies_the_view_contract` checks that the same inputs give the same pixels and picks, that the demo shows processes with positions and something to click, that every pick names a process, that an empty machine draws, and layout stability: no surviving process moves more than the row's tolerance (1 world unit over the ground by default) when every CPU is scaled by 0.25 to 4 and every memory by 0.5 to 2, or when a tenth of the processes exit and as many start. A view whose creatures wander has anchors, and the harness checks those instead of the drawn positions: a module view returns them from `ViewModule::anchors` (Coop's seats). The harness runs each view at its row's `contract.time`, 12 s by default. A new view never lands with a `known_unstable` entry.
 - Beyond the harness, a view tests only what is its own. A stability test of its own states exactly what is frozen, e.g. "closed rows are frozen; the open row may re-pack".
 - Every simulation view has a test that 10 fps and 60 fps produce the same state at the same wall-clock time. Coop's `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second` is the model.
 - Every view passes `every_view_renders_the_demo_and_an_empty_machine` in `render.rs`. It must show something, have positions, and have something to click. The test iterates the registry and skips a view whose row's `contract` says it draws no processes (Matrix).

@@ -401,6 +401,8 @@ struct App {
     renderer: String,
     /// When the demand last contained `Source::Journal`; None while it has not.
     journal_demanded: Option<Instant>,
+    /// What `feed` has attached to samples so far, which numbers the next lines.
+    journal_totals: journal::Totals,
     /// Whether each of the scene's views runs on this platform, in row order.
     available: Vec<bool>,
     /// The views Tab and Shift+Tab cycle; never empty while any view is available.
@@ -452,6 +454,7 @@ impl App {
             gpu: None,
             renderer: "cpu".into(),
             journal_demanded: None,
+            journal_totals: journal::Totals::default(),
             playlist: picker::playlist(&[], &available),
             picker: None,
             available,
@@ -463,6 +466,20 @@ impl App {
     /// The shown view's registry row.
     fn row(&self) -> &'static ViewInfo {
         self.scene.row(self.view)
+    }
+
+    /// Takes in a new sample as the newest, keeping at most `capacity` in the history. The sample
+    /// it replaces as the newest lets go of its journal lines: they were drawn, and only the
+    /// newest sample is ever fed more.
+    fn push_sample(&mut self, snapshot: Snapshot, capacity: usize) {
+        self.scene.record(&snapshot, self.animation);
+        if let Some(newest) = self.history.back_mut() {
+            newest.journal.retire();
+        }
+        self.history.push_back(snapshot);
+        if self.history.len() > capacity {
+            self.history.pop_front();
+        }
     }
 
     /// Whether the journal follower should run at `now`: while the demand contains
@@ -725,9 +742,9 @@ impl App {
         self.panel || self.search.is_some()
     }
 
-    /// Notable processes to visit while idle: the view's own targets (Orbit's system stars, and
-    /// a module view's `Stage::tour`), heaviest first, then the busiest and the largest. Hubs
-    /// are not processes, so they have no callout to show and are passed over.
+    /// Notable processes to visit while idle: the view's own targets (a module view's
+    /// `Stage::tour`, which leaves out what has no callout to show, such as the
+    /// hub of an Orbit system), heaviest first, then the busiest and the largest.
     fn tour_targets(&self) -> Vec<Identity> {
         let visible: Vec<&Process> = self
             .snapshot()
@@ -741,16 +758,9 @@ impl App {
         largest.sort_by_key(|p| Reverse(p.memory));
         let mut stars: Vec<(Identity, f32)> = self
             .scene
-            .stars
+            .tour
             .iter()
-            .map(|&(id, members, _)| (id, members as f32))
-            .chain(
-                self.scene
-                    .tour
-                    .iter()
-                    .map(|target| (target.id, target.weight)),
-            )
-            .filter(|(id, _)| !render::is_hub(id))
+            .map(|target| (target.id, target.weight))
             .collect();
         stars.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut targets = Vec::new();
@@ -1099,13 +1109,6 @@ impl App {
                         lines.push(format!("NVIDIA GPU memory {}", bytes(gpu)));
                     }
                 }
-                if let Some(&(total, count)) = self.scene.mass.get(&id) {
-                    lines.push(format!(
-                        "system {} {} across {count} processes",
-                        platform::MEMORY_LABEL,
-                        bytes(total)
-                    ));
-                }
                 lines.extend(
                     self.scene
                         .popup
@@ -1153,29 +1156,32 @@ impl App {
         )
     }
 
-    /// The label of an orbit system's star with `members` processes: its process's name, or
-    /// for a hub the name of the parent it stands for, which isotop could not read.
-    fn star_label(
+    /// The label of a system centred on `star` that reaches `reach` world units: just below its
+    /// outer edge for a small system, at the star for a large one (an edge more than six rows
+    /// below it), when the screen has room for it.
+    fn title_label(
         &self,
-        lookup: &HashMap<Identity, &Process>,
-        id: Identity,
-        members: usize,
-    ) -> Option<String> {
-        if let Some(p) = lookup.get(&id) {
-            let name = match (p.name.as_str(), p.id.pid) {
-                ("systemd", 1) => "init",
-                ("systemd", _) => "systemd --user",
-                (name, _) => name,
-            };
-            let name = label_name(name);
-            return Some(if members > 1 {
-                format!("{name} ({members})")
-            } else {
-                name.into_owned()
-            });
-        }
-        let name = self.scene.hub_names.get(&id)?;
-        Some(format!("{} (unreadable) ({members})", label_name(name)))
+        frame: &Frame,
+        layout: &Layout,
+        board: &mut Board,
+        star: Point,
+        reach: f32,
+        text: String,
+    ) -> Option<Label> {
+        let at = frame.locate(&self.camera, star)?;
+        let width = text.chars().count() as u16;
+        let edge = frame
+            .locate(&self.camera, self.camera.front(star, reach))
+            .filter(|edge| edge[1] - at[1] < layout.cell_size()[1] * 6.0)
+            .unwrap_or(at);
+        let (column, row) = layout.cell_of([at[0], edge[1]]);
+        let column = column.saturating_sub(width / 2);
+        (row + 1 < layout.rows && board.claim(column, row + 1, width, 1)).then_some(Label {
+            column,
+            row: row + 1,
+            text,
+            tone: Tone::Bright,
+        })
     }
 
     /// Text drawn over the scene, highest priority first: the inspector popup, the tour
@@ -1288,28 +1294,15 @@ impl App {
                 }
             }
         }
-        for &(id, members, reach) in &self.scene.stars {
-            if let Some(text) = self.star_label(&lookup, id, members)
-                && let Some(at) = self.screen(frame, id)
-            {
-                let width = text.chars().count() as u16;
-                // Small systems are labelled just below their outer edge, large ones at the star.
-                let star = self.scene.positions[&id];
-                let edge = frame
-                    .locate(&self.camera, self.camera.front(star, reach))
-                    .filter(|edge| edge[1] - at[1] < layout.cell_size()[1] * 6.0)
-                    .unwrap_or(at);
-                let (column, row) = layout.cell_of([at[0], edge[1]]);
-                let column = column.saturating_sub(width / 2);
-                if row + 1 < layout.rows && board.claim(column, row + 1, width, 1) {
-                    labels.push(Label {
-                        column,
-                        row: row + 1,
-                        text,
-                        tone: Tone::Bright,
-                    });
-                }
-            }
+        for title in &self.scene.titles {
+            labels.extend(self.title_label(
+                frame,
+                layout,
+                &mut board,
+                title.at,
+                title.reach,
+                title.text.clone(),
+            ));
         }
         let mut busy: Vec<&Process> = lookup
             .values()
@@ -1957,11 +1950,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
                 } else {
                     collector.sample()?
                 };
-                app.scene.record(&snapshot, app.animation);
-                app.history.push_back(snapshot);
-                if app.history.len() > options.history as usize {
-                    app.history.pop_front();
-                }
+                app.push_sample(snapshot, options.history as usize);
                 last_sample = Instant::now();
                 if app.framed && app.tour.is_none() && app.scene.bounded() {
                     app.fit = true;
@@ -2218,19 +2207,25 @@ fn run_phases(app: &mut App, options: &Options, journal: Option<&Journal>) {
     }
 }
 
-/// Hands the matrix view its journal lines: synthetic ones arriving in `(from, to]` demo seconds,
-/// or whatever `journalctl` has written since the last call.
+/// Attaches the journal lines of this frame to the newest sample (`Snapshot::journal`), where the
+/// view that draws them finds them: synthetic ones arriving in `(from, to]` demo seconds, or
+/// whatever `journalctl` has written since the last call.
 fn feed(app: &mut App, source: Option<&Journal>, demo: bool, from: f64, to: f64) {
     let lines = match (demo, source) {
         (true, _) => journal::demo(from, to),
         (false, Some(source)) => source.drain(),
         (false, None) => Vec::new(),
     };
-    for line in lines {
-        app.scene.matrix.push(line);
-    }
-    if let Some(source) = source {
-        app.scene.matrix.skipped += source.dropped();
+    let dropped = source.map_or(0, Journal::dropped);
+    if !lines.is_empty() || dropped > 0 {
+        let App {
+            history,
+            journal_totals,
+            ..
+        } = app;
+        if let Some(newest) = history.back_mut() {
+            newest.journal.add(journal_totals, lines, dropped);
+        }
     }
 }
 
@@ -2410,7 +2405,13 @@ mod tests {
         for view in [view("orbit"), view("flow")] {
             let mut app = App::new(view, snapshot.clone(), all_available());
             app.render(1600, 900, 512);
-            assert!(!app.scene.hub_names.is_empty(), "{view:?} draws the hub");
+            assert!(
+                app.scene
+                    .titles
+                    .iter()
+                    .any(|title| title.text.contains("(unreadable)")),
+                "{view:?} draws the hub"
+            );
             let targets = app.tour_targets();
             assert!(!targets.is_empty());
             for target in &targets {
@@ -2817,13 +2818,21 @@ mod tests {
         let selected = snapshot.processes[0].id;
         let mut app = App::new(view("matrix"), snapshot, all_available());
         app.selected = Some(selected);
-        app.scene
-            .matrix
-            .push(journal::Line::new(6, "sshd[1]: hello"));
+        let App {
+            history,
+            journal_totals,
+            ..
+        } = &mut app;
+        history[0].journal.add(
+            journal_totals,
+            vec![journal::Line::new(6, "sshd[1]: hello")],
+            0,
+        );
+        // The line reaches the view when it draws the sample that carries it.
+        let frame = app.render(320, 180, 512);
         let text = app.text(0.0, "test", 20, 512);
         assert_eq!(text[1], " > sshd[1]: hello");
         assert!(text[2].contains("queued"), "{}", text[2]);
-        let frame = app.render(320, 180, 512);
         let layout = Layout {
             columns: 80,
             rows: 24,
@@ -2833,6 +2842,97 @@ mod tests {
         };
         assert!(app.popup(&frame, &layout).is_none());
         assert_eq!(app.selected, Some(selected), "kept for the process views");
+    }
+
+    #[test]
+    fn matrix_lines_reach_the_view_through_the_snapshot() {
+        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
+        let line = |app: &App| {
+            app.scene
+                .inspector_line(app.view)
+                .expect("the matrix has one")
+        };
+        let legend = |app: &App| app.scene.legend(app.view, app.snapshot());
+        app.render(320, 180, 512);
+        assert_eq!(line(&app), " > waiting for the journal...");
+
+        // `main.rs` hands the frame's lines to the sample; the view takes them in when it draws.
+        feed(&mut app, None, true, 0.0, 1.0);
+        let lines = journal::demo(0.0, 1.0);
+        assert_eq!(app.history.back().unwrap().journal.lines, lines);
+        assert_eq!(line(&app), " > waiting for the journal...", "not drawn yet");
+        app.render(320, 180, 512);
+        assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
+        let queued = legend(&app);
+
+        // Drawing the same sample again, or a newer one that brought no lines, queues none twice.
+        app.render(320, 180, 512);
+        app.history.push_back(model::demo(2.0, 16));
+        app.render(320, 180, 512);
+        assert_eq!(legend(&app), queued);
+        assert_eq!(line(&app), format!(" > {}", lines.last().unwrap().text));
+
+        // Lines attached to the newer sample are the next ones taken.
+        feed(&mut app, None, true, 1.0, 2.0);
+        app.render(320, 180, 512);
+        let all = journal::demo(0.0, 2.0);
+        assert_eq!(line(&app), format!(" > {}", all.last().unwrap().text));
+        assert_eq!(
+            app.history.back().unwrap().journal.through as usize,
+            all.len()
+        );
+    }
+
+    #[test]
+    fn feed_attaches_each_frames_journal_lines_to_the_newest_sample() {
+        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
+        app.history.push_front(model::demo(0.0, 16));
+        feed(&mut app, None, true, 0.0, 1.0);
+        assert!(
+            app.history[0].journal.lines.is_empty(),
+            "an older sample gets none"
+        );
+        assert_eq!(app.history[1].journal.lines, journal::demo(0.0, 1.0));
+        feed(&mut app, None, true, 1.0, 2.0);
+        let newest = &app.history[1].journal;
+        assert_eq!(newest.lines, journal::demo(0.0, 2.0));
+        assert_eq!(newest.through as usize, newest.lines.len());
+        // A frame that brought nothing leaves the sample as it was.
+        let before = newest.clone();
+        feed(&mut app, None, true, 2.0, 2.05);
+        assert_eq!(app.history[1].journal, before);
+    }
+
+    #[test]
+    fn the_history_keeps_the_journal_lines_of_the_newest_sample_only() {
+        let mut app = App::new(view("matrix"), model::demo(1.0, 16), all_available());
+        let held = |app: &App| -> usize { app.history.iter().map(|s| s.journal.lines.len()).sum() };
+        for sample in 0..40 {
+            app.push_sample(model::demo(f64::from(sample), 16), 24);
+            // A flood bigger than a sample keeps arrives every frame, twice.
+            for _ in 0..2 {
+                let flood: Vec<journal::Line> = (0..journal::KEPT)
+                    .map(|n| journal::Line::new(6, format!("line {n}")))
+                    .collect();
+                let App {
+                    history,
+                    journal_totals,
+                    ..
+                } = &mut app;
+                let newest = history.back_mut().unwrap();
+                newest.journal.add(journal_totals, flood, 0);
+            }
+            assert!(held(&app) <= journal::KEPT, "{} lines held", held(&app));
+        }
+        assert_eq!(app.history.len(), 24);
+        assert_eq!(held(&app), journal::KEPT, "the newest sample's lines");
+        // The numbering outlives the lines: a sample that was the newest says how many had
+        // arrived by then, and offers none of them to a view that has not taken them.
+        for older in app.history.iter().take(23) {
+            assert!(older.journal.lines.is_empty());
+            assert!(older.journal.through > 0);
+            assert!(older.journal.unseen(0).is_empty());
+        }
     }
 
     #[test]
@@ -3687,6 +3787,35 @@ mod tests {
     }
 
     #[test]
+    fn titles_from_the_stage_label_the_system_under_its_outer_edge() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 512);
+        frame.rasterize();
+        let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+        let titles: Vec<&Label> = labels
+            .iter()
+            .filter(|label| label.text == views::testing::GUIDE_TITLE)
+            .collect();
+        assert_eq!(titles.len(), 1, "{:?}", app.scene.titles);
+        assert!(matches!(titles[0].tone, Tone::Bright));
+        let seat = frame
+            .locate(&app.camera, app.scene.positions[&last])
+            .expect("the seat is on screen");
+        let (_, row) = layout.cell_of(seat);
+        assert!(titles[0].row > row, "just below the star's own row");
+        app.labels = false;
+        let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
+        assert!(labels.is_empty(), "labels off hides titles too");
+    }
+
+    #[test]
     fn popup_lines_from_stage_outputs_reach_the_inspector() {
         let (mut app, last) = guided_app();
         let layout = Layout {
@@ -3988,8 +4117,6 @@ mod tests {
             ),
             all_available(),
         );
-        // The matrix greets `$USER`, which differs between machines.
-        app.scene.matrix.user = Some("Neo".into());
         warm_up(&mut app, &options, None);
         app.animation = options.time as f32;
         let frame = app.render(
