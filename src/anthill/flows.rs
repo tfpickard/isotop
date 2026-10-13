@@ -20,6 +20,7 @@
 //! process has no tunnel at all and holds a terminal, and is counted otherwise: never given to a
 //! file.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use crate::io_detail::{FileFlow, Flow, IoDetail, Unattributed};
@@ -405,6 +406,17 @@ pub fn explained(detail: &IoDetail) -> Option<f32> {
 }
 
 /// A pair of processes joined by a medium, whichever end is which.
+/// Orders two rates busiest first, a rate nobody measured after every one that was measured: unknown
+/// is not idle, so it is not ranked as if it were zero.
+pub fn busier_first(a: Option<f32>, b: Option<f32>) -> Ordering {
+    match (a, b) {
+        (Some(a), Some(b)) => b.total_cmp(&a),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
 fn pair(a: Identity, b: Identity) -> (Identity, Identity) {
     if a <= b { (a, b) } else { (b, a) }
 }
@@ -665,9 +677,7 @@ impl Plan {
         if tunnels.len() > MOST_TUNNELS {
             tally.tunnels_beyond = tunnels.len() - MOST_TUNNELS;
             tunnels.sort_by(|a, b| {
-                b.rate
-                    .unwrap_or(0.0)
-                    .total_cmp(&a.rate.unwrap_or(0.0))
+                busier_first(a.rate, b.rate)
                     .then_with(|| pair(a.from, a.to).cmp(&pair(b.from, b.to)))
             });
             tunnels.truncate(MOST_TUNNELS);
@@ -1149,5 +1159,12 @@ mod tests {
         let forward = snapshot(vec![make(1), make(2), make(3)], 5.0);
         let backward = snapshot(vec![make(3), make(2), make(1)], 5.0);
         assert_eq!(plan_of(&forward), plan_of(&backward));
+    }
+
+    #[test]
+    fn a_rate_nobody_measured_ranks_after_every_measured_one() {
+        let mut rates = [None, Some(0.0), Some(5.0), None, Some(1.0)];
+        rates.sort_by(|a, b| busier_first(*a, *b));
+        assert_eq!(rates, [Some(5.0), Some(1.0), Some(0.0), None, None]);
     }
 }

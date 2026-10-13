@@ -22,6 +22,10 @@ use crate::simulation::{hash, hash_identity};
 /// A route and the units per second (calls, or KiB) of the stream that walks it.
 type Routed = (Route, f32);
 
+/// A way out of a nest: the units per second through it, None where that was not measured, and
+/// the place it leads to.
+type Door = (Option<f32>, [f32; 2]);
+
 impl Anthill {
     /// Takes in the sample `snapshot`, of which `processes` are the drawn ones, at the stage's
     /// time.
@@ -214,20 +218,17 @@ impl Anthill {
     /// Opens an entrance on each nest for each of up to four distinct destinations, the busiest
     /// first, facing it: its files, its blanket and the nests at the other end of its tunnels.
     fn open_entrances(&mut self, routes: &[Routed], plan: &Plan) {
-        let mut doors: HashMap<Identity, Vec<(f32, [f32; 2])>> = HashMap::new();
+        let mut doors: HashMap<Identity, Vec<Door>> = HashMap::new();
         for &(route, rate) in routes {
             doors
                 .entry(route.owner)
                 .or_default()
-                .push((rate, route.goal));
+                .push((Some(rate), route.goal));
         }
         for tunnel in &plan.tunnels {
             for (end, other) in [(tunnel.from, tunnel.to), (tunnel.to, tunnel.from)] {
                 if let Some(to) = self.nests.get(&other) {
-                    doors
-                        .entry(end)
-                        .or_default()
-                        .push((tunnel.rate.unwrap_or(0.0), to.at));
+                    doors.entry(end).or_default().push((tunnel.rate, to.at));
                 }
             }
         }
@@ -235,7 +236,7 @@ impl Anthill {
             let Some(nest) = self.nests.get_mut(&id) else {
                 continue;
             };
-            list.sort_by(|a, b| b.0.total_cmp(&a.0));
+            list.sort_by(|a, b| flows::busier_first(a.0, b.0));
             let mut seen: Vec<[f32; 2]> = Vec::new();
             for (_, at) in list {
                 if seen.contains(&at) || seen.len() == 4 {
@@ -272,7 +273,7 @@ impl Anthill {
                     travelled: slid
                         .get(&(tunnel.from, tunnel.to, tunnel.medium))
                         .copied()
-                        .unwrap_or(0.0),
+                        .unwrap_or_default(),
                 })
             })
             .collect();
