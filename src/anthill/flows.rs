@@ -719,6 +719,7 @@ mod tests {
 
     fn pipe(writer: u32, reader: u32) -> Pipe {
         Pipe {
+            id: crate::platform::PipeId::Anonymous(u64::from(writer) << 32 | u64::from(reader)),
             reader: id(reader),
             writer: id(writer),
             two_way: false,
