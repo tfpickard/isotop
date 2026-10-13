@@ -489,10 +489,23 @@ impl Roster {
                 .collect();
         }
         sorted.sort_by_key(|&(rank, id, ..)| (rank, id));
-        let per_seat = sorted.len().div_ceil(SEATS).max(1);
+        // A seat holds CPUs of one kind, so each kind is chunked on its own; the remainder of a
+        // kind can add a seat, so the run grows until the operators fit in `SEATS`.
+        let groups: Vec<_> = sorted.chunk_by(|a, b| a.0 == b.0).collect();
+        let needed = |per_seat: usize| -> usize {
+            groups
+                .iter()
+                .map(|group| group.len().div_ceil(per_seat))
+                .sum()
+        };
+        let mut per_seat = sorted.len().div_ceil(SEATS).max(1);
+        while needed(per_seat) > SEATS {
+            per_seat += 1;
+        }
         let mut ordinals = [0_usize; 3];
-        let seats = sorted
-            .chunks(per_seat)
+        let seats = groups
+            .iter()
+            .flat_map(|group| group.chunks(per_seat))
             .map(|chunk| {
                 let (rank, _, kind, _) = chunk[0];
                 let ordinal = ordinals[usize::from(rank)];
@@ -1163,6 +1176,90 @@ pub mod tests {
         lines.take_in(&back, 3.0, false);
         assert_eq!(plugged(&lines, 47), Some(2));
         assert!(lines.cords[&47].swing.is_some());
+    }
+
+    fn machine(performance: u32, efficiency: u32) -> Vec<Cpu> {
+        (0..performance + efficiency)
+            .map(|id| Cpu {
+                id,
+                kind: if id < performance {
+                    CoreKind::Performance
+                } else {
+                    CoreKind::Efficiency
+                },
+                busy: Some(0.5),
+                mhz: None,
+                wait: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_grouped_operator_never_mixes_performance_and_efficiency_cores() {
+        let roster = Roster::new(&machine(33, 32), &BTreeSet::new());
+        assert_eq!(roster.per_seat, 2);
+        for seat in &roster.seats {
+            let kinds: BTreeSet<CoreKind> = seat
+                .cpus
+                .iter()
+                .map(|cpu| {
+                    if *cpu < 33 {
+                        CoreKind::Performance
+                    } else {
+                        CoreKind::Efficiency
+                    }
+                })
+                .collect();
+            assert_eq!(kinds, BTreeSet::from([seat.kind]), "seat {:?}", seat.cpus);
+        }
+        assert_eq!(roster.count(CoreKind::Performance), 17, "33 CPUs in twos");
+        assert_eq!(roster.count(CoreKind::Efficiency), 16);
+        assert_eq!(
+            roster.seat_of(32),
+            Some(16),
+            "the odd performance core sits alone"
+        );
+        assert_eq!(roster.seats[16].cpus, [32]);
+        assert_eq!(
+            roster.seats[17].cpus,
+            [33, 34],
+            "efficiency starts a seat of its own"
+        );
+        let ordinals: Vec<usize> = roster
+            .seats
+            .iter()
+            .filter(|seat| seat.kind == CoreKind::Efficiency)
+            .map(|seat| seat.ordinal)
+            .collect();
+        assert_eq!(ordinals, (0..16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn remainders_of_each_kind_never_push_the_operators_past_the_cap() {
+        // 127 CPUs take 2 to a seat, but 63 + 63 + 1 leaves a remainder in every kind: 65 seats.
+        let mut cpus = machine(63, 63);
+        cpus.push(Cpu {
+            id: 126,
+            kind: CoreKind::Unknown,
+            ..machine(1, 0).remove(0)
+        });
+        let roster = Roster::new(&cpus, &BTreeSet::new());
+        assert!(roster.seats.len() <= SEATS, "{} seats", roster.seats.len());
+        assert!(
+            roster
+                .seats
+                .iter()
+                .all(|seat| seat.cpus.len() <= roster.per_seat)
+        );
+        assert_eq!(
+            roster
+                .seats
+                .iter()
+                .map(|seat| seat.cpus.len())
+                .sum::<usize>(),
+            127
+        );
+        assert_eq!(roster.per_seat, 3, "so three to a seat");
     }
 
     #[test]
