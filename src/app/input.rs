@@ -44,25 +44,8 @@ impl App {
         if self.picker.is_some() {
             return self.picker_key(code, modifiers);
         }
-        if self.search.is_some() {
-            match code {
-                KeyCode::Esc | KeyCode::Enter => self.search = None,
-                KeyCode::Backspace => {
-                    self.search.as_mut().unwrap().pop();
-                    self.search();
-                }
-                KeyCode::Tab => {
-                    if !self.matches.is_empty() {
-                        self.match_index = (self.match_index + 1) % self.matches.len();
-                        self.select_match();
-                    }
-                }
-                KeyCode::Char(c) => {
-                    self.search.as_mut().unwrap().push(c);
-                    self.search();
-                }
-                _ => {}
-            }
+        if self.search.is_open() {
+            self.search_key(code);
             return false;
         }
         if code == KeyCode::Esc && self.thing.take().is_some() {
@@ -134,14 +117,10 @@ impl App {
                 self.fit = true;
             }
             KeyCode::Char('?') => self.show_help = !self.show_help,
-            KeyCode::Char('/') => {
-                self.search = Some(String::new());
-                self.matches.clear();
-            }
+            KeyCode::Char('/') => self.search.open(),
             KeyCode::Char('n') => {
-                if !self.matches.is_empty() {
-                    self.match_index = (self.match_index + 1) % self.matches.len();
-                    self.select_match();
+                if let Some(id) = self.search.next() {
+                    self.select_match(id);
                 }
             }
             KeyCode::Char('f') => {
@@ -236,7 +215,7 @@ mod tests {
         press(&mut app, '/');
         assert!(app.panel_shown(), "the search line stays visible");
         press(&mut app, 'h');
-        assert_eq!(app.search.as_deref(), Some("h"), "h is typed, not a toggle");
+        assert_eq!(app.search.query(), Some("h"), "h is typed, not a toggle");
         app.key(KeyCode::Esc, KeyModifiers::NONE, 10.0);
         assert!(!app.panel_shown(), "hidden again after the search");
         press(&mut app, 'h');
@@ -273,7 +252,7 @@ mod tests {
         for code in [KeyCode::Char('/'), KeyCode::Char('b'), KeyCode::Char('k')] {
             press(&mut app, code);
         }
-        assert_eq!(app.search.as_deref(), Some("bk"), "typed into the search");
+        assert_eq!(app.search.query(), Some("bk"), "typed into the search");
         press(&mut app, KeyCode::Esc);
         assert_eq!(
             keys(&app, probe),

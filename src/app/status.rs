@@ -74,10 +74,10 @@ impl App {
                     |p| format!(" {}", p.command),
                 ),
         );
-        if let Some(search) = &self.search {
+        if let Some(query) = self.search.query() {
             lines.push(format!(
-                " /{search}_  {} matches | Enter accept | Esc cancel | Tab next",
-                self.matches.len()
+                " /{query}_  {} matches | Enter accept | Esc cancel | Tab next",
+                self.search.found()
             ));
         } else if self.picker.is_some() {
             lines.push(" Type to filter views | Up/Down move | Enter show | Space add or remove from the Tab playlist | Esc close".into());

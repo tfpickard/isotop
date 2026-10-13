@@ -404,7 +404,7 @@ mod tests {
             assert!(!press(&mut app, code));
         }
         assert_eq!(app.view, View::at(0));
-        assert_eq!(app.search, None);
+        assert!(!app.search.is_open());
         let lines = picker_lines(&app, 31);
         assert!(lines[0].starts_with("View: qxam1/+lh_"), "{lines:?}");
         assert_eq!(legend(&app), before.0, "the view saw no key");

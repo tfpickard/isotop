@@ -578,7 +578,7 @@ mod tests {
         press(&mut app, KeyCode::Char('a'));
         press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Char('*'));
-        assert_eq!(app.search.as_deref(), Some("a *"));
+        assert_eq!(app.search.query(), Some("a *"));
         assert!(app.tour.is_none() && app.cursor.is_none());
     }
 

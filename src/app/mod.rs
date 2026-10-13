@@ -29,6 +29,7 @@ use player::HistoryPlayer;
 use pointer::Pointer;
 pub(crate) use renderer::Renderer;
 pub(crate) use screen::Layout;
+use search::Search;
 use tour::{Cursor, Tour};
 
 /// How long the journal follower keeps running after the demand last contained
@@ -48,9 +49,7 @@ pub(crate) struct App {
     pub(crate) thing: Option<Thing>,
     pub(crate) focus: Option<Identity>,
     pub(crate) history: HistoryPlayer,
-    pub(crate) search: Option<String>,
-    pub(crate) matches: Vec<Identity>,
-    pub(crate) match_index: usize,
+    pub(crate) search: Search,
     pub(crate) fit: bool,
     /// The camera still frames the whole view, so views that grow are refitted as they do.
     pub(crate) framed: bool,
@@ -110,9 +109,7 @@ impl App {
             thing: None,
             focus: None,
             history: HistoryPlayer::new(snapshot),
-            search: None,
-            matches: Vec::new(),
-            match_index: 0,
+            search: Search::default(),
             fit: true,
             framed: true,
             snap: true,
@@ -256,7 +253,7 @@ impl App {
 
     /// Whether the status panel is drawn: when wanted, and always while typing a search.
     pub(super) fn panel_shown(&self) -> bool {
-        self.panel || self.search.is_some()
+        self.panel || self.search.is_open()
     }
 }
 
