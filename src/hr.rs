@@ -938,8 +938,10 @@ pub struct Hr {
     mode: Mode,
     /// `m` was pressed since the last frame.
     toggle: bool,
-    /// The `elapsed` of the sample the layout and the fit were last worked out for.
+    /// The `elapsed` of the sample the layout and the records were last brought up to, and the one
+    /// the fit, the names and the diagram's text were last worked out for.
     observed: Option<f64>,
+    derived: Option<f64>,
     records: BTreeMap<Identity, Record>,
     /// The constellations, in key order, and the layout they came from.
     groups: Vec<Group>,
@@ -1080,8 +1082,7 @@ impl Hr {
         self.followed = Some((camera.center, frames));
     }
 
-    /// Brings the layout, the records of the stars and the main sequence up to `snapshot`, once per
-    /// sample.
+    /// Brings the layout and the records of the stars up to `snapshot`, once per sample.
     fn observe(&mut self, snapshot: &Snapshot) {
         let until = snapshot.elapsed;
         if self.observed == Some(until) {
@@ -1096,7 +1097,6 @@ impl Hr {
             .iter()
             .filter(|process| process.kind == Kind::Kernel)
             .count();
-        self.fit = main_sequence(snapshot);
         // A zombie has died: it holds nothing, and its star is gone.
         let mut stars: Vec<&Process> = snapshot
             .processes
@@ -1185,6 +1185,17 @@ impl Hr {
         self.records.retain(|_, record| {
             record.present || record.left.is_some_and(|left| until - left <= RECORD_KEEP)
         });
+    }
+
+    /// Works out what only a frame of this view needs, once per sample: the main sequence, where
+    /// the constellations' names stand and the diagram's text. The records, which a sample that
+    /// no frame drew still changes, are `observe`'s.
+    fn derive(&mut self, snapshot: &Snapshot) {
+        if self.derived == Some(snapshot.elapsed) {
+            return;
+        }
+        self.derived = Some(snapshot.elapsed);
+        self.fit = main_sequence(snapshot);
         self.place_names();
         self.diagram_labels = diagram_labels(self.fit);
     }
@@ -1987,6 +1998,7 @@ impl ViewModule for Hr {
 
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         self.observe(snapshot);
+        self.derive(snapshot);
         self.observe_history(stage.history, snapshot);
         let time = stage.time;
         if std::mem::take(&mut self.toggle) {
@@ -3006,6 +3018,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_fit_and_the_names_are_worked_out_when_a_frame_draws_not_for_every_sample() {
+        let mut scene = Scene::new();
+        scene.record(&snapshot(9.0, population()), 9.0);
+        scene.record(&snapshot(10.0, population()), 10.0);
+        let hr = hr_state(&scene);
+        assert!(!hr.records.is_empty(), "the records follow every sample");
+        assert!(
+            hr.fit.is_none() && hr.derived.is_none() && hr.diagram_labels.is_empty(),
+            "no frame has asked for the fit yet"
+        );
+        draw(&mut scene, &snapshot(11.0, population()), 11.0);
+        let hr = hr_state(&scene);
+        assert!(hr.fit.is_some() && hr.derived == Some(11.0));
+        assert!(!hr.diagram_labels.is_empty());
     }
 
     #[test]
