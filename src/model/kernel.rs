@@ -12,10 +12,6 @@ use crate::platform::{self, Source};
 
 /// The row of `interrupts` that counts the timer: `LOC` on x86; where there is none (arm64), the
 /// first numbered row whose device is `arch_timer`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no view draws the timer row yet")
-)]
 pub fn timer_row(rows: &[Interrupt]) -> Option<&Interrupt> {
     rows.iter().find(|row| row.id == "LOC").or_else(|| {
         rows.iter()
@@ -181,7 +177,7 @@ impl KernelScan {
 
 /// Seconds in the day of uptime the demo's counts start from, so that they are positive at
 /// negative times too.
-const DEMO_UPTIME: f64 = 86_400.0;
+pub(super) const DEMO_UPTIME: f64 = 86_400.0;
 
 /// Seconds the moving interrupt stays on one CPU.
 const DEMO_MOVE_PERIOD: f64 = 37.0;
@@ -189,33 +185,33 @@ const DEMO_MOVE_PERIOD: f64 = 37.0;
 /// A rate in events per second that wanders: `base * (mean + swing * sin(speed * t + phase))`,
 /// never negative while `swing <= mean`. Its count since time 0 is the integral.
 #[derive(Clone, Copy)]
-struct Wave {
-    base: f64,
-    mean: f64,
-    swing: f64,
-    speed: f64,
-    phase: f64,
+pub(super) struct Wave {
+    pub(super) base: f64,
+    pub(super) mean: f64,
+    pub(super) swing: f64,
+    pub(super) speed: f64,
+    pub(super) phase: f64,
 }
 
 impl Wave {
-    fn rate(self, time: f64) -> f64 {
+    pub(super) fn rate(self, time: f64) -> f64 {
         self.base * (self.mean + self.swing * (self.speed * time + self.phase).sin())
     }
 
     /// The events from time 0 to `time`: the integral of `rate`.
-    fn total(self, time: f64) -> f64 {
+    pub(super) fn total(self, time: f64) -> f64 {
         self.base
             * (self.mean * time
                 + self.swing / self.speed
                     * (self.phase.cos() - (self.speed * time + self.phase).cos()))
     }
 
-    fn between(self, from: f64, to: f64) -> f64 {
+    pub(super) fn between(self, from: f64, to: f64) -> f64 {
         self.total(to) - self.total(from)
     }
 
     /// The count since boot at `time`, taking `share` of the events.
-    fn count(self, time: f64, share: f64) -> u64 {
+    pub(super) fn count(self, time: f64, share: f64) -> u64 {
         (share * (self.base * self.mean * DEMO_UPTIME + self.total(time))).max(0.0) as u64
     }
 }
@@ -392,10 +388,10 @@ const DEMO_DEVICES: [DemoDevice; 13] = [
 ];
 
 /// A named demo row, counted on every CPU with a wave of its own.
-struct DemoCounter {
-    id: &'static str,
-    description: &'static str,
-    wave: Wave,
+pub(super) struct DemoCounter {
+    pub(super) id: &'static str,
+    pub(super) description: &'static str,
+    pub(super) wave: Wave,
 }
 
 const fn counter(
@@ -419,7 +415,7 @@ const fn counter(
 }
 
 /// The named rows after the LOC row, which follows the CPU's busy share.
-const DEMO_COUNTERS: [DemoCounter; 4] = [
+pub(super) const DEMO_COUNTERS: [DemoCounter; 4] = [
     counter("NMI", "Non-maskable interrupts", 0.1, 0.5, 0.07),
     counter("RES", "Rescheduling interrupts", 30.0, 0.6, 0.23),
     counter("CAL", "Function call interrupts", 12.0, 0.7, 0.31),
@@ -427,7 +423,7 @@ const DEMO_COUNTERS: [DemoCounter; 4] = [
 ];
 
 /// The softirqs in the kernel's order, each with the events per second per CPU.
-const DEMO_SOFTIRQS: [(&str, f64, f64, f64); 10] = [
+pub(super) const DEMO_SOFTIRQS: [(&str, f64, f64, f64); 10] = [
     ("HI", 0.5, 0.5, 0.13),
     ("TIMER", 230.0, 0.7, 0.4),
     ("NET_TX", 6.0, 0.5, 0.21),
@@ -443,7 +439,7 @@ const DEMO_SOFTIRQS: [(&str, f64, f64, f64); 10] = [
 /// The wave of `LOC` on one CPU: about 250 Hz scaled by the CPU's busy share, which the demo's
 /// `Cpu::busy` computes as `(0.5 + 0.5 sin(0.4 t + 0.9 id))` times 0.9 on the first eight CPUs and
 /// 0.6 on the others, so a busier CPU takes more timer interrupts.
-fn local_timer(cpu: u32) -> Wave {
+pub(super) fn local_timer(cpu: u32) -> Wave {
     let scale = if cpu < 8 { 0.9 } else { 0.6 };
     Wave {
         base: 250.0,
@@ -455,14 +451,14 @@ fn local_timer(cpu: u32) -> Wave {
 }
 
 /// The wave of a per-CPU counter on `cpu`: the row's own, shifted by the CPU.
-fn on_cpu(wave: Wave, cpu: u32) -> Wave {
+pub(super) fn on_cpu(wave: Wave, cpu: u32) -> Wave {
     Wave {
         phase: wave.phase + 0.9 * f64::from(cpu),
         ..wave
     }
 }
 
-fn counted(wave: Wave, cpu: u32, time: f64) -> CpuCount {
+pub(super) fn counted(wave: Wave, cpu: u32, time: f64) -> CpuCount {
     (cpu, wave.count(time, 1.0), Some(wave.rate(time) as f32))
 }
 

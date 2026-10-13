@@ -34,6 +34,7 @@ PICKER_VISITS = [
     "arbor",
     "hr",
     "hive",
+    "switchboard",
 ]
 
 # A view's own keys, sent right after the picker shows it, each with what the terminal must show

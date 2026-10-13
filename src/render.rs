@@ -1082,6 +1082,9 @@ impl<'a> RenderInput<'a> {
 /// forgotten first.
 const ARRIVALS_KEPT: usize = 4096;
 
+/// The frame rate `--fps` defaults to, which a scene assumes until the app tells it otherwise.
+pub(crate) const DEFAULT_FPS: u32 = 10;
+
 /// The longest step `Stage::dt` reports, in seconds. A longer gap (a stall, a slow frame) counts
 /// as this much, so a simulation never leaps.
 pub(crate) const MAX_DT: f32 = 0.5;
@@ -1183,6 +1186,9 @@ pub(crate) struct Stage<'a> {
     /// draws more than the slice (exited processes) keeps within it.
     pub limit: usize,
     pub time: f32,
+    /// The target frame rate (`--fps`), for a view that animates faster than a frame can show
+    /// and caps it there, as the switchboard caps a lamp's flicker.
+    pub fps: u32,
     /// Frames the scene has rendered, this one included, whichever view was shown. A view that
     /// must tell a frame that follows its own last frame from one after a gap (another view was
     /// shown in between) compares it with the number it last drew at: the galaxy of Orbit
@@ -1328,6 +1334,9 @@ pub struct Scene {
     last_time: Option<f32>,
     /// The step every `Stage` gets as `dt`.
     clock: FrameClock,
+    /// The target frame rate, `--fps`, which the app sets once: every `Stage` carries it, and
+    /// whichever view is shown caps what it animates at it.
+    pub fps: u32,
     /// When each process was first seen, for the growth every view eases new bodies in with.
     births: HashMap<Identity, f32>,
     /// When each process that arrived after the first frame was first seen: `Stage::age`.
@@ -1407,6 +1416,7 @@ impl Scene {
             frames: 0,
             last_time: None,
             clock: FrameClock::default(),
+            fps: DEFAULT_FPS,
             births: HashMap::new(),
             arrivals: HashMap::new(),
             previous: HashMap::new(),
@@ -1746,6 +1756,7 @@ impl Scene {
             highlight: &self.highlight,
             limit,
             time,
+            fps: self.fps,
             frames: self.frames,
             dt,
             history: &self.history,
@@ -2835,6 +2846,7 @@ mod tests {
             frames: _,
             last_time: _,
             clock: _,
+            fps: _,
             births: _,
             arrivals: _,
             previous: _,

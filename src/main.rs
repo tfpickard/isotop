@@ -34,6 +34,7 @@ mod simulation;
 mod status;
 mod stellar;
 mod strata;
+mod switchboard;
 mod terminal;
 mod tesseract;
 mod threads;
@@ -1926,6 +1927,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
     let playlist = picker::playlist(&options.views, &available);
     let mut app = App::new(view, snapshot, available);
     app.scene.configure(&options.view_options());
+    app.scene.fps = options.fps;
     app.playlist = playlist;
     app.choose_renderer(options.renderer, options.gpu_power)?;
     let limit = options.limit as usize;

@@ -25,7 +25,7 @@ use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
     arbor, cells, coop, cores, cortex, globe, hive, horizon, hr, matrix, murmuration, necropolis,
-    ptolemy, reef, strata, tesseract,
+    ptolemy, reef, strata, switchboard, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -804,6 +804,43 @@ pub static REGISTRY: &[ViewInfo] = &[
             Box::new(hive::Hive::default())
         })
     },
+    ViewInfo {
+        // Interrupts are a Linux table; macOS has no unprivileged per-IRQ or per-CPU counters.
+        available: switchboard::available,
+        // No process is drawn, so there are no sockets to link.
+        links: LinkRule::DrawnByView,
+        // The board faces the viewer; a slight shear is built into its layout.
+        pitch: Some(0.45),
+        // The view draws no processes, so there is nothing for the tour to visit.
+        tour: false,
+        // Only the interrupt table is read, and only while the view is shown.
+        sources: Sources::of(&[Source::Interrupts, Source::Softirqs, Source::IrqAffinity]),
+        // The header is the view's own: lines, rate, RES and operators.
+        header: Some(|_| (0, 0)),
+        haze: false,
+        flash: false,
+        // Three seconds of the demo as a live run drew them, so the frame at 12 s finds the
+        // cord that irqbalance moved at 10.2 s a second into its swing.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 3,
+                step: 0.1,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            exchange: true,
+            ..DemoOptions::NONE
+        },
+        // The board draws interrupt lines, not processes.
+        contract: Contract {
+            draws_processes: false,
+            ..Contract::DEFAULT
+        },
+        ..ViewInfo::new("switchboard", "SWITCHBOARD", Backdrop::Dusk, || {
+            Box::new(switchboard::Switchboard::default())
+        })
+    },
 ];
 
 /// The registered view called `name`, for tests.
@@ -1111,6 +1148,8 @@ pub mod testing {
         seen: String,
         /// The `Stage::age` of every process of the last frame, by pid.
         pub ages: HashMap<u32, Option<f32>>,
+        /// The `Stage::fps` of the last frame.
+        pub fps: u32,
     }
 
     impl ViewModule for Witness {
@@ -1130,6 +1169,7 @@ pub mod testing {
                 stage.focus.map(|id| id.pid),
                 stage.limit
             );
+            self.fps = stage.fps;
             self.ages = processes
                 .iter()
                 .map(|process| (process.id.pid, stage.age(process.id)))
@@ -1565,6 +1605,24 @@ mod tests {
     }
 
     #[test]
+    fn the_stage_carries_the_target_frame_rate_the_app_set() {
+        use crate::render::{Camera, RenderInput};
+        let snapshot = Snapshot::default();
+        let camera = Camera::default();
+        let mut scene = Scene::with_rows(testing::WITNESSED);
+        let fps = |scene: &mut Scene| {
+            scene.render(&RenderInput::small(&snapshot, View::at(0), &camera, 1.0));
+            scene
+                .module::<testing::Witness>(View::at(0))
+                .expect("the witness has drawn")
+                .fps
+        };
+        assert_eq!(fps(&mut scene), 10, "--fps defaults to 10");
+        scene.fps = 24;
+        assert_eq!(fps(&mut scene), 24);
+    }
+
+    #[test]
     fn an_arrival_survives_a_rewind_to_before_the_birth_so_forward_navigation_restores_its_age() {
         use crate::model::testing::process;
         use crate::render::{Camera, RenderInput};
@@ -1599,7 +1657,7 @@ mod tests {
     }
 
     #[test]
-    fn every_row_builds_its_own_module_and_only_the_matrix_replaces_the_inspector() {
+    fn every_row_builds_its_own_module_and_only_views_without_processes_replace_the_inspector() {
         let scene = Scene::new();
         let snapshot = Snapshot::default();
         let replacing: Vec<&str> = View::all()
@@ -1608,7 +1666,7 @@ mod tests {
             .collect();
         assert_eq!(
             replacing,
-            ["matrix"],
+            ["matrix", "switchboard"],
             "a view replaces the inspector line through ViewModule, and only a view that draws no \
              processes has reason to"
         );
