@@ -220,7 +220,7 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the nineteen views in order, the number keys 1 to 9 jump straight to the first nine
+the twenty-one views in order (twenty on macOS), the number keys 1 to 9 jump straight to the first nine
 and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive and (on Linux) the switchboard are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
