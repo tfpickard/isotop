@@ -45,6 +45,8 @@ const HALF: [f32; 2] = [800.0, 450.0];
 /// The dome's colour field covers this many windows, so it fills the frame at any zoom the fit
 /// chooses and at any aspect ratio the terminal has.
 const FIELD_SPAN: f32 = 1.5;
+/// How far above and below the dome's edge the dark rim fades in, in sky units.
+const RIM_FADE: (f32, f32) = (26.0, 6.0);
 /// Nodes of the dome field: 192 by 108 per window.
 const FIELD_NODES: [usize; 2] = [288, 162];
 /// The key of the dome field among the fields a frame holds.
@@ -754,10 +756,11 @@ impl Dome {
         for channel in &mut color {
             *channel *= vignette;
         }
-        if y > horizon {
-            for (k, channel) in color.iter_mut().enumerate() {
-                *channel = *channel * 0.15 + [6.0, 5.0, 12.0][k];
-            }
+        // The rim fades in over about five node rows: a shallow arc sampled on the field's grid
+        // would otherwise read as a staircase.
+        let rim = smoothstep(horizon - RIM_FADE.0, horizon + RIM_FADE.1, y);
+        for (k, channel) in color.iter_mut().enumerate() {
+            *channel = lerp(*channel, *channel * 0.15 + [6.0, 5.0, 12.0][k], rim);
         }
         color
     }
