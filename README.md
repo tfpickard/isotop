@@ -730,6 +730,8 @@ Leonardo da Vinci noted that the branches of a tree keep their total cross-secti
 
 ### Hr
 
+![Hr: processes as stars on a plum planetarium dome, in blackbody colours from deep red to blue-white, grouped into dashed cgroup constellations with stick figures along their sockets, a Milky Way band of kernel threads across the sky](docs/media/hr.webp)
+
 A Hertzsprung-Russell sky of the machine: every process is a star on a planetarium dome, coloured by the blackbody its CPU would make, as bright as its memory, and sorted into the cgroup constellation it belongs to. `m` sends every star to its place on a Hertzsprung-Russell diagram of the machine and classifies it against the machine's own main sequence, such as `K3 III`.
 
 | Visual element | Measured source | Transform |
