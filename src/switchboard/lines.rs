@@ -569,6 +569,8 @@ pub struct Lines {
     pub nmi: BTreeMap<usize, f32>,
     /// The elapsed time of the sample taken in last.
     pub last: Option<f64>,
+    /// The background pass whose counters were taken in last.
+    pass: Option<u64>,
     /// When the sample was taken in, in scene time.
     pub taken: f32,
     pub columns: usize,
@@ -584,11 +586,17 @@ impl Lines {
     /// Takes in the sample `snapshot` that was drawn at scene time `time`. `reseed` means the
     /// board was not watching the sample before (another view was shown, or time went back): the
     /// cords are plugged where the sample says and nothing swings.
+    ///
+    /// The kernel counters are read once per background pass, but samples arrive faster, so a
+    /// sample whose `kernel_pass` is the one already taken in changes only the operators' busy
+    /// share: the reading is not counted twice towards a cord's persistence, the lamps do not
+    /// light again and the local timer is not restarted from the same count.
     pub fn take_in(&mut self, snapshot: &Snapshot, time: f32, reseed: bool) {
         let reading = Reading::new(snapshot);
         self.roster = Roster::new(&snapshot.cpus, &reading.cpu_ids);
         let reseed = reseed || self.last.is_none_or(|last| snapshot.elapsed < last);
-        if reading.table == Table::Known {
+        let new_pass = snapshot.kernel_pass.is_none() || snapshot.kernel_pass != self.pass;
+        if reading.table == Table::Known && (new_pass || reseed) {
             if reseed {
                 self.totals.clear();
             }
@@ -616,10 +624,15 @@ impl Lines {
             self.moved.retain(|number| present.contains(number));
             self.seat_jacks(&reading, watching);
             self.plug(time, reseed);
-            self.track_nmi(&reading, time);
+            if new_pass {
+                self.track_nmi(&reading, time);
+            }
+        }
+        if new_pass {
+            self.pass = snapshot.kernel_pass;
+            self.taken = time;
         }
         self.last = Some(snapshot.elapsed);
-        self.taken = time;
         self.reading = Some(reading);
     }
 
@@ -988,6 +1001,59 @@ pub mod tests {
         );
         assert_eq!(plugged(&lines, 42), Some(2));
         assert_eq!(lines.cords[&42].swing.map(|s| s.started), Some(3.0));
+    }
+
+    /// `rows` as the background pass `pass` read them, seen by the foreground at `elapsed`.
+    fn pass(rows: Vec<Interrupt>, pass: u64, elapsed: f64) -> Snapshot {
+        Snapshot {
+            kernel_pass: Some(pass),
+            ..sample(rows, elapsed)
+        }
+    }
+
+    #[test]
+    fn a_reading_the_foreground_sees_again_counts_once_towards_a_swing() {
+        let mut lines = Lines::default();
+        lines.take_in(
+            &pass(vec![row(42, "eth0-tx-1", 0, 400.0, None)], 1, 1.0),
+            1.0,
+            false,
+        );
+        let moved = || vec![row(42, "eth0-tx-1", 2, 400.0, None)];
+        // Pass 2 is the first reading on CPU 2; the foreground samples twice more before pass 3.
+        lines.take_in(&pass(moved(), 2, 2.0), 2.0, false);
+        for (elapsed, time) in [(3.0, 3.0), (4.0, 4.0)] {
+            lines.take_in(&pass(moved(), 2, elapsed), time, false);
+            assert_eq!(
+                plugged(&lines, 42),
+                Some(0),
+                "pass 2 counted once, at {elapsed}"
+            );
+            assert!(lines.cords[&42].swing.is_none());
+        }
+        assert_eq!(
+            lines.taken, 2.0,
+            "the local timer counts from the pass, not the repeat"
+        );
+        lines.take_in(&pass(moved(), 3, 5.0), 5.0, false);
+        assert_eq!(plugged(&lines, 42), Some(2), "a second pass confirms it");
+        assert_eq!(lines.cords[&42].swing.map(|s| s.started), Some(5.0));
+        assert_eq!(lines.taken, 5.0);
+    }
+
+    #[test]
+    fn a_repeated_reading_still_updates_the_operators_busy_share() {
+        let mut lines = Lines::default();
+        lines.take_in(
+            &pass(vec![row(42, "eth0-tx-1", 0, 400.0, None)], 1, 1.0),
+            1.0,
+            false,
+        );
+        let mut busier = pass(vec![row(42, "eth0-tx-1", 0, 400.0, None)], 1, 2.0);
+        busier.cpus[0].busy = Some(0.9);
+        lines.take_in(&busier, 2.0, false);
+        assert_eq!(lines.roster.seats[0].busy, Some(0.9));
+        assert_eq!(lines.last, Some(2.0));
     }
 
     #[test]
