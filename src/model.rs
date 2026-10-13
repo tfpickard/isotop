@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 pub(crate) mod kernel;
 
 use crate::geo;
+use crate::io_detail::{self, IoDetail, IoScan};
 use crate::places::COUNTRIES;
 use crate::platform::{
     self, AccessMode, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation,
@@ -37,7 +38,7 @@ pub enum Kind {
     not(test),
     expect(
         dead_code,
-        reason = "policy and started are read by the views that come after P5 (#21)"
+        reason = "policy, started and io_detail are read by views that come after P5 and B8"
     )
 )]
 pub struct Process {
@@ -120,6 +121,14 @@ pub struct Process {
     /// `threads`: a list that is not `complete` was cut by `threads::THREADS_PER_PROCESS` or
     /// `threads::THREADS_PER_PASS`.
     pub thread_list: Measured<ThreadList>,
+    /// Where its I/O goes: which open files its descriptors' positions say it reads and writes,
+    /// and how many pipes, sockets, terminals and anonymous descriptors it holds. Read on the
+    /// background thread only for the `io_detail::IO_PROCESSES` busiest processes (by
+    /// `platform::io_rank`: syscall rate on Linux, disk I/O rate on macOS), and only while a shown
+    /// view demands `Source::IoDetail`: `Pending` otherwise, and for a process the last pass has
+    /// not reached or that is not among the busiest. `Unreadable` for another user's process
+    /// without privileges. Behind an `Arc` because the history ring clones snapshots.
+    pub io_detail: Measured<Arc<IoDetail>>,
 }
 
 /// A process's place in the out-of-memory killer's ranking.
@@ -235,6 +244,7 @@ impl Default for Process {
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         }
     }
 }
@@ -843,6 +853,9 @@ struct Extras {
     /// `Source::Pipes` was demanded.
     pipes: Vec<Pipe>,
     pipes_partial: bool,
+    /// Where the busiest processes' I/O goes (`Source::IoDetail`), by identity; empty while
+    /// nothing demands it, and holding only the processes the last pass reached.
+    io_detail: HashMap<Identity, Measured<Arc<IoDetail>>>,
 }
 
 /// The background thread, as the frame loop sees it: what it measured last and whether it is
@@ -945,6 +958,9 @@ pub struct Collector {
     /// The processes whose threads the background thread reads, busiest first, while
     /// `Source::Threads` is demanded; empty otherwise.
     thread_targets: Arc<Mutex<Vec<Target>>>,
+    /// The processes whose descriptors the background thread reads, busiest first
+    /// (`io_detail::targets`), while `Source::IoDetail` is demanded; empty otherwise.
+    io_targets: Arc<Mutex<Vec<Identity>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
@@ -967,6 +983,7 @@ fn background(
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
     rollup_pids: Arc<Mutex<Vec<u32>>>,
     thread_targets: Arc<Mutex<Vec<Target>>>,
+    io_targets: Arc<Mutex<Vec<Identity>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
         let gpu = platform::Gpu::load();
@@ -983,6 +1000,8 @@ fn background(
         let mut thread_scan = ThreadScan::default();
         let mut pipe_scan = platform::PipeScan::new();
         let mut kept_pipes = KeptPipes::default();
+        let mut descriptors = platform::Descriptors::new();
+        let mut io_scan = IoScan::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -1050,6 +1069,17 @@ fn background(
                 &targets,
                 &mut latency,
             );
+            let io_targets = io_targets
+                .lock()
+                .map(|targets| targets.clone())
+                .unwrap_or_default();
+            let io_detail = read_io_detail(
+                &mut reads,
+                &mut io_scan,
+                &mut descriptors,
+                &io_targets,
+                &mut latency,
+            );
             let sample = reads.read(Source::Pipes, || {
                 timed(&mut latency, Source::Pipes, || pipe_scan.sample())
             });
@@ -1090,6 +1120,7 @@ fn background(
                 rollups: found.rollups,
                 pipes,
                 pipes_partial,
+                io_detail,
             }
         }
     })
@@ -1120,6 +1151,37 @@ fn read_threads(
         scan.forget();
         HashMap::new()
     })
+}
+
+/// Reads the descriptors of `targets` through `reader` when `Source::IoDetail` is demanded, and
+/// records the source as read, and `Source::UnattributedIo` as missing where the reader counts no
+/// bytes of read and write calls. Nothing is read otherwise, and what the scan remembered is
+/// dropped, so a view that asks again later starts without readings instead of comparing with
+/// positions from before the gap.
+fn read_io_detail(
+    reads: &mut Reads,
+    scan: &mut IoScan,
+    reader: &mut impl io_detail::DescriptorReader,
+    targets: &[Identity],
+    latency: &mut Vec<(Source, Duration)>,
+) -> HashMap<Identity, Measured<Arc<IoDetail>>> {
+    let found = reads.read(Source::IoDetail, || {
+        Some(timed(latency, Source::IoDetail, || {
+            scan.pass(targets, reader)
+        }))
+    });
+    match found {
+        Some(found) => {
+            if !reader.counts_bytes() {
+                reads.missing.insert(Source::UnattributedIo);
+            }
+            found
+        }
+        None => {
+            scan.forget();
+            HashMap::new()
+        }
+    }
 }
 
 impl<T> Default for Kept<T> {
@@ -1184,6 +1246,11 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         merge_memory(process, extras, scanned);
         process.thread_list = extras
             .threads
+            .get(&process.id)
+            .cloned()
+            .unwrap_or(Measured::Pending);
+        process.io_detail = extras
+            .io_detail
             .get(&process.id)
             .cloned()
             .unwrap_or(Measured::Pending);
@@ -2063,6 +2130,7 @@ impl Collector {
             identities: Arc::new(Mutex::new(HashMap::new())),
             rollup_pids: Arc::new(Mutex::new(Vec::new())),
             thread_targets: Arc::new(Mutex::new(Vec::new())),
+            io_targets: Arc::new(Mutex::new(Vec::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -2122,6 +2190,13 @@ impl Collector {
                 Vec::new()
             };
         }
+        if let Ok(mut targets) = self.io_targets.lock() {
+            *targets = if demand.contains(Source::IoDetail) {
+                io_detail::targets(&snapshot.processes)
+            } else {
+                Vec::new()
+            };
+        }
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = snapshot
                 .processes
@@ -2158,6 +2233,7 @@ impl Collector {
                 Arc::clone(&self.identities),
                 Arc::clone(&self.rollup_pids),
                 Arc::clone(&self.thread_targets),
+                Arc::clone(&self.io_targets),
             );
         }
         if let Some(background) = &self.background {
@@ -2414,6 +2490,23 @@ fn demo_syscall_io(index: usize, io_rate: f32, write_rate: f32) -> SyscallIo {
     }
 }
 
+/// The cumulative bytes demo process `index` has passed to read and write calls (`rchar` and
+/// `wchar`) at `time`, relative to time 0: the exact integrals of the read and write rates that
+/// `demo_syscall_io` gives it, which are its storage I/O scaled by the factors there. Zero for the
+/// processes that do no I/O (not a multiple of 7). It decreases going back before time 0.
+pub(crate) fn demo_syscall_chars(time: f64, index: usize) -> (f64, f64) {
+    if !index.is_multiple_of(7) {
+        return (0.0, 0.0);
+    }
+    // io_rate is its CPU use in percent times 65536 bytes per second.
+    let stored = demo_cpu_integral(time, index) * 65536.0;
+    let write_share = f64::from(demo_write_share(index));
+    (
+        stored * (1.0 - write_share) * (1.25 + 0.25 * (index % 4) as f64),
+        stored * write_share * (1.1 + 0.1 * (index % 3) as f64),
+    )
+}
+
 /// Major faults per second of demo process `index`: a few processes page in from storage.
 fn demo_major_faults(index: usize, phase: f32) -> f32 {
     if index % 23 == 5 {
@@ -2563,6 +2656,17 @@ pub struct DemoOptions {
     /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
     /// `unreadable` 0, as in `demo`.
     pub unreadable_parent: bool,
+    /// Synthesizes `Process::io_detail` for the base processes among the `io_detail::IO_PROCESSES`
+    /// busiest by syscall rate (never the transients), and lists `Source::IoDetail` in
+    /// `Snapshot::sources`, as a live run does while the source is demanded. Each holds three to
+    /// six of eight files under `/usr/lib`, `/home/demo`, `/var/log` and `/tmp` (one of the logs
+    /// deleted while open, one opened to append), and pipes, sockets, anonymous descriptors and
+    /// sometimes a terminal. The rates are what `io_detail::IoScan` would measure from positions
+    /// that advance with the integral of the process's syscall I/O (`demo_syscall_chars`) over the
+    /// `BACKGROUND_PERIOD` ending at `time`, a pure function of the time and the process's index,
+    /// so the files together take well under what it reads and writes and a remainder is left
+    /// unattributed. Off, `io_detail` is `Pending` for every process, as in `demo`.
+    pub io_detail: bool,
 }
 
 impl DemoOptions {
@@ -2581,6 +2685,7 @@ impl DemoOptions {
         oom_cycle: false,
         thread_churn: false,
         unreadable_parent: false,
+        io_detail: false,
     };
 }
 
@@ -3133,6 +3238,7 @@ impl Transient {
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         }
     }
 }
@@ -3478,6 +3584,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -3643,6 +3750,23 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             process.thread_list = Measured::Known(threads::demo_list(process, time));
         }
     }
+    if options.io_detail {
+        // The base processes only: the transients' I/O integrals are not the base formulas.
+        let busiest = io_detail::select(&processes[..count], io_detail::by_syscall_rate);
+        for (index, process) in processes.iter_mut().enumerate().take(count) {
+            if busiest.contains(&process.id) {
+                process.io_detail =
+                    Measured::Known(Arc::new(io_detail::demo_detail(index, process, time)));
+            }
+        }
+    }
+    let mut sources = Sources::default();
+    if options.threads {
+        sources.insert(Source::Threads);
+    }
+    if options.io_detail {
+        sources.insert(Source::IoDetail);
+    }
     let mut snapshot = Snapshot {
         processes,
         memory_total: Some(DEMO_MEMORY_TOTAL),
@@ -3663,11 +3787,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         remotes,
         unattributed_locks: 1,
         missing: Sources::default(),
-        sources: if options.threads {
-            Sources::from(Source::Threads)
-        } else {
-            Sources::default()
-        },
+        sources,
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
@@ -5467,6 +5587,7 @@ mod tests {
                 oom: Measured::Pending,
                 memory_detail: Measured::Pending,
                 thread_list: Measured::Pending,
+                io_detail: Measured::Pending,
             });
         }
         let id = |i: usize| processes[i % count].id;
@@ -6591,6 +6712,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .expect("the sampler thread starts");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -6739,6 +6861,7 @@ mod tests {
                 Arc::new(Mutex::new(HashMap::from([(own.pid, own)]))),
                 Arc::new(Mutex::new(Vec::new())),
                 targets,
+                Arc::new(Mutex::new(Vec::new())),
             )
             .expect("the sampler thread starts")
         };
@@ -6806,6 +6929,206 @@ mod tests {
         assert_eq!(snapshot.processes[2].thread_list, Measured::Pending);
     }
 
+    /// Holds nothing and counts the processes it was asked about; `counted` says whether its
+    /// platform counts the bytes of read and write calls.
+    struct CountingDescriptors {
+        asked: Vec<u32>,
+        counted: bool,
+    }
+
+    impl io_detail::DescriptorReader for CountingDescriptors {
+        fn counts_bytes(&self) -> bool {
+            self.counted
+        }
+
+        fn read(&mut self, id: Identity, _: io_detail::Budget) -> io_detail::Reading {
+            self.asked.push(id.pid);
+            io_detail::Reading::Taken(io_detail::Held::default())
+        }
+    }
+
+    #[test]
+    fn io_detail_is_not_sampled_without_demand() {
+        let targets = [Identity { pid: 7, start: 1 }, Identity { pid: 8, start: 1 }];
+        let mut scan = IoScan::default();
+        let mut reader = CountingDescriptors {
+            asked: Vec::new(),
+            counted: true,
+        };
+        let mut latency = Vec::new();
+
+        // Not demanded: the reader is never asked, nothing is timed, and the source is neither
+        // active nor missing, not even the part of it a platform may lack.
+        let mut idle = Reads::new(Demand::default());
+        let found = read_io_detail(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(found.is_empty() && reader.asked.is_empty() && latency.is_empty());
+        assert!(idle.active.is_empty() && idle.missing.is_empty());
+        reader.counted = false;
+        read_io_detail(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(reader.asked.is_empty() && idle.missing.is_empty());
+
+        // Demanded: every target is read, in the order given, and the source is active.
+        let mut demand = Demand::default();
+        demand.insert(Source::IoDetail);
+        let mut asked = Reads::new(demand);
+        reader.counted = true;
+        let found = read_io_detail(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        assert_eq!(reader.asked, [7, 8]);
+        assert_eq!(found.len(), 2);
+        assert!(asked.active.contains(Source::IoDetail) && asked.missing.is_empty());
+        assert_eq!(latency.len(), 1);
+        assert_eq!(latency[0].0, Source::IoDetail);
+
+        // A platform that counts no bytes (macOS) reads all the same and is missing the part that
+        // needs them.
+        reader.counted = false;
+        let mut uncounted = Reads::new(demand);
+        let found = read_io_detail(
+            &mut uncounted,
+            &mut scan,
+            &mut reader,
+            &targets,
+            &mut latency,
+        );
+        assert_eq!(found.len(), 2);
+        assert!(uncounted.active.contains(Source::IoDetail));
+        assert_eq!(uncounted.missing, Sources::from(Source::UnattributedIo));
+
+        // A cycle that read none drops what the scan remembered: the next reading compares with
+        // nothing rather than with positions from before the gap.
+        read_io_detail(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(scan.remembers_nothing());
+
+        // The real thread, started with nothing demanded, reads nothing and reports no detail.
+        let own = own_identity();
+        let start = |demand: Demand| {
+            background(
+                None,
+                Arc::new(Mutex::new(HashSet::new())),
+                Arc::new(Mutex::new(demand)),
+                Arc::new(Mutex::new(HashMap::from([(own.pid, own)]))),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(vec![own])),
+            )
+            .expect("the sampler thread starts")
+        };
+        let wait = |thread: &Background| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while thread.extras().finished.is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                thread.extras().finished.is_some(),
+                "the first cycle finished"
+            );
+        };
+        let quiet = start(Demand::default());
+        wait(&quiet);
+        let extras = quiet.extras();
+        assert!(extras.io_detail.is_empty());
+        assert!(
+            !extras.sources.contains(Source::IoDetail)
+                && !extras.missing.contains(Source::IoDetail)
+                && !extras.missing.contains(Source::UnattributedIo)
+        );
+        assert!(
+            extras
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::IoDetail),
+            "no descriptor was walked"
+        );
+        drop(extras);
+        // Demanded, it walks this process's own descriptors, a file this test holds open among
+        // them.
+        let path = std::env::temp_dir().join(format!("isotop-io-detail-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let path = std::fs::canonicalize(&path).unwrap();
+        let busy = start(demand);
+        wait(&busy);
+        let extras = busy.extras();
+        let detail = extras.io_detail[&own]
+            .known()
+            .expect("this process is readable");
+        assert!(
+            detail
+                .files
+                .iter()
+                .any(|held| held.path == path.to_str().unwrap()),
+            "{detail:?}"
+        );
+        std::fs::remove_file(&path).unwrap();
+        drop(file);
+        assert!(extras.sources.contains(Source::IoDetail));
+        assert_eq!(
+            extras.missing.contains(Source::UnattributedIo),
+            cfg!(target_os = "macos"),
+            "only a platform with no byte counters lacks the remainder"
+        );
+    }
+
+    #[test]
+    fn no_process_is_chosen_for_io_detail_until_a_view_demands_it() {
+        let mut collector = Collector::new(None, None);
+        collector.sample().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        collector.sample().unwrap();
+        assert!(
+            collector.io_targets.lock().unwrap().is_empty(),
+            "nothing demanded it"
+        );
+        collector.demand(Demand::from(Sources::from(Source::IoDetail)));
+        let snapshot = collector.sample().unwrap();
+        let chosen = collector.io_targets.lock().unwrap().clone();
+        assert!(chosen.len() <= io_detail::IO_PROCESSES);
+        assert_eq!(chosen, io_detail::targets(&snapshot.processes));
+        collector.demand(Demand::default());
+        collector.sample().unwrap();
+        assert!(collector.io_targets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_process_takes_only_the_io_detail_read_for_its_own_identity() {
+        let current = Identity { pid: 5, start: 10 };
+        let reused = Identity { pid: 5, start: 99 };
+        let detail = Measured::Known(Arc::new(IoDetail {
+            pipes: 2,
+            ..IoDetail::default()
+        }));
+        let extras = Extras {
+            identities: HashMap::from([(5, current)]),
+            io_detail: HashMap::from([
+                (current, detail.clone()),
+                (Identity { pid: 7, start: 1 }, Measured::Unreadable),
+            ]),
+            ..Extras::default()
+        };
+        let mut snapshot = Snapshot {
+            processes: vec![
+                Process {
+                    id: current,
+                    ..testing::process(5, 1)
+                },
+                Process {
+                    id: reused,
+                    ..testing::process(5, 1)
+                },
+                Process {
+                    id: Identity { pid: 7, start: 1 },
+                    ..testing::process(7, 1)
+                },
+                testing::process(6, 1),
+            ],
+            ..Snapshot::default()
+        };
+        merge(&mut snapshot, &extras);
+        assert_eq!(snapshot.processes[0].io_detail, detail);
+        assert_eq!(snapshot.processes[1].io_detail, Measured::Pending);
+        assert_eq!(snapshot.processes[2].io_detail, Measured::Unreadable);
+        assert_eq!(snapshot.processes[3].io_detail, Measured::Pending);
+    }
+
     #[test]
     fn a_demanded_pipe_scan_runs_and_is_reported_active() {
         let thread = background(
@@ -6813,6 +7136,7 @@ mod tests {
             Arc::new(Mutex::new(HashSet::new())),
             Arc::new(Mutex::new(Demand::from(Sources::from(Source::Pipes)))),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
         )

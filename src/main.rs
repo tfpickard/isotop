@@ -22,6 +22,7 @@ mod hershey;
 mod history;
 mod horizon;
 mod interactive;
+mod io_detail;
 mod journal;
 mod keys;
 mod layout;

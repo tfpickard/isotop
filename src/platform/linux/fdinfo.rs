@@ -1,6 +1,7 @@
 //! `/proc/<pid>/fdinfo/<fd>`, the kernel's account of one open file description: its offset and
-//! the flags it was opened with. The pipe scan reads the access mode from it; per-file I/O
-//! attribution (B8, #35) reads the offset.
+//! the flags it was opened with. The pipe scan reads the access mode from it; the descriptor
+//! reader behind `Source::IoDetail` (`descriptors.rs`) reads the offset and whether the file was
+//! opened to append.
 
 use crate::platform::AccessMode;
 
@@ -24,6 +25,12 @@ impl FdInfo {
             2 => Some(AccessMode::Both),
             _ => None,
         }
+    }
+
+    /// Whether the descriptor was opened `O_APPEND`: every write goes to the end of the file, and
+    /// the offset after one is that end, whoever else appended before it.
+    pub fn appending(self) -> bool {
+        self.flags & libc::O_APPEND as u32 != 0
     }
 }
 
@@ -76,6 +83,30 @@ mod tests {
         }
         assert_eq!(info("02100002").flags, 0o2100002);
         assert_eq!(info("02100002").pos, 0);
+    }
+
+    #[test]
+    fn fdinfo_pos_and_flags_parse_from_a_fixture() {
+        // Real captures, header lines included: a line that is neither `pos` nor `flags` is
+        // skipped. Python opens with O_CLOEXEC, which the flags show.
+        let read_only = parse_fdinfo(include_str!("fixtures/fdinfo_read_only.txt")).unwrap();
+        assert_eq!(read_only.pos, 4096);
+        assert_eq!(read_only.flags, 0o2100000);
+        assert_eq!(read_only.access(), Some(AccessMode::Read));
+        assert!(!read_only.appending());
+        let read_write = parse_fdinfo(include_str!("fixtures/fdinfo_read_write.txt")).unwrap();
+        assert_eq!(read_write.pos, 6);
+        assert_eq!(read_write.access(), Some(AccessMode::Both));
+        let append = parse_fdinfo(include_str!("fixtures/fdinfo_append.txt")).unwrap();
+        assert_eq!(append.pos, 100_006);
+        assert_eq!(append.flags, 0o2102001);
+        assert_eq!(append.access(), Some(AccessMode::Write));
+        assert!(append.appending(), "O_APPEND is 02000");
+        let sought = parse_fdinfo(include_str!("fixtures/fdinfo_seek.txt")).unwrap();
+        assert_eq!(
+            (sought.pos, sought.access()),
+            (50_000, Some(AccessMode::Read))
+        );
     }
 
     #[test]

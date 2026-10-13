@@ -1,8 +1,10 @@
 //! Linux: processes from /proc, CPUs from /proc/stat, /proc/schedstat and cpufreq, pressure
-//! stall information, cgroup v2 accounting, sockets, open files and file locks, NVML, the
-//! systemd journal, and fork, exec and exit events.
+//! stall information, cgroup v2 accounting, sockets, open files and file locks, the positions of
+//! the busiest processes' descriptors (`descriptors`), NVML, the systemd journal, and fork, exec
+//! and exit events.
 
 mod counters;
+mod descriptors;
 mod events;
 mod fdinfo;
 mod files;
@@ -25,6 +27,7 @@ use crate::model::{
 use crate::platform::{Files, Network, RawProcess, Shadow, Source, Sources};
 
 pub use counters::{interrupts, irq_affinity, oom_kills, softirqs};
+pub use descriptors::{Descriptors, io_rank};
 pub use events::{monotonic_ns, open_events};
 pub use files::{FileScan, locks};
 pub use journal::{JOURNAL, journal, stop_journal};
@@ -741,6 +744,7 @@ fn parse_stat(pid: u32, text: &str, page_size: u64) -> Option<(Process, StatCoun
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         },
         StatCounters {
             ticks: timing.ticks,
