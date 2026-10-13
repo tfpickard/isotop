@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    arbor, cells, coop, cores, cortex, globe, horizon, hr, matrix, murmuration, necropolis,
+    ptolemy, reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -748,6 +748,35 @@ pub static REGISTRY: &[ViewInfo] = &[
         ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
             Box::new(arbor::Arbor::default())
         })
+    },
+    ViewInfo {
+        // Stick figures are the view's own, along the socket links of a constellation.
+        links: LinkRule::DrawnByView,
+        link_strokes: true,
+        // A birth is a nova and an exit a fade or a supernova, drawn by the view; the dome is the
+        // sky, and pressure haze would tint it.
+        flash: false,
+        haze: false,
+        // The dome faces the viewer whatever the rotation and pitch, and is framed as it was
+        // drawn; top-down keeps its plane flat to the viewer from the start.
+        billboard: true,
+        pitch: Some(std::f32::consts::FRAC_PI_2),
+        keys: "m diagram or sky",
+        // Twelve seconds of samples as a live run takes them: the twinkle reads ten seconds of
+        // CPU, and the births and the first supernova of the churn are in the history.
+        warmup: &[Warmup {
+            phase: Phase::Replay {
+                seconds: 12,
+                before_start: false,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            churn: true,
+            early_giant: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("hr", "HR", Backdrop::Void, || Box::new(hr::Hr::default()))
     },
 ];
 

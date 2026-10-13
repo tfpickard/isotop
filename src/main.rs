@@ -13,6 +13,7 @@ mod gpu;
 mod harness;
 mod history;
 mod horizon;
+mod hr;
 mod journal;
 mod layout;
 mod matrix;
@@ -5514,5 +5515,58 @@ mod tests {
         city.show_help = true;
         assert!(line(&globe, 4).starts_with(" Scroll turn/tilt | drag pan | Ctrl-scroll zoom"));
         assert!(line(&city, 4).starts_with(" Scroll pan | Ctrl-scroll zoom"));
+    }
+
+    #[test]
+    fn the_m_key_toggles_mode_only_while_hr_is_shown() {
+        let hr = view("hr");
+        let diagram = |app: &App| {
+            app.scene
+                .module::<hr::Hr>(hr)
+                .expect("the hr module")
+                .in_diagram()
+        };
+        let mut app = App::new(view("city"), model::demo(12.0, 64), all_available());
+        app.render(320, 180, 512);
+        press(&mut app, KeyCode::Char('m'));
+        app.switch(hr);
+        app.render(320, 180, 512);
+        assert!(
+            !diagram(&app),
+            "an `m` pressed in another view did not reach hr"
+        );
+        app.show_help = true;
+        let help = app.text(1.0, "test", 10, 512)[3].clone();
+        assert!(
+            help.starts_with(" m diagram or sky | Arrows/WASD pan"),
+            "{help}"
+        );
+        press(&mut app, KeyCode::Char('m'));
+        app.render(320, 180, 512);
+        assert!(diagram(&app), "`m` sends the stars to the diagram");
+        assert!(
+            app.scene.legend(hr, app.snapshot()).contains("m sky"),
+            "and the legend says how to come back"
+        );
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('m'));
+        press(&mut app, KeyCode::Esc);
+        app.render(320, 180, 512);
+        assert!(diagram(&app), "a search takes the letter instead");
+        press(&mut app, KeyCode::Char('m'));
+        app.render(320, 180, 512);
+        assert!(!diagram(&app), "`m` again returns to the sky");
+        app.switch(view("city"));
+        press(&mut app, KeyCode::Char('m'));
+        app.switch(hr);
+        app.render(320, 180, 512);
+        assert!(!diagram(&app), "nor does it while another view is shown");
+        // `--hr-diagram` starts in the diagram.
+        let mut started = App::new(hr, model::demo(12.0, 64), all_available());
+        started
+            .scene
+            .configure(&options(&["--hr-diagram"]).view_options());
+        started.render(320, 180, 512);
+        assert!(diagram(&started));
     }
 }

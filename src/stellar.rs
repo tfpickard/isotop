@@ -92,10 +92,6 @@ pub enum Halo {
     /// halos that overlap drift apart by a level or two between the rasterizers.
     Glow,
     /// An `Item::Puff`, which rounds on both: for a sky of many stars, whose halos overlap.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first used by a view that draws a sky of stars")
-    )]
     Puff,
 }
 
@@ -161,7 +157,6 @@ impl Frame {
 
 /// The kind of event a flash timeline plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub enum Flash {
     /// A birth: the star brightens sharply, then settles.
     Nova,
@@ -173,7 +168,6 @@ pub enum Flash {
 
 /// The flash for a process that exits holding `memory` bytes: a supernova above 1 GiB, a fade
 /// otherwise.
-#[cfg_attr(not(test), expect(dead_code, reason = "first used by a star view"))]
 pub fn exit_flash(memory: u64) -> Flash {
     if memory > GIBIBYTE {
         Flash::Supernova

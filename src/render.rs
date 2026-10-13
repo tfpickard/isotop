@@ -348,10 +348,6 @@ pub enum Item {
     /// Depth-tested triangle whose colour and pick are sampled from field `field` (an index into
     /// `Frame::fields`) at `uv`, in node units, interpolated linearly across the triangle. It
     /// writes depth, the sampled colour and the owner of the nearest node (see `field`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first recorded by a view that draws a field")
-    )]
     Field {
         points: [Point; 3],
         uv: [[f32; 2]; 3],
@@ -973,7 +969,6 @@ impl Frame {
 
     /// A pick-only disc of `radius` pixels at the projection of `position`, depth-tested there:
     /// it keeps splatted or translucent content under it pickable.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub(crate) fn pick_disc(&mut self, camera: &Camera, position: Point, radius: f32, pick: u32) {
         let center = self.project(camera, position);
         self.items.push(Item::Pick {
@@ -1146,7 +1141,10 @@ pub struct Title {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "first constructed by a view that writes tags")
+    expect(
+        dead_code,
+        reason = "no view writes a tag to the left of its point; the app moves one that runs off the screen"
+    )
 )]
 pub enum Side {
     Right,
@@ -1242,10 +1240,6 @@ pub(crate) struct Stage<'a> {
     pub titles: &'a mut Vec<Title>,
     /// Texts written beside a point, before `places` and `titles` are offered their cells: the
     /// labels a view wants read before its other text.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first written by a view that writes tags")
-    )]
     pub tags: &'a mut Vec<Tag>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
