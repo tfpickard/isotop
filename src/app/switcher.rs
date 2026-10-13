@@ -82,7 +82,7 @@ impl App {
         self.view = view;
         self.fit = true;
         self.thing = None;
-        self.hovered_thing = None;
+        self.pointer.forget_thing();
         if let Some(pitch) = self.row().pitch {
             self.goal.pitch = pitch;
         }

@@ -2,7 +2,7 @@ use std::io;
 
 use crate::terminal::Popup;
 
-use super::pointer::Pointer;
+use super::pointer::Spot;
 
 /// Terminal rows of the status panel under the scene.
 pub(crate) const PANEL_ROWS: u16 = 5;
@@ -64,11 +64,11 @@ impl Layout {
     }
 
     /// Frame position and cell under a mouse report, which arrives in pixels when `pixels` is set.
-    pub(crate) fn pointer(&self, column: u16, row: u16, pixels: bool) -> Pointer {
+    pub(crate) fn spot(&self, column: u16, row: u16, pixels: bool) -> Spot {
         match self.cell.filter(|_| pixels) {
             Some([cw, ch]) => {
                 let (x, y) = (column as f32, row as f32);
-                Pointer {
+                Spot {
                     frame: [
                         x * self.width as f32 / (self.columns as f32 * cw),
                         y * self.height as f32 / (self.rows as f32 * ch),
@@ -78,7 +78,7 @@ impl Layout {
             }
             None => {
                 let [w, h] = self.cell_size();
-                Pointer {
+                Spot {
                     frame: [(column as f32 + 0.5) * w, (row as f32 + 0.5) * h],
                     cell: (column, row),
                 }

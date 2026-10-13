@@ -228,6 +228,7 @@ impl App {
             }
         }
         let tag = match self
+            .pointer
             .hover
             .and_then(|hover| frame.target_near(hover.frame[0], hover.frame[1], radius))
         {
@@ -245,7 +246,7 @@ impl App {
                 .map(|card| thing_tag(&card)),
             _ => None,
         };
-        if let Some(hover) = self.hover
+        if let Some(hover) = self.pointer.hover
             && let Some(text) = tag
         {
             let width = text.chars().count() as u16;
@@ -365,7 +366,7 @@ mod tests {
         let at = app
             .screen(&frame, hovered)
             .expect("the process is on screen");
-        app.hover = Some(Pointer {
+        app.pointer.hover = Some(Spot {
             frame: at,
             cell: layout.cell_of(at),
         });

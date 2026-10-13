@@ -8,7 +8,7 @@ pub(crate) use crossterm::event::{
 };
 
 pub(crate) use crate::app::App;
-pub(crate) use crate::app::pointer::Pointer;
+pub(crate) use crate::app::pointer::Spot;
 pub(crate) use crate::app::screen::Layout;
 pub(crate) use crate::cli::Options;
 pub(crate) use crate::model::{self, Demand, Identity, bytes};

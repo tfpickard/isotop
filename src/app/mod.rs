@@ -14,8 +14,6 @@ mod tour;
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::MouseButton;
-
 use crate::journal::{self, Journal};
 use crate::model::{Demand, Identity, Snapshot};
 use crate::picker::{self, Picker};
@@ -59,13 +57,7 @@ pub(crate) struct App {
     /// The status panel is wanted; `h` hides it so the scene fills the terminal.
     pub(crate) panel: bool,
     pub(crate) labels: bool,
-    pub(crate) hover: Option<Pointer>,
-    pub(crate) hovered: Option<Identity>,
-    /// The thing under the pointer in the last frame, which the view highlights while no thing
-    /// is selected.
-    pub(crate) hovered_thing: Option<Thing>,
-    pub(crate) dragging: Option<(MouseButton, [f32; 2])>,
-    pub(crate) dismiss: bool,
+    pub(crate) pointer: Pointer,
     pub(crate) animation: f32,
     pub(crate) last_input: Instant,
     pub(crate) tour: Option<Tour>,
@@ -117,11 +109,7 @@ impl App {
             show_help: false,
             panel: true,
             labels: true,
-            hover: None,
-            hovered: None,
-            hovered_thing: None,
-            dragging: None,
-            dismiss: false,
+            pointer: Pointer::default(),
             animation: 0.0,
             last_input: Instant::now(),
             tour: None,
@@ -196,7 +184,7 @@ impl App {
     /// Rasterizes a frame `draw` recorded, on the GPU when there is one.
     pub(crate) fn rasterize(&mut self, frame: &mut Frame) {
         self.renderer
-            .rasterize(frame, self.hover.map(|hover| hover.frame));
+            .rasterize(frame, self.pointer.hover.map(|hover| hover.frame));
     }
 
     /// Replaces the rasterizer, which starts as the CPU.
@@ -210,7 +198,7 @@ impl App {
         let time = self.render_time();
         self.scene.highlight = [
             self.selected,
-            self.hovered,
+            self.pointer.hovered,
             self.tour.as_ref().map(|tour| tour.target),
         ]
         .into_iter()
@@ -223,7 +211,7 @@ impl App {
             width,
             height,
             selected: self.selected,
-            thing: self.thing.or(self.hovered_thing),
+            thing: self.thing.or(self.pointer.hovered_thing),
             time,
             limit,
             focus: self.focus,

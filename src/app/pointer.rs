@@ -2,24 +2,43 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-use crate::render::{Frame, ORIGIN_Y, SCALE, Target};
+use crate::model::Identity;
+use crate::render::{Frame, ORIGIN_Y, SCALE, Target, Thing};
 use crate::terminal::Popup;
 
 use super::App;
 use super::screen::Layout;
 
+/// Where a mouse report points: the frame position under it and the terminal cell.
 #[derive(Clone, Copy)]
-pub(crate) struct Pointer {
+pub(crate) struct Spot {
     pub(crate) frame: [f32; 2],
     pub(crate) cell: (u16, u16),
 }
 
-impl App {
+/// What the mouse is doing and what it is over.
+#[derive(Default)]
+pub(crate) struct Pointer {
+    /// Where the pointer is in the scene; None outside it.
+    pub(crate) hover: Option<Spot>,
+    /// The process under the pointer in the last frame, which the next frame highlights.
+    pub(crate) hovered: Option<Identity>,
+    /// The thing under the pointer in the last frame, which the view highlights while no thing
+    /// is selected.
+    pub(crate) hovered_thing: Option<Thing>,
+    /// The button held and where the drag last stood in the frame.
+    pub(crate) dragging: Option<(MouseButton, [f32; 2])>,
+    /// A click on empty space closes the popup when the button is released, unless the press
+    /// turned into a drag.
+    pub(crate) dismiss: bool,
+}
+
+impl Pointer {
     /// Notes the process or thing under the pointer in `frame`, for the next frame to highlight.
     pub(crate) fn hover_over(&mut self, frame: &Frame, radius: f32) {
         let target = self
             .hover
-            .and_then(|h| frame.target_near(h.frame[0], h.frame[1], radius));
+            .and_then(|spot| frame.target_near(spot.frame[0], spot.frame[1], radius));
         (self.hovered, self.hovered_thing) = match target {
             Some(Target::Process(id)) => (Some(id), None),
             Some(Target::Thing(thing)) => (None, Some(thing)),
@@ -27,6 +46,13 @@ impl App {
         };
     }
 
+    /// Lets go of the thing under the pointer, which belongs to a view that is no longer shown.
+    pub(crate) fn forget_thing(&mut self) {
+        self.hovered_thing = None;
+    }
+}
+
+impl App {
     pub(crate) fn mouse(
         &mut self,
         mouse: MouseEvent,
@@ -51,10 +77,10 @@ impl App {
         panels: &[Popup],
         pixels: bool,
     ) {
-        let pointer = layout.pointer(mouse.column, mouse.row, pixels);
+        let pointer = layout.spot(mouse.column, mouse.row, pixels);
         let (column, row) = pointer.cell;
         let in_scene = row < layout.rows;
-        self.hover = in_scene.then_some(pointer);
+        self.pointer.hover = in_scene.then_some(pointer);
         let scroll = match mouse.kind {
             MouseEventKind::ScrollUp => Some((0.0, -1.0)),
             MouseEventKind::ScrollDown => Some((0.0, 1.0)),
@@ -102,38 +128,38 @@ impl App {
                     layout.pick_radius(pixels),
                 );
                 // Clicking empty space closes the popup, unless the press turns into a drag.
-                self.dismiss = picked.is_none();
+                self.pointer.dismiss = picked.is_none();
                 match picked {
                     Some(Target::Process(id)) => (self.selected, self.thing) = (Some(id), None),
                     Some(Target::Thing(thing)) => (self.selected, self.thing) = (None, Some(thing)),
                     None => {}
                 }
-                self.dragging = Some((MouseButton::Left, pointer.frame));
+                self.pointer.dragging = Some((MouseButton::Left, pointer.frame));
             }
             MouseEventKind::Down(button) if in_scene && button != MouseButton::Left => {
-                self.dragging = Some((button, pointer.frame));
+                self.pointer.dragging = Some((button, pointer.frame));
             }
             MouseEventKind::Drag(button) => {
-                if let Some((held, last)) = self.dragging
+                if let Some((held, last)) = self.pointer.dragging
                     && held == button
                 {
                     let dx = pointer.frame[0] - last[0];
                     let dy = pointer.frame[1] - last[1];
                     if button == MouseButton::Left {
                         self.both(|c| c.pan(-dx, -dy));
-                        self.dismiss = false;
+                        self.pointer.dismiss = false;
                     } else {
                         self.both(|c| {
                             c.rotation += dx * 0.01;
                             c.tilt(dy * 0.008);
                         });
                     }
-                    self.dragging = Some((held, pointer.frame));
+                    self.pointer.dragging = Some((held, pointer.frame));
                 }
             }
             MouseEventKind::Up(button) => {
-                self.dragging = None;
-                if button == MouseButton::Left && std::mem::take(&mut self.dismiss) {
+                self.pointer.dragging = None;
+                if button == MouseButton::Left && std::mem::take(&mut self.pointer.dismiss) {
                     self.selected = None;
                     self.thing = None;
                 }
@@ -200,7 +226,7 @@ mod tests {
         let (mut app, mut frame) = lantern_app();
         assert_eq!(frame.things.len(), 3);
         let hovered = lantern_at(&app, &frame, 1);
-        app.hover = Some(Pointer {
+        app.pointer.hover = Some(Spot {
             frame: hovered,
             cell: THING_LAYOUT.cell_of(hovered),
         });
@@ -220,7 +246,7 @@ mod tests {
             )],
             "a hovered thing shows its title and its card's first line"
         );
-        app.hover = None;
+        app.pointer.hover = None;
         let lantern = Thing {
             kind: testing::LANTERN,
             key: 100,
@@ -293,13 +319,13 @@ mod tests {
         let (mut app, mut frame) = lantern_app();
         let radius = THING_LAYOUT.pick_radius(true);
         let at = lantern_at(&app, &frame, 0);
-        app.hover = Some(Pointer {
+        app.pointer.hover = Some(Spot {
             frame: at,
             cell: THING_LAYOUT.cell_of(at),
         });
         let (labels, _) = app.overlay(&mut frame, &THING_LAYOUT, radius);
         click(&mut app, &frame, at);
-        app.hover = None;
+        app.pointer.hover = None;
         let (_, panels) = app.overlay(&mut frame, &THING_LAYOUT, radius);
         let tag = labels.iter().find(|label| label.tone == Tone::Tag);
         assert!(tag.expect("the hover tag").text.contains('\x1b'));
@@ -348,7 +374,10 @@ mod tests {
         let center = app.goal.center;
         press(&mut app, KeyCode::Char('v'));
         app.mouse(scroll, &layout, &frame, &[], false);
-        assert_eq!((app.goal.center, app.hover.is_none()), (center, true));
+        assert_eq!(
+            (app.goal.center, app.pointer.hover.is_none()),
+            (center, true)
+        );
         press(&mut app, KeyCode::Esc);
         app.mouse(scroll, &layout, &frame, &[], false);
         assert_ne!(

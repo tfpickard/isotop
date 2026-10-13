@@ -196,7 +196,7 @@ fn run(options: Options) -> Result<i32, Box<dyn Error>> {
         let mut frame = app.render(layout.width, layout.height, limit);
         let render_ms = frame_start.elapsed().as_secs_f32() * 1000.0;
         let pixels = terminal.pixel_mouse && layout.cell.is_some();
-        app.hover_over(&frame, layout.pick_radius(pixels));
+        app.pointer.hover_over(&frame, layout.pick_radius(pixels));
         let (labels, panels) = app.overlay(&mut frame, &layout, layout.pick_radius(pixels));
         let transport = if terminal.shared_memory {
             "shared memory".to_owned()
