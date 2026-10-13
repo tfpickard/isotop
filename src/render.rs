@@ -1142,6 +1142,29 @@ pub struct Title {
     pub text: String,
 }
 
+/// Which side of its point a `Tag` is written on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "first constructed by a view that writes tags")
+)]
+pub enum Side {
+    Right,
+    Left,
+}
+
+/// A short text written beside a world point instead of centred on it, as a `places` entry is:
+/// the name of a star next to the star. `side` is where the text goes if it fits; the app writes
+/// it on the other side when that one runs off the screen, and leaves it out when neither fits
+/// or another label is in the way. Its text is untrusted like process text and reaches the
+/// terminal only through `terminal::clean_text`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tag {
+    pub at: Point,
+    pub side: Side,
+    pub text: String,
+}
+
 /// What a view draws with, and its only way to talk back to the app. A view reads only `Stage`,
 /// the process slice and `&Snapshot`, and talks back only through `Stage` outputs. What the
 /// platform could not measure is `snapshot.missing`; `Stage` does not copy it.
@@ -1217,6 +1240,13 @@ pub(crate) struct Stage<'a> {
     /// `places`, in the order pushed. Each system's centre (`Title::at`) is kept in the camera
     /// fit with the `positions`, when the view gave no `bounds`.
     pub titles: &'a mut Vec<Title>,
+    /// Texts written beside a point, before `places` and `titles` are offered their cells: the
+    /// labels a view wants read before its other text.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "first written by a view that writes tags")
+    )]
+    pub tags: &'a mut Vec<Tag>,
     /// How far above the ground plane the view's content rises, in world units, for the camera
     /// fit to leave room for it when the view gave no `bounds`. Start at 0 each frame. Default:
     /// nothing rises.
@@ -1342,6 +1372,8 @@ pub struct Scene {
     pub places: Vec<(Point, String)>,
     /// The last frame's `Stage::titles`.
     pub titles: Vec<Title>,
+    /// The last frame's `Stage::tags`.
+    pub tags: Vec<Tag>,
     /// The last frame's `Stage::bounds`, which `fit` frames the camera to.
     bounds: Vec<Point>,
     /// The last frame's `Stage::notes`: popup lines after the sockets.
@@ -1396,6 +1428,7 @@ impl Scene {
             positions: HashMap::new(),
             places: Vec::new(),
             titles: Vec::new(),
+            tags: Vec::new(),
             bounds: Vec::new(),
             notes: HashMap::new(),
             sparklines: HashMap::new(),
@@ -1582,6 +1615,7 @@ impl Scene {
         self.collapsed = 0;
         self.places.clear();
         self.titles.clear();
+        self.tags.clear();
         self.bounds.clear();
         self.notes.clear();
         self.sparklines.clear();
@@ -1724,6 +1758,7 @@ impl Scene {
             popup: &mut self.popup,
             callout: &mut self.callout,
             titles: &mut self.titles,
+            tags: &mut self.tags,
             headroom: &mut self.headroom,
         };
         let shown = self.modules[view.index()].draw(&mut stage, processes, snapshot);
@@ -2772,6 +2807,7 @@ mod tests {
             positions: _,
             places: _,
             titles: _,
+            tags: _,
             bounds: _,
             notes: _,
             sparklines: _,

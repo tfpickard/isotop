@@ -56,8 +56,8 @@ use model::{Collector, Demand, GpuMemory, Identity, Process, Snapshot, bytes, de
 use picker::{Entry, Picker, Toggle};
 use platform::Source;
 use render::{
-    Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Target,
-    Thing, label_name,
+    Camera, Card, Frame, ISOMETRIC, Links, ORIGIN_Y, Point, RenderInput, SCALE, Scene, Side,
+    Target, Thing, label_name,
 };
 use simulation::Rng;
 use terminal::{Label, Popup, Terminal, Tone};
@@ -1194,6 +1194,37 @@ impl App {
         })
     }
 
+    /// The labels for `Stage::tags`, each beside its point on the side it asked for if that fits
+    /// on screen and on the other side if not, in the cells `board` has free.
+    fn tag_labels(&self, frame: &Frame, layout: &Layout, board: &mut Board) -> Vec<Label> {
+        let mut labels = Vec::new();
+        for tag in &self.scene.tags {
+            let Some(at) = frame.locate(&self.camera, tag.at) else {
+                continue;
+            };
+            let width = tag.text.chars().count() as u16;
+            let (column, row) = layout.cell_of(at);
+            let (right, left) = (column + 2, column.saturating_sub(width + 1));
+            let sides = match tag.side {
+                Side::Right => [right, left],
+                Side::Left => [left, right],
+            };
+            let fits = |column: u16| column + width <= layout.columns;
+            if row < layout.rows
+                && let Some(&column) = sides.iter().find(|&&column| fits(column))
+                && board.claim(column, row, width, 1)
+            {
+                labels.push(Label {
+                    column,
+                    row,
+                    text: tag.text.clone(),
+                    tone: Tone::Bright,
+                });
+            }
+        }
+        labels
+    }
+
     /// Text drawn over the scene, highest priority first: the inspector popup, the tour
     /// callout (with a pointer drawn into the frame), the hover name, then system and busy labels.
     fn overlay(&self, frame: &mut Frame, layout: &Layout, radius: f32) -> (Vec<Label>, Vec<Popup>) {
@@ -1289,6 +1320,7 @@ impl App {
         if !self.labels {
             return (labels, panels);
         }
+        labels.extend(self.tag_labels(frame, layout, &mut board));
         for (point, text) in &self.scene.places {
             if let Some(at) = frame.locate(&self.camera, *point) {
                 let width = text.chars().count() as u16;
@@ -3830,6 +3862,61 @@ mod tests {
         app.labels = false;
         let (labels, _) = app.overlay(&mut frame, &layout, layout.pick_radius(false));
         assert!(labels.is_empty(), "labels off hides titles too");
+    }
+
+    #[test]
+    fn tags_from_the_stage_are_written_beside_their_point_on_the_side_that_fits() {
+        let (mut app, last) = guided_app();
+        let layout = Layout {
+            columns: 80,
+            rows: 24,
+            width: 320,
+            height: 180,
+            cell: None,
+        };
+        let mut frame = app.render(320, 180, 512);
+        frame.rasterize();
+        let seat = frame
+            .locate(&app.camera, app.scene.positions[&last])
+            .expect("the seat is on screen");
+        let (column, row) = layout.cell_of(seat);
+        let tag = |app: &App, frame: &mut Frame| -> Option<Label> {
+            let (labels, _) = app.overlay(frame, &layout, layout.pick_radius(false));
+            labels
+                .into_iter()
+                .find(|label| label.text == views::testing::GUIDE_TAG)
+        };
+        let width = views::testing::GUIDE_TAG.chars().count() as u16;
+        let label = tag(&app, &mut frame).expect("the tag fits");
+        assert_eq!(
+            (label.column, label.row),
+            (column + 2, row),
+            "beside the point, on its own row, on the preferred side"
+        );
+        assert!(matches!(label.tone, Tone::Bright));
+        // Asking for the left puts it left of the point.
+        app.scene.tags[0].side = Side::Left;
+        let label = tag(&app, &mut frame).expect("the left side fits");
+        assert_eq!(
+            (label.column, label.row),
+            (column.saturating_sub(width + 1), row)
+        );
+        app.scene.tags[0].side = Side::Right;
+        // Moved to the right edge, where it no longer fits, it flips to the left of the point.
+        let [across, along] = app.camera.ground(
+            layout.width as f32 * 0.5 - 4.0,
+            seat[1] - layout.height as f32 * ORIGIN_Y,
+        );
+        app.scene.tags[0].at = [
+            app.camera.center[0] + across,
+            app.camera.center[1] + along,
+            0.0,
+        ];
+        let label = tag(&app, &mut frame).expect("it fits on the other side");
+        assert!(label.column + width < layout.columns, "{}", label.column);
+        assert_eq!(label.row, row);
+        app.labels = false;
+        assert!(tag(&app, &mut frame).is_none(), "labels off hides tags too");
     }
 
     #[test]

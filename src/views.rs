@@ -754,7 +754,7 @@ pub fn view(name: &str) -> View {
 #[cfg(test)]
 pub mod testing {
     use super::*;
-    use crate::render::{Title, TourTarget};
+    use crate::render::{Side, Tag, Title, TourTarget};
 
     /// A module view that seats the first half of the processes on a line and lets the rest
     /// collapse. Its legend counts what reached it through the trait. `m` toggles a mode that
@@ -879,6 +879,8 @@ pub mod testing {
 
     /// The text `Guide` titles its system with.
     pub const GUIDE_TITLE: &str = "guide system";
+    /// The tag the guide writes beside the last process.
+    pub const GUIDE_TAG: &str = "guide tag";
 
     /// A module view that seats every process on a line, asks the tour to visit the last one at
     /// a point beside its seat, adds a line to its popup and titles the line as a system. Its
@@ -924,6 +926,11 @@ pub mod testing {
                     at: [index as f32 * 4.0, 0.0, 0.0],
                     reach: 3.0,
                     text: GUIDE_TITLE.into(),
+                });
+                stage.tags.push(Tag {
+                    at: [index as f32 * 4.0, 0.0, 0.0],
+                    side: Side::Right,
+                    text: GUIDE_TAG.into(),
                 });
                 stage.tour.push(TourTarget {
                     id: last.id,

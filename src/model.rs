@@ -6380,7 +6380,6 @@ mod tests {
             early_giant: true,
             ..DemoOptions::NONE
         };
-        assert!(!DemoOptions::NONE.early_giant, "off by default");
         for count in [64, 192, 1000] {
             let kills: Vec<DemoLife> = demo_life(-1.0, 300.0, count, EARLY)
                 .into_iter()

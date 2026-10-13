@@ -179,6 +179,7 @@ writes back `stage.positions` (picking anchors, labels, the tour and the exit fl
 `stage.bounds` (a fixed envelope for the camera fit when the content moves by itself),
 `stage.headroom` (how high content stands above the ground, for the fit of a view that gives no bounds),
 `stage.places`, `stage.titles` (the names of systems, labelled under their outer edges),
+`stage.tags` (`Tag { at, side, text }`: a short text written beside a point, on its `side` if that fits, before `places` and `titles` are offered their cells),
 `stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
 braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
 `stage.tour` (`TourTarget { id,
