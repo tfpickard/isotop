@@ -4,13 +4,22 @@ isotop has two rasterizers for one display list. The CPU path is the reference, 
 
 ![The affine depth map from view depth to the GPU z-buffer, and the resolution of a 32-bit depth buffer](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/theory-depth-mapping.svg)
 
+## History
+
+* **Before the GPU.** Real-time 3D on personal computers began as software rasterizers on the CPU; consumer accelerators such as 3dfx's Voodoo (1996) moved triangle rasterization and texturing into hardware. NVIDIA's GeForce 256 (1999) was marketed as the first "GPU", a name chosen to say that transform and lighting had moved too.
+* **Shaders and unified APIs.** Programmable shaders, then general-purpose use of the same hardware, followed in the 2000s. Through the 2010s the old global-state APIs gave way to explicit, low-overhead ones: AMD's Mantle (2013) is usually cited as the prompt, Apple's Metal appeared in 2014, Microsoft's Direct3D 12 with Windows 10 in 2015, and Khronos's Vulkan 1.0 in 2016.
+* **WebGPU and wgpu.** The W3C's WebGPU standard and its shading language WGSL abstract those APIs for the web. `wgpu` is a Rust implementation of that API with native back ends over Vulkan, Metal and Direct3D 12 (and others), and grew out of the `gfx-rs` project; it is also the engine behind WebGPU in Firefox, which is why a program written against it runs unchanged on the three platforms isotop's `wgpu::Backends::PRIMARY` names. WebGPU shipped in Chrome 113 in 2023 (unverified here).
+* **Software as reference.** Graphics APIs have long shipped a slow, exact software implementation to test hardware against: Direct3D has had a reference rasterizer for this purpose, and CPU implementations such as WARP and llvmpipe now exist as fallbacks. Hardware vendors do not promise bit-identical output with each other, only with the specification, and the specification leaves rounding of blends and some fill-rule details to the implementation within bounds. That latitude is why this page has a table of divergences and a tolerance rather than a hash.
+* **MOVNTDQA.** The streaming load that `copy_mapped` uses arrived with SSE4.1 in Intel's Penryn generation of processors (2007 to 2008), designed for exactly the case in the source comment, reading from write-combined memory such as a frame buffer.
+* isotop treats the older machine as the reference and the newer as the approximation, which is the reverse of the order in which they were built.
+
 ## Why the two must agree
 
 `AGENTS.md` states it as an invariant: if you change how anything is rasterized (sky, sphere shading, glow falloff, depth mapping), change `render.rs` and `shaders.wgsl` together, and render the same view with `--renderer cpu` and `--renderer gpu` and compare. Three reasons stand behind it. The picture must not depend on the hardware of the person running it. The pick buffer decides what a click selects ([Theory Picking](Theory-Picking)), and a click must find what the viewer sees. And the CPU is what every test, screenshot and `--output` run uses by default in CI, so a view tuned only against the GPU would be unreviewable.
 
 ## The GPU pipeline
 
-`gpu::Gpu` owns a wgpu device and queue, one bind group (a 48-byte uniform `Globals`), eight render pipelines plus a sky pipeline, and per-size render targets. Backends are `wgpu::Backends::PRIMARY` (Vulkan on Linux, Metal on Apple GPUs, DX12 on Windows). Targets are an `Rgba8Unorm` colour texture, an `R32Uint` pick texture and a `Depth32Float` depth texture, all one sample per pixel (no multisampling).
+`gpu::Gpu` owns a wgpu device and queue, one bind group (a 48-byte uniform `Globals` at binding 0 and the field storage buffer at binding 1), nine render pipelines (one per `Pass`) plus two sky pipelines (`sky_fragment`, and `twilight_fragment` for the `Twilight` backdrop), and per-size render targets. Backends are `wgpu::Backends::PRIMARY` (Vulkan on Linux, Metal on Apple GPUs, DX12 on Windows). Targets are an `Rgba8Unorm` colour texture, an `R32Uint` pick texture and a `Depth32Float` depth texture, all one sample per pixel (no multisampling).
 
 ### One pass per primitive family
 
@@ -23,16 +32,17 @@ Every `Item` kind has a pipeline. The *style* flags decide blending, depth and p
 | Beams | same | line list | alpha blending | no | `Always` / no |
 | Stars | same | point list | none | no | `Always` / no |
 | Balls | `ball_vertex`, `ball_fragment` | quad (6 vertices per instance) | none | yes | `GreaterEqual` / yes |
-| Glows | `glow_vertex`, `glow_fragment` | quad per instance | alpha blending | no | `Always` / no |
+| Glows (`Item::Glow` and `Item::Puff`) | `glow_vertex`, `glow_fragment` | quad per instance | alpha blending | no | `Always` / no |
 | Glyphs | `glyph_vertex`, `glyph_fragment` | quad per instance | none | no | `Always` / no |
 | Splats (`Item::Pick`) | `splat_vertex`, `splat_fragment` | quad per instance | colour writes masked off | yes | `GreaterEqual` / no |
-| Sky | `sky_vertex`, `sky_fragment` | one oversized triangle | none | no | `Always` / no |
+| Fields (`Item::Field`) | `field_vertex`, `field_fragment` | triangle list | none | yes | `GreaterEqual` / yes |
+| Sky | `sky_vertex`, `sky_fragment` (`twilight_fragment` for `Backdrop::Twilight`) | one oversized triangle | none | no | `Always` / no |
 
 The sky triangle needs no vertex buffer: `corner = ((i << 1) & 2, i & 2)` for vertex index $i = 0, 1, 2$ gives $(0,0), (2,0), (0,2)$, and $2\cdot\text{corner} - 1$ is $(-1,-1), (3,-1), (-1,3)$, which covers the clip square. Opaque primitives write colour, pick and depth together; the blended ones write only colour. This is the same split as the CPU's: lines clear picks and beams do not, spheres and triangles are pickable, glows are not.
 
-**Batching preserves order.** `Gpu::render` walks `frame.items` once, routes each item into one of five vertex streams (`vertices`, `balls`, `glows`, `glyphs`, `splats`) and records a batch `(Pass, range)`, extending the previous batch while consecutive items use the same pass. The batches are drawn in list order, and within a draw call primitives are processed in order, so painter's order and the blend order of translucent items survive. The price is that alternating primitive kinds produce many small draws; issue [#87](https://github.com/tfpickard/isotop/issues/87) (A28) proposes layered blended passes and pipelined readback.
+**Batching preserves order.** `Gpu::render` walks `frame.items` once, routes each item into one of six vertex streams (`vertices`, `balls`, `glows`, `glyphs`, `splats`, `field_vertices`) and records a batch `(Pass, range)`, extending the previous batch while consecutive items use the same pass. The batches are drawn in list order, and within a draw call primitives are processed in order, so painter's order and the blend order of translucent items survive. The price is that alternating primitive kinds produce many small draws; issue [#87](https://github.com/tfpickard/isotop/issues/87) (A28) proposes layered blended passes and pipelined readback.
 
-**Instance data.** Spheres, glows, glyphs and pick discs are instances of a six-vertex quad expanded in the vertex shader from the constant array `CORNERS`. Each instance struct is tightly packed and its size and field offsets are pinned by compile-time assertions that must match the WGSL `struct` of the same name: `Globals` 48 bytes, `Vertex` 20, `Ball` 32, `Glow` 20, `Glyph` 32, `Splat` 20. A triangle is three `Vertex` entries of position (two floats), depth (one float), colour (4 normalised bytes) and pick (`u32`); there is no index buffer. Streams are reused across frames and grown to the next power of two (minimum 4096 bytes).
+**Instance data.** Spheres, glows, glyphs and pick discs are instances of a six-vertex quad expanded in the vertex shader from the constant array `CORNERS`. Each instance struct is tightly packed and its size and field offsets are pinned by compile-time assertions that must match the WGSL `struct` of the same name: `Globals` 48 bytes, `Vertex` 20, `Ball` 32, `Glow` 20, `Glyph` 32, `Splat` 20, `FieldVertex` 24. A triangle is three `Vertex` entries of position (two floats), depth (one float), colour (4 normalised bytes) and pick (`u32`); there is no index buffer. Streams are reused across frames and grown to the next power of two (minimum 4096 bytes).
 
 ### The sphere on the GPU
 
@@ -50,9 +60,13 @@ $$
 
 Because the map is one increasing affine function applied to every depth in the frame, comparing mapped values orders any two fragments exactly as comparing raw $D$ does, up to rounding. The remaining question is whether 32-bit floats resolve what the scene needs. The step between adjacent representable values of `Depth32Float` is $2^{-24}$ for $z \in [0.5, 1)$ and $2^{-30}$ near 0.01, so the smallest depth difference resolved is about $2^{-24}\,(D_{\max} - D_{\min})/0.98$ world units. The right panel of the figure plots it: the 0.02-unit line bias equals one step only when a frame spans about $3.3 \times 10^5$ world units, and for a range of $10^3$ it is some 330 steps. Depth precision is not what limits parity; fill rules and blending are.
 
+### Fields
+
+The field pass samples one storage buffer by hand, with no hardware sampler, so that it can apply the same clamped-uv, `floor(bilerp + 0.5)` formula as the CPU's `Frame::field_triangle` (`field_texel` and `field_fragment` in the shader). `Gpu::store_fields` rewrites only the slots whose field was shaded again that frame (`StoragePlan`, from `render/field.rs`), and grows the buffer if a field does not fit. The pick written is the owner of the nearest node. The details of the field primitive are on [Theory Scene and Display List](Theory-Scene-and-Display-List).
+
 ### The sky
 
-`sky_fragment` reproduces `paint_sky`: the backdrop discriminant arrives as a float in `globals.sky.x` and each test is the midpoint between neighbouring discriminants, the base colour is the shared gradient, the haze density is the same product of two sinusoids, and the result is `floor(color)/255`, which an `Rgba8Unorm` target stores as exactly the integer. Using `floor(position.x) / size.x` reproduces the CPU's `x / w`.
+`twilight_fragment` does the same for the three-stop `Twilight` gradient (`TWILIGHT_TOP`, `TWILIGHT_MIDDLE`, `TWILIGHT_HORIZON`, break at `TWILIGHT_KNEE = 0.6`). `sky_fragment` reproduces `paint_sky`: the backdrop discriminant arrives as a float in `globals.sky.x` and each test is the midpoint between neighbouring discriminants, the base colour is the shared gradient, the haze density is the same product of two sinusoids, and the result is `floor(color)/255`, which an `Rgba8Unorm` target stores as exactly the integer. Using `floor(position.x) / size.x` reproduces the CPU's `x / w`.
 
 ## Shared constants: one source, two languages
 
@@ -65,7 +79,7 @@ const HAZE_FREQUENCY_A: f32 = 7.3;
 const SPACE_BASE: vec3<f32> = vec3<f32>(5.0, 8.0, 18.0);
 ```
 
-and `gpu::shader_source()` is `format!("{}{}", shared::prelude(), include_str!("shaders.wgsl"))`. Floats are printed with `{:?}`, which is the shortest text that parses back to the same `f32` and always has a decimal point or exponent, as WGSL needs; the rule "never write a shared value in `shaders.wgsl`" is enforced by tests: every constant appears exactly once in the prelude, literals print exactly, round-trip to the same bits, and the shader source must not contain the literals `0.65`, `7.3`, `4294967295`, `0xffffffff`, `237.0` or `0.25`. The constants cover the pick sentinel, the four backdrops and their colours, the haze frequencies, the sphere light, the sphere edge and selection ring, the line depth bias and the glyph cell size. The compile-time layout assertions play the same role for the GPU structs.
+and `gpu::shader_source()` is `format!("{}{}", shared::prelude(), include_str!("shaders.wgsl"))`. Floats are printed with `{:?}`, which is the shortest text that parses back to the same `f32` and always has a decimal point or exponent, as WGSL needs; the rule "never write a shared value in `shaders.wgsl`" is enforced by tests: every constant appears exactly once in the prelude, literals print exactly, round-trip to the same bits, and the shader source must not contain the literals `0.65`, `7.3`, `4294967295`, `0xffffffff`, `237.0` or `0.25`. The constants cover the pick sentinel, the five backdrops and their colours, the haze frequencies, the sphere light, the sphere edge and selection ring, the line depth bias and the glyph cell size. The compile-time layout assertions play the same role for the GPU structs.
 
 ## Readback
 
@@ -120,8 +134,9 @@ At 960 by 540 (518,400 pixels) the default share permits about 1,300 pixels more
 | reef | 0.0485 | 0.1524 | 123 | default |
 | matrix | 0.0335 | 0.0000 | 2 | default |
 | coop | 0.0149 | 0.0237 | 192 | default |
+| murmuration | 0.0000 | 0.0000 | 1 | default |
 
-Orbit, Flow and Strata exceed even the line-dominant limit; the conventions call them known parity debt of the older views, to be fixed in the rasterizer, not in a view. CI measures parity on the `macos-15` runner for every view (`parity.txt`, an artifact) with `continue-on-error`: it is evidence, not a gate. There is no automated GPU test on Linux; the one GPU test in the tree (`pick_splats_and_thing_picks_survive_the_gpu_readback`) is `#[ignore]` and needs hardware, and asserts that for a small hand-built frame the GPU's colour *and* pick buffers equal the CPU's exactly.
+Orbit, Flow and Strata exceed even the line-dominant limit; the conventions call them known parity debt of views that predate the tolerance, to be fixed in the rasterizer, not in a view. CI measures parity on the `macos-15` runner for every view (`parity.txt`, an artifact) with `continue-on-error`: it is evidence, not a gate. There is no automated GPU test on Linux; the one GPU test in the tree (`pick_splats_and_thing_picks_survive_the_gpu_readback`) is `#[ignore]` and needs hardware, and asserts that for a small hand-built frame the GPU's colour *and* pick buffers equal the CPU's exactly.
 
 ## Known divergences
 
@@ -129,7 +144,7 @@ Issue [#83](https://github.com/tfpickard/isotop/issues/83) (A24, open, "changes 
 
 | Feature | CPU | GPU | Effect |
 |---|---|---|---|
-| Glow and beam blending | $c + (t - c)\,w$ in `f32`, converted with `as u8` (truncation), weight unclamped | normalised-unorm alpha blending (rounds, clamps); beam alpha quantised to 8 bits as `(weight.clamp(0,1) * 255) as u8` | faint beams do nothing (or darken by one level) on the CPU and add one level on the GPU; weights below 1/255 vanish on the GPU; Flow's thousands of beam segments accumulate the bias |
+| Glow and beam blending (`Item::Puff` rounds on both, by design: the CPU's `blend_rounded`) | $c + (t - c)\,w$ in `f32`, converted with `as u8` (truncation), weight unclamped | normalised-unorm alpha blending (rounds, clamps); beam alpha quantised to 8 bits as `(weight.clamp(0,1) * 255) as u8` | faint beams do nothing (or darken by one level) on the CPU and add one level on the GPU; weights below 1/255 vanish on the GPU; Flow's thousands of beam segments accumulate the bias |
 | Lines and beams | DDA, truncation, both endpoints | hardware line rule (diamond exit; the last pixel is dropped) | up to a pixel of offset in line-heavy views; the reason for the line-dominant limit |
 | Triangle edges | pixel centre with $\lambda \ge 0$ on every edge, shared-edge pixels drawn twice, later wins | hardware fill rule (top-left, per the issue) | colour and pick ownership differ along shared edges |
 | Haze | added only when `Sky::hazy()` (a channel above 0.5) | always added | the GPU can be one level brighter on a nearly clear sky |

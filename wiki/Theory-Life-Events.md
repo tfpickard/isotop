@@ -9,6 +9,18 @@ and misses what lived and died between two samples. `Life` in `model.rs` merges 
 mechanisms, the byte layout isotop decodes, the merge, the queue between the event thread and the frame loop, the
 privilege rules, and (found while writing it) one edge where the "once" has a time limit.
 
+## History
+
+*Accounting for exits.* Unix has recorded process exits since long before there were graphical tools: BSD and System V process accounting write a record when a process ends. (General background; I have not cited a source for dates.) The mechanisms this page reads are the Linux and BSD descendants of that idea, and they differ in how much they say.
+
+* **The proc connector** is a netlink interface that multicasts fork, exec and exit. It took shape in 2005, when Matt Helsley proposed merging separate fork and exit connector patches into one connector that also reported exec and id changes; the connector's own history dates the "Process Events Connector" commit to 2005-11-07. Later additions were a tracer event and a comm-change event (2011). Until Linux 6.6 listening needed `CAP_NET_ADMIN`; isotop's source comment says it does not from 6.6 on, and the sections below say it will not ask.
+* **Taskstats** is the per-task accounting struct delivered over generic netlink at exit. Its documentation in the kernel is bound up with delay accounting, which measures time spent waiting for CPU, block I/O and swap-in; the record isotop decodes is the same structure with `TASKSTATS_VERSION` 14 in current headers, and "new versions only append fields". Taskstats always needs `CAP_NET_ADMIN`.
+* **kqueue** came from FreeBSD 4.1 in July 2000 (Jonathan Lemon, described at USENIX 2001) and reached macOS later. Its `EVFILT_PROC` filter watches one pid at a time for exec and exit, which is why section 2 differs from section 1 in kind and not only in detail.
+
+*Why sample diffing is not enough* is a problem older than any of these: a process that lives for less than the interval between looks is invisible to a poller. Section "Why events at all" gives the probability; the connector, taskstats and kqueue are three answers to it.
+
+*In this project.* Event sources arrived on 2026-10-11 with the Necropolis (#123), the one view that demands `Source::LifeEvents`. The tests for the zombie case in the exit invariant section are a later consequence of reading the merge closely.
+
 ## Why events at all
 
 Take sampling instants $\Delta t$ apart and a process that lives $L$ seconds, born at a random moment. It is

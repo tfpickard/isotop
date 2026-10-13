@@ -361,7 +361,7 @@ The two stability properties are:
   re-parents its children, which is a change of *structure*, not of population.
 
 A run is a headless `--output` run at the row's `contract.time` (12 s unless the view needs a fuller history;
-Ptolemy 300 s), width 160, 192 demo processes, CPU rasterizer: the row's warm-up, a first frame, then 12
+a row names a later one where needed, as Ptolemy's 300 s), width 160, 192 demo processes, CPU rasterizer: the row's warm-up, a first frame, then 12
 frames 0.25 s apart, with the changed sample arriving as the sample of time + 1 s. The steady run and the
 changed run are compared **frame for frame at the same times**, so whatever moves by itself (orbits, walking
 chickens) moves alike in both. For every process present in both, the distance in the *ground plane*,

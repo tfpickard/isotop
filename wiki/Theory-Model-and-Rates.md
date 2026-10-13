@@ -9,6 +9,14 @@ absence a first-class value ("unknown is not zero"), and describes the budgeted 
 deterministic demo workload that every screenshot in this wiki is rendered from. The sources of the raw numbers are
 on [Sampling on Linux](Theory-Sampling-Linux) and [on macOS](Theory-Sampling-macOS).
 
+## History
+
+*Counters and averages.* Differencing a cumulative counter is how Unix has always reported CPU use: the kernel keeps totals and the tool subtracts. The smoothing is older than computers. Exponential smoothing came out of Robert G. Brown's work as an operations analyst for the US Navy in the Second World War, which he presented in 1956 for inventory demand, and of Charles C. Holt's independent report for the Office of Naval Research (ONR Report 52, 1957), which went unpublished until 2004. The idea of an exponentially decaying window is older still: Wikipedia's article on it attributes the window function to Poisson, as an extension of a numerical analysis technique from the seventeenth century. Sources differ on how much of this belongs to each man, and isotop's filter needs only the result, a weight of `1 - exp(-dt/tau)` that makes the filter independent of the sampling interval.
+
+*Aliasing.* The sampling theorem the aliasing section leans on is cited in the references as Shannon (1949); the folding of frequencies above the Nyquist limit is the same arithmetic whether the signal is a radio wave or a compile job.
+
+*In this project.* The 1.5 s smoother is already in the first commit (2026-10-07), written inline as `1 - exp(-dt / 1.5)`. Making absence a value of its own, the "unknown is not zero" rule, landed on 2026-10-11 in the architecture batch #113, and the deterministic demo workload took its present form with the demo options in #120 the same day. This page derives what the constant does rather than why 1.5 was chosen, and the log does not say.
+
 ## The data
 
 **`Identity { pid, start }`** is the key for everything that persists between samples. `start` is a Linux
@@ -23,7 +31,7 @@ start; that total order is the tie-break in `top_n`, the sort order of `Snapshot
 |---|---|---|
 | read directly (gauges) | `id`, `parent`, `name`, `command`, `group`, `kind`, `state`, `memory`, `threads`, `core`, `cgroup`, `priority`, `nice`, `policy`, `written`, `started` | the platform, in `RawProcess::process` |
 | derived from counters | `cpu`, `cpu_time`, `io_rate`, `read_rate`, `write_rate`, `system_share`, `performance_share`, `waiting`, `syscall_io`, `major_faults` | `measure` in `model.rs` |
-| from the background thread | `files`, `locks_held`, `blocked_on`, `gpu_memory` (and the snapshot's links, remotes, units) | `merge`, by `Identity` ([background sampler](Theory-Background-Sampler-and-Demand#3-the-join-why-a-reused-pid-inherits-nothing)) |
+| from the background thread | `files`, `locks_held`, `blocked_on`, `gpu_memory`, and, while their sources are demanded, `oom`, `memory_detail` and `thread_list` (and the snapshot's links, remotes, units, `pipes`, `unix_queues` and kernel counters) | `merge`, by `Identity` ([background sampler](Theory-Background-Sampler-and-Demand#3-the-join-why-a-reused-pid-inherits-nothing)) |
 
 A field added to `Process` must be decided in four exhaustive struct literals (`parse_stat` on Linux,
 `Sampler::process` on macOS, `demo_with` and `Transient::process` in the demo): no `..Default::default()`, so the
@@ -34,7 +42,7 @@ monotonic clock since the collector started, the clock every window and history 
 calendar time, seconds since the Unix epoch; in the demo `DEMO_EPOCH + time`), the three pressure percentages, the
 socket-derived links and remotes, the `Cpu` list, the cgroup `Unit`s, `missing` and `sources`
 ([the two sets](Theory-Background-Sampler-and-Demand#snapshotsources-against-snapshotmissing)), the sampler's
-health, the life events since the previous sample, and `observer`, isotop's own row.
+health, the life events since the previous sample, `journal` (the log lines delivered while it was the newest sample), the kernel counters (`interrupts`, `softirqs`, `oom_kills`; Pending, Pending and None until a view demands them), and `observer`, isotop's own row.
 
 **`Measured<T>`** is for values measured on the background thread: `Pending` (not yet; before the first pass, or a
 process born since, or one a budget-limited scan has not reached), `Unreadable` (could not be read, normally for
@@ -261,9 +269,10 @@ order is total and sample-independent: ties go to the smaller `Identity`, and a 
 (NaNs among themselves by `Identity`). Implementation: map to `(key, process)`, `select_nth_unstable_by` to
 partition so the best `n` are in front (expected $O(N)$), truncate, then sort just those $n$ ($O(n\log n)$). Because
 the order never depends on input order, the same keys give the same selection in every sample, which is what lets a
-budgeted view change its drawn set by the *data*, not by hash-map iteration or the platform's listing order. As the
-source stands, `top_n` is exercised by tests only (`#[expect(dead_code)]` outside them): no shipped view calls it
-yet; the scene's `--limit` admission is a separate mechanism.
+budgeted view change its drawn set by the *data*, not by hash-map iteration or the platform's listing order. Two callers
+use it today: `Collector::sample` picks the `ROLLUP_PROCESSES` (64) processes with the largest resident set for the
+`smaps_rollup` reads, and `threads::targets` orders every process by CPU, busiest first, for the thread scan. The
+scene's `--limit` admission is a separate mechanism.
 
 ## `describe`
 
@@ -299,6 +308,7 @@ clock, no global state, so any `time`, in any order, including negative, gives t
   new `Identity::start`. `demo_life` lists the forks and exits in `(from, to]`, `demo_events` turns them into life
   events (forks "from the proc connector", exits "from taskstats" with an exit record), and a test pins that the
   events are exactly the difference of the two populations, so splitting an interval anywhere gives the same events.
+* **Options for the newer sources.** `oom_and_memory_detail` gives every process an `Oom` (three System processes exempt) and the 64 largest a consistent `Rollup`, one of them unreadable; `kernel_counters` synthesizes `interrupts`, `softirqs` and `oom_kills` (the sum of the demo units' `oom_kills`); `threads` gives every process the threads `threads::demo_list` synthesizes; `channels` synthesizes `unix_queues` and `pipes`. Plain `demo` leaves them all unread.
 * **`observer`** synthesises isotop's own row; **`mortality`** stretches cycles to 84–105 s, adds short `sh`
   helpers, a twelve-child compile burst, a stopped unit, a victim scope that counts its OOM kills and one exit in
   ten that only sample diffing sees.

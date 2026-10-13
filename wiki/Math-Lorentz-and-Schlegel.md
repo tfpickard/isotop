@@ -9,6 +9,18 @@ parts of the tesseract, shows what the projection does to it at several rotation
 *Top row: worldlines $x = -1 + \beta(w + 1)$ before and after the boost into the rest frame of the 0.6-core process (it goes vertical, the "now" line tilts, the light cone stays), and the hyperbolas of constant interval along which a boost moves an event. Bottom row: the 32 edges of the tesseract
 with the view's projection at XW angles 0, 0.12 (canonical), 45 and 90 degrees. Script: `docs/figures/lorentz-schlegel-boost.py`.*
 
+## History
+
+The longer account lives in the repository: [docs/theory/tesseract.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/tesseract.md).
+
+**A fourth dimension.** Four coordinates had long been algebra; the geometry arrived in the 1850s with Ludwig Schläfli, who found the regular polytopes of every dimension, six of them in four. The English mathematician Charles Howard Hinton popularised the idea, and the Oxford English Dictionary credits his 1888 book *A New Era of Thought* with the first use of the word **tesseract**. Hinton taught readers to see in four dimensions with sets of coloured cubes. His life was less orderly than his cubes: he lost a teaching post at Uppingham after a conviction for bigamy (sources date it to 1883 or 1886), spent years in Japan, and at Princeton in 1897 built a gunpowder-powered baseball pitching machine for the university team.
+
+**The diagram.** Victor Schlegel published his work on homogeneous spatial structures in 1883 and his projection models of the regular four-dimensional bodies in 1886; the projection of a polytope from a point just outside one facet, so that the facet becomes the outer boundary and the rest lies inside, carries his name. The cube-in-a-cube picture of section 5 is its best-known example.
+
+**Time as the fourth.** Hendrik Lorentz (1904) found the transformations under which Maxwell's equations keep their form, and Einstein (1905) derived them from the principle of relativity and the constancy of the speed of light. Hermann Minkowski, who had taught Einstein in Zurich, recast the theory as geometry in a lecture at Cologne in September 1908, published as "Raum und Zeit": space by itself and time by itself, he said, were doomed to fade into shadows, and only a union of the two would keep an independent reality. Alfred Robb (1911) introduced the rapidity as the natural parameter of a boost. Salvador Dali's *Corpus Hypercubus* (1954) shows the unfolded tesseract as a cross.
+
+**Cherenkov.** Pavel Cherenkov observed a faint blue glow from radioactive sources in liquids in 1934; Ilya Frank and Igor Tamm explained it in 1937 as radiation from particles faster than light in the medium. The three shared the 1958 Nobel Prize in Physics.
+
 ## Theory
 
 ### 1. Minkowski space
@@ -90,7 +102,7 @@ $$
 $$
 
 The view uses $\mathbf r\,\cdot 25/(3.5 - w)$, which is this with $e = 3.5$ and a uniform scale of $25/e$. The unrotated tesseract then shows its $w = +1$ cell at perspective factor $1/(e - 1) = 0.4$ and its $w = -1$ cell at $1/(e+1) = 0.222$: **a cube inside a cube**, the inner 5/9 the size of the outer
-(in general $(e-1)/(e+1)$). The six remaining cells ($x = \pm1$, $y = \pm1$, $z = \pm1$) are the truncated pyramids joining them. This is the classical *Schlegel diagram* of the tesseract (Schlegel, 1886): the eye sits just outside one cell, the projection maps that cell to the outer boundary and everything else lies inside it.
+(in general $(e-1)/(e+1)$). The six remaining cells ($x = \pm1$, $y = \pm1$, $z = \pm1$) are the truncated pyramids joining them. This is the classical *Schlegel diagram* of the tesseract (Schlegel, 1886; his 1883 work is the earlier reference): the eye sits just outside one cell, the projection maps that cell to the outer boundary and everything else lies inside it.
 Because a central projection maps straight lines to straight lines, edges and straight worldline segments stay straight; the combinatorics (which vertices are joined) is preserved.
 
 **The alternative.** *Stereographic* projection of the circumscribed 3-sphere from a pole is conformal (angles are preserved) and maps the tesseract to curved cells; it is the usual "bulging" picture. The view uses the perspective (projective) one because its straight lines are straight and because the whole computation then happens before the display list exists.
@@ -116,7 +128,7 @@ uses $n = 1$ and $\beta$ in cores, which is a *metaphor*: there is nothing "supe
 
 The functions are short and mirror the derivations above. `boost(point, pivot, rapidity)` returns `[pivot_x + dx cosh - dw sinh, y, z, pivot_w + dw cosh - dx sinh]`, with $(dx, dw)$ the offset from the pivot: the boost of section 2 about a chosen event (the head of the selected process), leaving $y$ and $z$ alone. `rest_rapidity(beta)` is $\operatorname{artanh}\beta$ for $\lvert\beta\rvert < 0.999$ and `None`
 otherwise. `plane_rotation(a, b, angle)` builds the matrices of section 3 (`matrix[a][a] = cos`, `matrix[a][b] = -sin`, `matrix[b][a] = sin`, `matrix[b][b] = cos`); `rotation(angles)` multiplies the XW, YW and ZW ones; the canonical angles are $(0.12, 0.10, -0.08)$ rad, eased with a 0.2 s time constant, with a drift of a full turn in XW every 120 s.
-`Projection::world` applies the boost, then `compress`, then `rotate`, then the divide `1 / max(EYE - w, NEAREST)` with `EYE = 3.5` and `WORLD = 25`; memory is up. The frame (`draw_frame`) draws the 32 edges of the *lab-frame* tesseract through the same projection (so it is boosted along with the data), plus the dashed light-cone diagonal $[v, 1, 1, v]$ of the $y = z = 1$ face,
+`Projection::place` applies the boost, and `Projection::world` then applies `compress`, `rotate` and the divide `1 / max(EYE - w, NEAREST)` with `EYE = 3.5` and `WORLD = 25`; memory is up. The frame (`draw_frame`) draws the 32 edges of the *lab-frame* tesseract through the same projection (so it is boosted along with the data), plus the dashed light-cone diagonal $[v, 1, 1, v]$ of the $y = z = 1$ face,
 and `draw_lab_now` draws the unboosted "now" cell dimly while the rapidity is non-zero.
 
 Tests that pin the mathematics: `rotations_preserve_lengths`, `a_quarter_turn_in_xw_swaps_time_and_cpu`, `boosts_preserve_the_interval`, `boosting_into_a_process_leaves_it_at_rest`, `no_rest_frame_exists_for_a_superluminal_process`.
@@ -156,7 +168,7 @@ In the live view press `;` to select the plane (the legend names it), then `,` o
 
 * A. Einstein, "Zur Elektrodynamik bewegter Korper", *Annalen der Physik* 17 (1905), 891-921.
 * H. Minkowski, "Raum und Zeit", *Physikalische Zeitschrift* 10 (1909), 104-111.
-* V. Schlegel, on projection models of the regular four-dimensional bodies (1886; exact title and venue unverified here).
+* V. Schlegel, *Theorie der homogen zusammengesetzten Raumgebilde*, Nova Acta der Ksl. Leop.-Carol. Deutschen Akademie der Naturforscher 44 (Dresden, 1883); and his work on projection models of the regular four-dimensional bodies (1886; exact title and venue unverified here).
 * C. H. Hinton, *A New Era of Thought* (1888).
 * H. S. M. Coxeter, *Regular Polytopes* (3rd ed., Dover, 1973).
 * P. A. Cherenkov (1934); I. M. Frank and I. E. Tamm, *Comptes Rendus (Doklady) de l'Academie des Sciences de l'URSS* 14 (1937), 109-114 (details as recalled; unverified).

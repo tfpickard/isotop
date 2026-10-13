@@ -174,6 +174,7 @@ The sky is not an item. `Frame::rasterize` paints it first, every pixel, from `S
 | `Space` | $(5, 8, 18)$ flat |
 | `Sea` | $(24,72,96) - y\,(18,50,58)$ |
 | `Void` | $(0,0,0)$ |
+| `Twilight` | three stops down the frame: `TWILIGHT_TOP` $(28,34,70)$ to `TWILIGHT_MIDDLE` $(120,92,138)$ at $y = 0.6$ (`TWILIGHT_KNEE`), then to `TWILIGHT_HORIZON` $(238,150,104)$ |
 
 On top of the base is the **pressure haze**, a slowly moving smooth density field that carries system pressure into the picture:
 

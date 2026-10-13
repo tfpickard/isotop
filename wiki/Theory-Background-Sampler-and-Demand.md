@@ -9,6 +9,15 @@ the slow ones every couple of seconds and leaves them in a mailbox; and a *join*
 process. On top of that, a **demand** mechanism lets the view on screen say which optional sources it wants, so a
 source nobody is looking at costs nothing. This page is how those three pieces work and what they guarantee.
 
+## History
+
+*In this project.* The `isotop-sampler` thread is in the repository's first commit (2026-10-07): from the start the slow scans ran off the frame loop on a fixed period. What the thread read was not a question until 2026-10-11, when the architecture batch that added the view registry (#120) also added source demand, so that a view says which optional sources it draws. The typed `Source` set and "unknown is not zero" had come earlier the same day in #113.
+
+*The idea.* Demand-driven reading is an old pattern with two well-known names.
+
+* **Lazy evaluation.** Peter Henderson and James H. Morris, "A lazy evaluator" (POPL 1976), and Daniel P. Friedman and David S. Wise, "CONS should not evaluate its arguments" (1976), proposed computing a value only when something asks for it. (Venues from memory; not re-checked for this page.) `Demand::read_if` is the same rule at the scale of a system call: the closure runs only if the source is in the set.
+* **Pay only for what you use.** Bjarne Stroustrup's zero-overhead principle, "what you don't use, you don't pay for", is attributed to his 1994 *The Design and Evolution of C++*. In a 2024 paper to the C++ committee (P3406R0) he writes that the principle was conceived as applying to run time only. isotop's version is the run-time one, applied to the operating system rather than to the language: a source nobody draws leaves no trace in `sources` or `missing`, and no file is opened.
+
 ## 1. The problem, and the design it forces
 
 * **Cost.** On [Linux](Theory-Sampling-Linux) the slow sources are `/proc/net`, `sock_diag`, `/proc/<pid>/fd`
@@ -45,11 +54,17 @@ so it has something to join against.
 
 ### What a cycle does
 
-Today the cycle always reads, in this order, each timed into `latency` under the `Source` it reads: the **socket**
-scan (`platform::network`), the **locations** lookup (demand-gated, below), **GPU memory**, **cgroup accounting**
-for the paths the latest sample wanted, the bounded **open-file** scan, and the **lock table**. It also derives
-per-connection byte rates (`remotes`), and loopback traffic between process pairs (`traffic`), from the *change* in
-each socket's cumulative counter between cycles, the same counters-not-gauges pattern the frame loop uses.
+Each cycle reads, in this order, each scan timed into `latency` under the `Source` it reads:
+
+1. the **socket** scan (`platform::network`), which includes the Unix sockets' unread bytes;
+2. the **locations** lookup (demanded: `Source::Locations`);
+3. **GPU memory**, **cgroup accounting** for the paths the latest sample wanted, the bounded **open-file** scan and the **lock table**;
+4. the **memory reads** (`MemoryReads`): the out-of-memory ranking of every pid the cycle scanned (`Source::Oom`) and `smaps_rollup` for the `ROLLUP_PROCESSES` (64) largest processes the frame thread handed over in `rollup_pids` (`Source::MemoryDetail`), under a 50 ms budget (`ROLLUP_BUDGET`) that resumes where it stopped, the unreached processes keeping their last reading (`Kept`);
+5. the **kernel counters** (`KernelScan`: interrupts, softirqs, IRQ affinity, OOM kills), each read only if demanded;
+6. the **threads** (`Source::Threads`): `read_threads` walks the processes busiest first, at most `THREADS_PER_PASS` (8192) threads and `THREADS_PER_PROCESS` (1024) per process;
+7. the **pipes** (`Source::Pipes`), joined into reader and writer links by `pair_pipes`.
+
+It also derives per-connection byte rates (`remotes`), and loopback traffic between process pairs (`traffic`), from the *change* in each socket's cumulative counter between cycles, the same counters-not-gauges pattern the frame loop uses. Every scan that keeps a table between cycles (open files, rollups, pipes) keeps it together with the identity it was read for.
 
 ## 3. The join: why a reused pid inherits nothing
 
@@ -125,15 +140,16 @@ The registry row of each view (`ViewInfo::sources`, a `Sources` bit set) lists t
 view draws. `main` turns the shown view's row into a `Demand` at startup and on every view change
 (`Collector::demand`). There are three consumers, one per source, and they differ in where the check happens:
 
-| optional source | declared by | read where | mechanism |
+| optional source | declared by (the row's `sources`) | read where | mechanism |
 |---|---|---|---|
-| `Source::Locations` (GeoIP lookups of remote addresses) | Globe | background cycle | `Reads::read(Source::Locations, ...)` through `Demand::read_if` |
-| `Source::Journal` (the system log) | Matrix | frame loop (`main.rs`) | `App::journal_wanted`, which starts or stops the follower; see [Journal](Theory-Journal) |
+| `Source::Locations` (GeoIP lookups of remote addresses) | Globe | background cycle | `Reads::read` through `Demand::read_if` |
+| `Source::Oom`, `Source::OomKills` | Horizon (and `OomKills` for Murmuration) | background cycle | `MemoryReads::read`, `KernelScan::scan` |
+| `Source::Threads` | Murmuration, Arbor | background cycle | `read_threads` |
+| `Source::Pipes` | Cortex | background cycle | `Reads::read` |
+| `Source::Journal` (the system log) | Matrix | frame loop (`main.rs`) | `App::journal_wanted` starts or stops the follower; its lines reach the view on `Snapshot::journal` (a `journal::Delivery`); see [Journal](Theory-Journal) |
 | `Source::LifeEvents` (fork, exec, exit) | Necropolis | `Collector::sample` | `Life::start` opens the event sources and the `isotop-events` thread; see [Life events](Theory-Life-Events) |
 
-Every other view declares no sources. The rest of the cycle (sockets, GPU, cgroups, open files, locks) is not
-demand-gated today: it runs every cycle whichever view is shown. The mechanism is general (a new source is a
-`Source` variant plus a `read_if`), but only these three are wired.
+Sources in the enum that no shipped row declares today (`MemoryDetail`, `Interrupts`, `Softirqs`, `IrqAffinity`) are read the same way when a row does. Every other view declares no sources. The sockets (with the Unix queues), GPU, cgroups, open files and locks are not demand-gated: they run every cycle whichever view is shown. The mechanism is general (a new source is a `Source` variant plus a `read_if`).
 
 The pieces:
 
@@ -162,8 +178,7 @@ background pass found absent (`GpuMemory`, `FileLocks`). A view says "no X" only
 bypasses `Reads`, so it never appears in `sources` or `missing` in a live run (a failed `journalctl` shows up as an
 error line in the rain). While `LifeEvents` is demanded, `Snapshot::sources` also holds the delivering mechanisms
 (`ProcConnector`, `Taskstats`, `Kqueue`, `SampleDiff`) and `missing` the detail none of them gives
-(`ForkEvents`, `ExitRecords`). `Source` has 23 variants (`Source::ALL`), one bit each in a `u64`, and a test keeps the
-count within 64.
+(`ForkEvents`, `ExitRecords`). `Source` has 32 variants (`Source::ALL`), one bit each in a `u64`, so there is room for 32 more.
 
 ### The journal's linger
 
@@ -195,8 +210,11 @@ the `Journal` value stops the follower and joins its reader.
 ## Where in the code
 
 * [`model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs): `Background`, `Extras`, `background`,
-  `merge`, `merge_files`, `KeptFiles`, `Demand`, `Reads`, `SamplerHealth`, `BACKGROUND_PERIOD`, `STALLED_PERIODS`,
+  `merge`, `merge_files`, `KeptFiles`, `Kept`, `MemoryReads`, `ROLLUP_PROCESSES`, `Demand`, `Reads`, `SamplerHealth`, `BACKGROUND_PERIOD`, `STALLED_PERIODS`,
   `Collector::demand` and `Collector::sample`.
+* [`model/kernel.rs`](https://github.com/tfpickard/isotop/blob/main/src/model/kernel.rs): `KernelScan`.
+  [`threads.rs`](https://github.com/tfpickard/isotop/blob/main/src/threads.rs): `ThreadScan`, `targets`.
+  [`journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/journal.rs): `Delivery`.
 * [`platform/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/mod.rs): `Source`, `Sources`.
 * [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `App::journal_wanted`, `JOURNAL_LINGER`,
   `sampler_text`, the demand update after view changes.

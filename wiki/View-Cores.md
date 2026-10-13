@@ -55,6 +55,16 @@ treatment and the figure below for a worked example.
 
 ![Busy share and run queue from cumulative counters](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/cores-counters.svg)
 
+## History
+
+The thing Cores draws is the multi-core, and later heterogeneous, processor, and the kernel's bookkeeping of what each core did.
+
+* For decades a faster processor meant a faster clock. Dennard scaling, from a 1974 paper co-authored by Robert Dennard, said that shrinking transistors kept power density roughly constant, so clocks could rise at constant power per area. Its breakdown is usually dated to the mid-2000s, when leakage current made chips overheat; sources put it variously between about 2005 and 2007, and the effects were visible earlier.
+* IBM's POWER4 (2001) put two cores on one die and is generally described as the first non-embedded microprocessor to do so; the claim depends on how "first" is defined. Intel cancelled Tejas and Jayhawk, the planned successors to the Pentium 4 core, on 7 May 2004 and moved to dual-core designs; contemporary reports cite power and heat.
+* The energy argument for frequency scaling predates the multi-core turn. Weiser, Welch, Demers and Shenker (Xerox PARC, OSDI 1994) proposed that a scheduler adjust the clock to the workload, and evaluated policies against traces from workstations. The policies, as a secondary summary names them (`(unverified)` against the paper itself), are OPT, which needs the whole future, FUTURE, which needs a short window of it, and PAST, which looks only at what has already happened. Cores, which can only read counters, belongs to the third class.
+* Heterogeneous cores arrived in phones first. ARM's big.LITTLE pairs a fast core design with a frugal one; the page above dates the announcement to 2011, and Samsung showed the Exynos 5 Octa, four Cortex-A15 and four Cortex-A7, at CES in January 2013. Apple's M1 (2020) and Intel's twelfth-generation hybrid parts (2021) brought the idea to the desktop, and the scheduler's job became deciding which kind of core a task deserves.
+* The kernel side is older than all of it. Cumulative per-CPU tick counters in `/proc/stat` are what makes a lane's busy share an exact difference quotient, and J. D. C. Little's proof of $L = \lambda W$ (1961) is what lets the run-queue counter be read as a mean queue length without assumptions about arrivals.
+
 ## Theory
 
 ### Counters and their units

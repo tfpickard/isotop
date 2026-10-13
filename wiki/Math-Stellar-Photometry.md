@@ -1,12 +1,20 @@
 # Stellar photometry
 
 Astronomers measure how bright a star looks with a logarithmic scale of *magnitudes*, a historical accident that turned out to match the eye. isotop borrows the scale wholesale: memory is the star's brightness, 1 GiB is magnitude 0, and `src/stellar.rs` turns a magnitude into a
-sharp core inside a soft halo and turns births and exits into flashes. [View Ptolemy](View-Ptolemy) draws every steady process as such a star, and the specified [Planned HR](Planned-HR) sky builds on the same module. This page derives the magnitude scale, explains the point-spread function behind the "star" look, lists exactly
+sharp core inside a soft halo and turns births and exits into flashes. [View Ptolemy](View-Ptolemy) draws every steady process as such a star, and the specified [Planned HR](Planned-HR) sky is specified to build on the same module. This page derives the magnitude scale, explains the point-spread function behind the "star" look, lists exactly
 what the code does and where it saturates, and compares the nova, fade and supernova timelines with the real things.
 
 ![Memory to magnitude, halo profile, nova and fade, and supernova curves](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/stellar-photometry.svg)
 
 *A: magnitude against memory. B: the halo's alpha profile of stars of several magnitudes in a 720-pixel frame; the dots are core radii. C: nova and fade. D: supernova shell. Script: `docs/figures/stellar-photometry.py`, which re-implements the formulas of `stellar.rs`.*
+
+## History
+
+The scale runs backwards because it began as a ranking. Hipparchus (2nd century BCE) is generally believed to have sorted stars into brightness classes in a catalogue that is lost, so the attribution cannot be proved; the surviving text of his that mentions star brightness describes it in words, not numbers. Ptolemy's catalogue in the *Almagest* (about 150 CE) is what made the six classes known: the brightest stars were first magnitude, the faintest visible to the naked eye sixth. Nothing in that scheme was logarithmic, and the classes were not equal steps of anything measured.
+
+Measurement turned the ranking into a law. In the 19th century photometers showed that a star of first magnitude gave roughly a hundred times the light of one of sixth magnitude. In 1856 Norman Pogson proposed making that exact: five magnitudes is a flux ratio of exactly 100, one magnitude a ratio of $100^{1/5} = 2.512$. His paper, on the magnitudes of thirty-six minor planets, is cited in the references. The zero point was set by convention (Vega, approximately) and has been redefined several times since.
+
+Brightness curves of the kind in the code section have their own histories. The word nova comes from the title of Tycho Brahe's 1573 book on the new star of 1572, which was in fact a supernova; the two kinds of event were not told apart for centuries. Cecilia Payne-Gaposchkin's *The Galactic Novae* (1957) is the classification the page cites. The Hertzsprung-Russell diagram (Hertzsprung 1911, Russell 1913) is the other half of this page's astronomy and belongs to the HR view.
 
 ## Theory
 
@@ -131,7 +139,8 @@ Watch the outer ring of the Ptolemy view in the live demo for a newly started pr
 3. **Constellations.** Join the stars of a cgroup with stick figures, as the planned view proposes; the figure's legibility depends on the halo cap above.
 4. **Lift the cap.** Let the halo radius keep growing with flux until the core and halo strengths saturate, restoring a visible difference between 1 and 16 GiB.
 5. **Real light curves.** Use a power-law decline (linear in magnitude) for the nova; the current exponential-in-magnitude decay is flatter at late times.
-6. **Open:** is a *logarithm of memory* the right "luminosity"? Resident memory is not a flux (it does not add over time): a process's *memory-seconds* would be.
+6. **The Sun.** Solving $-2.5\log_{10}(\text{memory}/1\,\mathrm{GiB}) = -26.7$ gives about $5.1\times10^{19}$ bytes, 2.8 times a 64-bit address space. `magnitude` takes a `u64`, so the brightest star it can draw is $-25.6$, at a memory of $2^{64}$ bytes; no process can outshine that, and none can be the Sun.
+7. **Open:** is a *logarithm of memory* the right "luminosity"? Resident memory is not a flux (it does not add over time): a process's *memory-seconds* would be.
 
 ## References
 

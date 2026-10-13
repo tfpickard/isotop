@@ -14,6 +14,14 @@ macOS code cannot run on Linux, so the pure decisions live in
 also compiled into Linux test builds; the project's CI runs the rest on `macos-15`. Nothing on this page was run
 on a Mac while writing it; claims are from the source and its tests.
 
+## History
+
+*Mach.* The kernel under macOS descends from Mach, begun at Carnegie Mellon University in 1985 by Richard Rashid and Avie Tevanian, and developed there until Mach 3.0 in 1994. Apple's kernel, XNU, combines a Mach component with a BSD layer. That is why this page has two vocabularies: Mach's tasks, threads, absolute time and host calls, and BSD's pids, `sysctl` and `kqueue`. Tevanian later went to NeXT and then to Apple.
+
+*libproc.* The `libproc` calls the sampler is built on, `proc_listpids` and `proc_pidinfo`, are marked in Apple's headers as available from Mac OS X 10.5; `proc_listallpids` is marked from 10.7. The header describes them as private interfaces that are subject to change in future releases, and isotop relies on them (and on a private responsibility call, section 2) all the same. I did not find a source that dates `proc_pid_rusage`; the version flavours V2 to V6 in section 1 are the record of it growing.
+
+*kqueue.* `kqueue` was written by Jonathan Lemon for FreeBSD 4.1 (July 2000) and described in "Kqueue: A generic and scalable event notification facility" at the FREENIX track of the 2001 USENIX Annual Technical Conference in Boston. It arrived to replace `select` and `poll`, which scale poorly with the number of descriptors and cannot watch signals or file system changes; `EVFILT_PROC`, the filter this page uses, is one of its extra event sources. Lemon's slides record that the paper was left out of the proceedings and handed out on paper. NetBSD, OpenBSD, DragonFly BSD and macOS adopted it later.
+
 ## 1. The platform's side
 
 General macOS background, independent of isotop.
@@ -192,6 +200,10 @@ Both use `proc_pidinfo(PROC_PIDLISTFDS)` to list a process's descriptors and `pr
 | `SyscallIo` | `syscalls` is `None`; no per-process read and write call counts | yes |
 | `CpuClock` | missing unless clocked per cluster (V6, both cluster kinds named, cycles counted) | yes |
 | `CoreKinds` | only if the IORegistry names none | yes |
+| `MemoryDetail` | `Process::memory_detail` is `None`: no `smaps_rollup` | not checked against the README |
+| `Interrupts`, `Softirqs`, `IrqAffinity`, `OomKills` | the kernel counters of `Snapshot` stay empty or `None` | not checked against the README |
+
+Four readings that only some views demand also exist here. `Source::Oom` is read from the jetsam priority list (`memorystatus_control`, `MEMORYSTATUS_CMD_GET_PRIORITY_LIST`), which only root may list, so for anyone else it is missing; the rank is the negated band, with no adjustment value (`jetsam_oom`). Unix sockets carry a receive queue (`logic::unix_queue`: bytes for a stream socket, a flag for a datagram socket, none for a listener). Pipes and FIFOs come from `PROC_PIDFDPIPEINFO`, plus a vnode call per vnode descriptor to find FIFOs. Threads come from `PROC_PIDLISTTHREADIDS` and then `PROC_PIDTHREADID64INFO` per thread, with CPU in nanoseconds like the process's.
 
 Not a gap but not the same quantity: `major_faults` is the page-in count (`pti_pageins`, which includes read-ahead
 and wraps as an `i32`, so it is widened through `u32`), not Linux's `majflt`. The journal is the unified log
@@ -220,6 +232,7 @@ could not be measured is absent, not zero, and that `Snapshot::missing` says why
   `descriptor`, `table`.
 * [`platform/macos/ffi.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/macos/ffi.rs): every extern
   declaration and struct layout `libc` lacks, with size assertions.
+* [`platform/macos/journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/macos/journal.rs): the unified-log follower.
 * [`platform/macos/events.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/macos/events.rs): kqueue.
 
 ## References

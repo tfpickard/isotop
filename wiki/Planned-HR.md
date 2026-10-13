@@ -22,13 +22,13 @@ The `hr` view is specified as a planetarium sky of processes in true blackbody c
 
 ## History
 
-The diagram has two origins and a naming dispute. In 1911 Ejnar Hertzsprung published, in a Potsdam observatory publication, diagrams of colour against apparent magnitude for the Pleiades and the Hyades. The stars of a cluster lie at nearly one distance, so apparent magnitude differs from absolute magnitude by a constant, and the diagram was in effect absolute magnitude against spectral type. Some sources credit his assistant Hans Otto Rosenberg with a Pleiades diagram of 1910; sources disagree on who plotted first.
+The diagram has two origins and a naming dispute. In 1911 Ejnar Hertzsprung published, in a Potsdam observatory publication, diagrams of colour against apparent magnitude for the Pleiades and the Hyades. The stars of a cluster lie at nearly one distance, so apparent and absolute magnitude differ by a constant, and the diagram was in effect absolute magnitude against spectral type. Some sources credit his assistant Hans Otto Rosenberg with a Pleiades diagram of 1910; sources disagree on who plotted first.
 
-Henry Norris Russell reached the same plot from the other side. By 1913 enough stars had measured parallaxes to plot spectral type against absolute magnitude directly, and he presented the result in that year. The diagram first appeared in print in *Nature* on 7 May 1914, according to the Linda Hall Library. Russell's paper credits Hertzsprung with the terms "giant" and "dwarf"; Hertzsprung is said not to have used them in his own papers of the time. The diagram carries both names, though neither man called it by them.
+Henry Norris Russell reached the same plot from the other side, independently of Hertzsprung. By 1913 enough stars had measured parallaxes to plot spectral type against absolute magnitude directly. According to the Linda Hall Library he showed the result at a joint meeting of the American Astronomical Society and the American Association for the Advancement of Science on 30 December 1913, and the talk was printed in *Nature* in three issues from 30 April 1914, the diagram first appearing in the issue of 7 May. Russell's text attributes the terms "giant" and "dwarf" to Hertzsprung, who is said not to have used them in his own papers of the time.
 
-The vertical axis is the magnitude scale. Pogson fixed it in 1856 by making five magnitudes a factor of 100 in flux, which matched Hipparchus's classes of brightness closely enough that the older catalogues could be kept. The horizontal axis is the Harvard spectral sequence, O B A F G K M, whose order came from Annie Jump Cannon's classification for the Henry Draper Catalogue, and whose letters are the survivors of an earlier alphabetical scheme in which the classes ran A to Q; the sequence was rearranged by temperature and most of the letters dropped. The luminosity classes were added by Morgan and Keenan in 1943.
+The horizontal axis is the Harvard spectral sequence. Pickering's survey first lettered the classes by the strength of the hydrogen lines, A strongest; Annie Jump Cannon saw that the order should follow temperature and reordered it to O B A F G K M. The Henry Draper Catalogue, published from 1918 to 1924, classified 225,300 stars on her scheme, and the International Astronomical Union adopted it in 1922. The luminosity classes were added by Morgan and Keenan in 1943. The sequence is remembered by mnemonics, the best known being "Oh, be a fine girl, kiss me".
 
-The colour axis is Planck's. Blackbody radiation was given its law in 1900, and the table of colours on this page is its integral against the CIE 1931 colour matching functions. In the view the two axes are CPU and memory, so the diagram is a statistic of the machine, not an astronomical one.
+The vertical axis is the magnitude scale, which Pogson put on a logarithmic footing in 1856: five magnitudes a factor of 100 in flux. The colours rest on Planck's law of 1900, integrated against the CIE 1931 colour matching functions. In the view the two axes are CPU and memory, so the diagram is a statistic of the machine, not an astronomical one.
 
 ## Theory
 
@@ -104,13 +104,13 @@ On the sky the International Astronomical Union's 88 constellations tile the cel
 
 | Visual element | Measured quantity (source) | Transform |
 |---|---|---|
-| Star colour | `Process.cpu` | $T = 2400(1 + \mathrm{cpu}/5)^{0.47}$ K, cap 40,000 K, through the blackbody table (building block B5, open); core colour $0.4\,\mathrm{bb} + 0.6\,\mathrm{white}$ |
+| Star colour | `Process.cpu` | $T = 2400(1 + \mathrm{cpu}/5)^{0.47}$ K, cap 40,000 K, through the blackbody table (`blackbody::color`, `src/blackbody.rs`, building block B5); core colour $0.4\,\mathrm{bb} + 0.6\,\mathrm{white}$ |
 | Star size and brightness | `Process.memory` (RSS; footprint on macOS) | $m = -2.5\log_{10}(\mathrm{memory}/1\ \mathrm{GiB})$, clamped $[-6, +9]$, memory 0 is $+9$; point spread by `stellar::spread`; pixel sizes scale with frame height / 720, glow radius capped at 48 px at 1080p |
 | Twinkle | the shared CPU history (`History`, B1, merged) | coefficient of variation of CPU over the last 10 s of `snapshot.elapsed`, at least 3 samples; amplitude $\min(0.8,\ 0.45\,\mathrm{CV})$; sum of three sines at 0.9 to 3.5 Hz, phases from `Rng::for_identity` |
 | Spectral class | $T$ | boundaries above, subclass by $\log T$ |
 | Luminosity class | residual from the Theil-Sen fit of the machine | thresholds above; no class with fewer than 3 points |
 | Constellation | `Process.cgroup` (name from `Process.group`) | one `layout::Discs` disc per cgroup, need $\sqrt{\mathrm{members} + 3}$ |
-| Stick figure | `Snapshot.links` (sockets) and traffic (B2, open) | within a cgroup a `Line` with a gap of $4.5 + 1.6\max(0, 3.5 - m)$ px at each star, brightness $0.35 + 0.65\min(1, \log_{10}(1 + B/s)/6)$; across cgroups a faint `Beam` |
+| Stick figure | `Snapshot.links` (sockets) and traffic (B2: `Snapshot::unix_queues`, `Snapshot::pipes`) | within a cgroup a `Line` with a gap of $4.5 + 1.6\max(0, 3.5 - m)$ px at each star, brightness $0.35 + 0.65\min(1, \log_{10}(1 + B/s)/6)$; across cgroups a faint `Beam` |
 | Milky Way band | the number of `Kind::Kernel` processes | intensity $1 - e^{-\mathrm{count}/40}$; each kernel thread an unpickable `Item::Star` in the band; never on the diagram |
 | Nova | a birth (`History::changes`) | `stellar` nova: +4 magnitudes in 0.3 s, e-folding 2 s, over after 6 s |
 | Supernova | an exit of a process last seen above 1 GiB | flash to -6 magnitudes in 0.5 s, expanding shell, over after 8 s |
@@ -121,26 +121,28 @@ On the sky the International Astronomical Union's 88 constellations tile the cel
 
 Everything below is the specification of issue #44. None of it exists.
 
-**Module and registry.** `src/hr.rs` with `#[derive(Default)] pub struct Hr` implementing `views::ViewModule`, and one registry row: `Backdrop::Void`, pressure haze off, links drawn by the view, the generic birth and death flash off (the nova and supernova replace it). There is no plugin system. The pure fit is a function in `src/hr.rs`, run once per new sample, never per frame.
+**Module and registry.** `src/hr.rs` with `#[derive(Default)] pub struct Hr` implementing `views::ViewModule`, and one registry row, `ViewInfo::new("hr", "HR", Backdrop::Void, build)` with `build` a `views::Build` closure, `haze` off, `links` set to `LinkRule::DrawnByView` and `flash` off (the nova and supernova replace it). The scene builds the view from its row and owns its state. There is no plugin system. The pure fit is a function in `src/hr.rs`, run once per new sample, never per frame.
 
-**Dependencies.** Status at commit `192299b`:
+**Dependencies.** Status in the current source tree:
 
 | Item | Provides | Status |
 |---|---|---|
 | P1 (#17), P2 (#18), S1 (#22) | registry row, picker, parity check | merged |
 | B1 (#28) | shared per-process CPU and memory history (`history.rs`) | merged |
 | S4 (#25), S5 (#26), S6 (#27) | demo births and exits, `stellar.rs` helpers, source demand | merged |
-| P3 (#19) | colour field with four-corner placement, used for the dome | open |
-| B2 (#29) | Unix socket and pipe traffic for stick-figure brightness | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
-| B5 (#32) | blackbody colour table | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
+| P3 (#19) | colour field with four-corner placement (`Placement::Corners` in `src/render/field.rs`), used for the dome | merged |
+| B2 (#29) | Unix socket and pipe traffic for stick-figure brightness (`Snapshot::unix_queues`, `Snapshot::pipes`) | merged |
+| B5 (#32) | blackbody colour table (`src/blackbody.rs`: `TABLE`, `linear`, `color`) | merged |
 
-**Billboard dome.** A sky-plane point maps to world coordinates as `Camera::ground` of its screen offset, so the dome always faces the viewer; pan and zoom apply; rotate and tilt leave it upright. `Camera::view` and `Camera::ground` become `pub(crate)`. `positions`, `places` and `bounds` stay consistent with what is drawn. The dome is one opaque P3 field of about 192 x 108, placed by four world corners: a plum-to-black gradient plus the Milky Way band; rebuilt only when the number of kernel threads changes or a transition runs.
+Every prerequisite is on `main`; the view itself is what is missing.
+
+**Billboard dome.** A sky-plane point maps to world coordinates as `Camera::ground` of its screen offset, so the dome always faces the viewer; pan and zoom apply; rotate and tilt leave it upright. `Camera::ground` is already `pub(crate)`; `Camera::view` is private and would become `pub(crate)`. `positions`, `places` and `bounds` stay consistent with what is drawn. The dome is one opaque P3 field of about 192 x 108, placed by four world corners: a plum-to-black gradient plus the Milky Way band; rebuilt only when the number of kernel threads changes or a transition runs.
 
 **Layout.** Each cgroup gets one `layout::Discs` disc (the issue writes `pack::Discs`; in the tree the module is `layout`). A star's offset within 0.85 of its disc radius comes from its identity hash and is relaxed against existing members once, at birth, then frozen, so a star never moves when CPU or memory change. Boundaries are the edges between cells of a fixed grid (power-distance owner), recomputed only when `Discs` places a disc or adds one, drawn as dashed lines (5 on, 4 off at 720p).
 
 **Stars.** The S5 magnitude scale and point-spread star: a halo `Glow`, a bloom `Glow` when the flux is high, and a pickable `Sphere` core. The shared `stellar::magnitude` floors memory at 1 MiB (+7.5), so the view handles memory 0 itself to reach +9.
 
-**Diagram mode and transition.** `m` toggles the mode (the global `d` pans, so the mockup's `d` is not used), through the registry key hook; it is listed on the help line while hr is shown. A flag `--hr-diagram` starts a headless render in diagram mode. The transition takes 1.5 s, cubic in-out, with a per-star lag of at most 0.28 from the hash, along a quadratic Bezier with a +/-0.25 bend, driven by `stage.time`. The diagram draws axes, O B A F G K M ticks along the top and the dashed fitted line. The mode is stored per `Scene`.
+**Diagram mode and transition.** `m` toggles the mode (the global `d` pans, so the mockup's `d` is not used), as a `ViewKey::Local` (`m` is one of the keys a view may own), delivered to `ViewModule::key`; it is listed on the help line while hr is shown through the row's `keys`. A flag `--hr-diagram` starts a headless render in diagram mode. The transition takes 1.5 s, cubic in-out, with a per-star lag of at most 0.28 from the hash, along a quadratic Bezier with a +/-0.25 bend, driven by `stage.time`. The diagram draws axes, O B A F G K M ticks along the top and the dashed fitted line. The mode is kept in the view's own state struct.
 
 **Fit.** Theil-Sen of $m$ on $\log_{10}T$ once per new sample, excluding kernel threads, memory-0 stars, clamped stars and pairs with $\Delta\log T \le 0.01$; above 400 stars it uses every $k$-th star by identity.
 
@@ -181,7 +183,8 @@ In the running view `m` toggles sky and diagram. The figure regenerates with `py
 ## Where in the code
 
 * Existing: `src/stellar.rs` (`magnitude`, `spread`, `Frame::star`, `Flash`, `exit_flash`, `flash`), `src/history.rs` (`History::window`, `History::changes`), `src/layout.rs` (`Discs`), `src/simulation.rs` (`Rng::for_identity`), `src/views.rs` (`REGISTRY`, `ViewModule`, `ViewKey`), `src/model.rs` (`Process.cpu`, `Process.memory`, `Process.cgroup`, `Process.group`, `Snapshot.links`), `src/render.rs` (`Stage`, `Camera`, `label_name`), `src/palette.rs` (`kind_color`).
-* Planned: `src/hr.rs`, the P3 field primitive, B2 and B5.
+* Also existing, which the design uses: `src/render/field.rs` (P3), `src/blackbody.rs` (B5), `Snapshot::unix_queues` and `Snapshot::pipes` (B2).
+* Planned: `src/hr.rs` and a registry row.
 * Prototype, reference only: `docs/mockups/code/hr.py` (`blackbody_table`, `temperature`, `magnitude`, `spectral`, `lum_class`, `theil_sen`, the sky layout).
 * Related pages: [Math-Stellar-Photometry](Math-Stellar-Photometry), [Math-Spatial-Hashing](Math-Spatial-Hashing) (a spatial hash is the tool if the one-off relaxation of stars inside a very large cgroup ever becomes costly; the issue does not specify one), [View-Ptolemy](View-Ptolemy).
 
@@ -192,10 +195,12 @@ In the running view `m` toggles sky and diagram. The figure regenerates with `py
 * **Clusters.** Pleiades and Hyades are clusters at a common distance, which is what made Hertzsprung's diagram work. A cgroup is the equivalent: plot one cgroup alone and see whether it has a sequence of its own.
 * **Colour-blind safe palette.** The only measured encoding in hue is temperature; issue #104 (colour-blind safe palette) will have to decide what to do with a hue-only variable.
 * **Bolometric corrections.** Stars are drawn at their bolometric magnitude, not by band; a "V-band" variant would dim very hot and very cool stars by the bolometric correction.
+* **The observer's class.** If isotop is listed among the processes it is classified like any other: about A0 at one core, M when idle. Which one a viewer sees depends on whether the frame loop is the hottest thing on the machine.
 * **Dust.** Interstellar reddening could be a metaphor for memory pressure: pressure shifts colours toward red.
 
 ## References
 
+* H. N. Russell, "Relations between the spectra and other characteristics of the stars", *Nature* 93, 252-258 (1914) (as the Linda Hall Library lists it).
 * E. Hertzsprung, "Zur Strahlung der Sterne", *Zeitschrift für wissenschaftliche Photographie* 3, 429 (1905) and 5, 86 (1907) (pages from memory).
 * H. N. Russell, "Relations between the spectra and other characteristics of the stars", *Popular Astronomy* 22, 275 and 331 (1914) (pages from memory).
 * W. W. Morgan, P. C. Keenan, E. Kellman, *An Atlas of Stellar Spectra, with an Outline of Spectral Classification*, University of Chicago Press (1943).

@@ -38,6 +38,14 @@ The **ironbow** palette runs black, deep blue, purple, magenta, red, orange, yel
 
 macOS exposes no unprivileged per-core temperatures, throttle counts or package power: the sensors are behind the SMC or the private HID event system, and `powermetrics` needs root. B12 therefore reports `temperature`, `throttle counts` and `package power` in `Snapshot.missing` on macOS, and the view is available in a degraded form: a generic Apple floorplan built from P/E core kinds and the measured cluster clocks, the field in **relative heat**, process points on their P or E cluster by `performance_share` (macOS reports no last CPU). Note that the brief said Linux only with a one-line explanation elsewhere; the issue overrides it and the view conventions list it as available on macOS.
 
+## History
+
+Heat was first seen as light by accident. In 1800 William Herschel passed sunlight through a prism and laid thermometers with blackened bulbs along the spectrum to see how much heat each colour carried. The temperature rose toward the red end and was highest in the dark just beyond it, from which he concluded that sunlight contains invisible rays; he published the experiments in the *Philosophical Transactions of the Royal Society*. The name infrared came later. Wien's displacement law (1896) and Planck's law, which says how much a body at a given temperature radiates at each wavelength (1901), followed a century on; both are in the references.
+
+The thing being imaged is younger. Jack Kilby at Texas Instruments conceived the integrated circuit in July 1958 and had a working oscillator on a single piece of germanium by September; his patent was filed in February 1959. Robert Noyce at Fairchild filed in July 1959 for a version in which the interconnects were laid down as a film over an oxide layer, which is what made manufacture practical. Accounts differ on how to share the credit; the two companies settled by cross-licensing in 1966. A die is one such circuit cut from its wafer; this page treats it as a rectangle of silicon with a heat source in it.
+
+Dealing with the heat in hardware is younger still. The Pentium 4 carried a thermal monitor that slowed the clock when the core reached a trigger temperature. Tom's Hardware published a widely discussed test in which the heatsink was removed from a running Pentium 4 and from running Athlons (I did not confirm the article's date; forum posts place it around 2001). The Athlons failed within fractions of a second; the Pentium 4 slowed down, and Quake III Arena kept running, more slowly. Supporters of AMD disputed the test, and a counter-video showed a later Athlon surviving.
+
 ## 2. Theory: the heat equation on a die
 
 Fourier's law $\mathbf{q} = -k\nabla T$ and conservation of energy, $\rho c_p\,\partial_t T = \nabla\!\cdot(k\nabla T) + q_v$, give for uniform $k$
@@ -93,11 +101,11 @@ Between sensors the field is a model. The issue makes each sensor a **ground tru
 
 ## 4. Design: how isotop will realise it
 
-* **Module.** `src/die.rs` with state `Die`, one registry row: `Backdrop::Dusk`, B12's sources declared through S6, no view-local keys; hover and click on core blocks through B9's non-process pickables. The owner grid names the core block under each cell, `NONE` elsewhere.
+* **Module.** `src/die.rs` with state `Die`, which implements `views::ViewModule`, and one `ViewInfo::new(name, title, backdrop, build)` row at the end of `views::REGISTRY`: `Backdrop::Dusk`, B12's sources declared through S6, no view-local keys; hover and click on core blocks through B9's non-process pickables. The owner grid names the core block under each cell, `NONE` elsewhere.
 * **Heat core.** Explicit 5-point step, 192 x 96, $\kappa = 90$ cells$^2$/s, $\tau = 2.0$ s, `FixedStep` with $h = 0.2/\kappa$; gain calibrated as in the prototype; at 1080p the simulation stays under 2 ms per frame and the field is one P3 draw, never a triangle pair per cell. At `--processes 1000` the points are 1000 small spheres.
 * **Power proxy.** As in the mapping table. The proxy is a *stated proxy*, and the README says the field between sensors is a model.
 * **Demo.** The demo keeps its 16 CPUs and presents them as an Intel hybrid with 4 SMT P-cores (cpu0 to cpu7) and 8 E-cores in two clusters of four (cpu8 to cpu15); topology, per-core sensors (a first-order lag of the proxy), the package sensor, TjMax, RAPL and one P-core that crosses TjMax and throttles once per 40 s cycle are synthesized deterministically in `--time`, extending B12's demo.
-* **Dependencies** (ROADMAP index): P1, P2, S1, P3, B9, B12, S2, S6. In the tree at commit `192299b`: P1, P2, S1, S2, S6 and B9 are merged; **P3 (field primitive) and B12 (thermal and topology) are not**.
+* **Dependencies** (ROADMAP index): P1, P2, S1, P3, B9, B12, S2, S6. In the current tree: P1, P2, S1, S2, S6, B9 and P3 (`src/render/field.rs`) are merged; **B12 (thermal and topology) is not**.
 * **Platforms.** Linux with hwmon: the full view in degrees C. Linux without hwmon (VMs, CI): relative units, colour bar labelled `relative`, and the strip names the missing temperature source followed by `field is model only`. RAPL unreadable: `RAPL n/a (root only)` and the proxy stays unscaled. macOS: **available, degraded** (section 1.4). The view is never a "not supported" screen.
 * **No plugin system.** Compile-time module and `REGISTRY` row.
 
@@ -131,7 +139,7 @@ python3 docs/figures/die-thermal.py                  # this page's figure
 
 ## 7. Where in the code
 
-Existing: `model::Cpu` (`busy`, `mhz`, `kind`), `CoreKind`, `Process.core` in `src/model.rs`; `palette::core_color` in `src/palette.rs`; `simulation::FixedStep` and `Rng::for_identity` in `src/simulation.rs`; `terminal::clean_text`; `Thing`, `Card` in `src/render.rs`. Planned: `src/die.rs`, B12's `src/platform/linux/thermal.rs` (hwmon, topology, throttle counts, RAPL) and its macOS topology in `src/platform/macos/logic.rs`, `parse_cpu_list` from B4's `counters.rs`, P3's field. The prototype is `docs/mockups/code/die.py` (numpy, scipy, OpenCV; reference only).
+Existing: `model::Cpu` (`busy`, `mhz`, `kind`), `CoreKind`, `Process.core` in `src/model.rs`; `palette::core_color` in `src/palette.rs`; `simulation::FixedStep` and `Rng::for_identity` in `src/simulation.rs`; `terminal::clean_text`; `Thing`, `Card` in `src/render.rs`; the field primitive (`Field`, `Relief`, `Frame::field`) in `src/render/field.rs`. Planned: `src/die.rs`, B12's `src/platform/linux/thermal.rs` (hwmon, topology, throttle counts, RAPL) and its macOS topology in `src/platform/macos/logic.rs`, `parse_cpu_list`, which B4 already put in `src/platform/linux/counters.rs`. The prototype is `docs/mockups/code/die.py` (numpy, scipy, OpenCV; reference only).
 
 ## 8. Variations and open questions
 
@@ -144,6 +152,7 @@ Existing: `model::Cpu` (`busy`, `mhz`, `kind`), `CoreKind`, `Process.core` in `s
 
 ## 9. References
 
+* W. Herschel, "Experiments on the refrangibility of the invisible rays of the Sun", *Philosophical Transactions of the Royal Society of London* (1800).
 * M. Planck, "Ueber das Gesetz der Energieverteilung im Normalspectrum", *Annalen der Physik* 4 (1901) 553-563; W. Wien, "Ueber die Energievertheilung im Emissionsspectrum eines schwarzen Koerpers", *Annalen der Physik* 58 (1896) 662-669.
 * J. P. Holman, *Heat Transfer* (McGraw-Hill), and F. P. Incropera and D. P. DeWitt, *Fundamentals of Heat and Mass Transfer* (Wiley), for emissivity, silicon properties and the heat equation.
 * D. Borland and R. M. Taylor II, "Rainbow color map (still) considered harmful", *IEEE Computer Graphics and Applications* 27(2) (2007) 14-17.

@@ -4,6 +4,15 @@ The CPU rasterizer is `Frame::rasterize`: a few hundred lines of straightforward
 
 ![Pixels scanned for a thin line drawn as one quad and as 8 px pieces](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/theory-hairline-cost.svg)
 
+## History
+
+* **Barycentric coordinates.** The weights $\lambda_a, \lambda_b, \lambda_c$ below are August Ferdinand Moebius's *barycentric coordinates*, introduced in *Der barycentrische Calcul* (1827): the masses one would place at the vertices so that the point is their centre of gravity.
+* **Lines first.** Early raster hardware drew lines before triangles. J. E. Bresenham's algorithm, "Algorithm for Computer Control of a Digital Plotter", *IBM Systems Journal* 4(1), 1965, 25-30, steps along the major axis with integer arithmetic only. By his own later account it was in production use by 1962 (he presented it at the 1963 ACM national convention), so the 1965 date is the date of the paper, not of the idea. The simpler digital differential analyser that isotop's `segment` and `ray` use accumulates in floating point instead.
+* **Hidden surfaces.** Through the early 1970s the usual answer was to sort (see the painter's algorithm in [Theory Scene and Display List](Theory-Scene-and-Display-List)). The depth buffer, which resolves visibility one pixel at a time and needs no sorting, was described in 1974 by Edwin Catmull in his Utah doctoral thesis, and independently the same year by Wolfgang Strasser in his dissertation at the Technische Universitaet Berlin. Its cost at the time was memory: a word per pixel.
+* **Edge functions.** Juan Pineda, "A Parallel Algorithm for Polygon Rasterization" (SIGGRAPH 1988), showed that coverage can be decided at every pixel in a block by evaluating three affine functions, which is the form that hardware, and this page, use. It replaced scan-line walking as the basis of parallel rasterizers.
+* **Fill rules and the pixel centre.** Graphics APIs later fixed conventions (pixel centres at half-integers and a top-left rule for shared edges) so that two triangles sharing an edge draw each pixel exactly once. isotop's CPU path takes the half-integer centre for triangles and the integer lattice point for spheres, and states the difference below rather than hiding it.
+* The plotter drew one line at a time, last. The nearest thing in isotop is the tour's callout pointer, the only stroke drawn after everything else has been rasterized (`stroke`, below), and it too is drawn with no regard for what is behind it.
+
 ## Theory: scan conversion with edge functions
 
 A triangle with screen vertices $a, b, c$ covers a pixel when the pixel's sample point $p$ lies inside it. Pineda (1988) observed that this is a test of three signs of *edge functions*. For an edge from $a$ to $b$ define
@@ -34,7 +43,7 @@ In order:
 
 1. Size the buffers: `pixels` to $3WH$ bytes, `depth` to $WH$ `f32` set to $-\infty$, `picks` to $WH$ `u32` set to `NONE`. Together 11 bytes per pixel, 22.8 MB at 1920 by 1080 (6.2 MB colour, 8.3 MB depth, 8.3 MB picks). The allocations are recycled from the previous frame (`Buffers`).
 2. `paint_sky`: every pixel gets the backdrop colour plus haze (see [Theory Scene and Display List](Theory-Scene-and-Display-List)). Per column $p(x/W, 0)$ is computed once, per row $p(y/H, 1.9)$ once; when the haze is non-zero (`Sky::hazy`: any haze channel above 0.5) each pixel costs a multiply-add and a clamp per channel, and otherwise a row is a plain fill.
-3. Take the item list out of the frame and walk it in order, dispatching each `Item` to `triangle`, `segment`, `ball`, `halo`, `ray`, `pixel` (stars), `glyph` or `splat`, then put the list back.
+3. Take the item list out of the frame and walk it in order, dispatching each `Item` to `triangle`, `segment`, `ball`, `halo`, `puff`, `ray`, `pixel` (stars), `glyph`, `splat` or `field_triangle` (an `Item::Field`, in `render/field.rs`), then put the list back.
 
 There is no tiling, no binning, no sorting and no culling beyond clamping loops to the frame. Painter's order plus a depth test decides everything.
 
@@ -46,7 +55,7 @@ The primitives do not share one convention, and the difference is visible at the
 |---|---|---|
 | `Triangle` | $(x + \tfrac12,\; y + \tfrac12)$ | $\lambda_a, \lambda_b, \lambda_c \ge 0$ |
 | `Sphere` (`ball`), `Pick` (`splat`) | $(x, y)$, the integer point | $\lvert n\rvert^2 \le 1$ |
-| `Glow` (`halo`) | $(x + \tfrac12,\; y + \tfrac12)$ | distance $< R$ |
+| `Glow` (`halo`), `Puff` (`puff`) | $(x + \tfrac12,\; y + \tfrac12)$ | distance $< R$ |
 | `Line` (`segment`), `Beam` (`ray`), `Star` | pixel $= \text{trunc}(\text{point})$, so no sampling at all | one pixel per major-axis step |
 | `Glyph` | origin truncated to an integer | each set font bit fills a `scale` by `scale` block |
 
@@ -80,7 +89,7 @@ Larger depth is nearer. Ties pass, so the later item wins them. There is no earl
 
 * **`ball`** scans the box $[c \mp \text{outer}]$ with outer $= r + 3$ if selected else $r + 1$. Per pixel: two divisions ($n_x$, $n_y$ by $r$), $d = n_x^2 + n_y^2$; inside, one square root, the light, `tint`, and `pixel(..., c_z + n_z R, ...)`. The derivation is in [Theory Scene and Display List](Theory-Scene-and-Display-List). Cost: $(2\,\text{outer} + 1)^2$ pixel visits.
 * **`splat`** (an `Item::Pick`) is `ball` without colour or depth writes: where $d \le 1$ and the disc's depth is at least the stored depth, only `picks[i]` is written.
-* **`halo`** scans $[\lfloor p - R\rfloor, \lceil p + R\rceil]^2$, not clamped to the frame (the blend bounds-checks), computing a `hypot` per pixel and blending where $d < 1$. Cost $\approx (2R+2)^2$ visits for $\pi R^2$ blends, so the square of the radius.
+* **`halo`** and **`puff`** share one scan (`disc`), differing only in the blend (`blend` truncates, `blend_rounded` rounds to nearest). It scans $[\lfloor p - R\rfloor, \lceil p + R\rceil]^2$, not clamped to the frame (the blend bounds-checks), computing a `hypot` per pixel and blending where $d < 1$. Cost $\approx (2R+2)^2$ visits for $\pi R^2$ blends, so the square of the radius.
 * **`segment`** (a `Line`): `steps = ceil(max(|dx|, |dy|))`; for $i = 0..=\text{steps}$ it takes $t = i/\max(\text{steps}, 1)$ and a pixel at `trunc(a + (b - a) t)`, depth interpolated plus `LINE_DEPTH_BIAS = 0.02`, pick `NONE`. A digital differential analyser: one pixel per step of the major axis, both endpoints included, no width, no sub-pixel placement.
 * **`ray`** (a `Beam`) is the same walk, capped at 8000 steps, blending instead of overwriting and touching neither depth nor picks. `stroke` and `circle`, the tour's annotation, are the same with three pixels per step and a 4000-step cap, applied after rasterization.
 
@@ -124,7 +133,8 @@ Every ratio is below 16: each view has a fixed part (recording and simulating, w
 
 | What | Where |
 |---|---|
-| `Frame::rasterize`, `paint_sky`, `pixel`, `triangle`, `segment`, `ball`, `splat`, `halo`, `ray`, `glyph`, `stroke`, `circle`, `hairline` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
+| `Frame::rasterize`, `paint_sky`, `pixel`, `triangle`, `segment`, `ball`, `splat`, `halo`, `puff`, `disc`, `ray`, `glyph`, `stroke`, `circle`, `hairline` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
+| `Frame::field_triangle` (the span rasterizer of `Item::Field`) | [`src/render/field.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/field.rs) |
 | Constants used by the shaded sphere, ring and line bias | [`src/render/shared.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/shared.rs) |
 | Golden hashes of pixels, picks and depth | [`tests/golden.txt`](https://github.com/tfpickard/isotop/blob/main/tests/golden.txt), `every_view_matches_its_golden_hash` in [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs) |
 | Benchmark | `isotop --demo --renderer cpu --benchmark N` ([`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `run`) |

@@ -6,6 +6,14 @@ Two chemicals that react with each other and diffuse at different speeds can tur
 
 *The six anchor points of the morph brief, simulated by `docs/figures/reaction-diffusion-patterns.py` (72 x 72 periodic dish, 10000 steps, activator $v$ shown). Left to right, top to bottom: drifting spots, solitons, fingerprint, maze, holes, turbulence.*
 
+## History
+
+**Turing.** Alan Turing published "The chemical basis of morphogenesis" in *Philosophical Transactions of the Royal Society of London B* in 1952, while at Manchester, and died in 1954. He asked how a ball of identical cells breaks symmetry, answered with the linear argument of section 1, and supplemented it with calculations on the Manchester computer. The paper was largely ignored by biologists for two decades. Hans Meinhardt and Alfred Gierer gave it a biologist's form in 1972 (a short-range activator and a long-range inhibitor), and the first laboratory Turing patterns in a chemical system waited until 1990, in a chlorite-iodide-malonic acid reaction (Castets and co-workers; Lengyel and Epstein, 1991).
+
+**Chemical clocks.** The chemistry that made a reaction-diffusion dish plausible had its own trouble getting a hearing. Boris Belousov found an oscillating reaction in the early 1950s; reviewers rejected his manuscripts on the ground that a closed reaction could not oscillate, and he published only a brief abstract in a collection on radiation medicine. Anatol Zhabotinsky took the reaction up in the 1960s, and the Belousov-Zhabotinsky reaction became the standard example of chemical waves and spirals.
+
+**Gray and Scott.** Peter Gray and Stephen Scott studied the autocatalytic step $A + 2B \to 3B$ in a stirred reactor at Leeds (*Chemical Engineering Science*, 1983 and 1984). In 1993 John Pearson of Los Alamos put the same two equations on a lattice, with a diffusivity ratio of two, and published "Complex patterns in a simple system" in *Science*: spots that divide, stripes, mazes, pulsing and chaotic regions in a single parameter plane of feed and kill. He labelled the regions with Greek letters. A notable point of his paper, which section 3 reproduces, is that for this diffusivity ratio the patterns are not classical Turing patterns. Karl Sims' web tutorial (2013) and Robert Munafo's *xmorphia* pages carried the map to a wide audience.
+
 ## 1. Theory: Turing's argument
 
 Alan Turing, "The chemical basis of morphogenesis" (*Philosophical Transactions of the Royal Society of London B* 237, 1952), asked how a ball of identical cells could break symmetry. His answer: let $n$ chemicals (morphogens) react locally and diffuse, and look at a uniform steady state. If the state is stable against uniform perturbations but unstable against some spatially periodic ones, a pattern with a preferred wavelength grows out of noise. Diffusion, normally the great smoother, is the destabiliser.

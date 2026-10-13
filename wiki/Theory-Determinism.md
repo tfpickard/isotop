@@ -14,6 +14,16 @@ a 192-bit digest standing for a frame of 11.4 million bits.
 [Scene and display list](Theory-Scene-and-Display-List)). Determinism is the discipline of making the picture
 depend on the first two only through values that a headless run can reproduce.*
 
+## History
+
+The problem of making a machine produce numbers that look random, and produce the same ones again on request, is as old as the machines. John von Neumann proposed the middle-square method for the ENIAC's Monte Carlo calculations (sources date the proposal to 1946, and its public description to a conference in 1949): square an $n$-digit number and keep the middle digits. Its flaws were known early. Its period is usually short, and a sequence that reaches zero stays there. The remark with which he excused it appeared in the 1951 National Bureau of Standards volume on the Monte Carlo method: "Any one who considers arithmetical methods of producing random digits is, of course, in a state of sin." He kept the method because it was hundreds of times faster than reading digits off punched cards, and because a sequence that can be run again can be debugged.
+
+Three lines of descent lead to the generators in `simulation.rs`. Marsaglia's xorshift generators (*Journal of Statistical Software* 8(14), 2003) use only shifts and exclusive-ors; Brent's note of 2004 showed that they are linear feedback shift register generators in disguise and inherit those generators' theory. Steele, Lea and Flood's SplitMix (OOPSLA 2014) was written to split a generator into independent streams and shipped in the JDK 8 as `java.util.SplittableRandom`; Steele and Vigna later reported detectable weaknesses in its output function, and its period is limited to $2^{64}$ per stream, which is why isotop uses it for seeds and decoration and nothing statistical. Salmon, Moraes, Dror and Shaw (SC11, 2011) argued for the third style, counter-based generators, in which the random number is a function of a key and a counter and the generator has no state to advance.
+
+The hashes have a plainer past. The FNV hash grew out of reviewer comments that Glenn Fowler and Phong Vo sent to the IEEE POSIX P1003.2 committee in 1991; Landon Curt Noll improved the method during a ballot round, and the three names became its name. It is non-cryptographic by design, and has an IETF Internet-Draft; Noll's repository says it has since become RFC 9923 (unverified here).
+
+The clock has its own tradition. Glenn Fiedler's "Fix Your Timestep!" on the Gaffer On Games site argues for integrating in fixed steps, carrying the remainder, and interpolating the drawn state between the last two; the reference list below dates it 2004, and one mirror of the article is dated 2006. Floating point is the last source of drift: IEEE 754 appeared in 1985 and was revised in 2008 and 2019, and none of them requires the transcendental functions to be correctly rounded, which is why the golden hashes are tied to one platform. Randomised hash-table order is a response to a different problem: Crosby and Wallach (USENIX Security 2003) showed that a predictable hash function lets an attacker degrade a hash table to a list, and the standard library's per-instance seeding is in that tradition.
+
 ## 1. The contract
 
 `docs/VIEW_CONVENTIONS.md` ("The realness contract", "Simulation time", "Seeded randomness", "Demo
@@ -45,7 +55,7 @@ A headless frame is the value of this composition (`run` in `main.rs`, `demo_sna
 flowchart LR
     O["Options: --view --time --processes --width --sample-ms --limit"] --> D
     D["demo_snapshot(row, time - sample, time, count)<br/>= model::demo_with(time, count, row.demo)<br/>pure function"] --> W
-    W["warm_up: replay_history + the row's Phases<br/>(History / Record / Replay / Settle / Journal)<br/>replayed at fixed demo times"] --> R
+    W["warm_up: replay_history + the row's Phases<br/>(History / Record / Replay / Play / Settle / Journal)<br/>replayed at fixed demo times"] --> R
     R["app.animation = options.time<br/>App::render -> Scene::render"] --> F
     F["Frame::rasterize (CPU)<br/>colour, pick, depth buffers"]
     S["Scene state: eased CPU/memory, births,<br/>layout (Seats, Discs), view modules"] --> R
@@ -110,8 +120,9 @@ and `Rng::for_identity(id, salt) = Rng::new(hash_identity(id, salt))`. Three pro
    `/proc/<pid>/stat`, in clock ticks since boot) and it is mixed in. A test fixes both claims
    (`hash_identity_separates_reused_pids_by_start_time`).
 3. **`salt` separates independent uses** of one process (drift versus colour versus phase). Salts in the tree
-   are ASCII in hex: Necropolis `0x6e65_6372_6f21`, Ptolemy `0x7074_6f6c_656d_7901` and `..02`, the demo's
-   churn, signal, record and mortality salts, the harness's own.
+   are ASCII in hex: Necropolis `0x6e65_6372_6f21`, Ptolemy `0x7074_6f6c_656d_7901` and `..02`, Arbor `0x6172_626f_7231`, Murmuration
+   `0x6d75_726d_7572_6174`, Cortex's five, Horizon's two, the demo's churn, signal, record and mortality salts,
+   the harness's own.
 
 The seed is a function of `(pid, start, salt)`, and `(pid, start)` is something the machine measured. That is
 why the decorative randomness of a view is not "invented": it is a deterministic, reproducible function of
@@ -134,7 +145,7 @@ tell a pid from its reuse (`hash_identity_separates_reused_pids_by_start_time` a
 
 `XorShift32` is Marsaglia's 32-bit xorshift with shifts (13, 17, 5) (Marsaglia 2003): $x\oplus=x\ll13$,
 $x\oplus=x\gg17$, $x\oplus=x\ll5$, period $2^{32}-1$ over non-zero states, and a zero state stays zero. Flow
-seeds one with `GOLDEN_RATIO_32` $=\texttt{0x9e3779b9}$ and draws from it for every emitter. A single shared
+seeds one with `GOLDEN_RATIO_32` $=\texttt{0x9e3779b9}$ (in `medium.rs`) and draws from it for every emitter. A single shared
 stream is *history-dependent*: what one particle gets depends on how many random numbers every other particle
 consumed first, so the picture depends on frame rate, on population changes, and on the order in which a hash
 map is iterated. That is the reason Flow is on the list in section 7.
@@ -161,7 +172,8 @@ glyph. A generator with a cursor cannot offer that.
 
 A view never reads the system clock (it cannot tell a demo run from a live one); calendar-dependent visuals
 (the Necropolis moon) read `Snapshot::wall`. The one exception is the Matrix greeting, which reads `$USER`
-when no name is set; the golden test and the harness pin it to "Neo" (`matrix.user = Some("Neo".into())`).
+through `login()` in `matrix.rs`; in a test build `login()` returns nothing and the greeting falls back to
+"Neo", so the golden test and the harness do not depend on the machine.
 This is listed in [#92](https://github.com/tfpickard/isotop/issues/92).
 
 ### 4.2 `stage.dt` and `FixedStep`
@@ -173,7 +185,8 @@ not. There are two sanctioned ways (derived in [the toolkit page](Theory-Simulat
   paused and when time went back (a rewind or a headless replay); otherwise `min(time - last, MAX_DT)` with
   `MAX_DT = 0.5`. Use it for anything that integrates a smooth ODE (eases, decays, drifts).
 * **`FixedStep`** (`FixedStep::new(step, max_steps, max_gap)`), fed `stage.time`: whole steps of a fixed
-  size, so the *trajectory* is independent of frame times. Coop uses `FixedStep::new(0.05, 10, 0.5)`.
+  size, so the *trajectory* is independent of frame times. Coop uses `FixedStep::new(0.05, 10, 0.5)`
+  (`H`, `MAX_STEPS`, `MAX_GAP`); Arbor, Murmuration and Cortex use it with their own constants.
 
 The property tested is not "the same pixels" but "the same state after the same number of steps"
 (`fixed_steps_follow_the_same_path_at_ten_and_sixty_frames_per_second`,
@@ -188,13 +201,13 @@ Views that predate the contract do not all meet it. Verified in the tree, and tr
 
 | view | deviation | where |
 |---|---|---|
-| Flow | `dt` clamped to 0.1 s (runs in slow motion below 10 fps); one shared `XorShift32` seeded `GOLDEN_RATIO_32` | `render.rs` (`(time - flow.time).clamp(0.0, 0.1)`), `medium.rs` |
+| Flow | `dt` clamped to 0.1 s (runs in slow motion below 10 fps); one shared `XorShift32` seeded `GOLDEN_RATIO_32` | `views/flow.rs` (`(time - flow.time).clamp(0.0, 0.1)`), `medium.rs` |
 | Reef | `dt` clamped to 0.1 s | `reef.rs` |
 | Cores | `dt` clamped to 0.5 s | `cores.rs` |
 | Ripple | its own clock with CFL substeps | `medium.rs` |
-| Orbit | galaxy continuity decided by a frame counter (`galaxy_frame + 1 == frames`) | `render.rs` (`revolve`) |
-| Matrix | reads `$USER` | `matrix.rs` |
-| pid-only seeding | `hash::knuth(pid)` etc. at about ten sites | `palette.rs`, `reef.rs`, `render.rs`, `coop.rs`, `necropolis.rs` |
+| Orbit | galaxy continuity decided by a frame counter (`self.frame + 1 == frames`) | `views/systems.rs` (`Galaxy::revolve`) |
+| Matrix | reads `$USER` | `matrix.rs` (`login`) |
+| pid-only seeding | `hash::knuth(pid)` etc. at about a dozen sites | `palette.rs`, `reef.rs`, `coop.rs`, `necropolis.rs`, `model.rs`, `render.rs`, `views/orbit.rs`, `views/ripple.rs`, `views/systems.rs` |
 
 Below the clamp (10 fps for a 0.1 s clamp) these views run slower than real time rather than diverging, which
 is the safe failure; they are deterministic in a headless run, where frames are generated at a fixed `--fps`.
@@ -214,7 +227,7 @@ and a different set of three on the next run. Anything that iterates a map and l
 output (a sum of floats, the order of overlapping translucent beams, the consumption of a shared random stream)
 is nondeterministic. The tree's discipline is to sort: `Seats::assign` visits newcomers in `Identity` order,
 `Discs::arrange` sorts pending discs by radius then name, `model::top_n` breaks ties by `Identity`, `SpatialHash`
-sorts a cell's points by index, and `Scene` sorts `Snapshot::outside` by `Identity` at both sites that draw it.
+sorts a cell's points by index, and the two sites that draw `Snapshot::outside` (`Scene` in `render.rs` and `views/flow.rs`) sort it by `Identity`.
 Issue [#108](https://github.com/tfpickard/isotop/issues/108) is the case study: Flow rendered a different PNG on
 every run (4 of 4) and Orbit two different PNGs across 12 runs (differing in two pixels by at most two levels)
 because both iterated `Snapshot::outside`; the cause was found by sorting one site at a time. (The issue text
@@ -289,7 +302,7 @@ def read_png(path):                     # 8-bit RGB, non-interlaced, as isotop w
 print('%016x' % fnv1a64(read_png(sys.argv[1])))
 ```
 
-Run on this machine (Linux x86_64, the platform the golden file is blessed on), for each of the 14 views:
+Run on this machine (Linux x86_64, the platform the golden file is blessed on), for each of the views the golden file then listed:
 
 ```sh
 ./target/release/isotop --demo --view $v --time 12 --renderer cpu --width 480 --output $v.png

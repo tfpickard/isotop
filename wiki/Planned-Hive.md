@@ -14,6 +14,16 @@ A colony of honey bees (*Apis mellifera*) lives in wax comb, and a beekeeper's *
 
 Three things from the hive reappear in the view as structure, not as data: the **cells** (a fixed, countable unit, here a quantum of memory), the **frames** (the bounded container of a single process's share), and the **bees** (individual actors, here threads, whose liveliness shows how busy the frame is). The metaphor is good for memory for a simple reason: memory is counted in discrete pages, accounted by kind, and shared between processes in a way that a frame of comb makes visible. It is a metaphor: a cell is not a page, and the placement of honey above brood is a convention of the beekeeper's picture that the view borrows (see [Reading the picture](#reading-the-picture)).
 
+## History
+
+Beekeepers had long kept bees in hives from which the comb could not be removed whole without destroying it. The movable-frame hive was reached more than once. François Huber designed a hive of hinged frames in 1789 (the "leaf" or "book" hive), and Johann Dzierzon's work in Germany preceded Langstroth's. The Reverend Lorenzo Langstroth, in Pennsylvania, found in 1851 that bees fill a gap smaller than about 6.4 mm (a quarter inch) with propolis and a gap larger than about 9.5 mm (three eighths of an inch) with comb, so that a space between the two is left alone; the term "bee space" came later. Hanging each frame with a bee space around it made the frame removable without tearing the colony, and his US Patent 9300 of 5 October 1852 survived many attempts to challenge it on grounds of prior art. The frame the view draws is his.
+
+The bees' own communication was worked out in the twentieth century. Karl von Frisch showed that a forager returning to the hive dances on the comb, and that the dance carries the direction and distance of the food; his *Die Tänze der Bienen* appeared in 1946. He shared the 1973 Nobel Prize in Physiology or Medicine with Konrad Lorenz and Nikolaas Tinbergen. The citation speaks of discoveries concerning the organisation and elicitation of individual and social behaviour patterns; the dance is not named in it.
+
+The dance language was disputed. From 1967 Adrian Wenner argued that recruited bees find food by odour alone and not by reading a dance. The dispute is usually said to have settled by about the time of the Nobel Prize, and in 2005 Riley and colleagues followed individual recruited bees with harmonic radar and published in *Nature* that bees read the dance and also compensate for wind drift on the way. Tania Munz's account of the argument, *The Dancing Bees* (University of Chicago Press, 2016) (publication details unverified), argues that von Frisch's interpretation largely held.
+
+The geometry of the comb has a separate history, told in the section above: the hexagon, D'Arcy Thompson's argument from foam, and the proof of the honeycomb conjecture by Hales, published in 2001.
+
 ## Theory
 
 ### Why hexagons: the honeycomb conjecture
@@ -82,17 +92,19 @@ The bees' real communication is the **waggle dance**, decoded by Karl von Frisch
 
 Everything below is the specification of issue #46. None of it exists in the source.
 
-**Module and registry.** A single new module `src/hive.rs` with a `#[derive(Default)] Hive` implementing `views::ViewModule`, plus one registry row declaring the sources `MEMORY_DETAIL` (B6) and `THREADS` (B7), so that both are read only while the hive is shown. There is no plugin system; the module is compiled in. There are no view-local keys and the hives are not pickable; the bee triangles pick their process.
+**Module and registry.** A single new module `src/hive.rs` with a `#[derive(Default)] Hive` implementing `views::ViewModule`, plus one registry row, `ViewInfo::new("hive", "HIVE", Backdrop::Dusk, build)` with `build` a `views::Build` closure, whose `sources` are `Source::MemoryDetail` (B6) and `Source::Threads` (B7), so that both are read only while the hive is shown. The scene builds the view from its row and owns its state. There is no plugin system; the module is compiled in. There are no view-local keys and the hives are not pickable; the bee triangles pick their process.
 
-**Dependencies.** Status at commit `192299b`:
+**Dependencies.** Status in the current source tree:
 
 | Item | Provides | Status |
 |---|---|---|
 | P1 (#17), P2 (#18), S1 (#22), S2 (#23), S6 (#27) | registry row, picker, parity check, `FixedStep`, source demand | merged |
 | P4 (#20) | simulation utilities | merged |
-| B6 (#33) | `Process.memory_detail` (`Measured<Rollup>`), the `memory split` gap, demo | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
-| B7 (#34) | `Process.thread_list` (`Measured<ThreadList>`), demo | implemented in open PR #134, not merged |
-| P3 (#19) | field primitive with four-corner (vertical) placement | not implemented in any open pull request |
+| B6 (#33) | `Process.memory_detail` (`Measured<Rollup>`), `Source::MemoryDetail`, the `memory split` gap, demo (`DemoOptions::oom_and_memory_detail`) | merged |
+| B7 (#34) | `Process.thread_list` (`Measured<ThreadList>`), `Source::Threads`, demo (`DemoOptions::threads`) | merged |
+| P3 (#19) | field primitive with four-corner (vertical) placement (`Placement::Corners` in `src/render/field.rs`) | merged |
+
+Every prerequisite is on `main`; the view itself is what is missing.
 
 **Hives, frames, cells.**
 
@@ -101,12 +113,12 @@ Everything below is the specification of issue #46. None of it exists in the sou
 * What a frame shows depends on the state of `Process.memory_detail`: a split rollup draws the comb by kind; a rollup without the split (kernels before 5.3) draws PSS as one pale-nectar kind plus `SwapPss` capped; an unreadable rollup draws the sealed frame; a pending rollup (outside the 64 largest, or not reached yet) draws the unsplit frame from `Process.memory`, a measured quantity and not a substitute; on macOS every frame is unsplit and the legend says ` | no memory detail: cells = memory footprint`.
 * The comb is a fixed 64 x 32 offset hexagonal grid (the issue says 2,048 cells; a straight port of the prototype's alternating 64- and 63-cell rows gives 2,032, which is still above the 2,000 cells plus 3 cells of rounding the unit rule allows, so a frame never overflows).
 * Unit rule: the target is the smallest power of two of at least 64 KiB with the largest drawn, non-sealed frame at most 2,000 cells; the current unit is kept while $700u \le \mathrm{largest} \le 2000u$, or while the unit is 64 KiB and the largest frame is below 700 cells.
-* Brood is read from a record hook that keeps `(previous, latest)` memory per `Identity` on every sample in every view, deduplicated on `snapshot.elapsed`, so brood is correct on the first frame after a view switch.
+* Brood is read from the module's `ViewModule::record`, which keeps `(previous, latest)` memory per `Identity` on every sample in every view, deduplicated on `snapshot.elapsed`, so brood is correct on the first frame after a view switch.
 * The layout of kinds is a port of `Comb.layout`: brood centred at $(w/2,\ 0.58h)$ with $x$ scaled by $1/1.55$, then pollen around it, royal jelly below, then honey and capped honey in an arch metric (cells above the nest count as near, cells below as far); the priority order of each kind is precomputed once per comb with ties broken by cell index. I reproduced it in the middle panel above.
 
 **Bees.** At most `min(200, Process.threads)` per frame; listed threads come first. Bees step through `FixedStep::new(0.05, 10, 0.5)` (20 Hz) with interpolation. A bee without a per-thread CPU reading (the first observation, threads beyond an incomplete list, pending or unreadable thread lists) is never given a speed: it stands in the idle cluster and the legend counts it. Randomness is one `const SALT: u64` with `Rng::for_identity(process.id, SALT ^ key)`, where the key hashes `tid` and `start` for a listed thread.
 
-**Rendering.** Each comb is a P3 field on a vertical four-corner quad at 8 texels per cell pitch, with the frame's process as owner, rebuilt only when its cell kinds or the unit change. A bee is at most 8 triangles with no glow; wings only when the bee is at least 6 px long. Hive bodies use the shaded cuboid helper (`geometry::cuboid`; the issue calls it `coop::cuboid`, which is where it was before it moved). The ground slab is made of quads. Backdrop `Dusk`. `stage.positions` holds the frame centres so death rings work; `stage.bounds` is the box around the shown hives, recomputed only when the shown set changes. Cost is bounded by 8 hives x 3 frames whatever the process count.
+**Rendering.** Each comb is a field (P3) on a vertical four-corner quad at 8 texels per cell pitch, with the frame's process as owner, rebuilt only when its cell kinds or the unit change. A bee is at most 8 triangles with no glow; wings only when the bee is at least 6 px long. Hive bodies use the shaded cuboid helper (`geometry::cuboid`; the issue calls it `coop::cuboid`, which is where it was before it moved). The ground slab is made of quads. Backdrop `Dusk`. `stage.positions` holds the frame centres so death rings work; `stage.bounds` is the box around the shown hives, recomputed only when the shown set changes. Cost is bounded by 8 hives x 3 frames whatever the process count.
 
 **Legend** (specified, in the conventions' order): ` 1 cell = <unit> | H hives (+X), F frames, U unsplit, C counted, B bees (S without thread CPU)`, then the `memory detail` and `memory split` notes, then the sources note, then ` | hive = cgroup | frame = process (top 3 by <MEMORY_LABEL>) | honey = Pss_Anon, pollen = Pss_File, royal jelly = Pss_Shmem, capped = SwapPss, brood = <MEMORY_LABEL> growth | bee = thread, speed = thread CPU, queen = leader`. The inspector notes list MiB per component, the thread count and the busiest thread's name (raw; the popup path cleans it).
 
@@ -144,13 +156,15 @@ The figure regenerates from the repository root with `python3 docs/figures/hive-
 ## Where in the code
 
 * Existing: `src/views.rs` (`REGISTRY`, `ViewModule`), `src/cells.rs` (`cell_name`, `short`, currently private), `src/layout.rs` (`Discs`), `src/geometry.rs` (`cuboid`), `src/simulation.rs` (`FixedStep`, `Rng::for_identity`), `src/render.rs` (`Stage`), `src/model.rs` (`Process.memory`, `Process.threads`, `Process.cgroup`), `src/platform/mod.rs` (`MEMORY_LABEL`, `GROUP_LABEL`).
-* Planned: `src/hive.rs`; B6 and B7 (`Process.memory_detail`, `Process.thread_list`, `Source::MemoryDetail`, `Source::Threads`) in the open PR #134; P3.
+* Also existing, which the design uses: B6 and B7 (`Process.memory_detail`, `Process.thread_list`, `Source::MemoryDetail`, `Source::Threads`) and `src/render/field.rs` (P3).
+* Planned: `src/hive.rs` and a registry row.
 * Prototype, reference only: `docs/mockups/code/hive.py` (`Comb.layout`, `draw_cell`, `draw_bee`, `frame_rect`, `frame_geometry`).
 
 ## Variations and open questions
 
 * **Shared combs.** The brief's optional mode: resolve `Pss_File` by backing file from `/proc/<pid>/smaps` every 15 s, so each shared library becomes a communal comb whose cells are coloured by the processes sharing it.
 * **A waggle dance.** Let a thread that migrates between CPUs or NUMA nodes dance: the angle for the direction of the node, the duration for the distance. The data (`Process.core`, per-thread CPU) partly exists.
+* **The same cgroup twice.** [View-Coop](View-Coop) draws a cgroup as a henhouse of hens; this view draws it as a hive of bees. The two contain the same processes and different animals, and neither page takes a position.
 * **Swarming.** A fork storm (a container starting) is the colony reproducing; a new hive could be founded by a swarm of bees leaving an old one, using the life events of building block B3.
 * **A temperature.** A brood nest is kept warm; building block B12 (thermal sensors) could tint the frames of a cgroup by the temperature of the cores it runs on.
 * **Cell unit as information.** The cell count is a quantised measurement; each component loses at most half a cell. A per-frame display of the rounding error would show how much of the picture is quantisation.
