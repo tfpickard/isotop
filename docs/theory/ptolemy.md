@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Ptolemy: Earth at the centre, planets with epicycle chains and trails](../media/ptolemy.webp)
+
 | On screen | Measured quantity |
 |---|---|
 | Earth at the centre | isotop itself |
@@ -57,6 +59,10 @@ and the samples are recovered exactly by $z[n] = \frac{1}{N}\sum_k X[k]\, e^{+2\
 
 Keeping only the largest few terms is lossy compression. It is the same idea as JPEG or MP3 in a different domain. The terms with the greatest magnitude carry the most of the signal's energy (Parseval: $\sum |z|^2 = \tfrac{1}{N}\sum |X|^2$).
 
+![A path reconstructed from two, four and twelve epicycles](figures/ptolemy-epicycles.svg)
+
+*One process's minute of CPU and memory as a path, and its reconstruction from the 2, 4 and 12 largest Fourier terms (a synthetic series, using the same forward-DFT convention as `simulation::dft`). Two counter-rotating terms draw a line; four draw a loop; twelve are already close to the original.*
+
 ### Why a loop appears
 
 Put a planet on a deferent of radius $R$ with angular speed $\omega_d$, carrying an epicycle of radius $\rho$ and angular speed $\omega_e$, both counter-clockwise. Its position is $p = Re^{i\omega_d t} + \rho e^{i\omega_e t}$. Expanding $\operatorname{Im}(\bar p\,p')$ gives
@@ -64,6 +70,10 @@ Put a planet on a deferent of radius $R$ with angular speed $\omega_d$, carrying
 $$\operatorname{Im}(\bar p\, p') = R^2\omega_d + \rho^2\omega_e + R\rho\,(\omega_d + \omega_e)\cos\big((\omega_e - \omega_d)t\big)$$
 
 whose minimum, at $\cos = -1$, factors as $(R - \rho)(R\omega_d - \rho\omega_e)$. For an epicycle smaller than its deferent ($\rho < R$) the planet therefore goes retrograde exactly when $\rho\,\omega_e > R\,\omega_d$: when the epicycle's tip is moving faster than the deferent's. That is Ptolemy's account of Mars: a slow big circle and a fast small one. In the view an epicycle may have either sign of frequency, so the general condition is the sign of $\operatorname{Im}(\bar p\,p')$ itself, which is what the code evaluates.
+
+![A planet path with and without retrograde loops](figures/ptolemy-retrograde.svg)
+
+*A deferent of radius 1 carrying an epicycle of radius 0.5. When the epicycle tip moves faster than the deferent ($\rho\omega_e > R\omega_d$), the apparent path loops, and the stretches where longitude runs backwards are red.*
 
 ### Retrograde, computed
 

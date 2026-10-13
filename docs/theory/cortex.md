@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Cortex: a slice of cortex with firing somas, dendrites and axons](../media/cortex.webp)
+
 | On screen | Measured quantity |
 |---|---|
 | A neuron per process | the process |
@@ -58,6 +60,10 @@ Replaying the update rule at the noise-free current the code calibrates to gives
 
 An RS cell needs nearly four times the drive of an FS cell to fire at 40 Hz, because its large $d$ makes it adapt. So 100% CPU does not mean the same current for a kernel thread and a system service, and that is what the calibration is for. All four rheobases sit just under 4.
 
+![Firing rate against input current for four cell types](figures/cortex-rate-current.svg)
+
+*Steady firing rate against input current for the four types, from a replay of the update rule in `neurons::advance` (2 s settling, rate counted over the next 2 s). The onset sits just under $I = 4$ for all four, and the rate climbs continuously and steeply from zero.*
+
 ### Firing patterns
 
 Four of the paper's patterns are used:
@@ -70,6 +76,10 @@ Four of the paper's patterns are used:
 | IB | intrinsically bursting | 0.02 | 0.2 | -55 | 4 | container |
 
 Fast-spiking cells are inhibitory interneurons that follow strong drive with no adaptation. Regular-spiking cells are the cortex's main excitatory cell: a large $d$ makes them adapt, so inter-spike intervals lengthen. A high reset potential $c$ keeps chattering and bursting cells close to threshold after a spike, so they fire in bursts. The assignment of kind to pattern is a design choice (kernel threads are fast and relentless, services are steady, sessions are chatty).
+
+![Membrane potential traces of the four firing patterns](figures/cortex-patterns.svg)
+
+*The four patterns at a constant current of 10 with no noise, 400 ms. The same equation, four sets of $(a, b, c, d)$.*
 
 ### Synaptic weights, worked
 

@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Tesseract: process worldlines in a Schlegel-projected tesseract](../media/tesseract.webp)
+
 Each process is a **worldline**: a curve through four axes over the last 60 seconds.
 
 | Axis | Measured quantity | Scale |
@@ -42,6 +44,10 @@ with $W = 25$ world units per projected unit, the divisor floored at 0.75 so poi
 
 Coordinates beyond $\pm 1$ are compressed smoothly rather than clipped: $|c| \to 1 + 0.6\tanh((|c|-1)/0.6)$, so a process that burns far more CPU than the window expected still fits on screen.
 
+![A tesseract in Schlegel projection, near cube outside far cube](figures/tesseract-schlegel.svg)
+
+*The two $w$ cells of a worldline window in the perspective projection `Projection::world` uses (eye at $w = 3.5$). The present is the large outer cube and a minute ago the small inner one.*
+
 ### Worked numbers
 
 **Perspective.** With the eye at $w = 3.5$ and $W = 25$, a point at the present ($w = +1$) is magnified by $25/2.5 = 10$ world units per unit and one a minute ago ($w = -1$) by $25/4.5 = 5.6$. So the present is 1.8 times larger than the past on screen, and its cube is the outer one.
@@ -73,6 +79,10 @@ Applied here, with $w$ standing in for $ct$ and CPU-seconds for $x$:
 - A worldline with slope $\beta < 1$ is **timelike**, and there is a boost with $\eta = \operatorname{artanh}(\beta)$ in which it is vertical: the **rest frame** of that process. In that frame the process "isn't running" and the *rest of the machine* streams past at $-\beta$. This is how the view lets you look at the system from one process's point of view. The rest frame of a process at 0.5 cores is a tilt of the whole scene.
 - A slope of exactly 1 (one core) is **lightlike**. No boost turns it vertical. It has no rest frame; slopes at or above 0.999 are refused (`NO_REST_FRAME`).
 - A slope above 1, only possible for a **multithreaded** process using more than one core, is **superluminal** in this analogy. It has no rest frame either.
+
+![Worldlines in the lab frame and in a boosted frame](figures/tesseract-boost.svg)
+
+*Worldlines of processes using 0, 0.5, 0.9, 1 and 1.5 cores, before and after a boost to the rest frame of the 0.5-core process (the `boost` function). The chosen worldline becomes vertical, the lightlike one keeps slope 1, and the superluminal one stays superluminal.*
 
 ### Cherenkov radiation
 

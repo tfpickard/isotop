@@ -406,6 +406,8 @@ and focusing a subtree does not change the framing.
 
 ![Coop: flocks foraging by their henhouses, roosting on perch ladders and queueing at the feeders](docs/media/coop.webp)
 
+How it works, and the science and history behind it: [docs/theory/coop.md](docs/theory/coop.md).
+
 A fenced chicken yard in which every process is a chicken in a Vicsek flock: each one steers by the average heading of its flock mates, plus noise.
 
 | Visual element | Measured source | Transform |
@@ -464,6 +466,8 @@ The view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) 
 
 ![Ptolemy: Earth at the centre, planets on deferents with epicycle chains and looping trails, fixed stars on the outer ring](docs/media/ptolemy.webp)
 
+How it works, and the science and history behind it: [docs/theory/ptolemy.md](docs/theory/ptolemy.md).
+
 A geocentric sky seen from above: isotop itself is Earth at the centre, the seven processes whose CPU and memory varied most over the last minute are planets on deferents and epicycles, and every other process is a fixed star.
 
 | Visual element | Measured source | Transform |
@@ -503,6 +507,8 @@ A geocentric sky seen from above: isotop itself is Earth at the centre, the seve
 
 ![Tesseract: worldlines of the last minute in a Schlegel-projected tesseract, superluminal processes leaving through the +x cell in Cherenkov blue](docs/media/tesseract.webp)
 
+How it works, and the science and history behind it: [docs/theory/tesseract.md](docs/theory/tesseract.md).
+
 Each process is a worldline through four dimensions over the last 60 seconds, drawn inside a wireframe tesseract in Schlegel projection: the outer cube is now, the inner cube a minute ago.
 
 | Visual element | Measured source | Transform |
@@ -536,6 +542,8 @@ Keys while the tesseract is shown: `,` and `.` turn a quarter turn back and forw
 ### Necropolis
 
 ![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and the waning moon](docs/media/necropolis.webp)
+
+How it works, and the science and history behind it: [docs/theory/necropolis.md](docs/theory/necropolis.md).
 
 Exited processes as headstones in a cemetery at night, one row per minute of death with the newest in front.
 
@@ -571,6 +579,8 @@ On macOS only sample diffing and kqueue see deaths: see [What macOS does not rep
 
 ![Cortex: a dark slice of cortex in layers, somas flashing as they fire, dendrites branching from each, axons arcing between linked processes with spikes travelling along them, and a raster of the last ten seconds along the bottom](docs/media/cortex.webp)
 
+How it works, and the science and history behind it: [docs/theory/cortex.md](docs/theory/cortex.md).
+
 Every process is an Izhikevich neuron in a layered slice of cortex, with a raster plot of the last ten seconds of spikes along the bottom.
 
 | Visual element | Measured source | Transform |
@@ -601,6 +611,8 @@ Every process is an Izhikevich neuron in a layered slice of cortex, with a raste
 ### Horizon
 
 ![Horizon: a lensed accretion disk bent over and under a black shadow with a thin photon ring, processes riding orbits ranked by oom_score, the next victim on the innermost stable circular orbit](docs/media/horizon.webp)
+
+How it works, and the science and history behind it: [docs/theory/horizon.md](docs/theory/horizon.md).
 
 The OOM killer as a Schwarzschild black hole: a lensed accretion disk around a black shadow, processes on circular orbits ranked by how soon the kernel would kill them, and a plunge that freezes short of the horizon when it does.
 
@@ -657,6 +669,8 @@ On macOS the threads and their CPU are read as on Linux, but there is no count o
 
 ![Arbor: the process tree as a great tree at dusk, a thick trunk branching in golden-angle slots, a canopy of green and red leaves with pink blossoms, fallen leaves on a cut-away slab of soil and blue roots under it](docs/media/arbor.webp)
 
+How it works, and the science and history behind it: [docs/theory/arbor.md](docs/theory/arbor.md).
+
 The process tree drawn as a tree: PID 1 is the trunk, its descendants are the branches, the threads are the leaves and the kernel threads are the roots under the soil.
 
 | Visual element | Measured source | Transform |
@@ -694,6 +708,8 @@ Leonardo da Vinci noted that the branches of a tree keep their total cross-secti
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
+
+How it works, and the science and history behind it: [docs/theory/matrix.md](docs/theory/matrix.md).
 
 The systemd journal decoded out of digital rain (on macOS, the unified log; see
 [macOS](#macos)). `journalctl -f` runs on a

@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Coop: flocks foraging by their henhouses](../media/coop.webp)
+
 | On screen | Measured quantity |
 |---|---|
 | A chicken | one process; its size is its memory |
@@ -55,6 +57,10 @@ Each chicken has its own noise, built from three measured things:
 $$\eta = 0.5 + 0.5\,\min(c_v, 2) + 5.5\,\frac{\psi}{\psi + 15}$$
 
 (capped at a full turn, $2\pi$). Here $c_v$ is the *coefficient of variation* of the process's CPU over its last 30 samples, so a bursty process is jittery, and $\psi$ is the CPU pressure (percentage of time tasks wait for the CPU), saturating with a knee at 15%. A quiet machine therefore has $\eta = 0.5$ rad and its flocks align; a machine under heavy CPU pressure approaches $\eta \approx 6$ rad, and the flocks dissolve. The constants are calibrated by the test `flocks_order_at_low_noise_and_dissolve_past_critical_noise`: a flock of 60 idle foragers must settle at $\varphi > 0.8$ at $\psi = 0$ (noise 0.5 rad) and fall below $\varphi < 0.4$ at $\psi = 40\%$ (noise 4.5 rad). So $\varphi$ in the legend is a measurement of how contended the machine is, read off as flocking.
+
+![Heading noise against CPU pressure and speed against CPU use](figures/coop-mappings.svg)
+
+*The two mappings from measurements to behaviour, drawn from the constants in `coop.rs`: heading noise $\eta$ against CPU pressure for three burstiness values, and foraging speed against a process's own CPU use.*
 
 ### Speed
 

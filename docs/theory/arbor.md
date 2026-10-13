@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Arbor: the process tree as a great tree](../media/arbor.webp)
+
 | On screen | Measured quantity |
 |---|---|
 | The trunk | PID 1, else the root of the largest subtree (a pale trunk is launchd) |
@@ -55,6 +57,10 @@ $$\alpha = 2\pi\left(1 - \frac{1}{\varphi}\right) \approx 137.508^\circ, \qquad 
 
 whose continued fraction is all ones, so no rational approximation is good for long. Successive organs at this angle spread into the Fibonacci spirals seen in sunflower heads and pine cones.
 
+![Points placed at three different fixed angles](figures/arbor-phyllotaxis.svg)
+
+*Placing each new organ a fixed angle from the last, at radius $\propto\sqrt k$. Only near the golden angle do the points spread evenly; a rational angle leaves spokes.*
+
 ### Damped oscillators and wind
 
 Each branch is a damped harmonic oscillator pulled towards the lean the gust asks for:
@@ -64,6 +70,10 @@ $$\ddot{x} = \omega^2\,(x_{\text{target}} - x) - 2\zeta\omega\,\dot{x}$$
 Here $\omega$ is the branch's natural frequency and $\zeta = 0.12$ its damping ratio. That is *underdamped* ($\zeta < 1$): a pulse overshoots by $e^{-\pi\zeta/\sqrt{1-\zeta^2}} \approx 68\%$ of the step and rings, with an amplitude envelope that shrinks as $e^{-\zeta\omega t}$. At the top frequency (3 Hz, $\omega \approx 18.8$ rad/s) that is a time constant of $1/(\zeta\omega) \approx 0.44$ s. Thin twigs have high $\omega$ and shake fast; heavy limbs have low $\omega$ and roll slowly. That is what real trees do and why a canopy looks alive.
 
 The integration is semi-implicit Euler at a fixed step of 0.05 s, which is stable while $\omega\,\Delta t < 2$; at 3 Hz the product is 0.94.
+
+![Leonardo and Murray branching, and a damped step response](figures/arbor-rules.svg)
+
+*Left: the daughter radii after an even split under Leonardo's rule (areas add) and Murray's law (cubes add). Right: the step response of a damped oscillator for three damping ratios; $\zeta = 0.12$ is `DAMPING` in `arbor.rs`.*
 
 ## How isotop implements it
 

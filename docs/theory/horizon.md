@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Horizon: a lensed accretion disk bent over and under a black shadow](../media/horizon.webp)
+
 | On screen | Measured quantity |
 |---|---|
 | Orbital radius of a process | its rank by `oom_score` (rank 1 sits on the ISCO; memory footprint where the platform has no score) |
@@ -56,9 +58,17 @@ Below it the photon crosses the horizon. Above it the photon turns round and esc
 
 A disk behind the hole is bent over the top of the shadow (the *primary* image) and a second, fainter, thinner image of its far side appears under it (the *secondary* image, from rays that swing the other way round the hole, $2\pi - \psi$ instead of $\psi$).
 
+![Light rays traced back from the observer around a black hole](figures/horizon-rays.svg)
+
+*Photons traced back from a distant observer on the right (the same equation and Runge-Kutta step as `lens::trace_photon`). Rays with impact parameter below 3√3 spiral into the horizon; those above are bent and escape, and the ones just above wind round the photon sphere.*
+
 ### Derivations and worked numbers
 
 **The ISCO.** Write $V(r) = (1 - 2/r)(1 + L^2/r^2)$ for the effective potential. Circular orbits sit at $V' = 0$ and are stable if $V'' > 0$. Setting $V' = 0$ gives $L^2 = r^2/(r - 3)$, which exists only for $r > 3$. Setting $V'' = 0$ as well, so that the minimum is about to disappear, gives $r^2 - 6r = 0$, so $r = 6$. There $L^2 = 12$ and $E^2 = 8/9$. A particle falling from rest at infinity to the ISCO has radiated $1 - \sqrt{8/9} \approx 5.7\%$ of its rest mass: the efficiency of an accretion disk around a Schwarzschild hole, against well under 1% for nuclear fusion.
+
+![Effective potential for three values of angular momentum](figures/horizon-potential.svg)
+
+*The effective potential $V(r)$ for three angular momenta. A circular orbit sits at a flat point of $V$. For $L^2 = 16$ there is a stable minimum and an unstable maximum; as $L^2$ falls to 12 they merge into the inflection at $r = 6$, and below that no circular orbit exists.*
 
 **The photon sphere.** Light has the same equation without the "1": $V_\gamma = (1 - 2/r)/r^2$, whose maximum is at $r = 3$. A photon placed there on a tangent stays in an unstable circular orbit. Its impact parameter is $b = L/E = r/\sqrt{1 - 2/r}$ evaluated at $r = 3$, which is $3\sqrt3 \approx 5.196$. That is the radius of the shadow.
 

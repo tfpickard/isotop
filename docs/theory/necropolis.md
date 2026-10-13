@@ -4,6 +4,8 @@
 
 ## What you are looking at
 
+![Necropolis: rows of headstones in fog under the moon](../media/necropolis.webp)
+
 | On screen | Measured quantity |
 |---|---|
 | A headstone | one exited process |
@@ -73,6 +75,10 @@ The phase is a pure function of the date. The synodic month (new moon to new moo
 $$\frac{1 - \cos(2\pi a / 29.530588853)}{2}$$
 
 This treats the moon's orbit as a circle at constant speed. The real synodic month varies by about half a day around its mean because the orbit is an ellipse and the sun perturbs it, so the drawn phase can be off by up to roughly half a day, which is invisible in a picture. `moon_phase` names the quarter and crescent states from the same number.
+
+![Stone height, stone width and the lit fraction of the moon](figures/necropolis-scales.svg)
+
+*The scales behind the picture: stone height and width are logarithmic in lifetime CPU and peak memory with caps, and the lit fraction of the moon follows the synodic month.*
 
 ## How isotop implements it
 
