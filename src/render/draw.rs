@@ -151,7 +151,6 @@ impl Frame {
 
     /// A pick-only disc of `radius` pixels at the projection of `position`, depth-tested there:
     /// it keeps splatted or translucent content under it pickable.
-    #[cfg_attr(not(test), expect(dead_code, reason = "first used by a view"))]
     pub(crate) fn pick_disc(&mut self, camera: &Camera, position: Point, radius: f32, pick: u32) {
         let center = self.project(camera, position);
         self.items.push(Item::Pick {

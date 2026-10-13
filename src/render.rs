@@ -26,13 +26,6 @@ pub type Point = [f32; 3];
     )
 )]
 pub use field::{Field, Placement, Relief, Shading};
-#[cfg_attr(
-    not(test),
-    expect(
-        unused_imports,
-        reason = "no view lights a surface by the one world light yet"
-    )
-)]
 pub use shared::LIGHT;
 pub use shared::NONE;
 pub(crate) const WARM: Color = [255, 190, 110];

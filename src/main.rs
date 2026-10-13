@@ -1,3 +1,4 @@
+mod anthill;
 mod app;
 mod arbor;
 mod blackbody;

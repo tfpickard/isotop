@@ -1,15 +1,18 @@
 //! Test only: text a hostile machine could supply, through every view and the whole overlay.
 //!
 //! Every string the model holds from the system (names, command lines, cgroup and unit names,
-//! thread names, interrupt and device names, the exit records' command names, the lines of the
-//! journal, the place names of the GeoIP lookups and the parents isotop cannot read) is replaced
+//! thread names, the paths of open files, interrupt and device names, the exit records' command
+//! names, the lines of the journal, the place names of the GeoIP lookups and the parents isotop
+//! cannot read) is replaced
 //! by `HOSTILE`, which carries a window title, a screen clear, a C1 control, a bidirectional
 //! override and line breaks. Each view is then drawn for twelve seconds of demo time with a
 //! selection, a hover, a tour and every thing it drew opened, and everything the app hands the
 //! terminal is written out and searched for what a terminal would act on.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use crate::io_detail::{FileFlow, IoDetail};
 use crate::journal::{Delivery, Line};
 use crate::model::{Measured, Process, Snapshot};
 use crate::platform::LifeKind;
@@ -36,6 +39,20 @@ fn poisoned(mut snapshot: Snapshot, number: u64) -> Snapshot {
         process.command = hostile(&process.command);
         process.group = hostile(&process.group);
         process.cgroup = hostile(&process.cgroup);
+        if let Measured::Known(detail) = &process.io_detail {
+            let files = detail
+                .files
+                .iter()
+                .map(|file| FileFlow {
+                    path: hostile(&file.path),
+                    ..file.clone()
+                })
+                .collect();
+            process.io_detail = Measured::Known(Arc::new(IoDetail {
+                files,
+                ..(**detail).clone()
+            }));
+        }
         if let Measured::Known(list) = &process.thread_list {
             let threads: Vec<Thread> = list
                 .threads
@@ -212,7 +229,7 @@ fn hostile_text_reaches_no_terminal_in_any_view() {
         }
     }
     // The check is not vacuous: the process views do put the names on the screen.
-    for name in ["city", "orbit", "murmuration", "arbor"] {
+    for name in ["city", "orbit", "murmuration", "arbor", "anthill"] {
         assert!(
             showing.contains(&name),
             "{name} shows no process name: {showing:?}"

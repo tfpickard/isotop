@@ -15,10 +15,6 @@ pub fn missing_note(snapshot: &Snapshot, source: Source, consequence: &str) -> O
 
 /// ` | sources: a, b` naming the optional sources read for `snapshot`, in `Source` declaration
 /// order; None when there are none.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "no legend uses it until the first new view")
-)]
 pub fn sources_note(snapshot: &Snapshot) -> Option<String> {
     let names: Vec<&str> = snapshot.sources.iter().map(Source::name).collect();
     (!names.is_empty()).then(|| format!(" | sources: {}", names.join(", ")))
