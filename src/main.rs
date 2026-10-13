@@ -17,6 +17,7 @@ mod horizon;
 mod hr;
 mod journal;
 mod layout;
+mod lights;
 mod matrix;
 mod medium;
 mod model;
