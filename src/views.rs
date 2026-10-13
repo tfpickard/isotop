@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    anthill, arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis,
+    ptolemy, reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -730,6 +730,30 @@ pub static REGISTRY: &[ViewInfo] = &[
         },
         ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
             Box::new(arbor::Arbor::default())
+        })
+    },
+    ViewInfo {
+        // Every process is a nest, and the tunnels and blankets are the view's own; the scene's
+        // links would say it twice.
+        links: LinkRule::DrawnByView,
+        // The colony settles for ten seconds, a step at a time, as a live run would have drawn
+        // them, so the trails are laid and the ants are on their way in the captured frame.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 10,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        // Which files the busiest processes read and write, only while the view is shown.
+        sources: Sources::of(&[Source::IoDetail, Source::Pipes]),
+        demo: DemoOptions {
+            io_detail: true,
+            channels: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("anthill", "ANTHILL", Backdrop::Dusk, || {
+            Box::new(anthill::Anthill::default())
         })
     },
 ];

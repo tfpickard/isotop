@@ -23,10 +23,6 @@ pub type Point = [f32; 3];
     expect(unused_imports, reason = "first used by a view that draws a field")
 )]
 pub use field::{Field, Placement, Relief, Shading};
-#[cfg_attr(
-    not(test),
-    expect(unused_imports, reason = "first used by a view that draws a field")
-)]
 pub use shared::LIGHT;
 pub use shared::NONE;
 pub(crate) const WARM: Color = [255, 190, 110];
