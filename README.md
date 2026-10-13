@@ -29,7 +29,7 @@ synthetic workload; the coop image is a crop of a headless `--demo --output` ren
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hive
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ```
@@ -180,6 +180,7 @@ cache is stale.
 | Exit statuses (necropolis) | Every epitaph reads "died between samples", stone heights and widths are the CPU time and memory last sampled, lifetimes run from the start time, there are no unmarked markers, and a mausoleum stands for an app group (there is no `.service`) whose processes are all gone |
 | OOM scores and kills (horizon) | Horizon is never skipped. Without an `oom_score` (macOS only lists jetsam bands, and only as root, with no `oom_score_adj`) it ranks by memory footprint, so rank 1 on the ISCO is the largest process; there is no unkillable band, because there is no `oom_score_adj` -1000; and the OOM kill count lives in a private framework, so no exit is classified and every exit fades in place instead of plunging. Its legend says "no oom score: ranked by memory footprint" and "no oom kills: exits not classified". Lensing, the disk and the memory-pressure brightness work as on Linux |
 | CPU pressure, kernel threads and unreadable parents (arbor) | Arbor is never skipped. With no CPU pressure the air is still and no branch sways, and its legend says "no cpu pressure: still air". macOS reports `kernel_task` and no thread of the kernel, so the roots are one stump or none, and the legend says "no kernel threads reported: no roots" when there is none. Threads are read as on Linux, but another user's processes are unreadable without sudo: their leaves are shaded by the process's CPU, and the legend counts them (`per-thread CPU unreadable for N: leaves use process CPU`). Without sudo launchd is a parent isotop cannot read, so the trunk is a pale branch of no memory of its own that carries every process it started, and the legend adds `pale branch = a parent isotop can't read (run with sudo)` |
+| Memory detail (hive) | Hive is never skipped. `memory detail` is always missing, so every frame is unsplit: one pale-nectar kind counted from the physical footprint, never sealed, and the legend says `no memory detail: cells = memory footprint`. Hives are apps instead of cgroups (`hive = app`). Brood still comes from the growth of the footprint, and threads and their CPU are read as on Linux, but another user's processes are unreadable without sudo: their bees stand in the idle cluster and the legend counts them (`N without thread CPU`) |
 | Fork events and exit records | There is no proc connector or taskstats. kqueue gives the exact time of each exec and exit of your own processes, without the exit status, and births come from comparing samples, at the time of the sample that saw them; see [Fork, exec and exit events](#fork-exec-and-exit-events). The status strip says "no fork events" and "no exit records" |
 
 **Kinds.** Each process is one of four kinds, which set its colour. `kernel_task`
@@ -212,8 +213,8 @@ has no warning level, so nothing is amber.
 
 The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. Tab cycles
-the eighteen views in order, the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration and arbor are reached with Tab, Shift+Tab,
+the nineteen views in order, the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor and hive are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -706,6 +707,46 @@ The process tree drawn as a tree: PID 1 is the trunk, its descendants are the br
 
 Leonardo da Vinci noted that the branches of a tree keep their total cross-section from fork to fork; C. Eloy, "Leonardo's rule, self-similarity, and wind-induced stresses in trees", *Physical Review Letters* 107, 258101 (2011), shows that it follows from trees withstanding wind stress, which is why the wind here is the real CPU pressure. Arbor has no keys of its own.
 
+### Hive
+
+![Hive: eight wooden beehives on a meadow at dusk, each with three honeycomb frames lifted out behind it, amber honey arching over a ring of brood and orange pollen, pale green frames where the memory is not split, and a few bees crawling on the combs](docs/media/hive.webp)
+
+Memory as honeycomb: each cgroup is a wooden hive, each of its three largest processes is a frame of 64 by 32 cells counted by kind of memory, and each thread is a bee.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Hive | A cgroup (the cgroup path on Linux, the app on macOS), as Cells groups processes | One per group, ranked by the sum of `Process::memory` (RSS; the physical footprint on macOS) over every process in it, whatever its rollup. At most 8 are shown, and a shown hive is replaced only by a hive that outweighs it by 25% |
+| Hive label | The group's name and its processes | The short name, then `+N more` for the N processes of the hive that are not among its 3 frames |
+| Hive trim | `Process::kind` of the hive's largest process | The kind colour (kernel, system, session) |
+| Frame | A process: the 3 largest in its hive by `Process::memory`, ties by identity | Frame j stands back 0.5 + 0.4 j and aside 0.1 j hive units from its hive, lifted 0.78 j above the first, and is 12% darker for each slot back. A process keeps the lowest free slot while it stays among the three |
+| Frame tag | `Process::kind` | The kind colour on the frame's top bar |
+| One cell | A unit of memory, the same for every frame | A power of two of bytes, at least 64 KiB: the smallest for which the largest frame has at most 2,000 cells. It holds while 700 units <= the largest frame <= 2,000 units (or while it is 64 KiB and the largest frame is under 700 cells), so the scale does not change at every sample. The legend gives it: `1 cell = 4 MiB` |
+| Honey (amber) | `Pss_Anon` from `smaps_rollup` (`Process::memory_detail`, the 64 largest processes by RSS) | round(Pss_Anon / unit) cells. Every kind is rounded to the nearest cell on its own, a half up |
+| Pollen (red and orange) | `Pss_File` | round(Pss_File / unit) cells |
+| Royal jelly (white) | `Pss_Shmem` | round(Pss_Shmem / unit) cells |
+| Capped honey (wax-capped gold) | `SwapPss` | round(SwapPss / unit) cells |
+| Brood (pearl larvae) | The growth of `Process::memory` since the sample before | max(0, RSS now - RSS before) in cells, carved out of the honey and never more than it. When the growth stops the cells go back to honey |
+| Pale nectar (pale green) | `Process::memory` of a process whose rollup is `Pending` (not among the 64 largest, or not reached yet) or missing; `Pss` where the kernel does not split it (before 5.3) | One kind in the same cells, with the capped honey of `SwapPss` beside it on a kernel without the split. The brood is carved out of it |
+| Sealed frame | A rollup that could not be read (`Measured::Unreadable`) | A uniform wax cap, no cells and no bees, labelled `sealed: smaps_rollup unreadable`. It does not count toward the largest frame |
+| Bee | One thread (`Process::thread_list`, read while hive is shown) | At most 200 a frame: listed threads first, then bees with no reading for threads the list does not hold. The rest are a label, `+N bees` |
+| Bee speed | The thread's CPU, percent of one core (`Thread::cpu`) | 0.25 + 9 sqrt(CPU / 100) cells a second. A thread under 3% is idle and stands still in a cluster beside the brood |
+| Queen | The thread that leads its process (`Thread::leader`: the thread whose tid is the pid on Linux, the oldest thread on macOS) | 1.37 times the size, the colour of the process's kind on her back, at most 0.6 cells a second. She stands in the brood when idle |
+| Bee with no reading | A thread whose CPU was not measured (a first observation, a thread beyond an incomplete list, a list not read) | Never given a speed: it stands in the idle cluster, and the legend counts it |
+
+**Decorative:** the dusk sky, the meadow slab and the shade of each of its tiles, the hive's box, stand, lid, landing board, entrance slot and shadow, the faint column of the trim colour between a lid and its frames, the wood of the frames, bars and lugs, the wax walls and glosses of the cells, the six colours of pollen (a cell keeps the one it was given, seeded by process and cell), the pearly curl of each larva and its turn, its size in four stages (the innermost quarter of the brood largest, the outermost smallest), the colours and stripe of a bee and its wings (two triangles, drawn only when a bee is at least 6 px long, flapping while it walks), where a busy bee starts and the wandering path it follows (seeded by process and thread), where an idle bee stands in the cluster, and the arrangement of the kinds on the comb.
+
+**Arrangement.** The order of the cells is a convention, not a measurement; only the number of cells of each kind is measured. The brood takes the cells nearest the nest, a point in the middle of the comb at 58% of its height, in order of distance with x scaled by 1/1.55. Pollen packs round it, royal jelly lies below it, and honey arches over the nest (a cell above it counts as nearer than one below), with capped honey and pale nectar taking the cells after the honey in the same arch. Each kind takes the free cells nearest its centre in its own order, ties by cell index, so the same counts always make the same comb. The cells are drawn as one field (8 texels to a cell, `render::field`) and repainted only when the counts change.
+
+**Layout.** A hive's place depends on its name and the other shown hives and nothing else; a frame's slot depends on its process and the hive. CPU, memory and population never move a hive or a frame, and a hive keeps its place until it is replaced. The camera fits the box round the shown hives, recomputed only when the shown set changes.
+
+**Simulation.** The bees step at a fixed H = 0.05 s (20 Hz, at most 10 steps a frame, a gap of more than 0.5 s counted as 0.5 s), whatever the frame rate, and are drawn interpolated between steps. A busy bee walks a wandering path at its speed and turns back at the edge of the comb, and an idle one walks home. A bee keeps its random stream and its place while its thread lives (a thread is told apart by its tid and start time).
+
+**Caps.** At most 8 hives, 3 frames to a hive and 200 bees to a frame, so at most 4,800 bees, whatever `--processes` is. The legend counts what a cap hides: hives not shown `(+X)`, the processes of shown hives that have no frame (`C counted`), and the bees a frame's cap leaves out are a `+N bees` label on it.
+
+**What cannot be measured.** `smaps_rollup` is read for the 64 largest processes only, in a 50 ms pass that resumes where it stopped, so the frame of any other process, and one the pass has not reached yet, is unsplit: its whole resident set in the pale-nectar colour, with no invented split of it, and the legend counts them (`U unsplit`). A rollup the process does not allow to be read is sealed. A kernel before 5.3 has no `Pss_` split, so Pss is drawn in one kind and the legend says `no memory split: cells = Pss and SwapPss`. Another user's threads are unreadable without privileges, and a pass reads only so many threads, so some bees have no CPU: they stand in the cluster and the legend counts them (`S without thread CPU`). If threads cannot be read at all every bee does.
+
+**Platform.** On Linux everything above. On macOS hives are apps, there is no `smaps_rollup` (see [What macOS does not report](#what-macos-does-not-report-and-how-each-view-shows-it)), and every frame is unsplit. Hive has no keys of its own.
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -804,7 +845,7 @@ visit the next or a random process in the tour's own order and let it go on from
 
 | Key / mouse | Action |
 | --- | --- |
-| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor |
+| Tab | Next view in the playlist (every view unless `--views` or the picker narrowed it): city, orbit, ripple, flow, cores, cells, strata, globe, reef, matrix, coop, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hive |
 | Shift + Tab | Previous view in the playlist |
 | `v` | Open the view picker (below) |
 | `1`-`9`, `0` | Jump to a view in that order; the playlist does not apply |
@@ -901,7 +942,7 @@ the media and creatures have settled, demo murmuration plays 15 seconds of its f
 history (ptolemy does too, but its planets need 30 samples, so its reference renders use
 `--time 300`), demo coop replays 30 seconds of samples for CPU variation, demo tesseract
 replays a minute of samples at `--sample-ms` (before `--benchmark` too), and demo necropolis
-replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Live headless output takes two samples to measure CPU, so live strata
+replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo hive plays the ten seconds before `--time` the same way (a frame every 0.05 s, none of them rasterized), so its bees are spread over the combs and its brood is measured against the sample before. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--duration 5` runs an interactive session for five seconds and

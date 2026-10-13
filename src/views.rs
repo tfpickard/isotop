@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    arbor, cells, coop, cores, cortex, globe, hive, horizon, matrix, murmuration, necropolis,
+    ptolemy, reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -727,6 +727,32 @@ pub static REGISTRY: &[ViewInfo] = &[
         },
         ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
             Box::new(arbor::Arbor::default())
+        })
+    },
+    ViewInfo {
+        // Sockets join the frames of the processes that hold them, as hairlines.
+        link_strokes: true,
+        // A frame stands high above the ground under it, so a tour or a search centres the frame
+        // itself; the camera turns and tilts as it is.
+        face: Some(|_, goal| (goal.rotation, goal.pitch)),
+        // The pale-nectar frames of processes the rollup has not reached, and the cells and bees
+        // of the rest, come from the two sources only this view draws.
+        sources: Sources::of(&[Source::MemoryDetail, Source::Threads]),
+        // Ten seconds of bees, a frame at a time, as a live run would have drawn them.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 10,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            oom_and_memory_detail: true,
+            threads: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("hive", "HIVE", Backdrop::Dusk, || {
+            Box::new(hive::Hive::default())
         })
     },
 ];

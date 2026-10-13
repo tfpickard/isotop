@@ -12,6 +12,7 @@ mod gpu;
 #[cfg(test)]
 mod harness;
 mod history;
+mod hive;
 mod horizon;
 mod journal;
 mod layout;
