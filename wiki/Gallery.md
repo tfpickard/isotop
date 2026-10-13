@@ -240,10 +240,6 @@ specification asks for. Each page links the mockup beside its theory.
 
 ![Chamber mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/chamber.jpg)
 
-### [HR](Planned-HR)
-
-![HR mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hr.jpg)
-
 ### [Hive](Planned-Hive)
 
 ![Hive mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hive.jpg)
@@ -295,3 +291,7 @@ These four were mockups when this wiki was begun and are real views now. The moc
 ### [Arbor](View-Arbor)
 
 ![Arbor mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/arbor.jpg)
+
+### [HR](View-HR)
+
+![HR mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hr.jpg)
