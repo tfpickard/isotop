@@ -157,10 +157,6 @@ pub enum Item {
     /// Depth-tested triangle whose colour and pick are sampled from field `field` (an index into
     /// `Frame::fields`) at `uv`, in node units, interpolated linearly across the triangle. It
     /// writes depth, the sampled colour and the owner of the nearest node (see `field`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first recorded by a view that draws a field")
-    )]
     Field {
         points: [Point; 3],
         uv: [[f32; 2]; 3],

@@ -27,6 +27,13 @@ pub(crate) const KEPT: usize = BACKLOG;
 /// systemd's verdict on a finished job, the `JOB_RESULT` field of the journal entry that reports
 /// it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(test, target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only the Linux journal reader parses a result; macOS has none, and the demo makes two"
+    )
+)]
 pub enum JobResult {
     Done,
     Canceled,
@@ -39,6 +46,10 @@ pub enum JobResult {
 
 impl JobResult {
     /// The result a `JOB_RESULT` value names; None for one this reader does not know.
+    #[cfg_attr(
+        not(any(test, target_os = "linux")),
+        expect(dead_code, reason = "only the Linux journal reader parses a result")
+    )]
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value.trim() {
             "done" => Self::Done,
@@ -323,9 +334,14 @@ const JOB_INTERVAL: f64 = 7.0;
 /// seconds, alternately systemd finishing a backup (priority 6, `JobResult::Done`) and failing to
 /// start a mount (priority 3, `JobResult::Failed`), the first of them at seven seconds.
 pub fn demo_jobs(from: f64, to: f64) -> Vec<Line> {
+    job_counters(from, to).map(demo_job).collect()
+}
+
+/// The counters of the job lines that arrive in `(from, to]` seconds.
+fn job_counters(from: f64, to: f64) -> std::ops::RangeInclusive<i64> {
     let first = (from / JOB_INTERVAL).floor() as i64 + 1;
     let last = (to / JOB_INTERVAL).floor() as i64;
-    (first.max(1)..=last).map(demo_job).collect()
+    first.max(1)..=last
 }
 
 /// The `counter`-th job line, which arrives at `counter * JOB_INTERVAL`.
@@ -359,15 +375,14 @@ pub fn demo_spirits(from: f64, to: f64) -> Vec<Line> {
         .filter(|counter| counter % SPIRIT_STRIDE == SPIRIT_OFFSET)
         .map(|counter| (counter as f64 * DEMO_INTERVAL, demo_line(counter)))
         .collect();
-    let first = (from / JOB_INTERVAL).floor() as i64 + 1;
-    let last = (to / JOB_INTERVAL).floor() as i64;
     arrivals.extend(
-        (first.max(1)..=last).map(|counter| (counter as f64 * JOB_INTERVAL, demo_job(counter))),
+        job_counters(from, to)
+            .zip(demo_jobs(from, to))
+            .map(|(counter, line)| (counter as f64 * JOB_INTERVAL, line)),
     );
     arrivals.sort_by(|a, b| a.0.total_cmp(&b.0));
     arrivals.into_iter().map(|(_, line)| line).collect()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -465,8 +480,14 @@ mod tests {
                     6,
                     "kernel: usb 3-9: new high-speed USB device number 9 using xhci_hcd"
                 ),
-                Line::new(3, "kernel: nvme0: I/O 1012 QID 7 timeout, completion polled"),
-                Line::new(6, "systemd[1]: logrotate.service: Deactivated successfully."),
+                Line::new(
+                    3,
+                    "kernel: nvme0: I/O 1012 QID 7 timeout, completion polled"
+                ),
+                Line::new(
+                    6,
+                    "systemd[1]: logrotate.service: Deactivated successfully."
+                ),
             ]
         );
         assert!(lines.iter().all(|line| line.job.is_none()));

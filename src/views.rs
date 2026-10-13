@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ptolemy,
-    reef, strata, tesseract,
+    arbor, cells, coop, cores, cortex, globe, horizon, matrix, murmuration, necropolis, ouija,
+    ptolemy, reef, strata, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -730,6 +730,42 @@ pub static REGISTRY: &[ViewInfo] = &[
         },
         ..ViewInfo::new("arbor", "ARBOR", Backdrop::Dusk, || {
             Box::new(arbor::Arbor::default())
+        })
+    },
+    ViewInfo {
+        // The pressure haze would tint the black the velvet fades into.
+        haze: false,
+        // The board draws no process: nothing flashes where one left, and the tour has no one to
+        // visit.
+        flash: false,
+        tour: false,
+        // Steeper than isometric, so the letters read.
+        pitch: Some(ouija::PITCH),
+        sources: Sources::of(&[Source::Journal]),
+        // The board shows no process and collapses none, whatever the machine runs.
+        header: Some(|_| (0, 0)),
+        // The demo's journal carries the lines that end a job, with their results.
+        demo: DemoOptions {
+            job_results: true,
+            ..DemoOptions::NONE
+        },
+        // The board draws journal lines, not processes.
+        contract: Contract {
+            draws_processes: false,
+            ..Contract::DEFAULT
+        },
+        // The journal of the eight seconds before a captured frame, as a live run would have
+        // been fed it, so that frame lands in the middle of a line.
+        warmup: &[Warmup {
+            phase: Phase::Journal {
+                frames: 161,
+                step: 0.05,
+                lead: 8.0,
+            },
+            when: When::Headless,
+        }],
+        ..ViewInfo::new("ouija", "OUIJA", Backdrop::Void, || {
+            Box::new(ouija::Ouija::default())
         })
     },
 ];
@@ -1510,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn every_row_builds_its_own_module_and_only_the_matrix_replaces_the_inspector() {
+    fn every_row_builds_its_own_module_and_only_the_journal_views_replace_the_inspector() {
         let scene = Scene::new();
         let snapshot = Snapshot::default();
         let replacing: Vec<&str> = View::all()
@@ -1519,7 +1555,7 @@ mod tests {
             .collect();
         assert_eq!(
             replacing,
-            ["matrix"],
+            ["matrix", "ouija"],
             "a view replaces the inspector line through ViewModule, and only a view that draws no \
              processes has reason to"
         );

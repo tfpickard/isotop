@@ -20,12 +20,18 @@ pub type Color = [u8; 3];
 pub type Point = [f32; 3];
 #[cfg_attr(
     not(test),
-    expect(unused_imports, reason = "first used by a view that draws a field")
+    expect(
+        unused_imports,
+        reason = "ouija draws flat, unshaded fields; no view shades one yet"
+    )
 )]
 pub use field::{Field, Placement, Relief, Shading};
 #[cfg_attr(
     not(test),
-    expect(unused_imports, reason = "first used by a view that draws a field")
+    expect(
+        unused_imports,
+        reason = "no view lights a surface by the one world light yet"
+    )
 )]
 pub use shared::LIGHT;
 pub use shared::NONE;

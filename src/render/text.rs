@@ -35,10 +35,6 @@ impl Frame {
     /// closes the wedge a sharp corner would leave outside. Below a pixel of projected width a
     /// ribbon falls back to a line, as `ribbon` does. A `height` that is not a positive finite
     /// number, or an `origin`, `right` or `up` that is not finite, draws nothing.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "first used by a view that draws stroke text")
-    )]
     #[expect(
         clippy::too_many_arguments,
         reason = "the issue fixes this signature, with the face it leaves implicit"
