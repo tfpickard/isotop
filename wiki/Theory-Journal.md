@@ -5,7 +5,19 @@ data source that is *text written by other programs*: untrusted, unbounded, arri
 isotop's, and produced by a follower process that isotop must start, feed from, bound, and stop. This page is the
 pipeline from `journalctl` (Linux) or `log` (macOS) to the lines on screen: the formats and their parsers, the
 reader thread and its three bounded stages, the linger that keeps the follower alive after you leave the view, the
-deterministic demo lines, and where untrusted text is neutralised.
+the `Snapshot.journal` delivery that carries the lines to the view, the deterministic demo lines, and where untrusted text is
+neutralised.
+
+## History
+
+The longer account of the Matrix view lives in the repository: [docs/theory/matrix.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/matrix.md).
+
+* **Syslog.** Unix logging as most people met it began in the 1980s with Eric Allman's `sendmail` project, whose logging facility was split out as `syslog`. For years it was a de facto standard with no authoritative specification; the IETF wrote the existing practice down as RFC 3164 in August 2001, and RFC 5424 (2009, edited by Rainer Gerhards) replaced that document.
+* **The severity scale.** Syslog's eight levels run from 0 (emergency) to 7 (debug), so the number grows as the message matters less. isotop keeps the sender's number and colours by it (red for 0 to 3, teal for 7).
+* **What syslog lacked.** A syslog message is a line of text with a priority and a tag. The protocol has no authentication, so any program can write a line in the name of any other, and the structure of a message is whatever its sender made of it. The text-only form is the reason a log line is, to a reader, untrusted input.
+* **The journal.** `journald`, part of systemd, replaced the text file with a binary store of named fields (`MESSAGE`, `PRIORITY`, `_PID`, and the trusted `_`-prefixed fields that the logging daemon, not the sender, fills in). It arrived with systemd in the early 2010s (the exact release is unverified here). `journalctl --output=export` exists because a binary store needs a lossless way out, and the export format's length-prefixed field is what lets a message with newlines survive.
+* **The Apple side.** macOS replaced the older Apple System Log with the unified logging system in macOS 10.12 Sierra (2016), after outlining its goals at WWDC that June. The `log` tool is its command-line reader.
+* **Why the rain.** The Matrix view draws these records as digital rain because the log is the one data source on the machine that is already a stream of text. The two systems have in common that neither was designed to be watched, only to be read afterwards.
 
 ## 1. The sources (theory)
 
@@ -81,7 +93,7 @@ that are not JSON objects and records with no message (the trailing `finished` r
 The displayed source is the basename of `processImagePath`, else `subsystem`, else `"log"`. Severity maps
 `Fault` to 2, `Error` to 3, `Default` to 5, `Info` to 6, `Debug` to 7, and anything else (or none) to 5.
 
-## 4. The reader thread and three bounded stages
+## 4. The reader thread and its bounded stages
 
 `Journal::start` (in `journal.rs`) owns the follower and a reader thread:
 
@@ -89,7 +101,8 @@ The displayed source is the basename of `processImagePath`, else `subsystem`, el
 flowchart LR
     A["follower<br/>(journalctl / log)"] -->|"stdout pipe"| B["reader thread<br/>BufReader + read_entry"]
     B -->|"try_send"| C["sync_channel<br/>BACKLOG = 2048"]
-    C -->|"drain() each frame"| D["Rain.pending<br/>(2 screens)"]
+    C -->|"drain() each frame"| S["Snapshot.journal<br/>(Delivery)"]
+    S -->|"Rain::take"| D["Rain.pending<br/>(2 screens)"]
     D -->|"one line at a time"| E["rows on screen"]
     B -. "channel full: count" .-> F["Journal.dropped"]
     D -. "trim oldest: skipped += 1" .-> G["Rain.skipped"]
@@ -102,14 +115,34 @@ flowchart LR
    (severity 3), so a failure to authorise, or a missing binary, shows up in the rain instead of vanishing. A spawn
    failure sends `isotop: cannot run journalctl: …` through the same path and leaves no child or reader.
 2. **Channel.** `mpsc::sync_channel(BACKLOG)` holds at most `BACKLOG = 2048` lines. This is the backlog "while the
-   view is hidden or paused": the main loop only drains it while the Matrix view is shown and the app is not paused,
-   so a flood during a pause fills it and the overflow is counted.
-3. **The rain.** Each frame, `feed` moves `drain()`ed lines into `Rain::push`, and adds `Journal::dropped()` (which
-   `swap`s the counter back to 0) to `Rain::skipped`. `Rain` keeps at most `max(rows, 16) · 2` pending lines, two
+   view is hidden or paused": the main loop only drains it while the demand contains `Source::Journal` and the app is
+   not paused, so a flood during a pause fills it and the overflow is counted.
+3. **The sample.** Each frame that drains, `feed` in `main.rs` attaches the `drain()`ed lines and `Journal::dropped()`
+   (which `swap`s the counter back to 0) to the newest `Snapshot` through `journal::Delivery::add`. See section 4a.
+4. **The rain.** The Matrix view (`Rain`, a `ViewModule`) calls `Rain::take` on `snapshot.journal` when it draws, and
+   `Rain::push` queues each unseen line. `Rain` keeps at most `max(rows, 16) · 2` pending lines, two
    screens' worth, trimming the *oldest* and counting each as skipped, but not before the first frame has sized the
    grid, so the startup history survives. Lines are written into the screen **one at a time, faster when they
    queue**: the next release is `0.5 / (1 + pending/3)` seconds after the last, and a burst after a gap is limited to
    one second's worth. The legend shows `N queued, M skipped`.
+
+### 4a. `Snapshot.journal` and `journal::Delivery`
+
+The lines do not reach the view by the view calling the journal. They travel on the sample, as `Snapshot.journal`, a
+`journal::Delivery`:
+
+* `lines`: the lines attached to this sample, oldest first; `through`: how many lines had arrived in all when the last
+  of them did (so the first of `lines` is number `through - lines.len()`); `dropped`: how many had been lost in all by
+  then, either because the follower's backlog was full or because a sample held more than it keeps.
+* `Delivery::add` takes the new lines and the follower's drop count, advances the running `Totals` that `App` keeps
+  (`journal_totals`), and keeps only the newest `journal::KEPT` (equal to `BACKLOG`, 2048) lines of a flood, counting
+  the cut ones as dropped.
+* `Delivery::unseen(taken)` returns the lines after the first `taken` that ever arrived. `Rain::take` passes its own
+  count, so drawing the same sample twice, or an older one after a rewind, queues nothing new.
+* `Delivery::retire` empties `lines` once a newer sample replaces this one as the newest (`App::push_sample`); the
+  numbering stays, so the history of snapshots that pause and rewind keep holds the lines of one sample at most.
+* A sample nothing was attached to carries an empty delivery. `--demo` fills it from `journal::demo`; live runs from
+  `Journal::drain`.
 
 Net: the stream is lossy by design and says so. There is no point where the frame loop can block on the log.
 
@@ -170,15 +203,16 @@ allocate more. The general rule and its test (`process_text_cannot_inject_termin
 
 ## Where in the code
 
-* [`journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/journal.rs): `Journal`, `Line`, `BACKLOG`,
-  `READER_GRACE`, `demo`.
+* [`journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/journal.rs): `Journal`, `Line`, `Delivery`, `Totals`,
+  `KEPT`, `BACKLOG`, `READER_GRACE`, `demo`.
+* [`model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs): `Snapshot::journal`.
 * [`platform/linux/journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/journal.rs):
   `journal`, `read_entry`, `read_line`, `FIELD`.
 * [`platform/macos/journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/macos/journal.rs): `FOLLOW`,
   `parse_line`, `scan`, `Cursor`, `severity`.
 * [`platform/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/mod.rs): `JournalParser`,
   `stop_journal` contract.
-* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `JOURNAL_LINGER`, `journal_wanted`, `feed`;
+* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `JOURNAL_LINGER`, `journal_wanted`, `feed`, `App::push_sample`;
   [`matrix.rs`](https://github.com/tfpickard/isotop/blob/main/src/matrix.rs): `Rain`;
   [`glyphs.rs`](https://github.com/tfpickard/isotop/blob/main/src/glyphs.rs): `glyph`;
   [`terminal.rs`](https://github.com/tfpickard/isotop/blob/main/src/terminal.rs): `clean_text`.

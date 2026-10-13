@@ -20,6 +20,16 @@ The `hr` view is specified as a planetarium sky of processes in true blackbody c
 
 **Why it fits process data.** A machine has no stellar physics, but it does have the same *organisation* in two measured quantities: a power-like spread of memory (the "luminosity" axis) and a heavy-tailed spread of CPU (the "temperature" axis), with a rough correlation between them. A process far above the machine's own trend (a huge process doing almost nothing) is a "giant", and a small, busy one is a "white dwarf". The view makes this a diagnosis: the ordinary machine has a main sequence of its own, and the classification names departures from it. It is a metaphor with real statistics underneath. It is not a claim that processes obey a mass-luminosity relation.
 
+## History
+
+The diagram has two origins and a naming dispute. In 1911 Ejnar Hertzsprung published, in a Potsdam observatory publication, diagrams of colour against apparent magnitude for the Pleiades and the Hyades. The stars of a cluster lie at nearly one distance, so apparent magnitude differs from absolute magnitude by a constant, and the diagram was in effect absolute magnitude against spectral type. Some sources credit his assistant Hans Otto Rosenberg with a Pleiades diagram of 1910; sources disagree on who plotted first.
+
+Henry Norris Russell reached the same plot from the other side. By 1913 enough stars had measured parallaxes to plot spectral type against absolute magnitude directly, and he presented the result in that year. The diagram first appeared in print in *Nature* on 7 May 1914, according to the Linda Hall Library. Russell's paper credits Hertzsprung with the terms "giant" and "dwarf"; Hertzsprung is said not to have used them in his own papers of the time. The diagram carries both names, though neither man called it by them.
+
+The vertical axis is the magnitude scale. Pogson fixed it in 1856 by making five magnitudes a factor of 100 in flux, which matched Hipparchus's classes of brightness closely enough that the older catalogues could be kept. The horizontal axis is the Harvard spectral sequence, O B A F G K M, whose order came from Annie Jump Cannon's classification for the Henry Draper Catalogue, and whose letters are the survivors of an earlier alphabetical scheme in which the classes ran A to Q; the sequence was rearranged by temperature and most of the letters dropped. The luminosity classes were added by Morgan and Keenan in 1943.
+
+The colour axis is Planck's. Blackbody radiation was given its law in 1900, and the table of colours on this page is its integral against the CIE 1931 colour matching functions. In the view the two axes are CPU and memory, so the diagram is a statistic of the machine, not an astronomical one.
+
 ## Theory
 
 ### Blackbody colour

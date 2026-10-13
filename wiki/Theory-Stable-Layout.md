@@ -14,6 +14,16 @@ computed from the same arithmetic the code uses.
 degrees (a third of a turn), dotted by arrival order. Bottom: the sequence discrepancy $N D^*_N$ of the
 angles $\{n\alpha\}$ for $N=377$, against $\alpha$.*
 
+## History
+
+The arrangement of leaves, scales and florets was described long before it was explained. In 1837 the brothers Louis and Auguste Bravais (a botanist and a crystallographer) observed that successive organs around a stem are separated by about 137.5 degrees and tied the spiral counts to the Fibonacci sequence. The sequence itself comes from elsewhere: Leonardo of Pisa introduced it in the *Liber abaci* of 1202 as the answer to a problem about breeding rabbits, and no plant appears in the problem.
+
+The mechanism came next. Hofmeister proposed in 1868 that a new primordium forms, one at a time, in the largest gap left at the growing tip; Schwendener's mechanical theory of 1878 put contact pressure between neighbours behind the same idea. Both state the rule that a new organ appears in the least crowded place; that doing so one at a time leads to the golden angle is what section 2 quantifies. Douady and Couder (1992) made that rule a laboratory experiment and a dynamical system: primordia that repel one another and appear at regular intervals settle on a divergence angle near 137.5 degrees, and on Fibonacci spiral counts, as the interval is shortened.
+
+The formula isotop uses is Vogel's (1979): the $n$-th floret at radius $c\sqrt n$ and angle $n$ times the divergence angle. Computer graphics took it from there; Prusinkiewicz and Lindenmayer's *The Algorithmic Beauty of Plants* (1990) has a chapter on it, and Lindenmayer and Veen are recorded as having studied the spirals of sunflower seeds. The number-theoretic half of the argument is older than any of this. Hurwitz proved in 1891 that every irrational number has infinitely many rational approximations closer than $1/(\sqrt5\,q^2)$, that the constant cannot be improved, and that the golden ratio is the number that attains it; and the three-gap theorem (a conjecture of Steinhaus, proved independently by Sós, Surányi and Świerczkowski in 1958 and 1959) describes the partition of a circle by multiples of an angle.
+
+The wish that a changing picture should not rearrange itself has its own literature. Misue, Eades, Lai and Sugiyama (1995) named the viewer's model of where things are the mental map and asked layout algorithms to preserve it. isotop's variant is stronger than most graph-drawing practice: place is not adjusted to preserve the map, it is computed from nothing else.
+
 ## 1. Why a visualization of changing data must not reshuffle
 
 This section is general; it is not specific to isotop.
@@ -231,13 +241,14 @@ stay dense and `span(group)`, one past the highest seat in use, bounds the spira
 carry no meaning beyond arrival order within a group; they are not ranks. The seat becomes a position as
 `spiral(spacing, offset, seat, spin(group))` in Cells (`spiral(spacing, 1.0, ..)`), Reef
 (`spiral(1.3, 0.5, ..)` for fish, `spiral(1.6, 0.5, ..)` for crabs), Globe (`spiral(0.9, 0.5, ..)`, and
-`GOLDEN_ANGLE` directly), and Necropolis uses `Seats` for its zombie pits. Ripple has its
-own copy of the same slot logic, with `cluster.slots` instead of `Seats` (`Scene::scatter`), and the City
-has a third mechanism below.
+`GOLDEN_ANGLE` directly), and Necropolis uses `Seats` for its zombie pits. Cortex seats its neurons with `Seats`
+too. Ripple has its own copy of the same slot logic, with `cluster.slots` instead of `Seats`
+(`Ripple::scatter` in `src/views/ripple.rs`), and the City has a third mechanism below.
 
 **Hidden processes keep their seats.** Reef, Cells, Coop, Globe and Ripple reserve seats and places
-for *every sampled process, drawn or not* (the comments in `Scene::scatter` and in `cells.rs`, `reef.rs`,
-`coop.rs` say so). Focusing a subtree or lowering `--limit` hides processes without freeing their seats, so
+for *every sampled process, drawn or not* (the comments in `Ripple::scatter` and in `cells.rs`, `reef.rs`,
+`coop.rs` and `globe.rs` say so), and the Orbit and Flow systems keep a hidden root's place in `Galaxy::place`
+(`src/views/systems.rs`). Focusing a subtree or lowering `--limit` hides processes without freeing their seats, so
 clearing the focus brings everything back where it was (Cores has the same test for its marbles). This is the same rule as stability under churn, one
 level up: the *view of the data* (focus, limit) must not move anything either. The commits
 "Keep hidden processes' Reef and Cells seats and places" (#106) and "Keep Ripple, Strata, Globe, Orbit, Flow
@@ -268,13 +279,15 @@ sweeps the plane evenly, so the result is compact and independent of any contain
 
 The 15 percent is the **reservation**: headroom bought at placement so that ordinary growth does not force a
 move. Other stable placements use the same trick with their own constants: Ripple's clusters reserve
-`reach * 1.1` (plus `POND_GAP`) and grow their spacing by 1.15 when a pebble outgrows it; Orbit's systems
-reserve `need * 1.08` ("headroom absorbs memory drift so systems are only re-placed when their structure
-grows"). `Discs::reach()` is the radius around the origin that holds every disc, for fitting the camera.
+`reach * 1.1` (plus `POND_GAP`) and grow their spacing by 1.15 when a pebble outgrows it; the Orbit and Flow
+systems reserve `need * HEADROOM` with `HEADROOM = 1.3` in `src/views/systems.rs` (the comment there says 30
+percent holds what the view harness does to a system: memory by half to double, a tenth of its processes leaving
+and as many arriving, and that a system which outgrows it is placed again). Cells reserves a `Room` per cell, and
+its dish radius carries 5 percent (`needed * 1.05`). `Discs::reach()` is the radius around the origin that holds every disc, for fitting the camera.
 
 ### 3.4 The City: square shells
 
-`Scene::city_positions` is the third mechanism. A process gets a plot, a (district, slot) pair, from its
+`City::place` in `src/views/city.rs` is the third mechanism. A process gets a plot, a (district, slot) pair, from its
 group's districts: the lowest free slot among the group's 16 (a 4 by 4 block, 4 world units apart), else a
 new district. `district_origin(index)` enumerates the quadrant in **square shells**: with
 $s=\lfloor\sqrt{\text{index}}\rfloor$ and $o=\text{index}-s^2$ the district sits at $(s,o)$ if $o\le s$ else
@@ -292,7 +305,7 @@ $(2s-o,\,s)$, scaled by 23 world units:
 Index $i$ lives in shell $\lfloor\sqrt i\rfloor$, each square number $n^2$ completes an $n\times n$ block, and
 no earlier district ever moves. The cost is a growing, roughly square city; the benefit is that `plots` plus
 `occupancy` are all the state the layout needs. (The test `city_does_not_relocate_when_resources_or_population_change`
-pins it.)
+in `src/views/city.rs` pins it.)
 
 ### 3.5 What the guarantee costs
 
@@ -330,7 +343,7 @@ The ladder estimate $M_T/\ln h$ over-predicts these by 20 to 30 percent at $h=1.
 real crossing overshoots the barrier and the new rung is measured from the overshoot. The shape is the
 point: moves fall roughly as $1/\ln h$ while the area cost grows as $h^2$. Process memory is not a driftless
 random walk (it plateaus and jumps), so this is a model of the trade-off, not telemetry; the constants
-1.15, 1.1 and 1.08 in the code were chosen by eye.
+1.15 and 1.1 in the code were chosen by eye, and the 1.3 of `HEADROOM` against the harness's perturbation.
 
 ## 4. How the harness enforces it
 
@@ -353,27 +366,24 @@ frames 0.25 s apart, with the changed sample arriving as the sample of time + 1 
 changed run are compared **frame for frame at the same times**, so whatever moves by itself (orbits, walking
 chickens) moves alike in both. For every process present in both, the distance in the *ground plane*,
 $\sqrt{\Delta x^2+\Delta y^2}$, must not exceed `contract.tolerance` (1 world unit by default); height is
-excluded because several views draw a measurement with it. Where creatures wander, the row supplies
-**anchors**: Coop declares `scene.coop.anchors()` (seats and houses), and a module view returns them from
-`ViewModule::anchors`. A view with nothing to compare fails as `Broken`, and a panic is also `Broken`;
+excluded because several views draw a measurement with it. Where creatures wander, the view supplies
+**anchors**: `ViewModule::anchors` returns the places a body keeps to (Coop's seats and houses, Cores' lane
+starts, Reef's school targets and crab seats), which `Scene::anchors` hands to the harness. A view with nothing to compare fails as `Broken`, and a panic is also `Broken`;
 neither can be excused.
 
-`known_unstable` records the debt of the views that predate the harness, each with its issue:
-
-| view | fails | issue and reason |
-|---|---|---|
-| orbit | resource change, churn | [#114](https://github.com/tfpickard/isotop/issues/114): systems sized by memory; an exit or birth lays them out again |
-| flow | resource change, churn | [#115](https://github.com/tfpickard/isotop/issues/115): wells laid out like Orbit's systems |
-| ripple | resource change | [#116](https://github.com/tfpickard/isotop/issues/116): pebble clusters re-placed when memory grows the pebbles |
-| cores | resource change | [#117](https://github.com/tfpickard/isotop/issues/117): marbles lap at their CPU and no anchor is declared |
-| cells | resource change, churn | [#118](https://github.com/tfpickard/isotop/issues/118): the largest member is the nucleus at the centre, memory sizes the cell |
-| reef | resource change | [#119](https://github.com/tfpickard/isotop/issues/119): fish and crabs move at their CPU and no anchor is declared |
-
-City, Strata, Globe, Coop, Ptolemy, Tesseract and Necropolis pass; Matrix draws journal lines, not processes,
-and is exempt from the stability properties. The harness reports a property that starts to pass
-("`NowPasses`": drop the entry and close the issue), accepts no entry for a new view, and never excuses
-`Broken`. `the_harness_detects_a_view_that_reshuffles` proves the test has teeth against a deliberately
-rank-seated test view.
+`known_unstable` records the debt of views that fail a property, each with its issue. **It is empty on every
+registered row.** The six views that predate the harness (Orbit, Flow, Ripple, Cores, Cells, Reef) were listed
+there with the issues [#114](https://github.com/tfpickard/isotop/issues/114) to
+[#119](https://github.com/tfpickard/isotop/issues/119), and the change that moved every view onto
+`ViewModule` ([#143](https://github.com/tfpickard/isotop/pull/143)) fixed each layout and dropped the entries:
+the Orbit and Flow systems got `HEADROOM`, Cells a reserved `Room` per cell, and Cores and Reef declare the
+places that do not wander as anchors. All eighteen registered views pass all six properties; Matrix draws journal
+lines, not processes (`draws_processes: false` on its row), and is exempt from the stability properties. The
+harness reports a property that starts to pass on a listed row ("`NowPasses`": drop the entry and close the
+issue), accepts no entry for a new view, and never excuses `Broken`. The listing mechanism is exercised only by
+test rows in `views::testing` (`SHUFFLED`, whose second row lists a churn failure and a resource-change failure
+it does not have), and `the_harness_detects_a_view_that_reshuffles` proves the test has teeth against a
+deliberately rank-seated test view.
 
 ## 5. Reading the picture
 
@@ -411,20 +421,24 @@ Regenerate the figure with `python3 docs/figures/layout-vogel.py` from the repos
 * [`src/layout.rs`](https://github.com/tfpickard/isotop/blob/main/src/layout.rs): `GOLDEN_ANGLE`, `spiral`,
   `vacant`, `spin`, `Seats` (`assign`, `seat`, `span`), `Discs` (`arrange`, `reserved`, `reach`), and the test
   `layout_spiral_places_the_same_points_as_before` that pins their bits.
-* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::city_positions`,
-  `district_origin`, `Scene::scatter` (Ripple), `Scene::place_systems` (Orbit).
+* [`src/views/city.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/city.rs): `City::place`,
+  `district_origin`.
+  [`src/views/systems.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/systems.rs): `Galaxy::place`,
+  `HEADROOM` (Orbit and Flow).
+  [`src/views/ripple.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/ripple.rs): `Ripple::scatter`.
 * [`src/cells.rs`](https://github.com/tfpickard/isotop/blob/main/src/cells.rs),
   [`src/reef.rs`](https://github.com/tfpickard/isotop/blob/main/src/reef.rs),
   [`src/coop.rs`](https://github.com/tfpickard/isotop/blob/main/src/coop.rs),
   [`src/globe.rs`](https://github.com/tfpickard/isotop/blob/main/src/globe.rs),
-  [`src/necropolis.rs`](https://github.com/tfpickard/isotop/blob/main/src/necropolis.rs): the users of `Seats` and `Discs`.
+  [`src/necropolis.rs`](https://github.com/tfpickard/isotop/blob/main/src/necropolis.rs),
+  [`src/cortex.rs`](https://github.com/tfpickard/isotop/blob/main/src/cortex.rs): the users of `Seats` and `Discs`.
 * [`src/harness.rs`](https://github.com/tfpickard/isotop/blob/main/src/harness.rs): `rescaled`, `churned`,
   `Session`, `Runs`, `stayed`, `every_view_satisfies_the_view_contract`.
 * [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): `Contract`, `Property`,
-  `Unstable`, the registry rows' `known_unstable`.
+  `Unstable`, `ViewModule::anchors`, the registry rows' `known_unstable` (empty today).
 
-AGENTS.md and `docs/VIEW_CONVENTIONS.md` list `render::vacant` and `render::GOLDEN_ANGLE` among the shared
-helpers; in the code they live in `layout.rs` (`render.rs` imports them). The code wins.
+`docs/VIEW_CONVENTIONS.md` lists `render::vacant` and `render::GOLDEN_ANGLE` among the shared helpers "today";
+in the code they live in `layout.rs`. The code wins.
 
 ## 8. Variations and open questions
 
@@ -440,9 +454,12 @@ helpers; in the code they live in `layout.rs` (`render.rs` imports them). The co
 * **A discrepancy-optimal slot order.** Seats are handed out lowest-first, which on the spiral fills from the
   centre. Filling by the order that minimises the largest empty circle at every prefix is a different
   problem (and the golden sequence is already near-optimal for it).
-* **Higher dimensions.** Planned 3-D views (Murmuration) need the 3-D analogue of the spiral. The golden
-  angle has no single 3-D counterpart; the generalised golden ratio sequences of the Kronecker type
-  (the "$R_d$ sequence") are a candidate (unverified; not in the tree).
+* **Higher dimensions.** Arbor, a 3-D view, advances the azimuth of successive slots by the golden angle
+  (`src/arbor.rs`). A 3-D analogue of the spiral for placing points in a volume has no single golden counterpart;
+  the generalised golden ratio sequences of the Kronecker type (the "$R_d$ sequence") are a candidate
+  (unverified; not in the tree).
+* **Holes with names.** A freed seat records an exit and nothing else. Necropolis records an exit with a stone,
+  a minute and a cause. The two do not share a representation, and nobody has asked them to.
 * **Two sequences compared.** Replace `GOLDEN_ANGLE` in a scratch build with the silver angle and render Cells:
   the table in section 2.4 predicts an 11 percent smaller minimum spacing.
 

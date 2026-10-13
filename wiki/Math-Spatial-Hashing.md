@@ -16,6 +16,14 @@ in 4 000 uniform points. Middle: the same radius in 4 000 points in six Gaussian
 of 8 000 flock points in 3-D. Brute force is the horizontal line. The model curves of section 2 sit on the
 measured points.*
 
+## History
+
+The idea of binning points into equal cells is older than the word "hash" in this sense. Molecular dynamics met the problem first: every one of $n$ particles interacting through a short-range force needs its neighbours, and $n^2$ tests were unaffordable in the 1960s. Loup Verlet's 1967 paper on Lennard-Jones fluids (*Physical Review* 159, 98-103) introduced the neighbour list that bears his name, a per-particle list refreshed every few steps. Cell methods, which restrict the search to a particle's own cell and its 26 neighbours, appear in the same literature a few years on; Quentrec and Brot's 1973 note in the *Journal of Computational Physics* is often cited for them, though this page did not check what it proposed. Tree structures answered the same question for scattered data: Bentley's $k$-d tree (1975), the best-match search of Friedman, Bentley and Finkel (1977) and Meagher's octree encoding (1982) are the ones section 5 compares.
+
+Hashing the cell, rather than allocating a dense array of them, belongs to computer graphics. Matthias Teschner, Bruno Heidelberger, Matthias Mueller, Danat Pomeranets and Markus Gross, at ETH Zurich, presented "Optimized spatial hashing for collision detection of deformable objects" at Vision, Modeling, and Visualization 2003 in Munich (proceedings pp. 47-54). They compressed a potentially infinite regular grid into a finite table with a hash function that does not map cells uniquely, and reported real-time collision and self-collision detection for scenes of up to 20 000 tetrahedra. Their hash multiplies the three integer cell coordinates by the primes 73 856 093, 19 349 663 and 83 492 791 and takes the exclusive-or; the three numbers have since been copied into so many codebases that they behave as folk constants. Ericson's *Real-Time Collision Detection* (2005) put grids and hashed grids into the standard textbook form.
+
+isotop does not use that hash. It keys cells on the exact integer triple, so distant cells never share a key (section 5). The k-nearest shell search of section 3 is a plain expanding-ring search with an exactness proof, not a result from this literature.
+
 ## 1. The problem
 
 Given $n$ points $p_1,\dots,p_n\in\mathbb R^d$ and a query point $x$, answer one of
@@ -249,7 +257,7 @@ for a dense core and a sparse halo; see the next section.
 A grid wins when (a) the query scale is known and roughly uniform ($r$ is an interaction radius), (b) the
 data are rebuilt every step anyway, (c) the working set fits in cache, so that probing a cell is a few
 adjacent array reads, and (d) simplicity matters. Trees win on strongly clustered data or a wide spread of
-query scales. isotop's populations (192 to 10 000 processes; 8 000 birds in the planned flock) sit squarely in
+query scales. isotop's populations (192 to 10 000 processes; 8 000 birds in the Murmuration flock (`BIRD_CAP`)) sit squarely in
 the grid's regime. The `HashMap` from cell to range (instead of a dense 3-D array) is what lets the domain be
 unbounded: only occupied cells exist, and a key is the cell's integer triple (`SpatialHash` packs two `i32`
 into one `u64`; `SpatialHash3` keys on `[i32; 3]` with its own multiply-and-fold hasher, because the default
@@ -265,10 +273,7 @@ avoids false sharing by keying on the exact cell triple instead.
 * `SpatialHash` (2-D, radius only) has one production user: Coop's Vicsek flocks
   (`SpatialHash::new(NEIGHBOURHOOD)`, `NEIGHBOURHOOD = 4.0` world units, rebuilt per fixed step;
   see [Flocking](Math-Flocking)).
-* `SpatialHash3` (3-D, radius and exact $k$-nearest) has **no production caller**: it carries
-  `expect(dead_code)` and exists for the specified [Murmuration](Planned-Murmuration) view, built as P4
-  ([#20](https://github.com/tfpickard/isotop/issues/20)). Its doc comment sizes the cell for the 22nd
-  neighbour in the flock of the timing test.
+* `SpatialHash3` (3-D, radius and exact $k$-nearest) has one production user, the Murmuration view (`src/murmuration.rs`): `Flock` calls `nearest` once per bird per fixed step, asking for `FAR_NEIGHBOURS + 1` = 22 points (the bird and its 21 nearest), and takes the seven nearest of them for alignment. Its `Grid::adapt` rebuilds the hash with a cell as wide as the mean distance of a bird to its 21st neighbour whenever that is more than a quarter off the cell it has, clamped to `CELL_RANGE = (1.0, 8.0)` from a start of `CELL = 2.0`; the sizing rule of section 3.1 is therefore applied at run time. The 3-D radius query `neighbours` is still used only by tests.
 * Results are deterministic (sorted by index, or by distance then index) and independent of hash order,
   which keeps the frames reproducible ([Determinism](Theory-Determinism)).
 * The measured timing (not a count): the ignored test asserts that 22-nearest queries for 8 000 points take
@@ -288,8 +293,7 @@ python3 docs/figures/hashing-op-counts.py
 
 ## 8. Variations and open questions
 
-* **Adaptive cell width.** Choose $s$ per sample from the median $k$-th distance. The cost is one extra
-  pass; the heavy tail of section 3.3 argues for a two-level grid (coarse cells, subdivided where
+* **Adaptive cell width, beyond the mean.** Murmuration already adapts $s$ to the mean 21st-neighbour distance (`Grid::adapt`). The heavy tail of section 3.3 argues for a two-level grid (coarse cells, subdivided where
   occupied beyond a threshold).
 * **Counting sort.** Replace the $O(n\log n)$ sort by a two-pass counting sort over occupied cells. The
   determinism requirement (ascending index inside a cell) is met by a stable scatter.
@@ -308,6 +312,7 @@ python3 docs/figures/hashing-op-counts.py
   `spatial_hash_finds_exactly_the_points_brute_force_finds`, `nearest_finds_exactly_what_brute_force_finds`,
   `neighbours_in_3d_finds_exactly_what_brute_force_finds`, `timing_nearest_22_of_8000_flock_points_and_fft_1024`.
 * [`src/coop.rs`](https://github.com/tfpickard/isotop/blob/main/src/coop.rs): the one user of `SpatialHash`.
+* [`src/murmuration.rs`](https://github.com/tfpickard/isotop/blob/main/src/murmuration.rs): the one user of `SpatialHash3` (`Flock`, `Grid::adapt`).
 * `docs/mockups/code/murmuration.py`: the flock the tests are scaled from.
 
 ## 10. References
@@ -322,5 +327,6 @@ python3 docs/figures/hashing-op-counts.py
   19(2): 129-147.
 * Teschner, M., Heidelberger, B., Mueller, M., Pomeranets, D. and Gross, M. 2003. "Optimized spatial hashing
   for collision detection of deformable objects." *Vision, Modeling, and Visualization (VMV) 2003.*
+* Verlet, L. 1967. "Computer 'experiments' on classical fluids. I. Thermodynamical properties of Lennard-Jones molecules." *Physical Review* 159(1): 98-103.
 * Ericson, C. 2005. *Real-Time Collision Detection.* Morgan Kaufmann.
 * Samet, H. 2006. *Foundations of Multidimensional and Metric Data Structures.* Morgan Kaufmann.

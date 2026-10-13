@@ -19,6 +19,16 @@ inside a cube. Mathematical details, with derivations and figures, are on [Math 
 **Why it fits a process.** A process's accounting gives a cumulative CPU time. Plotted against wall-clock time its slope is the number of cores the process used. That slope has a real, hard bound for a single thread: it can run on one CPU at a time, so one thread's CPU time cannot grow faster than the wall clock. The bound is a light cone: one core is $c$. Only multithreaded
 processes can exceed it. That is an accurate statement about the machine, not a pun; what is only a metaphor is the *physics* of relativity: a process's CPU time is not frame-dependent, so boosting is a display transformation, and the view says so.
 
+## History
+
+The longer account lives in the repository: [docs/theory/tesseract.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/tesseract.md).
+
+**A fourth dimension.** Mathematicians had long used four coordinates as algebra; the geometry arrived in the 1850s with Ludwig Schlafli, who found the regular polytopes of every dimension (six in four dimensions, among them the 4-cube). Charles Howard Hinton popularised the idea and, in *A New Era of Thought* (1888), coined the word tesseract, from the Greek for "four rays", the four edges meeting at each vertex. He taught readers to picture four dimensions with sets of coloured cubes. He had been convicted of bigamy in 1886 and left England for Japan, which is where he spent the years that followed. Victor Schlegel's diagrams of polytopes, projected so that one cell contains the rest, date from the 1880s.
+
+**Time as the fourth.** Hendrik Lorentz (1904) found the transformations under which Maxwell's equations keep their form, and Einstein (1905) derived them from the principle of relativity and the constancy of the speed of light. In 1908 Hermann Minkowski, once Einstein's teacher, recast the theory as geometry: "Henceforth space by itself, and time by itself, are doomed to fade away into mere shadows". Alfred Robb (1911) introduced rapidity as the natural parameter of a boost. Salvador Dali painted an unfolded tesseract as the cross in *Corpus Hypercubus* (1954).
+
+**Cherenkov.** Pavel Cherenkov observed a faint blue glow from radioactive sources in liquids in 1934; Ilya Frank and Igor Tamm explained it in 1937 as radiation from a particle faster than light in that medium, and the three shared the 1958 Nobel Prize in Physics.
+
 ## Theory
 
 The coordinates of a worldline point are $(x, y, z, w)$, all in tesseract units where the cube is $[-1, 1]^4$:

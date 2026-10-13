@@ -4,6 +4,15 @@ The renderer does not draw a scene; it records one. A frame is a short program, 
 
 ![A sphere impostor: ray-sphere geometry and the literal pixels of a shaded sphere](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/theory-sphere-impostor.svg)
 
+## History
+
+* **The display file.** The idea of drawing from a stored list of instructions is older than raster graphics. Ivan Sutherland's *Sketchpad* (his MIT doctoral thesis, 1963) kept a structured description of the picture and had the display hardware redraw it continuously from that description; the vector displays of the time had to, because a phosphor trace fades.
+* **Painter's order.** Sorting polygons by depth and drawing the far ones first is the *painter's algorithm*, usually credited to M. E. Newell, R. G. Newell and T. L. Sancha, "A solution to the hidden surface problem", Proceedings of the ACM National Conference, 1972. It fails for cyclic overlap, which is why it was replaced for opaque geometry by the depth buffer ([Theory Rasterization](Theory-Rasterization)); isotop keeps painter's order for exactly the content a depth buffer cannot sort, the blended items below.
+* **Compositing.** Porter and Duff, "Compositing Digital Images" (SIGGRAPH 1984), gave the *over* operator that the blended items use, and showed why the order of two translucent layers matters.
+* **Retained and immediate.** OpenGL 1.0 (1992) offered display lists (`glNewList`) to record commands once and replay them; they were deprecated in OpenGL 3.0 and are absent from the core profiles that followed, as is the case for OpenGL ES and WebGL, where the application resubmits its geometry each frame. A scene graph (a retained tree of objects that a library traverses to draw) is the other tradition; Strauss and Carey described one in "An Object-Oriented 3D Graphics Toolkit" (SIGGRAPH 1992). isotop's design sits at neither: the retained part is the `Scene`'s memory, the drawn part is a flat list rebuilt each frame.
+* **Impostors.** Drawing a sphere as a screen-space disc whose depth and normal are computed per pixel, rather than as a tessellated mesh, is known as an *impostor* or *ray-cast sphere*; the technique became common in molecular visualisation, with Gumhold, "Splatting Illuminated Ellipsoids with Depth Correction" (VMV 2003) a frequently cited early description (venue and year unverified here).
+* The display list of Sketchpad outlived the program that drew it. The display list of isotop lives for one frame, and the 30 bits of a `Glyph` that its 7 by 14 bitmap does not use have so far outlived every one of them.
+
 ## The display list
 
 `render::Item` is a `Copy` enum. Every point is already in frame pixels: a world point has been through [`Frame::project`](Theory-Camera-and-Projection), so the third component of a `Point` is view depth (larger is nearer), not a pixel.
@@ -14,15 +23,19 @@ The renderer does not draw a scene; it records one. A frame is a short program, 
 | `Line` | two `(x, y, depth)`, `Color` | yes, `>=`, depth plus `LINE_DEPTH_BIAS` | yes | yes | writes `NONE` | no |
 | `Sphere` | centre `(x, y, depth)`, pixel `radius`, world radius `depth`, `Color`, pick, `selected` | yes, per pixel, at the sphere's surface depth | yes | yes | yes (the ring too) | no |
 | `Glow` | centre `(x, y)`, `radius`, `Color`, `strength` | none | yes | no | no | yes, weight `strength (1-d)^2` |
+| `Puff` | centre `(x, y)`, `radius`, `Color`, `strength` | none | yes | no | no | yes, weight `strength (1-d)^2`, strength clamped to 0..1, rounded to nearest on both backends |
 | `Beam` | two `(x, y)`, `Color`, weight | none | yes | no | no | yes, constant weight |
 | `Star` | `(x, y)`, `Color` | at `BACKGROUND = -10000` | yes | yes | writes `NONE` | no |
 | `Glyph` | integer `origin`, integer `scale`, `bits: u128`, `Color` | none | yes, overwrites | no | no | no |
 | `Pick` | centre `(x, y)`, `radius`, `depth`, pick | yes, `>=`, per pixel | no | no | yes | no |
+| `Field` | three `(x, y, depth)`, three `uv`, a field index | yes, `>=` | yes, sampled from the field | yes | yes, the owner of the nearest node | no |
 
 Notes that the table cannot carry:
 
-* **`Pick`** is a disc that writes only the pick buffer, so translucent or splatted content stays clickable. It must be recorded after the geometry it lies over, because it writes no depth and later geometry covers it wherever that geometry passes the depth test. It exists for views that need it (`#[expect(dead_code)]` outside tests says no shipped view draws one yet). See [Theory Picking](Theory-Picking).
+* **`Pick`** is a disc that writes only the pick buffer, so translucent or splatted content stays clickable. It must be recorded after the geometry it lies over, because it writes no depth and later geometry covers it wherever that geometry passes the depth test. The Murmuration view records them under its splatted flock. See [Theory Picking](Theory-Picking).
 * **`Glyph`** carries a 7 by 14 bitmap (`glyphs::WIDTH` and `HEIGHT`) as 98 bits of a `u128`, bit `row * 7 + column`. Only the Matrix view emits them. Labels, popups and the status lines are not display-list items at all; they are terminal text ([Theory Terminal Graphics](Theory-Terminal-Graphics)).
+* **`Puff`** is a `Glow` with the same profile that blends with round-to-nearest on the CPU, as the GPU's blend unit does, so any number of stacked puffs still agree between the backends. It is for content whose look is the density of many splats (Murmuration's flock); a lone halo is a `Glow`.
+* **`Field`** is a triangle whose colour and pick come from a grid of colours (`render/field.rs`: `Field`, `Frame::field`), sampled bilinearly in node units. It is for grid simulations; the `#[expect(dead_code)]` on the variant outside tests says no view records one yet.
 * **`Sphere`** is an *impostor*: no mesh, a pixel disc whose depth and shading are computed per pixel from the disc geometry ([below](#the-sphere-impostor)).
 * **`Star`** exists only for the `Space` backdrop and for views that scatter their own (Necropolis). Both rasterizers need stars to be recorded before anything else (see [ordering](#ordering-and-the-blending-model)).
 
@@ -182,33 +195,38 @@ CPU pressure tints the sky warm, memory pressure magenta, I/O pressure blue, and
 
 ## What the Scene persists
 
-`Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection, `thing`, time, `--limit`, focus, paused, toured) and returns a `Frame`. The scene is long-lived, and it exists to keep what a frame must not recompute:
+`Scene::render` takes one `RenderInput` (snapshot, view, camera, size, selection, `thing`, time, `--limit`, focus, paused, toured) and returns a `Frame`. The scene is long-lived, and it exists to keep what a frame must not recompute. It holds **frame-wide state only**: what every view and the app share. A view's own memory (its layout, its simulated medium, its history of what it has drawn) lives in its `ViewModule`, which the scene builds from the registry row (`ViewInfo::build`) when it is created and owns in `modules`, one per row in registry order. Every view is a module, City, Orbit, Ripple, Flow, Matrix and Coop included; there is no view the scene draws itself. The doc comment on `Scene` says so, and a test (`scene_has_no_view_specific_fields`) stops compiling until a new field is listed in it.
 
 | State | Held for |
 |---|---|
-| `resources` | each process's CPU and memory eased towards the samples, $\alpha = 1 - e^{-\Delta t/0.3}$; cleared if the gap leaves $0 \ldots 2$ s |
-| `births`, `previous`, `deaths` | the birth-growth animation (`growth`: a cubic ease-out over `GROW_SECONDS = 0.9`) and the exit flash (`FADE_SECONDS = 1.2`) |
-| `plots`, `groups`, `occupancy`, `systems`, `clusters`, `pebbles` | stable placement of City, Orbit, Ripple and Flow ([Theory Stable Layout](Theory-Stable-Layout)) |
-| `wave`, `flow` | the simulated media of Ripple and Flow |
+| `resources` | each process's CPU and memory eased towards the samples, $\alpha = 1 - e^{-\Delta t/0.3}$; cleared if the gap leaves $0 \ldots 2$ s. Frame-wide so that a view opened later finds the figures settled |
+| `births`, `arrivals`, `newborn` | the birth-growth animation (`growth`, in `simulation.rs`: a cubic ease-out over `GROW_SECONDS = 0.9`) and the true age of a process that arrived after the first frame (`Stage::age`) |
+| `previous`, `deaths`, `splashes` | where each process was last drawn, the exit flash (`FADE_SECONDS = 1.2`) and the disturbances any view's medium may take |
+| `links`, `highlight` | the `c` key's link mode and the processes whose links stand out |
+| `positions`, `places`, `titles`, `bounds`, `notes`, `sparklines`, `tour`, `popup`, `callout`, `headroom` | the last frame's `Stage` outputs, which the app reads back |
 | `history` | the shared per-process history ([Theory History](Theory-History)), filled on every sample whichever view is shown |
-| typed state of the built-in views, and `modules` | each view's own memory |
+| `rows`, `modules` | the registry rows and each view's module, built from its row; `record` feeds every sample to every module |
 | `clock` | the `FrameClock` behind `Stage::dt` |
 | `spare` | the previous frame's buffers |
 
-One frame does, in order: record the sample into the history; compute `dt`; ease the processes; select the processes to draw (`admitted`: the focused subtree or all, in `Identity` order, cut to `--limit` with the selection swapped in); build the sky from the pressures and the row's `haze` flag; make the `Frame`; clear the per-frame outputs; call the view; draw the socket links; draw the exit flashes; locate the selected process's anchor.
+The stable placement of the view families ([Theory Stable Layout](Theory-Stable-Layout)) is therefore not scene state: City, Orbit, Ripple and Flow keep theirs in `src/views/city.rs`, `orbit.rs`, `ripple.rs` and `flow.rs` (sharing `src/views/systems.rs`), and the simulated media of Ripple and Flow live in their modules.
+
+One frame does, in order: record the sample into the history; compute `dt`; ease the processes; select the processes to draw (`admitted`: the focused subtree or all, in `Identity` order, cut to `--limit` with the selection swapped in); build the sky from the pressures and the row's `haze` flag; make the `Frame`; clear the per-frame outputs; call the shown view's module (`draw_view`, which builds a `Stage`); draw the socket links according to the row's `links` rule (`All`, `Quiet`, which draws only the highlighted processes' links unless `c` asks for more, or `DrawnByView`, which draws none); draw the exit flashes where the row has the `flash` flag; locate the selected process's anchor.
 
 * **Links** (`draw_links`) are quadratic Bezier arcs lifted above the plane by `span * 0.35`, in 20 segments, as `Beam`s (or `hairline`s when the row sets `link_strokes`), colour `(80, 175, 235)` and weight `min(0.1 + 0.05 ln count, 0.3)`, or `(150, 232, 255)` at 0.8 for a highlighted process, with a travelling `Glow` of radius 5. Connections that leave the machine rise as ten fading beams in pink.
 * **Exit flashes** (`flash_exits`) draw an expanding ring of `Line`s (radius $0.6 + 3.4\,\text{age}$ world units) and, for the first 35% of the 1.2 s, a glow of radius $\max(2\,\text{zoom}, 10)$ and strength $1 - \text{age}/0.35$.
 
 ### Stage outputs
 
-A view reads `Stage` and writes back only through it. Inputs: the `Frame`, the `Camera`, `selected`, `thing` (selected or hovered non-process), `toured`, `focus`, `limit`, `time`, `dt`, `history`, and the eased `births` and `resources` through `growth(id)` and `eased(process)`. Outputs:
+A view reads `Stage` and writes back only through it. Inputs: the `Frame`, the `Camera`, `selected`, `thing` (selected or hovered non-process), `toured`, `focus`, `links` and `highlight`, `limit`, `time`, `frames`, `dt`, `history`, `splashes`, `newborn`, and the eased `births`, `arrivals` and `resources` through `growth(id)`, `age(id)` and `eased(process)`. Outputs:
 
 | Output | Consumed by |
 |---|---|
 | `positions` (identity to world point) | picking anchors, labels, the tour, the exit flash, the harness |
 | `bounds` (fixed envelope of world points) | the camera fit, for content that moves by itself |
 | `places` (world point and text) | scene labels |
+| `titles`, `headroom` | system labels under their outer edges; how far the content rises above the ground, for the camera fit |
+| `sparklines` | generated braille lines after the notes (cleaned by `terminal::clean_sparkline`) |
 | `notes`, `popup` | extra inspector lines, after the sockets / after the process's own figures |
 | `tour` (`TourTarget { id, position, weight }`) | the tour, heaviest first |
 | `callout` | extra lines in the tour's callout |
@@ -225,6 +243,8 @@ What the display list makes certain: every pixel of colour traces to an item, an
 |---|---|
 | `Item`, `Frame`, `Buffers`, `Sky`, `Backdrop`, `Frame::sphere`, `world_sphere`, `hairline`, `halo`, `ball` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
 | `Scene`, `Scene::render`, `ease`, `admitted`, `draw_links`, `flash_exits`, `Stage`, `FrameClock` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
+| `ViewModule`, `ViewInfo`, `Build`, `REGISTRY` (what the scene builds its modules from) | [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs) |
+| `Field`, `Frame::field`, `ShadedField` | [`src/render/field.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/field.rs) |
 | Shared constants (`SPHERE_*`, `SELECTION_*`, `LINE_DEPTH_BIAS`, sky and haze constants) | [`src/render/shared.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/shared.rs) |
 | The shader's `ball_fragment`, `glow_fragment`, `sky_fragment` | [`src/shaders.wgsl`](https://github.com/tfpickard/isotop/blob/main/src/shaders.wgsl) |
 | Easing helpers (`growth`, `smoothing`) | [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs) |

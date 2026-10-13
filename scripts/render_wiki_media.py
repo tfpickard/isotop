@@ -71,6 +71,10 @@ STILLS = {
     "ptolemy": 300,
     "tesseract": 120,
     "necropolis": 1383062,
+    "cortex": 60,
+    "horizon": 60,
+    "murmuration": 60,
+    "arbor": 60,
 }
 
 # The contact sheet's order is the registry's (Tab) order.

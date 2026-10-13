@@ -26,6 +26,18 @@ are driven by the same service and that stay coherent while the machine is calm.
 
 **A yard with predators.** The Linux OOM killer removes a victim chosen by memory use when a cgroup exhausts its limit; a fox that carries off the largest hen is the same event at a scale a viewer can read. Memory pressure is the fox's eyes in the hedge.
 
+## History
+
+The longer account lives in the repository: [docs/theory/coop.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/coop.md).
+
+**The chicken.** Every domestic chicken descends from the red junglefowl (*Gallus gallus*) of South and Southeast Asia. When it was domesticated is disputed: early claims of about 8,000 years ago in northern China have been challenged, and a 2022 re-evaluation of the archaeological evidence, led from the University of Exeter, put the domestication of the modern chicken in Southeast Asia about 3,500 years ago, tied to the arrival of dry rice farming (junglefowl came to the fields for the grain). Chickens were at first exotic and ritual animals, and only later food.
+
+**The pecking order.** The Norwegian zoologist Thorleif Schjelderup-Ebbe, who watched farmyard hens from childhood, described and named it in the early twentieth century: each hen knows whom she may peck and who may peck her, a hierarchy settled by early fights and kept without more of them. His term, *Hackordnung*, became the English idiom for any rank order, and the founding observation for the study of animal dominance.
+
+**Collective motion.** In 1986 Craig Reynolds built *boids*, three local rules (separate, align, cohere) that make a computer flock look alive. In 1995 Tamas Vicsek and colleagues stripped the idea to its physics, constant-speed particles taking the mean heading of their neighbours plus noise, and found a phase transition from a moving flock to a gas of individuals. This was surprising because the Mermin-Wagner theorem forbids long-range order in two-dimensional equilibrium systems with continuous symmetry; Toner and Tu (1995) explained why a non-equilibrium flock escapes it. See [Math Flocking](Math-Flocking).
+
+**The henhouse.** Paul Menage and Rohit Seth, engineers at Google, began "process containers" in 2006 and renamed them control groups to avoid colliding with the word "container". They were merged into Linux 2.6.24, which shipped in January 2008. Cgroups let the kernel account for and limit the CPU, memory and I/O of a set of processes, and container systems rest on them. The OOM killer, the fox, picks a victim when memory runs out.
+
 ## Theory
 
 The dynamics, in the notation of [Math Flocking](Math-Flocking): $N_f$ foragers in a flock, positions $x_i$, headings $\theta_i$, speed $v_i$, heading noise $\eta_i$.
@@ -127,7 +139,7 @@ Keys: only the global ones (Tab, `v` the picker, `f` focus a subtree, `c` link m
 
 * `src/coop.rs`: `Coop` (state; `record`, `draw`, `decide`, `paint`, `legend`, `anchors`), `Yard` (`step`, `separate`, `confine`, `order`, `flock_orders`), `Chicken`, `Role`, `Flock`, `Feeder`, `Nest`, `Fox`, `nest_seats`, `clutch`, `place_feeders`, `ladder`, `seat_offset`, `body_radius`, `noise`, `speed`, `variation`, `peer_weight`, `puffs`.
 * `src/simulation.rs`: `FixedStep`, `SpatialHash`, `Rng::for_identity`; `src/layout.rs`: `Seats`, `Discs`, `spin`; `src/model.rs`: `bounded`; `src/platform/linux/files.rs`, `net.rs`, `mod.rs` (cgroup OOM counts, pressure); `src/palette.rs`: `core_color`, `kind_color`.
-* `src/views.rs`: the `coop` row (`Backdrop::Dusk`, warm-up `Phase::Record { seconds: 30 }` for demo output plus `SETTLE`, harness `anchors`). **Note:** the row is `Hooks::BuiltIn { arm: BuiltIn::Coop, .. }` with its state in `Scene::coop`; the file table of `AGENTS.md` calls `coop.rs` a "module view", while its paragraph on the eleven older views (which includes the coop) matches the code.
+* `src/views.rs`: the `coop` row (`Backdrop::Dusk`, warm-up `Phase::Record { seconds: 30 }` for demo output plus `SETTLE`, harness `anchors`). The row builds `coop::Coop` (`ViewInfo::new("coop", "COOP", Backdrop::Dusk, ..)`), a `ViewModule` whose state the scene owns; there is no coop field on `Scene`.
 * Tests: `flocks_order_at_low_noise_and_dissolve_past_critical_noise`, `a_blocked_waiter_walks_to_the_holders_nest_in_another_flock`, `an_oom_kill_sends_a_fox_for_the_departed_member`, `kills_recorded_while_another_view_is_shown_do_not_replay_on_switching_to_coop`, `houses_and_perches_stay_put_when_resources_or_population_change`.
 * Design lineage: the view is a port of [tfpickard/chicken](https://github.com/tfpickard/chicken) with four of its bugs fixed (in-place heading updates, an alignment readout that was always 1, one step per frame, O(N^2) neighbour search). No plugin system exists; a new view is a compile-time module plus a registry row.
 
@@ -139,6 +151,7 @@ Keys: only the global ones (Tab, `v` the picker, `f` focus a subtree, `c` link m
 4. **Peers by measured Unix traffic.** The kernel gives no byte counters for Unix sockets; a queue-length proxy from `sock_diag` could replace the co-activity fallback.
 5. **A clutch with units.** Colour eggs by the file kind (regular, deleted, socket-backed) to restore what the logarithm hides.
 6. **Per-flock phi as a sky tint.** Open: is there a quantity worth reading from the order, or should phi be removed in favour of the noise inputs themselves?
+7. **The crossing.** Whether an aligned flock of 500 crosses the road requires a road and a motive; the model has a fence (`confine`) and neither of the others, and the question is left open.
 
 ## References
 

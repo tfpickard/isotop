@@ -16,6 +16,24 @@ for "forked and never exec'd" (AFORK). The Linux process connector delivers fork
 **Why a graveyard.** Process monitors show the living. The dead are the process table's negative space: every process that ever existed left a short record or nothing at all, and the *rate* of death, the mass deaths of a build job's children, the OOM kills and the services that stopped altogether are the machine's history. A cemetery has the right structure for it:
 a place for each death by when it happened, families together, a building for a whole dynasty, and the unmarked graves of those too short-lived to be recorded.
 
+## History
+
+The longer account lives in the repository: [docs/theory/necropolis.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/necropolis.md).
+
+*Necropolis* is Greek for "city of the dead", and the oldest were laid out as cities for the reason cities are: the dead were a community the living meant to stay in relation to.
+
+**The Valley of the Kings.** For roughly five centuries of the New Kingdom (about 1539 to 1075 BCE) the pharaohs were buried in rock-cut tombs in a wadi on the west bank at Thebes, across the Nile from the living city. The move away from pyramids was a bet on concealment, and mostly lost: nearly every tomb was robbed in antiquity. Tutankhamun's, KV62, survived largely by accident, buried under rubble from later digging; Howard Carter's team found its steps in November 1922. KV5, the tomb of the sons of Ramesses II, was noted in 1825, but its extent (well over a hundred chambers) was established only by Kent Weeks's team from 1995.
+
+**Banditaccia, Cerveteri.** An Etruscan city of the dead laid out as a city, with streets and squares, from the ninth century BCE to about the third. Many of its tumuli imitate the interior of a house, with carved beams, couches and hearths. The name does not refer to bandits; it is said to come from the *bando*, the lease under which landowners let ground to families for burials.
+
+**Pantalica, Sicily.** A limestone plateau pierced by thousands of rock-cut chamber tombs, most from the thirteenth to the seventh century BCE. The traditional count is over 5,000; the most recent estimate is just under 4,000.
+
+**The Alyscamps, Arles.** A Roman burial road that became a Christian pilgrimage cemetery, and which Van Gogh and Gauguin both painted in 1888. Cairo's City of the Dead (the Qarafa) is a necropolis people live in.
+
+**Brookwood, Surrey.** London's churchyards were full and dangerous, so a private company laid out a vast cemetery 25 miles out in 1852 and ran the dead there by rail. The London Necropolis Railway ran its first funeral train in November 1854, from a private terminus near Waterloo, with coffins and mourners in separate classes of carriage. A German bomb destroyed the terminus and its rolling stock on the night of 16 April 1941, and the line never reopened. The cemetery still takes burials. Glasgow's Necropolis (1833) and Pere Lachaise in Paris (1804) belong to the same movement, the garden cemetery.
+
+What these share is the design problem the view inherits: a place that has to index the dead (who, when, how, how big a life) so that someone can find one again.
+
 ## Theory
 
 ### What a death keeps, in bits
@@ -167,6 +185,7 @@ Hover or click a headstone for its epitaph; the legend line ends with `moon: <ph
 5. **Lifetime distributions.** Plot lifetime against CPU on a per-row Hertzsprung-style diagram; a machine's dead processes may fall on a main sequence.
 6. **Taskstats without privilege.** Read `/proc/<pid>/stat` just before death for processes with a known exit time to approximate `etime` when taskstats is not available.
 7. **Zombie ageing.** Colour a pit by how long the zombie has waited.
+8. **Degrees of death.** Whether a process that is remembered only by its pid is more or less dead than one the kernel has also forgotten; the view buries both in the same minute.
 
 ## References
 

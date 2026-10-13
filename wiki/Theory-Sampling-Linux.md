@@ -9,6 +9,20 @@ smoothing, aliasing) is on [Model and rates](Theory-Model-and-Rates); how the sl
 [the background sampler](Theory-Background-Sampler-and-Demand); the macOS counterpart is
 [Sampling on macOS](Theory-Sampling-macOS).
 
+## History
+
+*The `/proc` idea.* The first file system that showed processes as files is Tom Killian's `/proc` for Research Unix Eighth Edition, described in a 1984 paper. Its purpose was to replace `ptrace`, which moved a word at a time, with ordinary reads and writes of a process's address space. Sources disagree about where the paper appeared: most give the USENIX Summer Conference in Salt Lake City, June 1984, pages 203 to 207, while a 1988 Usenet post gives the EUUG Autumn Conference, September 1984. This page does not decide between them. Roger Faulkner and Ron Gomes carried the design into System V Release 4, and described it in a 1991 USENIX paper.
+
+*Linux.* Linux gained a `/proc` in version 0.97.3 (September 1992, according to the procfs article that cites the kernel's own history) and began filling it with data unrelated to processes in 0.98.6 that December. The difference from Killian's design is the one this page lives on: a Linux `/proc/<pid>/stat` is a line of text, not a memory image, so reading a process means parsing, and the `comm` field's parentheses are why `parse_stat` splits after the last `)`.
+
+*The files this page reads, in order of arrival.*
+
+* Control groups were begun by Google engineers Paul Menage and Rohit Seth in 2006 under the name "process containers", renamed to avoid the many meanings of "container" in the kernel, and merged in Linux 2.6.24, released in January 2008. Cgroup v2's `cpu.stat`, `memory.events` and pressure files are the later, unified form that section 4 reads.
+* Pressure stall information was written by Johannes Weiner and is in the kernel from 4.20, which is the version section 3 states.
+* The proc connector took shape in 2005 as Matt Helsley's proposal to merge several fork and exit notification patches into one netlink interface, with exec and id changes added. It is why a process that lives for a tenth of a second can be seen at all; see [Life events](Theory-Life-Events). It needed `CAP_NET_ADMIN` until Linux 6.6, per the source comment in `platform/linux/events.rs`.
+
+Where the sources above are secondary (the procfs article for version numbers, the cgroups article for the merge release), the dates should be read as the best available rather than checked against a kernel tree.
+
 ## 1. The kernel's side of the contract
 
 This section is general Linux, independent of isotop.
@@ -227,8 +241,10 @@ and per-connection statistics. It runs on the background thread.
    and the pair of pids is a link (counted once, by comparing the two address strings); if it does not, the
    connection leaves the machine and increments that pid's `outside` count.
 3. **Unix sockets.** A `sock_diag` dump (`NETLINK_SOCK_DIAG`, message type `SOCK_DIAG_BY_FAMILY` = 20, flags
-   `NLM_F_REQUEST | NLM_F_DUMP`) of `AF_UNIX` with `UDIAG_SHOW_PEER` returns, per socket, its inode and its peer's
-   inode; matching both through the owner table gives a pid pair.
+   `NLM_F_REQUEST | NLM_F_DUMP`) of `AF_UNIX` with `UDIAG_SHOW_PEER | UDIAG_SHOW_RQLEN` returns, per socket, its inode, its peer's
+   inode (`UNIX_DIAG_PEER`) and the bytes waiting in its receive and send queues (`UNIX_DIAG_RQLEN`);
+   matching both inodes through the owner table gives a pid pair, and the receive queue becomes
+   `Snapshot::unix_queues`. This rides the socket scan, which every view reads.
 4. **Per-connection statistics.** A second dump asks `AF_INET` and `AF_INET6` for established TCP sockets with the
    `INET_DIAG_INFO` extension, which attaches the kernel's `struct tcp_info`. The request and reply are decoded by
    byte offset:
@@ -236,7 +252,7 @@ and per-connection statistics. It runs on the background thread.
    | structure | offset | bytes | meaning |
    |---|---|---|---|
    | `unix_diag_req` | 4 | `u32` | `udiag_states`, all ones |
-   | | 12 | `u32` | `udiag_show`, `UDIAG_SHOW_PEER` (`0x4`) |
+   | | 12 | `u32` | `udiag_show`, `UDIAG_SHOW_PEER` (`0x4`) or `UDIAG_SHOW_RQLEN` (`0x10`) |
    | `inet_diag_req_v2` (56 bytes) | 0, 1 | `u8` | family, `IPPROTO_TCP` |
    | | 2 | `u8` | `idiag_ext`, `1 << (INET_DIAG_INFO − 1)` |
    | | 4 | `u32` | `idiag_states`, `1 << TCP_ESTABLISHED` |
@@ -318,6 +334,16 @@ in the model, never zero, with one exception the pressure percentages: an unread
   `fd` tables are not, so their I/O rates, open files and sockets read `None` or are absent unless isotop runs as
   root.
 
+## 10. Readings only some views ask for (background thread)
+
+These go through `Reads`, so they are read only while the shown view declares them ([demand](Theory-Background-Sampler-and-Demand#5-demand-which-optional-sources-are-read)).
+
+* **Out-of-memory ranking**, `Source::Oom`, `platform/linux/memory.rs`: `/proc/<pid>/oom_score` and `oom_score_adj` for every pid the cycle scanned (`oom_scores`). An `oom_score_adj` of -1000 (`EXEMPT`) exempts the process. A pid that vanishes is no gap; a permission failure leaves that process unreadable.
+* **Memory by kind**, `Source::MemoryDetail`: `/proc/<pid>/smaps_rollup` for the `ROLLUP_PROCESSES` (64) largest, read in a 50 ms budget (`ROLLUP_BUDGET`) that resumes where it stopped (`Rss`, `Pss`, the clean and dirty shared and private parts, `Swap`, `SwapPss`). The `Pss_Anon`, `Pss_File` and `Pss_Shmem` split needs Linux 5.3; before it `Source::MemorySplit` is missing.
+* **Pipes and FIFOs**, `Source::Pipes`, `platform/linux/pipes.rs` with `fdinfo.rs`: a descriptor that links to `pipe:[inode]`, or a FIFO found by a stat, direction from the `flags:` line of `/proc/<pid>/fdinfo/<fd>` (`O_ACCMODE`), at most 4096 fdinfo reads and 65 536 listed descriptors per pass.
+* **Threads**, `Source::Threads`, `platform/linux/threads.rs`: `/proc/<pid>/task/<tid>/stat`, parsed after the last `)` like a process's; at most `THREADS_PER_PASS` (8192) threads in a pass and `THREADS_PER_PROCESS` (1024) per process, busiest processes first.
+* **Kernel counters**, `platform/linux/counters.rs`: `/proc/interrupts` (columns follow the `CPUn` header), `/proc/softirqs`, `effective_affinity_list` per numbered interrupt, and `oom_kill` from `/proc/vmstat` (`OomKills`, absent on old kernels). With none demanded no counter file is opened.
+
 ## Where in the code
 
 * [`platform/linux/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/mod.rs): `Sampler`,
@@ -327,6 +353,11 @@ in the model, never zero, with one exception the pressure percentages: an unread
   `socket_owners`, `diag`, `unix_peer`, `tcp_socket`, `attributes`.
 * [`platform/linux/files.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/files.rs):
   `FileScan`, `scan_table`, `classify`, `estimate`, `parse_locks`.
+* [`platform/linux/memory.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/memory.rs),
+  [`pipes.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/pipes.rs),
+  [`fdinfo.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/fdinfo.rs),
+  [`threads.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/threads.rs) and
+  [`counters.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/counters.rs): section 10.
 * [`platform/linux/nvml.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/nvml.rs): `Nvml`, `awake`.
 * [`platform/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/mod.rs): the `Sampler` contract,
   `RawProcess`, `Source`, `Sources`.

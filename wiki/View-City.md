@@ -17,6 +17,17 @@ A city is a good picture of a process table because the two share a structure. L
 
 The City is closest to a **quantum treemap** (Bederson, Shneiderman and Wattenberg 2002): every leaf occupies exactly one fixed-size cell, a *quantum*, and the data are carried by something other than the cell's area. Here the cell is the 4 by 4 plot, and the data go into the third dimension (height) and into the size of the building inside its plot.
 
+## History
+
+The thing City draws is the planned city: land divided into equal parcels before anyone builds on it.
+
+* Rectilinear street plans are older than any name attached to them. Excavated cities of the Indus valley such as Mohenjo-daro (third millennium BCE) show blocks laid out on a grid, and Greek colonies used regular plots from the seventh century BCE onward. Historians treat "the first grid" as an unanswerable question.
+* The tradition names Hippodamus of Miletus (fifth century BCE) as its inventor, on the authority of Aristotle, who says in the *Politics* that Athens had him plan the Piraeus. Modern scholarship disputes the invention and the attribution of other cities to him, and some argue his real contribution was theoretical: a division of a city into classes of land and people. Aristotle also records that he wore his hair long, wore costly ornaments, and dressed in the same cheap warm cloak in winter and summer.
+* Roman town planning combined a rectilinear grid with a forum at its centre and a wall around it, and carried the plan across the empire. The Spanish crown's colonial ordinances of the sixteenth century did the same for a new continent (the grid-and-plaza pattern of Spanish American towns).
+* Two nineteenth-century plans are the usual modern exhibits. The Commissioners' Plan of 1811 laid a grid of avenues and numbered streets over Manhattan above Houston Street, on a survey by John Randel Jr., and critics have objected to its rigidity ever since. Ildefons Cerda's plan for the Eixample of Barcelona (late 1850s) also drew on the Hippodamian model, with equal blocks and chamfered corners, and was much altered by landowners and speculation afterwards.
+* The step from the plan to the metaphor in software is recent: Wettel and Lanza's *CodeCity* (2007) drew classes as buildings and packages as districts. City differs from that line in one respect it shares with the cadastre, not the skyline: a parcel keeps its address when the building on it changes.
+* Nobody has yet determined whether a district of sixteen is closer to a Roman *insula* or to a block of the Eixample; the tallest buildings in both are the exceptions.
+
 ## Theory
 
 ### Perceptual ranking and the choice of channel
@@ -78,19 +89,19 @@ Panel C is the district fill order described under [How isotop realises it](#how
 
 ## How isotop realises it
 
-`Scene::draw_city` (in [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs)) draws it after `Scene::city_positions` has seated every admitted process. City is a built-in arm (`Hooks::BuiltIn`, `BuiltIn::City`), not a `ViewModule`.
+City is a `ViewModule` in [`src/views/city.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/city.rs): the state struct `City` owns the seating, and `City::draw` calls `City::place` to seat every admitted process before drawing the districts and buildings. Its registry row in `views::REGISTRY` builds it with a closure (`Box::new(city::City::default())`), so `Scene` holds no City state.
 
-**Seating.** `Scene` keeps `plots` (identity to district and slot), `groups` (group name to its districts, in order) and `occupancy` (per district, slot to identity). A process already seated keeps its plot. A newcomer scans its group's districts in order for the lowest free slot of 16; if none, it opens a new district at the end. A process that exits frees its slot (`occupancy[district].remove`), which the next newcomer of the same group will take. District blocks are never freed, so a district's index and place never change. Admitted processes are visited in `Identity` order (pid, then start time), so on a cold start the seats are in pid order. The slot $s$ of a district is at plot $(s \bmod 4,\ \lfloor s/4\rfloor)$, 4 units apart, building centred in it.
+**Seating.** `City` keeps `plots` (identity to district and slot), `groups` (group name to its districts, in order) and `occupancy` (per district, slot to identity). A process already seated keeps its plot. A newcomer scans its group's districts in order for the lowest free slot of 16; if none, it opens a new district at the end. A process that exits frees its slot (`occupancy[district].remove`), which the next newcomer of the same group will take. District blocks are never freed, so a district's index and place never change. Admitted processes are visited in `Identity` order (pid, then start time), so on a cold start the seats are in pid order. The slot $s$ of a district is at plot $(s \bmod 4,\ \lfloor s/4\rfloor)$, 4 units apart, building centred in it.
 
 **Where districts go.** `district_origin(index)` fills **square shells**: with $q = \lfloor\sqrt{\mathrm{index}}\rfloor$ and $o = \mathrm{index} - q^2$, the grid cell is $(q, o)$ for $o \le q$ and $(2q - o,\ q)$ otherwise, times a pitch of 23 units. Shell $q$ adds $2q+1$ districts to the L-shaped border of the previous square, so index 0 is the grid cell $(0,0)$, 1 is $(1,0)$, 2 is $(1,1)$, 3 is $(0,1)$, 4 is $(2,0)$, and no district ever moves; twelve districts make a complete $4\times3$ rectangle. Each district is an 18-unit platform (a 16-unit block plus a margin of one) with a 5-unit street between neighbours.
 
-**Time.** Resource figures come eased (`Scene::ease`: $\alpha = 1 - e^{-\Delta t/0.3}$ towards the sampled CPU and memory, reset after a gap longer than 2 s or a rewind), so a 1 s sample step is smoothed into continuous motion at the frame rate. The view uses the scene time for its animations; as a built-in arm it does not use `stage.dt`.
+**Time.** Resource figures come eased (`Scene::ease`: $\alpha = 1 - e^{-\Delta t/0.3}$ towards the sampled CPU and memory, reset after a gap longer than 2 s or a rewind), so a 1 s sample step is smoothed into continuous motion at the frame rate. The easing is frame-wide and every view reads the same figures through `Stage::resources`. City uses `stage.time` for its animations and does not step anything with `stage.dt`.
 
-**Growth.** `simulation::growth` is a cubic ease-out over `GROW_SECONDS` = 0.9 s, applied as height $\times\ \max(\mathrm{grow}, 0.05)$ and half-side $\times\ (0.35 + 0.65\,\mathrm{grow})$. Headless renders and tests start fully grown; the interactive app sets `scene.intro` so the processes already running when it starts bloom as well.
+**Growth.** `simulation::growth` is a cubic ease-out over `GROW_SECONDS` = 0.9 s, applied as height $\times\ \max(\mathrm{grow}, 0.05)$ and half-side $\times\ (0.35 + 0.65\,\mathrm{grow})$. Headless renders and tests start fully grown; the interactive app sets `Scene::intro` so the processes already running when it starts bloom as well.
 
 **Draw order and picking.** Platforms and grid lines, then for each building a shadow, four walls (and windows), the roof, the rooftop light, the beacon and the I/O sphere. Walls, windows and roof carry the process index into `frame.identities`; platforms and shadows carry `NONE`. `positions[id]` is the plot centre on the ground, which is what the tour, labels and the exit flash read. The depth buffer resolves occlusion; the pick buffer follows, so a click lands on whatever building is in front.
 
-**Fit.** `Scene::fit` frames the districts' ground positions and leaves vertical headroom of $\max(24,\ \text{tallest}\cdot\cos(\text{pitch})\cdot\sqrt{3/2} + 8)$ world units, where `tallest` is the tallest building of the last frame.
+**Fit.** `Scene::fit` frames the districts' ground positions and leaves vertical headroom of $\max(24,\ \text{tallest}\cdot\cos(\text{pitch})\cdot\sqrt{3/2} + 8)$ world units, where `tallest` is the tallest building of the last frame, which `City::draw` writes back through `Stage::headroom`.
 
 **CPU and GPU.** Everything is quads, lines and sphere impostors on the shared display list, so there is no special parity case.
 
@@ -135,11 +146,12 @@ Keys: `1` selects it; `t` toggles top-down and isometric; `Q` and `e` rotate a q
 
 ## Where in the code
 
-* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::draw_city`, `Scene::city_positions`, `district_origin`, `Scene::fit`, `Scene::ease`, `admitted`, `Plot`; tests `city_does_not_relocate_when_resources_or_population_change`.
+* [`src/views/city.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/city.rs): `City`, `City::place`, `City::draw`, `district_origin`, `draw_district`, `draw_building`, `draw_windows`, `Plot`; tests `city_does_not_relocate_when_resources_or_population_change`.
+* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::fit`, `Scene::ease`, `admitted`, `Stage::headroom`.
 * [`src/model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs): `bounded`, `measure` (CPU rate and its smoothing), `Process`.
 * [`src/palette.rs`](https://github.com/tfpickard/isotop/blob/main/src/palette.rs): `DISTRICTS`, `process_color`, `tint`.
 * [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs): `growth`, `GROW_SECONDS`, `smoothing`.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `city` row (`LinkRule::All`, `Backdrop::Dusk`) and `city_legend`.
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `city` row (`LinkRule::All`, `link_lift` 1.5, `Backdrop::Dusk`); the legend is `City::legend`.
 * [`src/platform/linux/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/mod.rs): `cgroup_name`, `classify`; [`src/platform/macos/logic.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/macos/logic.rs): `group`.
 * Figure script: `docs/figures/city-encodings.py`.
 

@@ -4,7 +4,7 @@ isotop becomes the Earth at the centre of a geocentric cosmos. The seven process
 over the last minute are the planets, each carried on a deferent circle and a chain of twelve epicycles that is
 the discrete Fourier transform of that minute, replaying it once a minute; every other process is a fixed star on an
 outer ring, as bright as its memory. Where a planet's apparent longitude seen from Earth runs backwards, its trail turns
-red and the status line says so. It is the most mathematical of the fourteen views: the picture is, to rounding, a
+red and the status line says so. It is the most mathematical of the eighteen views: the picture is, to rounding, a
 theorem about Fourier series dressed as second-century astronomy.
 
 ![Ptolemy: Earth at the centre, planets on deferents with epicycle chains and red retrograde trails, fixed stars on the outer ring](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/ptolemy.webp)
@@ -25,6 +25,18 @@ centre outwards, and the outermost sphere carries the fixed stars.
 Why it is a good metaphor for process data: a process's resource use is a closed-ish trajectory in a plane (CPU against
 memory) with a slow trend and several fast cycles. A sum of rotating vectors is the natural way to describe cycles;
 a planet is a process, and a process in retrograde is one whose short-period swings outrun its long-period drift.
+
+## History
+
+The longer account lives in the repository: [docs/theory/ptolemy.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/ptolemy.md).
+
+**Spheres and circles.** Greek astronomy inherited a demand, usually attributed to Plato's circle: explain the wandering of the planets by uniform circular motion. Eudoxus answered with nested rotating spheres in the fourth century BCE. Apollonius of Perga (around 200 BCE) is credited with the deferent and epicycle, and Hipparchus (second century BCE) with fitting them to observation and discovering the precession of the equinoxes.
+
+**Ptolemy.** Claudius Ptolemy's *Mathematical Syntaxis*, known by its Arabic-derived title, the *Almagest* (around 150 CE), is the completed system: tables for every planet built from deferents, epicycles and the equant, an off-centre point about which the epicycle's centre moves at uniform angular speed. The equant broke the letter of uniform circular motion and troubled astronomers for well over a thousand years.
+
+**Repair and replacement.** Nasir al-Din al-Tusi (1247) devised a pair of circles that turns circular motion into motion along a line, the Tusi couple, and Ibn al-Shatir of Damascus (fourteenth century) built models without the equant. Copernicus (1543) moved the Sun to the centre but kept epicycles, and his lunar model is closely related to Ibn al-Shatir's; how much he knew of the earlier work is debated. Kepler's ellipses (1609) replaced the circles.
+
+**Fourier.** In 1822 Joseph Fourier, studying heat, showed that essentially any periodic function is a sum of sines and cosines; in complex form, that is the epicycle theorem used here. Gauss had found a fast algorithm for the discrete transform around 1805, working on asteroid orbits, but did not publish it. It appeared in his collected works in 1866, in Latin, and Cooley and Tukey rediscovered it independently in 1965. N. R. Hanson (1960) argued that epicyclic astronomy, as a method, can approximate any path, which is part of why it lasted.
 
 ## Theory
 

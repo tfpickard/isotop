@@ -22,6 +22,14 @@ What a physicist reads off such a photograph:
 
 That is also exactly the vocabulary of a process table: busy things that move, quiet things that do not, births and deaths at points, parents and children. The metaphor is therefore a mapping of structure, not of units: nothing about a process has a momentum or a charge in the physical sense, and the view says which measured quantity plays each role.
 
+## History
+
+The instrument in the mockup has an older sibling. C. T. R. Wilson, working in Cambridge, had spent time at the Ben Nevis observatory and was struck by the optical effects of sunlight on cloud; he tried to make clouds in the laboratory by expanding moist air in a sealed vessel, and found that droplets formed even when the air had been cleared of dust. Early in 1911 he photographed, for the first time, the tracks of individual alpha and beta particles and electrons as lines of droplets, and the fuller account followed in 1912. The cloud chamber found the positron (Carl Anderson, 1932) and showed the recoil electrons of the Compton effect. Wilson shared the 1927 Nobel Prize in Physics with Arthur Compton, for the chamber.
+
+A cloud chamber is sparse: its working medium is a gas, so few particles interact in it. Donald Glaser's insight of 1952 was to use a superheated liquid, which is dense enough to stop and to make secondary particles, and which, being a liquid, can be pulsed quickly. He received the 1960 Nobel Prize in Physics. The popular story that the idea came from the bubbles in a glass of beer is not Glaser's: in a 2006 talk he disputed it. He did test beer, in 1953, to check a calculation that the chamber should work with water, and the smell is said to have caused trouble in the department.
+
+From there the instrument scaled. Luis Alvarez's group built the large hydrogen chambers of the 1950s and 1960s. The Omega-minus (1964) and the neutral currents (1973) are the two results from chamber photographs that the page above names.
+
 ## Theory
 
 ### Track curvature: $p = 0.3\,B\,r$
@@ -84,7 +92,7 @@ A neutral particle leaves no track. A neutral kaon $K^0_S$ (mass 497.611 MeV/$c^
 
 ## Mapping
 
-The view is specified so that each visual element is a measurement or is declared decorative. The measured sources are `Process` and `Snapshot` fields; building block B4 is not on `main` yet.
+The view is specified so that each visual element is a measurement or is declared decorative. The measured sources are `Process` and `Snapshot` fields; building block B4 is on `main` (`Snapshot::interrupts`).
 
 | Visual element | Measured quantity (source) | Transform |
 |---|---|---|
@@ -114,9 +122,9 @@ The figure below plots the mapping from CPU and memory to radius, speed and bubb
 
 Everything in this section is the specification of issue #42; none of it exists in the source.
 
-**Module and registry.** A new module `src/chamber.rs` with `#[derive(Default)] pub struct Chamber` implementing `views::ViewModule`, and one registry row: `Backdrop::Void`, pressure haze off, links drawn by the view (none), the generic birth and death flash off, default pitch top-down. It declares the sources B3 (`Source::LifeEvents`) and B4 through `sources`, so they are read only while the view is shown. There is no plugin system: views are compile-time modules.
+**Module and registry.** A new module `src/chamber.rs` with `#[derive(Default)] pub struct Chamber` implementing `views::ViewModule`, and one registry row: `Backdrop::Void`, pressure haze off, links drawn by the view (none), the generic birth and death flash off, default pitch top-down. It is built as `ViewInfo::new("chamber", "CHAMBER", Backdrop::Void, build)` with `build` a `views::Build` closure, sets `haze` and `flash` off, `links` to `LinkRule::DrawnByView` and `pitch` to top-down, and names the sources it needs in `sources` (`Source::LifeEvents`, and `Source::Interrupts` for the timer row), so they are read only while the view is shown. The scene builds the view from its row and owns its state. There is no plugin system: views are compile-time modules.
 
-**Dependencies.** Status at commit `192299b`:
+**Dependencies.** Status in the current source tree:
 
 | Item | Provides | Status |
 |---|---|---|
@@ -124,8 +132,10 @@ Everything in this section is the specification of issue #42; none of it exists 
 | P5 (#21) | `Process.system_share` (utime/stime split), `syscall_io` | merged |
 | B3 (#30) | fork, exec and exit events (`Snapshot::life`, `Source::LifeEvents`, `isotop-events` thread) | merged |
 | S1 (#22), S2 (#23), S4 (#25), S6 (#27) | parity check, `FixedStep`, demo births and exits, source demand | merged |
-| P3 (#19) | field primitive for the window backdrop | open |
-| B4 (#31) | `/proc/interrupts`, `/proc/softirqs`, `oom_kill` | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
+| P3 (#19) | field primitive for the window backdrop (`src/render/field.rs`) | merged |
+| B4 (#31) | `/proc/interrupts`, `/proc/softirqs`, `oom_kill` (`Snapshot::interrupts`, `Source::Interrupts`; `src/platform/linux/counters.rs`, `src/model/kernel.rs`) | merged |
+
+Every prerequisite is on `main`; the view itself is what is missing.
 
 **Simulation.** `simulation::FixedStep` at H = 1/120 s on wall-clock time. Each step turns the heading of every track by $-s\,v/r\,H$ ($s = \pm1$ the sign of the charge), advances the position by $v\,H$ along the heading, and relaxes the guiding centre toward the home at rate $K_\mathrm{home} = 0.6/\mathrm{s}$. Because the sign and radius are recomputed from the current CPU, a falling CPU shrinks $r$ and the track spirals in without any scripted path. At most 96 tracks are integrated, chosen by momentum; the legend counts the rest as `N over cap`. A test asserts the same path at 10 and at 60 frames per second.
 
@@ -135,14 +145,14 @@ Everything in this section is the specification of issue #42; none of it exists 
 
 **Bubbles.** At each sample tick bubbles form along the motion since the previous tick, using at most the last 2 s of motion. Each is a world-space white `Glow` of 1.5 to 3 px. At most 40,000 are kept, oldest dropped first; one window-sized `Glow` of 0.25 s is the expansion flash.
 
-**Rendering and picking.** The backdrop is one P3 field (grain plus a liquid gradient), not triangles. The head of every charged track is a small `Sphere` whose pick is the process index; neutral processes are not drawn and cannot be picked. The view-local key `p` (through the registry key hook) switches the window to a printed look (paper grey, dark bubbles), and appears on the `?` help line. The global `t` key tilts the camera and so reveals the helices; it is unchanged.
+**Rendering and picking.** The backdrop is one field (P3: grain plus a liquid gradient), not triangles. The head of every charged track is a small `Sphere` whose pick is the process index; neutral processes are not drawn and cannot be picked. The view-local key `p` (`ViewKey::Local`, delivered to `ViewModule::key`) switches the window to a printed look (paper grey, dark bubbles), and appears on the `?` help line. The global `t` key tilts the camera and so reveals the helices; it is unchanged.
 
 **Degradation.**
 
 * Linux: full. The event sources are whatever B3 reports (proc connector, taskstats, or sample diffing); the status line names the active ones.
 * macOS: available, degraded. Life events come from sample diffing, and there are no interrupt counters, so there are no beam or cosmic tracks; the legend shows `no beam: macOS has no interrupt counters`. Live values are never synthesized.
 
-**Demo.** With S4 churn on the registry row, at `--demo --time 12` the frame must contain the utime/stime split, interrupt deltas, a fork from a neutral parent, an exit of a process with 4 or more threads, and one process whose CPU decays through the neutral threshold.
+**Demo.** With `DemoOptions { churn: true, kernel_counters: true, ..DemoOptions::NONE }` on the registry row (S4 churn and B4's synthesized counters), at `--demo --time 12` the frame must contain the utime/stime split, interrupt deltas, a fork from a neutral parent, an exit of a process with 4 or more threads, and one process whose CPU decays through the neutral threshold.
 
 **Legend** (specified): ` N tracks | M neutral | beam K = X LOC/s | <sources> | track = busy process circling its home | radius = CPU | curl + user, - system | bubbles ~ 1/beta^2 | V = fork | curls = exit`.
 
@@ -171,7 +181,8 @@ Keys planned: `p` toggles the printed (negative) look, `t` tilts, `l` toggles la
 ## Where in the code
 
 * Existing: `src/views.rs` (`REGISTRY`, `ViewModule`), `src/simulation.rs` (`FixedStep`, `Rng::for_identity`), `src/layout.rs` (`Seats`, `GOLDEN_ANGLE`), `src/render.rs` (`Stage`, `Item::Glow`, `Item::Sphere`, `ring_bounds`), `src/model.rs` (`Process.system_share`, `Process.threads`, `Snapshot::life`), `src/platform/mod.rs` (`LifeEvent`, `Cause`, `ExitRecord`, `LifeQueue`), `src/platform/linux/events.rs` and `src/platform/macos/events.rs` (the `isotop-events` thread).
-* Planned: `src/chamber.rs`, a registry row, building blocks P3 and B4.
+* Also existing, which the design uses: `src/render/field.rs` (P3), `src/model/kernel.rs` and `src/platform/linux/counters.rs` (B4).
+* Planned: `src/chamber.rs` and a registry row.
 * Prototype, reference only: `docs/mockups/code/chamber.py` (constants and integration scheme).
 
 ## Variations and open questions
@@ -181,6 +192,7 @@ Keys planned: `p` toggles the printed (negative) look, `t` tilts, `l` toggles la
 * **Pair production.** A parent that exits at the moment two children are born could draw an $e^+e^-$ pair, the classic gamma-conversion spirals.
 * **An identification plot.** A scan-sheet panel of bubble density against momentum, one point per track, would reproduce the particle-identification plot in which families fall on separate curves of constant mass.
 * **Armenteros-Podolanski for forks.** Plot parent and child CPU in the same variables and see whether `make` children cluster like a decay.
+* **Both detectors.** Where an exit is drawn here as a spray of spirals, [View-Necropolis](View-Necropolis) draws the same exit as a grave. A view that kept both would record every death twice, which is how experiments are usually kept.
 * **Delta ray energy spectrum.** The view draws one ray per thread; a spectrum $\propto 1/T^2$ would make many short spurs and a few long ones.
 
 ## References

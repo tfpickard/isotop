@@ -6,7 +6,18 @@ one exception, the mockups of planned views, is labelled. The renders come from
 which regenerates them from the release binary, and the figures from `docs/figures/*.py`
 (stdlib-only, deterministic). Nothing is retouched.
 
-![All fourteen views](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/contact-sheet.webp)
+![All eighteen views](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/contact-sheet.webp)
+
+## History
+
+Showing motion as a row of stills is older than cinema. In 1878 Eadweard Muybridge, commissioned by Leland Stanford
+to settle whether a galloping horse ever has all four hooves off the ground, lined a track at Stanford's Palo Alto
+farm with cameras that the horse tripped as it passed, and published the sequence as *The Horse in Motion*; the
+answer was yes. In 1882 the French physiologist Étienne-Jules Marey built a camera shaped like a rifle that took a
+series of exposures on one plate. Both made the same discovery that the filmstrips and loops here rest on: a
+movement too fast, or too slow, to read as it happens becomes legible as a row.
+
+The gallery contains hens, fish, crabs and starlings. It contains no horse.
 
 ## How these were made
 
@@ -20,7 +31,7 @@ which regenerates them from the release binary, and the figures from `docs/figur
   and slow views (Ptolemy, Coop) barely move in five seconds.
 * There is no Necropolis loop on purpose: a headless Necropolis frame is static apart from drifting fog.
 
-## The fourteen views
+## The eighteen views
 
 ### [City](View-City)
 
@@ -126,6 +137,30 @@ The Necropolis still is at demo day 16.0, a real full moon: its moon is computed
 clock, so `--time` changes the phase. It is also at the trough of the demo's memory-pressure wave, which sets the
 fog density, so the fog is at its base level.
 
+### [Cortex](View-Cortex)
+
+![Cortex](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/cortex.webp)
+
+Demo render at `--time 60`.
+
+### [Horizon](View-Horizon)
+
+![Horizon](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/horizon.webp)
+
+Demo render at `--time 60`.
+
+### [Murmuration](View-Murmuration)
+
+![Murmuration](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/murmuration.webp)
+
+Demo render at `--time 60`.
+
+### [Arbor](View-Arbor)
+
+![Arbor](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/arbor.webp)
+
+Demo render at `--time 60`.
+
 ## Screenshots from a terminal
 
 The README's gallery uses captures of Ghostty running `isotop --demo`; the animations below are from those
@@ -205,10 +240,6 @@ specification asks for. Each page links the mockup beside its theory.
 
 ![Chamber mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/chamber.jpg)
 
-### [Horizon](Planned-Horizon)
-
-![Horizon mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/horizon.jpg)
-
 ### [HR](Planned-HR)
 
 ![HR mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/hr.jpg)
@@ -233,21 +264,9 @@ specification asks for. Each page links the mockup beside its theory.
 
 ![Morph mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/morph.jpg)
 
-### [Murmuration](Planned-Murmuration)
-
-![Murmuration mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/murmuration.jpg)
-
-### [Cortex](Planned-Cortex)
-
-![Cortex mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/cortex.jpg)
-
 ### [Ouija](Planned-Ouija)
 
 ![Ouija mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/ouija.jpg)
-
-### [Arbor](Planned-Arbor)
-
-![Arbor mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/arbor.jpg)
 
 ### [Canyon](Planned-Canyon)
 
@@ -256,3 +275,23 @@ specification asks for. Each page links the mockup beside its theory.
 ### [Die](Planned-Die)
 
 ![Die mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/die.jpg)
+
+## Mockups of views since implemented
+
+These four were mockups when this wiki was begun and are real views now. The mockups are kept because the look they fixed is the look the views were built to; compare each with its render above.
+
+### [Horizon](View-Horizon)
+
+![Horizon mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/horizon.jpg)
+
+### [Murmuration](View-Murmuration)
+
+![Murmuration mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/murmuration.jpg)
+
+### [Cortex](View-Cortex)
+
+![Cortex mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/cortex.jpg)
+
+### [Arbor](View-Arbor)
+
+![Arbor mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/arbor.jpg)

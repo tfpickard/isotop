@@ -4,6 +4,18 @@ This wiki is source code. Its pages live in the `wiki/` directory of the main re
 
 The standard the wiki sets itself is the one the project sets for its code: every statement about what isotop does is checked against the source, and what the code does is kept apart from what the theory says and from what a picture lets a viewer infer. See [Philosophy](Philosophy) for why the project exists at all, and [Guide: Writing a View](Guide-Writing-a-View) for the code-side equivalent of this page.
 
+## History
+
+The word comes from the Hawaiian *wiki wiki*, "quick". Ward Cunningham put the first wiki, the WikiWikiWeb, on the
+web in 1995 as the Portland Pattern Repository, a place where programmers could edit one another's pages in a
+browser; its premise was that anyone should be able to edit any page.
+Wikipedia, begun in 2001, applied the premise at a far larger scale. A wiki whose pages are files in
+a version-control repository, reviewed in pull requests like code, is a later and narrower idea, and is the one this
+page documents: it keeps the wiki's habit of linking everything to everything and gives up the habit of editing
+anything in place. The pages are corrected by review instead of by whoever arrives next.
+
+This is the only page in the wiki whose subject is the wiki.
+
 ## How the wiki is built and published
 
 ```mermaid
@@ -60,6 +72,16 @@ These outrank style.
 6. **There is no plugin system.** Views are compile-time modules (`views::ViewModule` plus one row of `views::REGISTRY`). Say so where it matters and never imply dynamic loading. [Guide: Writing a View](Guide-Writing-a-View) explains what is true and what is speculation.
 7. **Name the platform.** isotop runs on Linux and macOS. Where behaviour differs, say which.
 8. **Mark what you did not run.** A recipe or claim you could not verify says so (the recipes page uses the labels *verified here* and *not verified*).
+9. **Every page has a `## History` section.** It is the history of what the page is about: the technique, the physics, the animal, the standard, the practice. It is specific and checkable (names, dates, places, venues), it is verified against a source you have actually read, and where sources disagree or a story rests on one person's recollection the text says so. A short true history beats a long shaky one, and a date you cannot confirm is left out or marked `(unverified)`.
+
+## Easter eggs
+
+The wiki is an art project, and a page may carry one or two Easter eggs. They obey the same truth rules as everything else.
+
+* **Deadpan, never winking.** The register is the one the rest of the page is in: dry, academic, matter of fact. No "fun fact", no exclamation marks, no emoji, no explaining the joke. A reader who notices is rewarded; one who does not loses nothing.
+* **True, or plainly in-world.** An egg is a true oddity from the history told straight; or a non-fiction treatment of something fictional, where the subject is fictional or fiction-adjacent (the [Matrix](View-Matrix) history is the model); or a formal trick (an unusually specific caption, a decorative element declared decorative). It is never a false claim about the code or about the real world.
+* **Never in a truth-bearing sentence.** Put it in a History section, a caption, a reference, a closing line, or "Variations and open questions".
+* **Not listed.** Do not mark the egg or collect the eggs on a page.
 
 ## Links
 
@@ -127,16 +149,17 @@ Every `View-*` and `Planned-*` page has these sections, in this order. The order
 
 1. **Lede and image.** One paragraph, then the render.
 2. **The system being modelled.** The real-world physics, biology or history, and why it is a good metaphor for process data.
-3. **Theory.** Equations, derivations, regimes, parameters, known behaviours (stability, scaling, fixed points).
-4. **Mapping.** A table: visual element, measured quantity (and its platform source), transform (log, square root, smoothing constant, quantum). Every element maps to a measurement or is declared decorative; this is the realness contract.
-5. **How isotop realises it.** Algorithm, data structures, constants with their real values, stable layout, seeding and determinism, `stage.dt` or `FixedStep`, CPU and GPU notes, picking, what degrades when a source is missing.
-6. **Reading the picture.** What a viewer can and cannot infer: measured versus derived versus decorative, resolution limits, aliasing, what is invisible.
-7. **Try it.** Exact commands (`--demo --view X`, `--time`, `--output`, keys). Run them.
-8. **Where in the code.** Files and symbols.
-9. **Variations and open questions.** Concrete experiments and unanswered questions. This is the seed for the next recipe or the next view.
-10. **References.**
+3. **History.** The history of the thing the view draws (rule 9). Where the repository holds a longer account in `docs/theory/`, link to it here.
+4. **Theory.** Equations, derivations, regimes, parameters, known behaviours (stability, scaling, fixed points).
+5. **Mapping.** A table: visual element, measured quantity (and its platform source), transform (log, square root, smoothing constant, quantum). Every element maps to a measurement or is declared decorative; this is the realness contract.
+6. **How isotop realises it.** Algorithm, data structures, constants with their real values, stable layout, seeding and determinism, `stage.dt` or `FixedStep`, CPU and GPU notes, picking, what degrades when a source is missing.
+7. **Reading the picture.** What a viewer can and cannot infer: measured versus derived versus decorative, resolution limits, aliasing, what is invisible.
+8. **Try it.** Exact commands (`--demo --view X`, `--time`, `--output`, keys). Run them.
+9. **Where in the code.** Files and symbols.
+10. **Variations and open questions.** Concrete experiments and unanswered questions. This is the seed for the next recipe or the next view.
+11. **References.**
 
-`Theory-` and `Math-` pages choose their own skeleton but keep the three-way separation and end with "Where in the code" (Theory) and "References". `Guide-` pages are organised by task.
+`Theory-` and `Math-` pages choose their own skeleton but keep the three-way separation, carry a History section, and end with "Where in the code" (Theory) and "References". `Guide-` pages are organised by task.
 
 ## Checking a page before you push
 
@@ -155,6 +178,7 @@ It does not check mathematics, code facts, spelling or that a command works. Tho
 For the author before requesting review, and for the reviewer:
 
 - [ ] `python3 scripts/check_wiki.py` reports no problems.
+- [ ] The page has a `## History` section whose dates and attributions were checked, with disagreements and unverifiable claims said so.
 - [ ] Every name (file, type, function, constant, flag, key) was found in the source, and cited by path and symbol, not by line.
 - [ ] Every number in the page is either a constant quoted from the code, a value computed by a script, or marked `(unverified)`.
 - [ ] Theory, code and picture are in separate sections; nothing in "Reading the picture" claims what the code does not measure.

@@ -12,7 +12,7 @@ A Victorian boiler room in which every process that talks to another is a rivete
 
 ### 1.1 Unix pipes
 
-Doug McIlroy argued in a 1964 Bell Labs memo that programs should be coupled "like garden hose", screwing in another segment when data needs massaging another way. Ken Thompson added the `pipe` system call and the `|` notation of the shell to Unix in 1973 (the Third Edition, as I recall; unverified). The shell pipeline `cat access.log | grep 500 | sort | uniq -c` is a chain of processes joined by kernel pipes, each stage a filter.
+Doug McIlroy argued in a 1964 Bell Labs memo that programs should be coupled "like garden hose", screwing in another segment when data needs massaging another way. Ken Thompson added the `pipe` system call and pipes in the shell to Unix in 1973 (Version 3); sources disagree about when the `|` notation itself appeared. The shell pipeline `cat access.log | grep 500 | sort | uniq -c` is a chain of processes joined by kernel pipes, each stage a filter.
 
 A pipe is a bounded byte queue in the kernel with a write end and a read end (`pipe(2)`, or a named FIFO made by `mkfifo`). The semantics are what makes plumbing a good metaphor:
 
@@ -28,6 +28,16 @@ A Unix-domain socket has a receive queue. The `sock_diag` interface gives it as 
 ### 1.3 Where the metaphor stops
 
 Water in a pipe obeys Bernoulli's principle, $p + \tfrac12\rho v^2 + \rho g h = \text{const}$, and in a narrow tube Hagen-Poiseuille, $Q = \pi r^4 \Delta p/(8\mu L)$, so flow is driven by a pressure difference and rises steeply with radius. A kernel pipe has no pressure and no radius. **None of that physics is in the view.** The view uses plumbing for its look (tanks, gauges, pipes, bulges) and keeps strictly apart what is measured and what is a display convention, as the mapping table in section 3 says.
+
+## History
+
+Moving fluids have long stood in for things that cannot be seen. Georg Ohm's treatise of 1827 gave the relation between voltage and current in wires of different lengths, and it is formally parallel to Fourier's law of heat conduction, a flux proportional to a gradient; electricity, like heat, was commonly pictured as a fluid. The water analogy for circuits became a teaching staple, and also a target: the "drain-pipe theory" as a name for taking it too literally is credited to Oliver Lodge in some accounts and to Oliver Heaviside in others, and I have not settled which.
+
+Economists built the machines. Irving Fisher's Yale doctoral thesis of 1891, published in 1892 as *Mathematical Investigations in the Theory of Value and Prices*, described a hydraulic apparatus of cisterns, valves and levers for computing equilibrium prices in ten linked markets; the original and a second model of 1925 are both lost. Bill Phillips, a New Zealander studying at the London School of Economics, built the Phillips Machine, later called the MONIAC, in 1949, in the garage of his landlady in Croydon (the usual account, with a cost of about 400 pounds). It was shown to economists at the school on 29 November 1949 and won him a teaching post. Water, in tanks of perspex, stood for money; the first machine is said to have used parts from a Lancaster bomber. Accounts differ on how many were built: twelve, or twelve to fourteen.
+
+The pipe that this page is about is a younger invention. Doug McIlroy's memo of 11 October 1964 asked that programs be coupled "like garden hose". Thompson implemented the idea in Unix in 1973, in one night by McIlroy's later account, and McIlroy then rewrote the programs in `/bin` to read standard input and write standard output. The idea had waited nine years for a kernel. Some accounts place the first pipes in 1972; 1973 is the date most sources give.
+
+The mockup's tanks are therefore the third generation of one picture: a flow of something measurable drawn as a flow of water.
 
 ## 2. Theory: a pipe is a bucket between two rates
 
@@ -45,7 +55,7 @@ For 64 KiB and a mismatch of 1 MB/s the pipe fills in 65 ms; for 100 MB/s in 0.6
 
 ### 2.1 The attribution problem
 
-isotop can read a process's `wchar` (bytes passed to `write` and relatives, in `/proc/<pid>/io`, as `Process.syscall_io.write_chars` once P5's field is filled) but not where they went. The view's rule, as made exact in issue [#49](https://github.com/tfpickard/isotop/issues/49) and its amendment (comment of 2026-10-10):
+isotop can read a process's `wchar` (bytes passed to `write` and relatives, in `/proc/<pid>/io`, as `Process.syscall_io.write_chars`, filled on Linux; macOS reports it missing) but not where they went. The view's rule, as made exact in issue [#49](https://github.com/tfpickard/isotop/issues/49) and its amendment (comment of 2026-10-10):
 
 $$
 R \;=\; \text{wchar rate} \;-\; \text{regular-file write bytes (B8)} \;-\; \text{exact loopback TCP send rates} .
@@ -89,13 +99,13 @@ Two consequences of the constants, both computed from the formulas above:
 
 ## 4. Design: how isotop will realise it
 
-* **Module and row.** `src/plumbing.rs`, one registry row, `Backdrop::Dusk`, a `draw(...) -> usize` that puts every tank in `stage.positions`, no view-local keys, no digit. Processes without a drawn link count as collapsed.
+* **Module and row.** `src/plumbing.rs`, a `#[derive(Default)]` state struct implementing `views::ViewModule`, and one `ViewInfo::new(name, title, backdrop, build)` row at the end of `views::REGISTRY` (`Backdrop::Dusk`, `build` a closure returning the boxed module). Its `draw(...) -> usize` puts every tank in `stage.positions`; no view-local keys, no digit. Processes without a drawn link count as collapsed.
 * **Layout.** Each cgroup is a rectangular bay on a floor grid of 2-unit cells, placed with disc packing snapped to the grid (the issue says `pack::Discs`; in the tree this is `layout::Discs` in `src/layout.rs`), with lifetime seats inside a bay (`layout::Seats`). Layouts are stable ([Theory-Stable-Layout](Theory-Stable-Layout)).
 * **Copper runs.** Manhattan A* on a half-cell grid with cost $1$ per step, $+2.5$ per turn and $+7$ for reusing a used cell (from the prototype); routes are computed in sorted (writer, reader) `Identity` order and cached, and recomputed only when an endpoint moves or a new tank blocks. Unix tubes run overhead as L-shapes at $z = 3.5$ with a 0.25 lane offset; hoses are Catmull-Rom curves on the floor. The Manhattan distance is an admissible heuristic because every step costs at least 1.
 * **Wchan.** New platform work inside this PR on the background thread of `platform/linux`: read `/proc/<pid>/wchan` only for pids holding pipe or FIFO descriptors, at most 256 per pass, only while a view that declares it is shown; stored as an enum `PipeWrite`, `PipeRead`, `Other`, `Unreadable` (`0` means unreadable), never displayed raw. On macOS `"wait channel"` goes into `Snapshot.missing`.
-* **Rendering.** Pipes, tubes and hoses use S3's tubes (triangles only); tanks and walls are shaded triangle meshes of 8 to 16 sides in this module; rivets are drawn only on tanks wider than 24 px; the burst is Beams and Glows seeded from `Rng::for_identity(writer, inode)`. No new rasterizer primitive.
+* **Rendering.** Pipes, tubes and hoses use S3's `Frame::tube` and `Frame::ribbon` (`src/render/strokes.rs`, triangles only); tanks and walls are shaded triangle meshes of 8 to 16 sides in this module; rivets are drawn only on tanks wider than 24 px; the burst is Beams and Glows seeded from `Rng::for_identity(writer, inode)`. No new rasterizer primitive.
 * **Demo** (through the P1 row's demo options, deterministic from `(time, i)`): a 4-stage pipeline, a writer with 3 outlets, a blocked writer and a dry reader, a burst every 20 s (the reader end is dropped, no process is removed), queued stream and datagram sockets, hose rates.
-* **Dependencies** (ROADMAP index): P1, P2, S1, P5, B2, B8, B9, S3, S6. In the tree at commit `192299b`: P1, P2, S1, P5 (`Process.syscall_io`), S6 and B9 are merged; B2's Unix-queue and pipe parts, B8 and S3 are not (`Snapshot.link_traffic` exists, but only as loopback TCP rates with both directions summed).
+* **Dependencies** (ROADMAP index): P1, P2, S1, P5, B2, B8, B9, S3, S6. In the current tree: P1, P2, S1, P5 (`Process.syscall_io`), S3 (`src/render/strokes.rs`), S6, B9 and B2 (`Snapshot.unix_queues`, `Snapshot.pipes` paired by `model::pair_pipes`, `src/platform/linux/pipes.rs`, `src/platform/linux/fdinfo.rs`) are merged; B8 (file-write attribution) and the wait-channel reader are not. `Snapshot.link_traffic` is still only loopback TCP rates with both directions summed.
 * **Platforms.** Linux: full; the sources it declares are wait channel, io split, file-write attribution, Unix queues and loopback rates. macOS: **available but degraded, not skipped**: tanks, Unix-socket tubes and whatever pipe and queue data B2 provides there are drawn; `wchan`, `wchar`/`rchar` and loopback byte rates are not available, so there are no red or dry gauges, water and hoses show as unmeasured, and the status strip says so.
 * **No plugin system.** Compile-time module and `REGISTRY` row.
 
@@ -129,7 +139,7 @@ python3 docs/figures/plumbing-backpressure.py      # the fluid model of section 
 
 ## 7. Where in the code
 
-Existing: `Process.syscall_io` (`SyscallIo { read_chars, write_chars, reads, writes }`) and `Snapshot.link_traffic`, `Snapshot.links`, `Snapshot.unix_links` in `src/model.rs`; the loopback `tcp_info` read in `src/platform/linux/net.rs` (`bytes_acked` at offset 120, `bytes_received` at 128) and its rate in `model::traffic`; `layout::Seats` and `layout::Discs` in `src/layout.rs`; `palette::kind_color`; `Thing`, `Card` in `src/render.rs`; `terminal::clean_text`; `simulation::Rng::for_identity`. Planned: `src/plumbing.rs`, a `src/platform/linux/fdinfo.rs` parser (B2), a wchan reader in `src/platform/linux`, S3's tubes. The prototype is `docs/mockups/code/plumbing.py` (numpy, cv2; reference only).
+Existing: `Process.syscall_io` (`SyscallIo { read_chars, write_chars, reads, writes }`) and `Snapshot.link_traffic`, `Snapshot.links`, `Snapshot.unix_links` in `src/model.rs`; the loopback `tcp_info` read in `src/platform/linux/net.rs` (`bytes_acked` at offset 120, `bytes_received` at 128) and its rate in `model::traffic`; `layout::Seats` and `layout::Discs` in `src/layout.rs`; `palette::kind_color`; `Thing`, `Card` in `src/render.rs`; `terminal::clean_text`; `simulation::Rng::for_identity`. Also existing since this page was first written: `Snapshot.pipes` and `Snapshot.unix_queues` with `model::pair_pipes`, `Pipe` and `Queue`; `src/platform/linux/pipes.rs` (`PipeScan`, behind `Source::Pipes`) and `src/platform/linux/fdinfo.rs` (`parse_fdinfo`); `Frame::tube` and `Frame::ribbon` in `src/render/strokes.rs`. Planned: `src/plumbing.rs`, a wchan reader in `src/platform/linux`, B8's file-write attribution. The prototype is `docs/mockups/code/plumbing.py` (numpy, cv2; reference only).
 
 ## 8. Variations and open questions
 
@@ -139,11 +149,13 @@ Existing: `Process.syscall_io` (`SyscallIo { read_chars, write_chars, reads, wri
 * Replace the log-gauge by a rate-of-change gauge, so a pipeline speeding up or slowing down is visible.
 * Show pipeline structure: link the tanks of one shell pipeline in a straight row regardless of cgroup bay.
 * The tank radius saturates at 267 MiB; a different clamp or a sqrt law would show gigabyte processes as larger.
+* Colour the water. The Phillips Machine is reported to have used tinted water so that separate flows could be told apart; the view tints by writer, which is the same decision seventy-seven years later.
 
 ## 9. References
 
 * M. D. McIlroy, internal Bell Labs memorandum, 1964 (the "garden hose" passage); D. M. Ritchie, "The Evolution of the Unix Time-sharing System", *AT&T Bell Laboratories Technical Journal* 63 (1984), for the history of pipes.
 * Linux manual pages `pipe(7)`, `pipe(2)`, `fcntl(2)` (`F_SETPIPE_SZ`), `proc(5)` (`wchar`, `wchan`, `fdinfo`), `sock_diag(7)`, `unix(7)`.
 * J. D. C. Little, "A proof for the queuing formula $L = \lambda W$", *Operations Research* 9 (1961) 383-387.
+* I. Fisher, *Mathematical Investigations in the Theory of Value and Prices* (Yale, 1892).
 * L. Kleinrock, *Queueing Systems, Volume 1: Theory* (Wiley, 1975), for queues and blocking.
 * Issue [#49](https://github.com/tfpickard/isotop/issues/49) and its amendment comment; [#29](https://github.com/tfpickard/isotop/issues/29) (B2); `docs/briefs/views-2026-10.md` section 10; [docs/VIEW_CONVENTIONS.md](https://github.com/tfpickard/isotop/blob/main/docs/VIEW_CONVENTIONS.md). See also [Theory-Text-Safety](Theory-Text-Safety), [Theory-Picking](Theory-Picking), [Theory-Stable-Layout](Theory-Stable-Layout).

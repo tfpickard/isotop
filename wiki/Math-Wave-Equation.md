@@ -4,6 +4,14 @@ The Ripple view is a pond: a two-dimensional membrane, a grid of heights and vel
 
 The page keeps three things apart. **Theory** is standard numerical analysis and physics and would be the same in any program. **Code** is what `Wave` in `medium.rs` does. **Inference** is what the pictures let you conclude. Numbers marked *measured* come from a stdlib Python port of `Wave::step` and `Wave::advance` that reproduces the Rust unit test `waves_spread_at_their_speed_and_die_out_at_the_border` (a ring at $ct$ against none at $2ct$, and an energy fall of about $2\times10^{-7}$ over 30 s); they are not read off the binary.
 
+## History
+
+The equation was first written for a violin string. Jean le Rond d'Alembert derived the one-dimensional wave equation in 1747 and found its general solution as the sum of two shapes travelling in opposite directions. Euler took it up in 1748 and 1749 and showed how to build the solution from the initial shape. Daniel Bernoulli countered that any motion of the string is an infinite sum of sine harmonics, without being able to say how to find the coefficients. The three disagreed for decades over a question that sounds modest: whether an initial shape with a corner, such as a plucked string, counts as a function at all. D'Alembert and Euler wanted a single analytic expression; Bernoulli argued on physical grounds that the plucked string existed whether or not the mathematics approved.
+
+Fourier's work on heat (presented 1807, published in book form in 1822) supplied the missing coefficient formula, and Dirichlet's 1829 convergence theorem is the usual date given for the end of the argument. The two-dimensional membrane and the three-dimensional wave followed in the 19th century; Hadamard's *Lectures on Cauchy's Problem* (1923) gave the reason that sharp signals leave no tail in three dimensions but do in two, the fact the Huygens section above relies on.
+
+The lattice came later and from a different motive. Courant, Friedrichs and Lewy published their paper in *Mathematische Annalen* in 1928 to prove that solutions of such equations exist, by showing that finite-difference approximations converge. The condition on the time step that every explicit wave solver since has had to respect appeared there as a by-product, and the machines it would constrain did not yet exist. The sponge at the border descends from the 1970s and 1980s work on artificial boundaries (Engquist and Majda 1977; Israeli and Orszag 1981); Berenger's perfectly matched layer followed in 1994.
+
 ## The equation
 
 A membrane of surface density $\sigma$ under isotropic tension $T$, displaced by $h(x,y,t)$ a little from flat, has the transverse force on a patch $T\,\nabla^2 h\,\mathrm{d}A$ (the net pull of the neighbouring sheet, linearised for small slopes) and mass $\sigma\,\mathrm{d}A$. Newton's second law gives
@@ -183,7 +191,7 @@ At the short-wavelength end the reflection is the geometric-optics estimate 0.19
 
 ### Where the layout sits
 
-`Scene::footprint` pads the layout by `margin = 8 + 0.08 * extent` world units on each side and covers it with 150 cells on the longer side. With $L$ the layout's longer extent the margin in cells is $10.34\,(L+100)/(L+13.8)$, which is at least 10.34 for every $L$ and 14.5 at $L = 200$. The sponge is 10 cells wide, so **no pebble ever sits inside it**, whatever the machine's size. (The same margin rule and the 150-cell grid come from `render.rs`; the match is not stated in a comment, so I treat it as design intent supported by arithmetic, not as a documented invariant.)
+`cover` (called by `footprint` in the Ripple view) pads the layout by `margin = 8 + 0.08 * extent` world units on each side and covers it with 150 cells on the longer side. With $L$ the layout's longer extent the margin in cells is $10.34\,(L+100)/(L+13.8)$, which is at least 10.34 for every $L$ and 14.5 at $L = 200$. The sponge is 10 cells wide, so **no pebble ever sits inside it**, whatever the machine's size. (The margin rule is `render::cover` in `render.rs` and the 150-cell grid is the argument `footprint` in `views/ripple.rs` passes to it; the match with the sponge width is not stated in a comment, so I treat it as design intent supported by arithmetic, not as a documented invariant.)
 
 ## Forcing
 
@@ -210,7 +218,7 @@ The steady response of the continuum equation to a point force of frequency $\om
 | $\kappa$ | `RESTORE` | 0.5 per second squared |
 | frame step clamp | in `advance` | elapsed in $[0, 0.25]$ s |
 | substeps | in `advance` | $\lceil 28\,\text{elapsed} \rceil$, so $\nu \le 0.5$ |
-| grid | `Grid::covering(..., 150)` | 150 cells on the longer side (`Scene::draw_ripples`) |
+| grid | `Grid::covering(..., 150)` | 150 cells on the longer side (`footprint` in `views/ripple.rs`, through `render::cover`) |
 | forcing footprint | `Wave::drive` | $[\tfrac12,1,\tfrac12]^{\otimes 2}$ |
 | scheme | `Wave::step` | nine-point Laplacian, symplectic Euler |
 
@@ -225,7 +233,8 @@ The steady response of the continuum equation to a point force of frequency $\om
 ## Where in the code
 
 * [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs): `Wave` (`new`, `drive`, `step`, `advance`, test-only `energy`), `Grid::covering`, the constants `WAVE_SPEED`, `DAMPING`, `SPONGE`, `SPONGE_CELLS`, `RESTORE`; test `waves_spread_at_their_speed_and_die_out_at_the_border`.
-* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::draw_ripples` (sources, `wave.advance`), `Scene::footprint` (grid and margin), `similar` (when the medium survives a layout change).
+* [`src/views/ripple.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/ripple.rs): the `ViewModule` implementation of `Ripple` (sources, `wave.advance`) and `footprint` (the grid over the pebbles).
+* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `cover` (grid and margin), `similar` (when the medium survives a layout change).
 * Figure scripts: `docs/figures/wave-dispersion.py`, `docs/figures/wave-anisotropy.py`, `docs/figures/wave-sponge-reflection.py` (shared drawing helper `docs/figures/figkit_w4.py`).
 
 ## Variations and open questions
@@ -235,6 +244,7 @@ The steady response of the continuum equation to a point force of frequency $\om
 * **Real water.** Swap the $c^2k^2 + \kappa$ dispersion for capillary-gravity waves by adding a $\nabla^4$ term (a bending stiffness): short waves then run *faster*, the opposite of the lattice's lag, and the two could be tuned to cancel at one pitch.
 * **Anisotropy on purpose.** A sheet with $c_x \ne c_y$ would make the pond an anisotropic medium; the pebbles' rings become ellipses, and the stencil weights would have to follow.
 * **Measure the wake.** The 2D Green's function predicts a positive tail behind a drip; compare the lattice response at a probe with $1/\sqrt{c^2t^2-r^2}$, with and without $\kappa$, to see $\kappa$ turn the tail into ringing at $\omega_c$.
+* **Kappa as a mass.** The restoring term makes the pond a Klein-Gordon field with angular cutoff $\omega_c = \sqrt{\kappa} = 0.707$ rad/s; at $c = 14$ cells per second its reduced Compton wavelength, $c/\omega_c$, is 19.8 cells. The pond is, in this sense, a universe whose lightest particle is about 13 percent of its width.
 * **Open:** is the sponge's quadratic profile a good one for the 3 to 1 span of wavelengths here? A cubic or a cosine taper has lower reflection at long wavelengths for the same total damping.
 
 ## References

@@ -5,11 +5,39 @@ fits in a corner of the screen. isotop is instead a machine for turning the hum 
 pictures that are worth looking at for their own sake, and for taking the physics, mathematics and biology
 behind those pictures seriously enough to write them down. This wiki is where that writing lives.
 
-It is maximalist on purpose. There are fourteen views and fifteen more specified, a CPU rasterizer and a GPU
+It is maximalist on purpose. There are eighteen views and eleven more specified, a CPU rasterizer and a GPU
 rasterizer that must agree pixel for pixel, a Fourier transform written in-tree so a planet can carry an
 epicycle chain, a Lorentz boost applied to the history of a shell. None of that is proportionate to the problem
 of "which process is using the CPU". It is proportionate to a different problem: *how much of the structure
 of a running computer can be made visible, and how beautiful can the visible thing be without lying?*
+
+## History
+
+The question of what a machine is doing has been asked, with software, for as long as there have been machines
+to ask it of. The tools that answer it each reflect their decade.
+
+* **`/proc`.** Tom Killian built the first process filesystem for Eighth Edition Unix at Bell Labs and described
+  it in "Processes as Files" at the USENIX conference in the summer of 1984. Its purpose was practical: to replace
+  the `ptrace` system call with files that could be read and written. Linux's `/proc`, which isotop reads, descends
+  from the idea, not the code.
+* **`top`.** The first version was written by William LeFebvre and posted to the `net.sources` newsgroup in 1984.
+  Where it began is disputed: later copyright notices in the code reach back to 1980 and credit an earlier author at
+  Lucasfilm. Either way, a screen of the busiest processes, refreshed in place, has been the default answer for
+  four decades.
+* **Treemaps.** Ben Shneiderman and colleagues at the University of Maryland devised the treemap in the early 1990s
+  (the first papers are dated 1991) to answer a question about disk space: where on this disk did the space go? It
+  is the first widely used picture in which area is a measurement of a resource, and the ancestor of every
+  disk-usage visualizer since.
+* **Task Manager.** The Windows NT Task Manager, which shipped with NT 4.0 in 1996, was written by Dave Plummer at
+  home, as a shareware idea he meant to sell. Dave Cutler, the architect of NT, saw it and agreed to take it into
+  the product, and Plummer donated it.
+* **`htop`.** Hisham Muhammad released `htop` in May 2004, as an interactive alternative to `top` that shows every
+  process, with colour and a mouse.
+
+Each of these was built to be *used*. A picture of a process table is a different kind of artifact, and the
+work isotop belongs to is the one that treats the data as something worth looking at: software cities and
+treemaps, as visualization research, and a long tradition of screensavers and demoscene pieces, as art. isotop
+is in the second tradition with the discipline of the first. The next section says what the discipline is.
 
 ## The one rule: the realness contract
 

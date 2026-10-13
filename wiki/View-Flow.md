@@ -14,7 +14,18 @@ Two real things are being imitated at once.
 
 **A weather map** of fluid flow: a velocity field and the paths of tracers in it. Visualising a flow by releasing particles and drawing their recent tracks is as old as smoke-tunnel and dye photography; the computer version integrates $\dot{\mathbf{x}} = \mathbf{u}$ and draws a short trail. Three curves are easy to confuse. A **streamline** is tangent to $\mathbf{u}$ at one instant; a **pathline** is the track of one particle through time; a **streakline** joins all the particles released from one point. For a steady field all three coincide; for an unsteady one they do not. Flow's trails are pathlines, and its field is steady for 0.25 s at a time (it is rebuilt that often) with a time-dependent turbulent term on top.
 
-**A gravity well on a rubber sheet**: the standard teaching picture of general relativity (a mass dents a sheet; a marble rolls in). The picture is an *embedding diagram* of space; the textbook case is Flamm's paraboloid for the Schwarzschild spatial geometry (Flamm 1916), a surface of revolution $z = 2\sqrt{r_s(r - r_s)}$ whose wells get arbitrarily steep. isotop's wells are **Gaussians**, bounded and smooth, and the "marble" is not pulled down them. Treat the sheet as a depth gauge. (For an honest treatment of the real object, see [Math Schwarzschild](Math-Schwarzschild) and the planned [Horizon](Planned-Horizon).)
+**A gravity well on a rubber sheet**: the standard teaching picture of general relativity (a mass dents a sheet; a marble rolls in). The picture is an *embedding diagram* of space; the textbook case is Flamm's paraboloid for the Schwarzschild spatial geometry (Flamm 1916), a surface of revolution $z = 2\sqrt{r_s(r - r_s)}$ whose wells get arbitrarily steep. isotop's wells are **Gaussians**, bounded and smooth, and the "marble" is not pulled down them. Treat the sheet as a depth gauge. (For an honest treatment of the real object, see [Math Schwarzschild](Math-Schwarzschild) and [Horizon](Planned-Horizon).)
+
+## History
+
+The thing Flow draws is a flow made visible by tracers, over a surface that is also a picture of gravity.
+
+* Osborne Reynolds's experiment of 1883 injected dye into water running through a glass tube: at low speed the dye held a straight thread, and above a threshold it broke into eddies. The dimensionless number named after him came out of that comparison of regimes.
+* Ludwig Prandtl's group at Gottingen filmed flows in water channels by scattering particles on the surface (aluminium powder, mica or lycopodium spores). The films date from around 1930 and were made largely for teaching, to show flow separation. Early on the exposures were so short that the particles appeared as dots, not the expected streaks, and the team changed to a camera with a longer exposure. Modern researchers at DLR later analysed the old films with particle image velocimetry and recovered the vortex strengths and speeds that Prandtl could not measure.
+* The terms Flow uses, streamline, pathline and streakline, name three different curves that coincide only in a steady flow. Dye photographs show streaklines; a long photographic exposure of particles shows pathlines.
+* The wells come from a different history. Ludwig Flamm's paper of 1916 embedded the spatial geometry of Schwarzschild's solution as a surface of revolution, now called Flamm's paraboloid. It is a rigorous picture, and sources that discuss it note that the popular rubber-sheet analogy resembles it only superficially and is a common source of misunderstanding. I did not trace who first drew the rubber sheet (`(unverified)`).
+* Vortex blobs, the regularised vortex Flow uses, come from the numerical work of Chorin (1973), cited below. The Plummer sphere that softens the inflow was introduced for globular clusters (1911).
+* Flow combines a flow-visualisation tradition and a cosmology teaching picture that were never meant to meet, and the tracers do not fall into the wells.
 
 ## Theory
 
@@ -82,7 +93,7 @@ That is 0.02 to 0.2 units per second against a turbulent background of 0.4 to 6.
 | Visual element | Measured quantity (platform source) | Transform | Status |
 |---|---|---|---|
 | Body (sphere) | one process | radius $0.7\times$ `mass_radius(subtree memory)`, at the sheet's depth plus $0.6\times$ radius | measured |
-| Well under a system | memory of the system root's whole subtree (`Scene::mass`; RSS or footprint) | Gaussian bowl of depth $2 + 14\,m/(m+2048)$ ($m$ in MiB), width $\max(\mathrm{extent}/2, 4)$ | measured; saturating |
+| Well under a system | memory of the system root's whole subtree (`Layout::mass`; RSS or footprint) | Gaussian bowl of depth $2 + 14\,m/(m+2048)$ ($m$ in MiB), width $\max(\mathrm{extent}/2, 4)$ | measured; saturating |
 | Dimple under a heavy body | body radius above 0.9 (subtree memory above about 53 MiB) | depth $0.4\,r$, width $1 + 2r$, weak inflow $0.6\,r^3$ | measured; the inflow is nearly inert (above) |
 | Sheet colour | relative depth | $t = \mathrm{depth}/\mathrm{deepest}$ in the frame; colour $(28 + 70t,\ 42 + 40t,\ 72 + 120t)$: dark blue to violet | derived, relative to the frame's deepest well |
 | Whirlpool | CPU above 0.5% | $\Gamma = \pm(6 + 60\,u/(u+40))$, core radius $1 + 2r_b$ | magnitude measured; **handedness decorative** (parity of the pid) |
@@ -99,20 +110,20 @@ Here $b(v, K) = v/(v+K)$ is `model::bounded`.
 
 ## How isotop realises it
 
-`Scene::draw_flow` ([`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs)) over a `Flow` from [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs). A built-in arm (`BuiltIn::Flow`); `Scene::hubs` adds hollow stars for unreadable parents as in Orbit.
+Flow is a `ViewModule` in [`src/views/flow.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/flow.rs); the state struct is called `Wells`, and its registry row in `views::REGISTRY` builds it with a closure. `Wells` owns a `Galaxy` (shared machinery with Orbit, in [`src/views/systems.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/systems.rs)) and an optional `Flow` sheet from [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs); `Scene` holds none of it. `Wells::draw` calls `systems::hubs` (hollow stars for unreadable parents, as in Orbit), then `systems::layout`, then `Wells::pour`, then `Layout::report`.
 
-1. **Layout.** `Scene::layout(processes, snapshot, time, 0.0)`: the **same** layout as Orbit with the orbital motion held at zero (planets sit at their starting mean anomalies, the galaxy does not turn). The systems' centres are shared state with Orbit, so a system sits where Orbit last turned it to, but individual planets are *not* where Orbit draws them at the same moment, except at time zero. (The README says "a process sits in the same place in each"; strictly that holds for the system centres.)
-2. **Grid.** `footprint(..., 140)`: 140 cells on the longer side with a margin of $8 + 0.08\times$extent, kept if `similar` to the previous grid and rebuilt otherwise.
+1. **Layout.** `systems::layout(&mut self.galaxy, stage, &processes, snapshot, 0.0)`: the **same** layout code as Orbit with the orbital motion held at zero (planets sit at their starting mean anomalies, the galaxy does not turn). Each view owns its own `Galaxy`, so a system's centre in Flow is where Flow's galaxy placed it, which agrees with Orbit's only while neither has turned it; individual planets are *not* where Orbit draws them at the same moment, except at time zero. (The README says "a process sits in the same place in each"; strictly that holds for the system centres.)
+2. **Grid.** `footprint(&layout.bodies, 140)`, which calls `render::cover`: 140 cells on the longer side with a margin of $8 + 0.08\times$extent, kept if `render::similar` to the previous grid and rebuilt otherwise.
 3. **Step.** `dt = clamp(time - flow.time, 0, 0.1)`.
-4. **Field.** `Scene::weather` runs when the cached field is older than 0.25 s (`field_time`). It zeroes the velocity and depth grids and adds, each only over the cells within its reach (`around`): the wells (Gaussian depth plus softened inflow), the vortices, the jets of the links; then caps every cell's speed at 20 and every depth at $-20$. The field is **cached on the grid**; a particle samples it by bilinear interpolation (`Grid::sample`).
+4. **Field.** `weather` (a free function in the module) runs when the cached field is older than 0.25 s (`field_time`). It zeroes the velocity and depth grids and adds, each only over the cells within its reach (`around`): the wells (Gaussian depth plus softened inflow), the vortices, the jets of the links; then caps every cell's speed at 20 and every depth at $-20$. The field is **cached on the grid**; a particle samples it by bilinear interpolation (`Grid::sample`).
 5. **Emission.** Fractional rates are realised by a Bernoulli trick, `while expected > random() { expected -= 1; spawn }`, whose mean count is exactly `expected`. The random stream is one seeded `XorShift32` (`GOLDEN_RATIO_32`), and the iterations that use it run in a fixed order (bodies in layout order, `snapshot.outside` sorted by identity) so a frame is repeatable. The total is capped at **6000 particles**: once it is reached, `room` stops emission *in the order of the loops* (background tracers first, then bodies in layout order, then links, then sparks); only the exit bursts and birth puffs skip the check.
 6. **Advection.** `Flow::advance(dt, stir)`: for each particle, RK2 midpoint on $\mathbf{u}_\mathrm{field} + \mathbf{u}_\mathrm{turbulence} + \mathbf{k}$, then $\mathbf{k} \leftarrow \mathbf{k}\,e^{-2.5\Delta t}$; the trail rotates by one and its head takes the new point at the sheet's depth plus 0.15 (a rising spark gains 2.5 units/s instead). Particles are removed when their age passes their life or they leave the grid. The turbulence amplitude is $0.4 + 6\,\mathrm{stir}$ with `stir` $= b(\text{cpu} + \text{memory} + \text{io pressure}, 25)$.
 7. **Draw.** The sheet is a wireframe of every third grid row and column, coloured by depth; then the bodies; then, for each particle, `TRAIL - 1` = 19 line segments (`Frame::beam`) fading along the trail with weight $s(1 - k/20)$, $s = (0.9\ \text{or}\ 0.6)\cdot\min(\mathrm{age}/0.3, 1)\sqrt{1 - \mathrm{age}/\mathrm{life}}$, and a small glow on the bright ones.
-8. **Time.** The older clamp, not `stage.dt`. Because the **trail holds 20 positions, one per frame**, a trail is $20\,\Delta t$ of history: two seconds at 10 fps, two thirds of a second at 30. Streak length is local speed times that: Flow's picture is a fixed-exposure photograph whose exposure shortens as the frame rate rises.
+8. **Time.** The view takes `stage.time` and clamps the step itself (step 3), not `stage.dt`. Because the **trail holds 20 positions, one per frame**, a trail is $20\,\Delta t$ of history: two seconds at 10 fps, two thirds of a second at 30. Streak length is local speed times that: Flow's picture is a fixed-exposure photograph whose exposure shortens as the frame rate rises.
 
 **Picking.** Bodies carry their index in the pick buffer; the sheet and the particles do not. Hover names a process only over a body.
 
-**Stability and instability.** Like Orbit, Flow's layout re-places systems when memory growth outgrows their reservation; the registry waives `ResourceChange` and `Churn` for Flow (issue #115). The flow media survive layout changes while the grid is `similar`.
+**Stability.** Like Orbit, Flow's layout re-places a system only when its structure outgrows the reservation (`HEADROOM` in `systems.rs`). The row waives no property; the harness checks each process's home, the centre of its system, which `Wells` returns from `ViewModule::anchors` (test-only). The flow media survive layout changes while the grid is `similar`.
 
 **Headless.** The row's `SETTLE` warm-up (80 frames of 0.05 s ending at `--time`) lets particles fill the sheet.
 
@@ -156,10 +167,12 @@ Keys: `4` selects it; click a body for the inspector; `f` focuses a subtree; `c`
 
 ## Where in the code
 
-* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::draw_flow`, `Scene::weather`, `Scene::footprint`, `Scene::layout` (shared with Orbit), `Lane`, `similar`, `mass_radius`, `Scene::glows`, `Scene::hubs`; test `ripples_and_flow_answer_to_activity`, `focusing_and_clearing_focus_keeps_every_flow_system_in_place`.
+* [`src/views/flow.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/flow.rs): `Wells`, `Wells::draw`, `Wells::pour`, `Pour` (`background`, `around_bodies`, `along_links`, `sparks`), `disturb`, `weather`, `fabric`, `bodies`, `particles`, `footprint`, `Lane`, `PARTICLES`; tests in the same file and `focusing_one_process_after_another_leaves_no_orbit_or_flow_system_behind` in `systems.rs`.
+* [`src/views/systems.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/systems.rs): `layout` and `hubs` (shared with Orbit).
+* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `cover`, `similar`, `glows`, `mass_radius`, `Stage::newborn`, `Stage::splashes`.
 * [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs): `Flow` (`new`, `spawn`, `advance`, `velocity_at`, `depth_at`), `Particle`, `TRAIL`, `Grid::sample`; test `particles_circle_a_vortex_and_ride_a_jet`.
 * [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs): `XorShift32`, `GOLDEN_RATIO_32`.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `flow` row (`SETTLE`, the waived properties) and `flow_legend`.
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `flow` row (`SETTLE`); the legend is `Wells::legend`.
 * Figure script: `docs/figures/flow-vortex-integrators.py`.
 
 ## Variations and open questions

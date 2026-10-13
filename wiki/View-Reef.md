@@ -3,8 +3,7 @@
 Reef draws the machine as a coral reef under a sea sky. System services grow as coral colonies, one per cgroup,
 with a polyp on a stalk for every process; your session's applications swim in schools whose speed follows their CPU;
 containers are crabs scuttling on the sand; busy kernel threads drift as plankton. Size follows memory everywhere, a
-glow follows CPU, I/O rises as bubbles and zombies float belly-up. It is the most decorative view of the five on this
-page, and the page says so wherever it matters: almost nothing about *where* a creature is carries data.
+glow follows CPU, I/O rises as bubbles and zombies float belly-up. It is one of the most decorative views, and the page says so wherever it matters: almost nothing about *where* a creature is carries data.
 
 ![Reef: coral, schools of fish and crabs](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/reef.webp)
 
@@ -38,6 +37,16 @@ within distance $r$ number $r^2/c^2$, an area of $\pi c^2$ per seed. Reef uses i
 `layout::spiral`, to seat every member of a colony, school and gang.
 
 ![Reef: colony seating and school loops](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/reef-school.svg)
+
+## History
+
+**Reefs as structures.** A reef is built by animals but shaped by geology. Charles Darwin, who saw atolls on the Beagle voyage, argued in *The Structure and Distribution of Coral Reefs* (1842) that fringing reefs, barrier reefs and atolls are stages of one process: a reef grows upward around a volcanic island as the island slowly sinks, first fringing it, then standing off as a barrier, and at last ringing an empty lagoon. The idea was tested by drilling. The Royal Society's expedition to Funafuti (1896 to 1898) recovered more than 300 m of shallow-water reef material without reaching the volcanic base, which implied subsidence, though a contemporary reviewer argued it did not prove it for all atolls. Cores taken at Eniwetok Atoll in 1952, led by Harry Ladd, reached volcanic rock about 1,267 m below the sea surface under reef limestone, and were widely taken as the confirmation. Modern commentators say the result confirmed the volcano beneath the reef rather than every detail of Darwin's model.
+
+**The Great Barrier Reef.** Europeans met it by accident: HMS *Endeavour*, under James Cook, ran aground on it in June 1770 and was refloated. It is the largest reef system on Earth, running about 2,300 km along the Queensland coast. Australia protected it with the Great Barrier Reef Marine Park Act of 1975, and it was inscribed on the UNESCO World Heritage List in 1981 (dates from memory, unverified here). The Great Barrier Reef Marine Park Authority counts mass bleaching on it in 1998 and in 2016, 2017, 2020, 2022 and 2024; the 2022 event was its sixth since 1998 and the first in a La Nina year, and the 2024 survey found some bleaching on 79 per cent of 1,080 reefs surveyed. Its count for 2002 is not confirmed here.
+
+**Bleaching.** A coral under heat stress expels the symbiotic algae (zooxanthellae) that supply most of its energy and colour, and turns white; if the stress passes, the algae can return, and if it does not, the coral dies. NOAA's Coral Reef Watch describes the bleaching of 2023 to 2024 as the fourth global event on record. Sources differ on the labels and spans of the earlier three: 1998, 2010 and 2014 to 2017 are the usual ones, and some reports date the third to 2016.
+
+**Boids.** The school rule is much younger than any of this: Craig Reynolds published *boids* in 1987. See [Math Flocking](Math-Flocking).
 
 ## Theory
 
@@ -132,10 +141,7 @@ not `stage.dt`. Neighbour search is a plain double loop over the school (quadrat
 $(\tfrac12 + \tfrac12\,\sin(\dots)\sin(\dots))^3$ built from two travelling sines; 28 kelp strands of 12 segments and 6 faint
 light shafts. All deterministic functions of position and time. None of it is data.
 
-**Stable layout.** The harness records known failures for Reef (issue
-[#119](https://github.com/tfpickard/isotop/issues/119)): fish swim at CPU-dependent speeds and crabs scuttle at CPU-dependent
-paces and no anchor is declared, so scaling CPU moves them by up to about 1.7 units; and in one churn case the separation
-steering among school mates changes the paths of the remaining fish. Coral polyps, which are seated, are stable.
+**Stable layout.** Fish swim at CPU-dependent speeds and crabs scuttle at CPU-dependent paces, so where they are drawn follows the CPU by design. The harness therefore holds them to what does stay put: `Reef::anchors` (compiled for tests) returns the target of a fish's school and a crab's seat on its container's home, and the coral polyps and plankton, which do not wander, are held where they are drawn. The `reef` row declares no known failures.
 
 **CPU and GPU.** Spheres, lines, beams, facets and glows only; no new primitive. The row uses the `Sea` backdrop and a
 four-second settle before a headless frame.
@@ -173,14 +179,13 @@ and the schools are the demo's session cgroups.
 * [`src/reef.rs`](https://github.com/tfpickard/isotop/blob/main/src/reef.rs): `Reef::draw`, `school`, `crab`, `polyp`, `draw_seabed`, `habitat`; constants `DEPTH`, `CORALS`, `FISH`, `ZOMBIE`.
 * [`src/layout.rs`](https://github.com/tfpickard/isotop/blob/main/src/layout.rs): `Seats`, `Discs`, `spiral`, `spin`, `GOLDEN_ANGLE`, `vacant`.
 * [`src/palette.rs`](https://github.com/tfpickard/isotop/blob/main/src/palette.rs): `CONTAINER`, `tint`; [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `mass_radius`; [`src/simulation.rs`](https://github.com/tfpickard/isotop/blob/main/src/simulation.rs): `hash`, `sprout`.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): `reef_legend`, the `reef` row (`SETTLE`, `known_unstable`).
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `reef` row (`Backdrop::Sea`, warm-up `SETTLE`); the legend is `Reef`'s `ViewModule::legend`.
 * Figure: `docs/figures/reef-school.py`.
 
-AGENTS.md lists `reef.rs` among the module views; its row is `Hooks::BuiltIn` (`BuiltIn::Reef`).
+`reef::Reef` is a `ViewModule` built from its registry row; views are compile-time modules and there is no plugin system.
 
 ## Variations and open questions
 
-* **Anchors for fish and crabs** (issue #119): declare each seat and school target so the harness can hold them to account.
 * **Bleaching.** Real corals expel their algae under thermal stress and turn white. Fade a colony towards white as its cgroup's memory
   or CPU pressure (the PSI figure Cells reads) rises, and let it recover.
 * **Accretion.** Make a polyp's height the integral of its CPU time (calcification), so a long-lived busy service builds a tall reef
@@ -189,7 +194,7 @@ AGENTS.md lists `reef.rs` among the module views; its row is `Hooks::BuiltIn` (`
   `SpatialHash3`, and measure with a polarisation order parameter as [Coop](View-Coop) does for its flocks
   ([Math: Flocking](Math-Flocking)). The school would stop being a driven oscillator and would drift as a group.
 * **Damping.** Add a drag term and the school will settle on its target; the question is whether a still school reads as healthy or dead.
-* **Spawning events.** Release a cloud of particles when a service forks many children at once.
+* **Spawning events.** Release a cloud of particles when a service forks many children at once. Mass spawning on the Great Barrier Reef is timed to the moon, a few nights after the full moon in late spring; the moon in [Necropolis](View-Necropolis) is computed from the date, and the Reef does not look at the sky. Whether it should is open.
 * **Open:** what should the reef do with processes that are in two cgroups' worth of ancestry? Today the leaf cgroup is the habitat.
 
 ## References

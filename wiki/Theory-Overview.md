@@ -4,6 +4,18 @@ isotop is a closed loop with four stages: it samples the operating system, recor
 
 ![The three clocks of the frame loop and the order of work inside one frame](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/theory-frame-timeline.svg)
 
+## History
+
+This is the history of the project's architecture, taken from the repository's own log (`git log`, 232 commits between 2026-10-07 and 2026-10-13 at the time of writing). The dates are commit dates; the order matters more than the pace.
+
+* **2026-10-07.** The first day has seven commits: an empty `Initial commit`, then one commit of about 8,300 lines that already holds `model.rs`, `render.rs`, `gpu.rs`, `shaders.wgsl` and `terminal.rs`, one file for each stage of this page, then a pseudo-terminal smoke test, a README and an agent guide.
+* **2026-10-08.** Strata, Cores, Cells, Globe and Reef are added together, then a Matrix view of the systemd journal. Strata's history ring is made to record in every view, the first appearance of the rule that a view's record hook runs whichever view is shown.
+* **2026-10-09.** Operating-system access moves behind a `platform` module (`47d34fa`), and macOS support follows the same day: processes, CPUs, memory and sockets, the terminal probe, the unified-log follower for Matrix, and CI on both platforms. The boundary came first; the second platform made it real.
+* **2026-10-11.** Three architecture batches land: golden hashes, CI, lints and the agent guide (#109); typed sources, sampler correctness and "unknown is not zero" (#113); and the view registry, the `Stage` contract, demo options, `FixedStep`, source demand, the view picker and the view harness (#120). From here a view is a row plus a module, and what a view needs from the operating system is declared, not assumed. Ptolemy, Tesseract and Necropolis are the first views written that way (#123).
+* **2026-10-12.** Horizon, Murmuration and Cortex (#134), the field primitive, strokes and Arbor (#140), and then #143, "one view path": the eleven views that had been built into `Scene` are moved onto `ViewModule` and the `Hooks` split is removed, so the registry has eighteen rows of one kind. The journal's lines stop being fetched by the Matrix view and travel on the snapshot (`Snapshot.journal`). That day alone has 117 of the 232 commits.
+
+By default the frame loop of [the section below](#the-frame-loop-and-its-clocks) runs at 10 frames a second and samples once a second, so each sample is drawn ten times and the frame thread asks the operating system nothing in between.
+
 ## The four stages
 
 | Stage | Question it answers | Main types | Where |
@@ -46,7 +58,7 @@ flowchart LR
     TERM -. "mouse, keys" .-> COL
 ```
 
-**Sample.** `Collector::sample` reads `/proc` (Linux) or libproc and Mach (macOS) once per `--sample-ms` (default 1000, range 100 to 10000) and returns a `Snapshot`. It runs on the frame thread, because reading `stat` and `io` for a few hundred processes is cheap. Anything slower runs on the background thread `isotop-sampler`, which wakes every `BACKGROUND_PERIOD` (2 s) and whose results are merged in against the pids the cycle scanned; the optional sources only some views draw are read only while the shown view declares them (`Demand`). A second thread, `isotop-events`, exists only while a view demands `Source::LifeEvents`. The details are in [Theory Sampling Linux](Theory-Sampling-Linux), [Theory Sampling macOS](Theory-Sampling-macOS), [Theory Background Sampler and Demand](Theory-Background-Sampler-and-Demand), [Theory Model and Rates](Theory-Model-and-Rates) and [Theory Life Events](Theory-Life-Events). The snapshot is pushed onto a ring (`App.history`, `--history`, default 120 snapshots) and, through `Scene::record`, into every view's record hook and the shared per-process [history](Theory-History).
+**Sample.** `Collector::sample` reads `/proc` (Linux) or libproc and Mach (macOS) once per `--sample-ms` (default 1000, range 100 to 10000) and returns a `Snapshot`. It runs on the frame thread, because reading `stat` and `io` for a few hundred processes is cheap. Anything slower runs on the background thread `isotop-sampler`, which wakes every `BACKGROUND_PERIOD` (2 s) and whose results are merged in against the pids the cycle scanned; the optional sources only some views draw are read only while the shown view declares them (`Demand`). A second thread, `isotop-events`, exists only while a view demands `Source::LifeEvents`. The details are in [Theory Sampling Linux](Theory-Sampling-Linux), [Theory Sampling macOS](Theory-Sampling-macOS), [Theory Background Sampler and Demand](Theory-Background-Sampler-and-Demand), [Theory Model and Rates](Theory-Model-and-Rates) and [Theory Life Events](Theory-Life-Events). The snapshot is pushed onto a ring (`App.history`, `--history`, default 120 snapshots) and, through `Scene::record`, into every view's `record` hook and the shared per-process [history](Theory-History).
 
 **Record.** `Scene::render` turns one snapshot plus a camera into a `Frame`: a sky description and a `Vec<Item>` of triangles, lines, sphere impostors, glows, beams, stars, glyphs and pick discs, in the order they must be painted. The scene persists between frames, so it can hold layout, easing and the simulated media. See [Theory Scene and Display List](Theory-Scene-and-Display-List) and [Theory Camera and Projection](Theory-Camera-and-Projection).
 
@@ -69,7 +81,7 @@ flowchart TD
       render["render.rs<br/>Camera, Frame, Scene, Stage"]
       shared["render/shared.rs<br/>constants shared with WGSL"]
       views["views.rs<br/>REGISTRY, ViewModule"]
-      modules["view modules<br/>cells cores strata globe reef coop<br/>matrix ptolemy tesseract necropolis"]
+      modules["view modules (all eighteen)<br/>views/city, orbit, ripple, flow, systems<br/>cells cores strata globe reef coop matrix<br/>ptolemy tesseract necropolis<br/>cortex horizon murmuration arbor"]
     end
     helpers["palette, geometry, medium,<br/>layout, simulation, history,<br/>stellar, status, glyphs"]
     subgraph DATA["data (mutual)"]
@@ -107,7 +119,7 @@ The invariants that follow from this picture, all stated in `AGENTS.md`: nothing
 
 1. `elapsed` is the time since the previous iteration began. Unless paused, `app.animation += elapsed`: the animation clock is wall time with the paused intervals removed.
 2. If not paused and `last_sample.elapsed() >= --sample-ms`, take a sample (`collector.sample()`, or `demo_snapshot` under `--demo`), call `Scene::record`, push it on `app.history` (dropping the oldest beyond `--history`).
-3. Manage the journal follower and feed Matrix, if the shown view demands `Source::Journal`.
+3. Manage the journal follower: it runs while the shown view's demand contains `Source::Journal` and for `JOURNAL_LINGER` (30 s) after. While it is demanded, the lines that arrived are attached to the newest sample as `Snapshot.journal` (a `journal::Delivery`), where the Matrix view reads them.
 4. `camera.approach(&goal, smoothing(elapsed, 0.2))`, then `update_tour`.
 5. `App::render`: `Scene::render`, camera fitting if requested, then `Frame::rasterize` or `Gpu::render`. If the GPU reports an error, the app drops the GPU and rasterizes on the CPU from then on.
 6. `hover_over`, `overlay` (labels and popups), `Terminal::present`.
@@ -126,7 +138,7 @@ Three consequences follow, none of them obvious from a frame rate alone.
   | time went back (a rewind, a headless replay) | 0, and the count restarts from this time |
   | otherwise | `time - last`, at most `MAX_DT = 0.5` s |
 
-  A fixed-step simulation (`FixedStep`, see [Theory Simulation Toolkit](Theory-Simulation-Toolkit)) is fed from `Stage::time` instead and never derives a step of its own. The older views keep their own clamps because changing them would change pixels.
+  A fixed-step simulation (`FixedStep`, see [Theory Simulation Toolkit](Theory-Simulation-Toolkit)) is fed from `Stage::time` instead and never derives a step of its own. A view that predates the policy may keep a clamp of its own (Flow limits its particle step to 0.1 s) because changing it would change pixels.
 * **Easing is exponential and therefore frame-rate independent.** The weight of one step over `dt` seconds with time constant tau is `1 - exp(-dt/tau)`, and two successive steps of `dt1` and `dt2` compose to `1 - exp(-(dt1+dt2)/tau)`, because `(1-a1)(1-a2) = exp(-(dt1+dt2)/tau)`. The camera uses tau = 0.2 s; the scene eases CPU and memory towards each sample with tau = 0.3 s (`Scene::ease`), and clears the eased values if the gap between frames leaves `0..=2` s. The README's 1.5 s CPU smoothing is applied earlier, in the model ([Theory Model and Rates](Theory-Model-and-Rates)).
 
 ### Headless runs
@@ -144,7 +156,7 @@ A view is one module plus one row of `views::REGISTRY`. There is **no plugin sys
 * The module owns a state struct and implements `views::ViewModule`: `draw(&mut self, stage, processes, snapshot) -> usize` and `legend`, plus defaulted hooks `record` (every sample, whichever view is shown), `key`, `inspector_line` and `card`.
 * A view reads only `Stage`, the process slice and `&Snapshot`, and talks back only through `Stage` outputs (`positions`, `bounds`, `places`, `notes`, `tour`, `popup`, `callout`). Whatever the platform could not measure is `snapshot.missing`.
 * The row (`ViewInfo`) holds everything else that distinguishes the view: name and title, `Backdrop`, `available`, link rule, flash and haze switches, default pitch, tour participation, header override, `face` and `turn` for the globe, `sources`, `demo` options, view-local `keys`, headless `warmup` phases and a harness `Contract`. `Scene`, `App` and the headless path read the row instead of naming a view.
-* Today the registry has 14 rows. Eleven are *built in* (`Hooks::BuiltIn`: City, Orbit, Ripple, Flow, Cores, Cells, Strata, Globe, Reef, Matrix and Coop, which `Scene` keeps in typed fields; six of them draw through `Stage`) and three are true modules (`Hooks::Module`: Ptolemy, Tesseract, Necropolis). New views are written the module way; the first ten rows are never reordered because the digit keys pick them.
+* Today the registry has eighteen rows, and every one is a `ViewModule`. A row is built with `ViewInfo::new(name, title, backdrop, build)`, where `build` is a `views::Build` (`fn() -> Box<dyn ViewModule>`, usually a closure) that the scene calls to make and own the view's state. `Scene` keeps only frame-wide state (the clock, easing, history, the selection); a view's own state lives in its module. City, Orbit, Ripple and Flow are in `src/views/` (Orbit and Flow share `views/systems.rs`), and Matrix and Coop are module views like the rest. There are no `Hooks` variants and no per-view arms in `Scene`. The first ten rows are never reordered because the digit keys pick them.
 
 The shared test harness (`harness.rs`) runs every row against its `Contract`: the same inputs give the same pixels and picks, the demo shows processes with something to click, every pick names a process, no surviving process moves when CPU and memory change or when a tenth of the processes exit and as many start, and an empty machine draws. [Guide Writing a View](Guide-Writing-a-View) walks through adding a row; [Theory Stable Layout](Theory-Stable-Layout) explains the layout property.
 

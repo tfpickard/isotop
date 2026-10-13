@@ -18,6 +18,17 @@ That second case is Ripple. Why a pond for processes? Because the machine is a *
 
 The physical wave medium is a membrane, not water. Real surface waves are dispersive (Lamb 1932); the membrane's $\omega = c\lvert\mathbf{k}\rvert$ plus a small restoring term is chosen for simplicity and cost.
 
+## History
+
+The thing Ripple draws is a wave medium disturbed by many sources, and the ways people have made such media visible.
+
+* In his Royal Society lecture of November 1801, Thomas Young presented an analogy between interfering light, sound and water waves, and showed the water case in a shallow tank. Interference was a hard sell: Newton's reputation counted for more than a demonstration, and Young published the double-slit form of his argument only in 1807.
+* Ernst Chladni's *Entdeckungen uber die Theorie des Klanges* (1787) introduced the technique of fixing a plate, scattering sand on it and drawing a bow along its edge: the plate rings at one of its natural frequencies and the sand collects on the nodal lines. The patterns are still called Chladni figures.
+* Chladni lectured in Paris in 1808, and the Academy announced on 27 February 1809 a prize of 3,000 francs for a mathematical theory of the figures, with the deadline of 1 October 1811 (the story that Napoleon was in the audience and sponsored the prize is the usual telling; the dates of the visit vary by source, 1808 or 1809). Sophie Germain was the only entrant in the first round and her derivation contained errors; Lagrange supplied a missing term in 1813; she received the prize on her third attempt, in 1816. Histories add that her theory was still incomplete.
+* The wave equation itself is older than either: d'Alembert's equation for the vibrating string dates from the 1740s (`(unverified)` as to the year), and its two-dimensional form for membranes and plates is what the Paris problem needed.
+* The ripple tank became standard school apparatus in the twentieth century: a shallow glass dish, a lamp above and a screen below, with a motor-driven bar or dippers as sources. Dates of its adoption in curricula are not given here.
+* Ripple's medium is a membrane with a small restoring term and a damping sponge at its border, not water. Real surface waves are dispersive; the pond is a teaching tank in that respect and in no other.
+
 ## Theory
 
 The pond integrates the damped Klein-Gordon equation with forcing, derived and analysed on [Math Wave Equation](Math-Wave-Equation):
@@ -63,24 +74,24 @@ Nothing in the table is a quantity the wave field *measures about the machine*; 
 
 ## How isotop realises it
 
-The built-in view is `Scene::draw_ripples` in [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs), which owns a `Wave` from [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs). Each frame:
+Ripple is a `ViewModule` in [`src/views/ripple.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/ripple.rs): the `Ripple` struct owns an optional `Wave` from [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs), the `clusters` and the `pebbles`, and its registry row in `views::REGISTRY` builds it with a closure. `Scene` keeps none of it. Each frame, in `Ripple::draw`:
 
-1. **`scatter` places the pebbles.** `Scene::scatter` keeps `clusters` (one per group name) and `pebbles` (identity to group and slot). A newcomer takes the lowest free slot of its group, so a pebble keeps its slot for life and a freed slot goes to the next arrival. The spiral spacing satisfies $s \ge (2r_{\max} + 1)/1.4$ with $r_{\max}$ the cluster's largest pebble; when it must grow it grows to $1.15$ times the need and **never shrinks**, so a cluster only ever spreads. Each pebble is jittered by up to $0.1\,s$ from a hash of its pid. Adjacent spiral slots sit at least about 1.55 spacings apart (*measured* over 200 slots), so the 1.4 divisor leaves room for the jitter. A cluster of extent $E$ reserves open water $1.1(E + 3)$ in radius (`POND_GAP` = 3) and is placed with `layout::vacant` (the golden-angle search used by Orbit's systems); it moves only when its reach outgrows its reservation. Slots and clusters are reserved for every sampled process, drawn or not, so focus and `--limit` never move anything (tests `focusing_and_clearing_focus_keeps_every_ripple_cluster_in_place` and `processes_beyond_the_limit_keep_their_ripple_place`).
-2. **`footprint` makes the grid.** `Grid::covering` spans the pebbles plus a margin of $8 + 0.08\times$ extent world units, with 150 cells on the longer side, so the grid is always about 150 cells long and the pond crosses in 150/14 = 10.7 s of wall-clock whatever the machine looks like. World-space wave speed is $14\times$ the cell size. If the new grid is `similar` to the old (same columns and rows, cell within 5%, origin within two cells) the `Wave` is kept; otherwise a fresh, still pond starts.
-3. **Events become impulses.** Every exit that `flash_exits` recorded last frame calls `wave.drive(point, -90)`, every newborn `wave.drive(point, 30)`.
-4. **Sources.** Each process with CPU above 0.3% becomes a source $(\text{at},\ 900\,u/(u+40),\ 2\pi f,\ \varphi)$. `wave.advance(time, ...)` calls `force` before each substep, which `drive`s each source by $\text{loudness}\cdot\sin(\omega t + \varphi)\cdot\Delta t$. The substepping rule keeps the Courant number at or below 0.5 (see the math page). Time is the scene's own clock, not `stage.dt`: `advance` clamps the elapsed time to 0.25 s itself, as the older views do, and when the clock does not advance (elapsed 0) the water does not move.
+1. **`Ripple::scatter` places the pebbles.** `Ripple` keeps `clusters` (one per group name) and `pebbles` (identity to group and slot). A newcomer takes the lowest free slot of its group, so a pebble keeps its slot for life and a freed slot goes to the next arrival. The spiral spacing satisfies $s \ge (2r_{\max} + 1)/1.4$ with $r_{\max}$ the cluster's largest pebble (`PEBBLE_GAP` = 1); when it must grow it grows to $1.15$ times the need and **never shrinks**, so a cluster only ever spreads. Each pebble is jittered by up to $0.1\,s$ from a hash of its pid. Adjacent spiral slots sit at least about 1.55 spacings apart (*measured* over 200 slots), so the 1.4 divisor leaves room for the jitter. A cluster of extent $E$ reserves open water $1.1(E + 3)$ in radius (`POND_GAP` = 3) and is placed with `layout::vacant` (the golden-angle search used by Orbit's systems); it moves only when its reach outgrows its reservation. Slots and clusters are reserved for every sampled process, drawn or not, so focus and `--limit` never move anything (tests `focusing_and_clearing_focus_keeps_every_ripple_cluster_in_place` and `processes_beyond_the_limit_keep_their_ripple_place`).
+2. **`footprint` makes the grid.** `render::cover` calls `Grid::covering` over the pebbles plus a margin of $8 + 0.08\times$ extent world units, with 150 cells on the longer side, so the grid is always about 150 cells long and the pond crosses in 150/14 = 10.7 s of wall-clock whatever the machine looks like. World-space wave speed is $14\times$ the cell size. If the new grid is `render::similar` to the old (same columns and rows, cell within 5%, origin within two cells) the `Wave` is kept; otherwise a fresh, still pond starts.
+3. **Events become impulses.** Every point in `Stage::splashes` (where processes left since the last frame, which the scene notes for every view) calls `wave.drive(point, -90)`, every process in `Stage::newborn` `wave.drive(point, 30)`.
+4. **Sources.** Each process with CPU above 0.3% becomes a source $(\text{at},\ 900\,u/(u+40),\ 2\pi f,\ \varphi)$. `wave.advance(time, ...)` calls `force` before each substep, which `drive`s each source by $\text{loudness}\cdot\sin(\omega t + \varphi)\cdot\Delta t$. The substepping rule keeps the Courant number at or below 0.5 (see the math page). Time is `stage.time`, not `stage.dt`: `Wave::advance` clamps the elapsed time to between 0 and 0.25 s itself, and when the clock does not advance (elapsed 0) the water does not move.
 5. **Territories.** `territories` floods the grid breadth-first from every pebble, larger pebbles claiming shared cells first, so each node belongs to its nearest pebble in the **four-neighbour (Manhattan) metric**; borders are therefore diamond-shaped, not circular.
 6. **Surface.** The drawn height is $0.09\,h + \text{swell}\cdot(\sin_1 + 0.7\sin_2 + 0.5\sin_3)/2.2$ world units; the three sines are plane waves of fixed wavenumber and time rates 0.9, 0.7, 1.3 that do not come from the wave solver.
 7. **Shading.** Each node's normal comes from central differences of the *drawn* heights; shade is diffuse (light from the side of the view) plus a $(\mathbf{n}\cdot\mathbf{h})^{48}$ glint plus foam, blended towards moonlight by at most 0.6 so the highlights never add up to white (test `ripple_water_stays_dim_however_hard_it_is_stirred`: no water triangle above 190 in any channel, even at 400% CPU everywhere and pressure 90). Each cell is two triangles whose colour is the average of their three nodes, so a cell never shows two shades.
-8. **Draw.** The grid is $\approx 2\cdot150\cdot(\text{rows}-1)$ `Item::Triangle`s with pick index `owners[a]`, then each pebble as a sphere impostor with its glows. Both rasterizers draw the same triangles, so there is no CPU/GPU parity special case.
+8. **Draw.** The grid is $\approx 2\cdot150\cdot(\text{rows}-1)$ `Item::Triangle`s (`Frame::facet`) with pick index `owners[a]`, then each pebble as a sphere impostor with its glows. Both rasterizers draw the same triangles, so there is no CPU/GPU parity special case.
 
 **Picking.** The water facets carry the owner's index, so the pointer over water selects the owning process (cell-coarse, at the node `a` of the cell, not the pixel's nearest pebble); a pebble's own sphere pick is nearer and wins. Nothing is a `Thing`.
 
-**Determinism.** Source pitch and phase hash the pid only; pebble jitter hashes the pid; the swell uses `time`. There is no random stream. Headless runs (`--output`, `--benchmark`) settle first: the row's `SETTLE` warm-up renders 80 frames 0.05 s apart, ending at `--time`, so the water has been stirred for four seconds. Without it a one-frame render would show a flat pond.
+**Determinism.** Source pitch and phase hash the pid only; pebble jitter hashes the pid; the swell uses `time`. There is no random stream. Headless runs (`--output`, `--benchmark`) settle first: the row's `SETTLE` warm-up (`Phase::Settle`, 80 frames 0.05 s apart, `When::Output`) ends at `--time`, so the water has been stirred for four seconds. Without it a one-frame render would show a flat pond.
 
 **When a source is missing.** The row declares no optional source. Without NVIDIA GPU memory there are no green glows; without CPU and I/O pressure (macOS) the swell stays at its resting 0.01.
 
-**Known instability.** The view harness records one waived property: `Property::ResourceChange` fails for Ripple (issue #116) because a pebble that grows with memory can force its cluster's spacing, and so the cluster's reservation, to grow and re-place the cluster.
+**Stability.** The row waives no property. A cluster is laid out with 15% more spacing than its largest pebble needs, so pebbles can grow in place (the test `doubling_every_pebble_leaves_them_in_place_and_clear_of_each_other` doubles every pebble's memory) and the cluster spreads, and is placed again, only when a pebble would touch a neighbour or the cluster outgrows its reserved water (`pebbles_that_outgrow_their_cluster_spread_it_out_without_touching`).
 
 ## Reading the picture
 
@@ -120,12 +131,12 @@ Keys while it is shown: `3` selects it; hover over water names the owning proces
 
 ## Where in the code
 
-* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Scene::draw_ripples`, `Scene::scatter`, `Scene::footprint`, `territories`, `similar`, `Cluster`, `mass_radius`, `Scene::glows`, constants `PEBBLE_GAP`, `POND_GAP`, `RIPPLE_DEEP`, `RIPPLE_CREST`, `RIPPLE_MOON`, `RIPPLE_SHINE`.
+* [`src/views/ripple.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/ripple.rs): `Ripple`, `Ripple::draw`, `Ripple::scatter`, `Cluster`, `System`, `territories`, `announce`, `footprint`, constants `PEBBLE_GAP`, `POND_GAP`, `RIPPLE_DEEP`, `RIPPLE_CREST`, `RIPPLE_MOON`, `RIPPLE_SHINE`; tests `pebbles_cluster_by_cgroup_without_touching_and_stay_put`, `ripples_answer_to_activity`, `ripple_water_stays_dim_however_hard_it_is_stirred`.
+* [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `cover`, `similar`, `glows`, `mass_radius`, `Frame::facet`, `Stage::splashes`, `Stage::newborn`.
 * [`src/medium.rs`](https://github.com/tfpickard/isotop/blob/main/src/medium.rs): `Wave`, `Grid`.
 * [`src/layout.rs`](https://github.com/tfpickard/isotop/blob/main/src/layout.rs): `spiral`, `vacant`, `spin`, `GOLDEN_ANGLE`.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `ripple` row (`SETTLE`, `LinkRule::All`, the waived `ResourceChange`) and `ripple_legend`.
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `ripple` row (`SETTLE`, `LinkRule::All`); the legend is `Ripple::legend`.
 * [`src/palette.rs`](https://github.com/tfpickard/isotop/blob/main/src/palette.rs): `kind_color`.
-* Tests in `render.rs`: `pebbles_cluster_by_cgroup_without_touching_and_stay_put`, `ripples_and_flow_answer_to_activity`, `ripple_water_stays_dim_however_hard_it_is_stirred`.
 * Figure script: `docs/figures/ripple-single-source.py`.
 
 ## Variations and open questions
@@ -135,6 +146,7 @@ Keys while it is shown: `3` selects it; hover over water names the owning proces
 * **Anisotropic water.** `c` differing along the two grid axes would make a sheet in which rings become ellipses; map the axes to user and kernel time.
 * **Locate coherent pairs.** Highlight pairs within 0.02 Hz, which beat for at least 50 s, and see whether the nodal lines between them are visible at the display's resolution.
 * **A proper boundary.** The sponge reflects up to 46%; a perfectly matched layer would make the pond effectively infinite (see the variations on the math page).
+* **Resonance.** The pond is not a resonator, because the sponge eats the reflections. An ideal pond with closed edges, 150 cells on its long side at $c = 14$ cells per second, would have a gravest mode at $c/2L = 0.047$ Hz, a period of 21.4 s, far below hearing; Chladni's plates sang because they were small and stiff.
 * **Open:** how many busy pebbles before marbling dominates? The Gaussian-field argument says a handful; a statistical test of the field's kurtosis against $N$ would show it.
 
 ## References

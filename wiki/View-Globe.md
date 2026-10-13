@@ -30,6 +30,18 @@ combining registry records, routing data and measurements, so a location is a st
 best the city of the block's users, at worst the country's centroid, and wrong for anycast, content networks, mobile
 carriers and VPNs. isotop reports such a place as what the database says and never as a measurement.
 
+## History
+
+**The projection.** The view of a sphere from infinitely far away, the orthographic projection, is among the oldest in the record. Hipparchus is credited with using it in the second century BCE to work out where stars rise and set, and for a long time it went by the name *analemma*. Its present name is generally credited to the Antwerp Jesuit Francois d'Aguilon, in his *Opticorum libri sex* (1613), the book Rubens illustrated; sources differ over whether he coined the word or took it from Vitruvius, and one older source applies the same coinage to the stereographic projection, so the attribution is not settled here. Mercator's cylindrical projection (1569) came 1,700 years later and answered a different question, how to draw a constant bearing as a straight line.
+
+**The meridian.** A globe needs a zero of longitude, and for most of history there was none. The International Meridian Conference in Washington in 1884 chose Greenwich: 22 delegations voted for, San Domingo against, and France and Brazil abstained. It matters here because `geo::home` can fall back to longitude 0.
+
+**Coastlines.** Computer cartography began with the geographic information systems of the 1960s, of which Roger Tomlinson's Canada Geographic Information System is the usual first example (the dates of its stages are unverified here). The coastlines in `src/coastline.bin` come from Natural Earth, a public-domain dataset published at scales of 1:10, 1:50 and 1:110 million by Tom Patterson and Nathaniel Vaughn Kelso, later maintained as a volunteer project supported by the North American Cartographic Information Society. isotop uses the coarsest scale. The launch year is not confirmed here.
+
+**Addresses to places.** An IP address has no position. MaxMind, founded in 2002, says it coined the term GeoIP that year and launched a commercial address-to-location database; it later released a free subset, GeoLite. The legacy GeoLite files (`GeoIP.dat`) were retired on 2 January 2019 in favour of GeoLite2, in the MaxMind DB format; DB-IP publishes a compatible free city database. isotop reads both formats: see "Databases" below.
+
+## Theory
+
 ### Orthographic projection, derived
 
 Let the view be centred on latitude $\varphi_0$ and longitude $\lambda_0$ (the point of the earth directly facing the
@@ -249,7 +261,7 @@ city database in `~/.local/share/isotop/` (DB-IP City Lite works); isotop itself
 * [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs): `Camera::view`, `Camera::hold`, `release`, `Frame::world_sphere`; [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `globe` row.
 * Figures: `docs/figures/globe-orthographic.py`, `globe-arcs.py`, `globe-rtt.py`.
 
-AGENTS.md lists `globe.rs` among the module views; its row is `Hooks::BuiltIn` (`BuiltIn::Globe`).
+`globe::Globe` is a `ViewModule` built from its registry row; views are compile-time modules and there is no plugin system.
 
 ## Variations and open questions
 
@@ -262,6 +274,7 @@ AGENTS.md lists `globe.rs` among the module views; its row is `Hooks::BuiltIn` (
   rather than throughput.
 * **Fix the home lookup** for merged zones: fall back to `zone.tab` when `zone1970.tab` has no row for the zone, and resolve the symlink to its target name.
 * **UDP.** `/proc/net/udp` and `sock_diag` for UDP would reveal QUIC peers, with no byte counters or RTT.
+* **Null Island.** An unknown home is drawn at latitude 0, longitude 0, which is open water in the Gulf of Guinea, the place geocoders put what they could not find. Whether it deserves a marker of its own is open.
 * **Open:** should arcs be coloured by the process kind, so the cloud above home and the arcs below it read together?
 
 ## References

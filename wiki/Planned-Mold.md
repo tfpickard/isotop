@@ -19,6 +19,16 @@ Two experiments made the organism a standard example of computation without a br
 
 Why this is a good metaphor for process data. The machine has scattered sources of activity (processes, each with a CPU load and a memory footprint) and a sparse set of real connections between them (sockets, pipes). A slime mold is a mechanism that, given sources of "food" at fixed places and some structure in between, produces a transport network that is thin where nothing flows and thick where much does, and rebuilds itself when a source appears or vanishes. The metaphor is structural and aesthetic. It is not a claim that the veins are measured traffic: see [Reading the picture](#reading-the-picture).
 
+## History
+
+The slime moulds were first taken for fungi, because the organism ends its feeding life as stalked, spore-bearing fruiting bodies. They were later grouped with the protozoa and are now placed in the Amoebozoa (class Myxogastria), with *Physarum polycephalum* in the order Physarales. A 2012 study in *BMC Evolutionary Biology* found the genus *Physarum* to be polyphyletic, so the classification is still being redrawn.
+
+Its career as a computing medium began at Hokkaido University. In 2000 Nakagaki, Yamada and Tóth published the maze experiment in *Nature*; in 2007 Tero, Kobayashi and Nakagaki turned the observation into a mathematical model of adaptive transport, the conductivity equation above. The Tokyo rail experiment and its generalised model appeared in *Science* in 2010. Popular accounts date the Tokyo experiment to 2009 or to 2010; the paper is the authority for the second.
+
+The two experiments were each recognised by an Ig Nobel Prize: in 2008, for cognitive science, to the maze team (Nakagaki, Yamada, Tóth, Tero, Kobayashi and Ishiguro), and in 2010, for transportation planning, to the Tokyo team, which added Takagi, Saigusa, Ito, Yumiki, Bebber and Fricker. Nakagaki is named in both citations.
+
+The continuum model then acquired a mathematics of its own. Jones (2010) showed that a swarm of local agents on a trail map reproduces the networks without ever building a graph, which is the model this view is specified to run. Adamatzky's *Physarum Machines* (2010) collected the organism's use as a computing substrate, and Bonifaci, Mehlhorn and Varma (2012) proved that the linear form of the model computes shortest paths. Each of these is a model of the organism's behaviour; none of them is evidence about processes, and the view claims nothing of the kind.
+
 ## Theory
 
 ### The flow in one tube: Hagen-Poiseuille
@@ -121,14 +131,14 @@ Jones also reports that other settings of the angles and offsets give other netw
 
 ## Mapping
 
-Every visual element maps to a measurement or is declared decorative. Source names are the fields of `Snapshot` and `Process` that exist today unless marked as from an open building block.
+Every visual element maps to a measurement or is declared decorative. Source names are the fields of `Snapshot` and `Process` as they exist in the source tree.
 
 | Visual element | Measured quantity (source) | Transform |
 |---|---|---|
-| Oat flake position | Stable ground position of the process: the orbit layout held still (`Scene::layout(processes, time, 0.0)`), hubs excluded | none; the flake never moves when CPU or memory change |
+| Oat flake position | Stable ground position of the process: the orbit layout held still (`layout` in `src/views/systems.rs` with `motion` 0.0, which Flow already calls that way), hubs excluded | none; the flake never moves when CPU or memory change |
 | Oat flake area | `Process.memory` (RSS; footprint on macOS) | area $(70 + 0.24\,\mathrm{MiB})(384/400)^2$ cells, radius clamped to 2.5 to 16 cells |
 | Attractant a flake emits | `Process.cpu` | halo $e^{-2.5(d-1)}(0.15 + 0.012\,\mathrm{cpu\%})$ per step, $d$ in flake radii |
-| Scent corridor along a link | loopback TCP rate (`Snapshot::link_traffic`), Unix queue bytes and pipe rate (building block B2, open), socket count (`Snapshot::links`) | segment, Gaussian sigma 1.2 cells, amplitude $0.55\min(1,\ 0.04\min(\mathrm{sockets},4) + \log_{10}(1+\mathrm{bytes})/7)$ |
+| Scent corridor along a link | loopback TCP rate (`Snapshot::link_traffic`), Unix queue bytes (`Snapshot::unix_queues`) and pipe rate (`Snapshot::pipes`), socket count (`Snapshot::links`) | segment, Gaussian sigma 1.2 cells, amplitude $0.55\min(1,\ 0.04\min(\mathrm{sockets},4) + \log_{10}(1+\mathrm{bytes})/7)$ |
 | Total biomass (agent count) | machine CPU busy fraction | target $\mathrm{AGENTS\_MAX}\,(0.4 + 0.6\,\mathrm{busy})$, 10 s exponential moving average |
 | Where starving agents reappear | `Process.cpu` of the flakes | after 1,500 steps without food, at a flake rim chosen with weight $\mathrm{cpu\%} + 0.5$ |
 | Vein brightness and thickness | the agents' own occupancy | density EMA 0.08 per step; slower tube EMA 0.006 per step; mold.py `vein_colour` ramp |
@@ -147,9 +157,9 @@ Script: `docs/figures/mold-mapping-curves.py`. The corridor saturates at $10^7$ 
 
 Everything in this section is the design of issue #41. The numbers are those of the issue; where the issue copies them from the prototype `docs/mockups/code/mold.py` it says so.
 
-**Module and registry.** A new module `src/mold.rs` with `#[derive(Default)] pub struct Mold` implementing `views::ViewModule` (`draw(&mut self, stage, processes, snapshot) -> usize`), plus one row at the end of `views::REGISTRY`. There is no plugin system: views are compile-time modules, and a view is one module plus one registry row. The row's backdrop is `Backdrop::Dusk`. There are no view-local keys. Pure simulation state is kept free of drawing, in the style of `medium.rs`.
+**Module and registry.** A new module `src/mold.rs` with `#[derive(Default)] pub struct Mold` implementing `views::ViewModule` (`draw(&mut self, stage, processes, snapshot) -> usize`), plus one row at the end of `views::REGISTRY`, built as `ViewInfo::new("mold", "MOLD", Backdrop::Dusk, build)` where `build` is a `views::Build` (a closure returning `Box::new(Mold::default())`). There is no plugin system: views are compile-time modules, and a view is one module plus one registry row. The scene builds the view from its row and owns its state, so the view keeps its own simulation in the struct. The layout above is a `pub(super)` function of `views`, so reaching it from `src/mold.rs` needs its visibility widened or a copy of the seating rule, which the issue does not settle. There are no view-local keys. Pure simulation state is kept free of drawing, in the style of `medium.rs`.
 
-**Dependencies.** Status as of the repository at the time of writing (commit `192299b`):
+**Dependencies.** Status in the current source tree:
 
 | Item | Provides | Status |
 |---|---|---|
@@ -157,10 +167,10 @@ Everything in this section is the design of issue #41. The numbers are those of 
 | S1 (#22) | CPU/GPU parity check and tolerance | merged |
 | S2 (#23) | `simulation::FixedStep` | merged |
 | S6 (#27) | source demand, `status::missing_note` and `sources_note` | merged |
-| P3 (#19) | field primitive: one bilinear quad, identical on CPU and GPU, with an owner grid for picking | open |
-| B2 (#29) | Unix socket queues and pipe links beside the loopback TCP rates | implemented in open PR [#134](https://github.com/tfpickard/isotop/pull/134), not merged |
+| P3 (#19) | field primitive (`src/render/field.rs`: `Field`, `Placement`, `Frame::field`) with an owner grid for picking | merged |
+| B2 (#29) | Unix socket queues (`Snapshot::unix_queues`) and pipe links (`Snapshot::pipes`) beside the loopback TCP rates | merged |
 
-The view cannot be started until P3 (not yet implemented in any open pull request) and B2 (in #134) are on `main`.
+Every prerequisite is on `main`; the view itself is what is missing.
 
 **Simulation.**
 
@@ -171,7 +181,7 @@ The view cannot be started until P3 (not yet implemented in any open pull reques
 * Biomass: when below the target, agents bud from existing ones; above it, starving agents retire instead of respawning. `AGENTS_MAX` is chosen with `--benchmark` (the issue suggests starting near 40,000). Simulation cost does not depend on the process count.
 * Fields: the food and corridor fields are rebuilt only when a sample arrives. The food halo, flake area and respawn rule are taken from `mold.py`.
 
-**Rendering.** The trail and vein colour are drawn by the P3 field primitive (one bilinear quad, not a triangle pair per cell), using the `vein_colour` ramp from the prototype. Flakes are kind-tinted ellipse fans of about 24 segments, pickable by process index. The dish wall and rim are triangles and decorative. The 12 % peristaltic wave is decorative and the README is specified to say so. The view fills `stage.positions` and pushes `render::ring_bounds` for the dish. On exit, the flake and its emission stop on that frame; the veins thin as the trail decays.
+**Rendering.** The trail and vein colour are drawn by the field primitive (P3: one bilinear quad, not a triangle pair per cell), using the `vein_colour` ramp from the prototype. Flakes are kind-tinted ellipse fans of about 24 segments, pickable by process index. The dish wall and rim are triangles and decorative. The 12 % peristaltic wave is decorative and the README is specified to say so. The view fills `stage.positions` and pushes `render::ring_bounds` for the dish. On exit, the flake and its emission stop on that frame; the veins thin as the trail decays.
 
 **Picking.** The P3 owner grid is the nearest live flake (a multi-source breadth-first search), rebuilt when the flake set changes. There are no non-process pickables: the inspector of each endpoint of a link gets a `stage.notes` line of the form `vein on link A <-> B: <kind> <rate>, N fds, scent X of corridor max`, with names passed through `terminal::clean_text` and `render::label_name`.
 
@@ -222,11 +232,13 @@ python3 docs/figures/mold-mapping-curves.py
 
 Nothing is implemented. What exists today and what the design will use:
 
-* `src/views.rs`: `REGISTRY`, `ViewInfo`, `ViewModule`, the row where `mold` will be added.
+* `src/views.rs`: `REGISTRY`, `ViewInfo`, `Build`, `ViewModule`, the row where `mold` will be added.
+* `src/render/field.rs`: the field primitive the trail is drawn with (`Field`, `Placement`, `Frame::field`).
+* `src/views/systems.rs`: `layout`, the orbit layout the flakes sit on.
 * `src/simulation.rs`: `FixedStep`, `Rng::for_identity`.
 * `src/layout.rs`: `Discs` (stable disc reservation), `Seats`, `vacant`.
 * `src/render.rs`: `Stage`, `Backdrop`, `ring_bounds`, `label_name`; `src/terminal.rs`: `clean_text`.
-* `src/model.rs`: `Snapshot::link_traffic` (loopback TCP bytes/s per pair), `Snapshot::links`, `Snapshot::unix_links`, `Snapshot::missing`.
+* `src/model.rs`: `Snapshot::link_traffic` (loopback TCP bytes/s per pair), `Snapshot::links`, `Snapshot::unix_links`, `Snapshot::unix_queues`, `Snapshot::pipes`, `Snapshot::missing`.
 * `src/medium.rs`: the model of a pure simulation state (the wave equation and flow particles).
 * Prototype, reference only: `docs/mockups/code/mold.py` (`Mold.step`, `build_fields`, `topdown`).
 * Issue: [#41](https://github.com/tfpickard/isotop/issues/41); roadmap: `docs/ROADMAP.md`.
@@ -238,6 +250,7 @@ Nothing is implemented. What exists today and what the design will use:
 * **Loops as redundancy.** The loop count of the trail (cycles of the vein skeleton) could be reported next to "connected a/b", as a fault-tolerance figure in Tero's sense.
 * **Measure the correspondence.** Estimate the effective exponent $\mu$ of the agent model by measuring the trail increase as a function of agent flux in a corridor. The sigmoid argument above is a conjecture.
 * **Which traffic scale?** The corridor saturates at about $10^7$ bytes/s, below the rates of a busy loopback socket. A per-link normalisation would show relative traffic instead of absolute.
+* **The observer flake.** isotop is a process, so it is a flake, and its CPU is what pays for the mold. The mold is therefore partly fed by the cost of its own growth. The specification does not exclude it.
 * **Memory pressure as nutrient.** Nothing in the specification uses pressure; the mold could shrink its biomass target under memory pressure, the way a starved plasmodium retreats.
 
 ## References

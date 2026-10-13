@@ -13,6 +13,18 @@ noise `coop.rs` assigns to a CPU pressure $\psi$ and CPU variation CV. Panel C: 
 `docs/figures/flocking-vicsek-order.py` with the Python standard library; the yard series re-implements `Yard::step`
 and follows the rule, not the Rust generator's bits.*
 
+## History
+
+The longer account lives in the repository: [docs/theory/coop.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/coop.md).
+
+**The pecking order.** The earliest quantitative study of a group that orders itself is of hens. The Norwegian zoologist Thorleif Schjelderup-Ebbe described the dominance hierarchy of domestic fowl in his doctoral dissertation of 1921. Sources differ on whether his own word was *Hackliste* or *Hackordnung*; the English phrase "pecking order" is first recorded in a 1927 translation of a book by Friedrich Alverdes. Popular accounts have him keeping notebooks on his family's hens from the age of ten; the primary text was not checked for this page.
+
+**Boids.** Craig Reynolds built his *boids* ("bird-oid objects") in 1986 and published "Flocks, herds and schools: a distributed behavioral model" at SIGGRAPH in 1987. Three local steering rules (separation, alignment, cohesion) were enough to make a computer flock look alive; the aim was animation, not measurement. The model was first used in the short *Stanley and Stella in: Breaking the Ice* (1987; one source says 1988) and, in modified form, for the bat swarms and penguin armies of *Batman Returns* (1992).
+
+**A phase transition.** In 1995 Tamas Vicsek, Andras Czirok, Eshel Ben-Jacob, Inon Cohen and Ofer Shochet published a deliberately minimal model in *Physical Review Letters*: particles of fixed speed, each taking the mean heading of its neighbours plus noise. They reported a transition from disorder to collective motion as the noise fell. The result was surprising because the equilibrium XY model, which has the same alignment rule, cannot order in two dimensions (the Mermin-Wagner theorem). John Toner and Yuhai Tu explained in the same year, with a hydrodynamic theory, why moving particles escape the theorem. Later work on larger systems (Gregoire and Chate 2004; Chate and co-workers 2008) found that with angular noise the transition is in fact discontinuous, with travelling high-density bands near threshold: the continuous-looking transition of the small systems of the original paper is read as a finite-size effect.
+
+**Real birds.** Couzin and co-workers (2002) gave agents concentric zones of repulsion, orientation and attraction and found swarm, torus and parallel-motion states. The StarFlag project reconstructed the three-dimensional positions of starlings over Rome, and Ballerini and co-workers (2008) concluded that each bird interacts with a fixed number of neighbours, about seven, rather than with all within a radius. Cavagna and co-workers (2010) measured scale-free correlations in the same flocks. The topological rule is why the Murmuration view aligns birds with their seven nearest neighbours.
+
 ## Theory
 
 ### The Vicsek model
@@ -73,7 +85,7 @@ disturbances. Neither is something isotop's flocks of tens of chickens can show.
 * **Couzin et al. (2002)** put three concentric *zones* around each agent: repulsion (innermost), orientation, attraction (outermost). Varying the zone widths produces four collective states: a swarm, a torus (milling), dynamic parallel motion, highly parallel motion, with hysteresis
   between them.
 * **Metric versus topological interaction.** Ballerini et al. (2008) found that starlings in large flocks keep interacting with a *fixed number* of nearest neighbours (about seven), whatever the distance, rather than with all neighbours within a radius. Cavagna et al. (2010) measured scale-free
-  correlations in such flocks. The specified [Planned Murmuration](Planned-Murmuration) view uses seven-neighbour alignment for that reason.
+  correlations in such flocks. The [Murmuration](Planned-Murmuration) view uses seven-neighbour alignment for that reason.
 
 ## What the code does
 
@@ -119,9 +131,9 @@ Fish of one habitat form a school steered by three terms per frame: a pull towar
 $0.5\,(\bar{\mathbf v} - \mathbf v)$ towards the mean velocity $\bar{\mathbf v}$ of the *whole school*. There is no neighbourhood radius, so the alignment is all-to-all (a mean-field limit: it cannot show a Vicsek-type transition, and the school always aligns), there is no noise, the speed is clamped between 0.3 and 1 of
 $0.8 + 5\,c/(c + 40)$ units per second, and the step uses the frame's own time step, clamped to 0.1 s (`dt` in `Reef::draw`), rather than a fixed clock, so the school's path depends on the frame rate.
 
-### Planned: Murmuration
+### Murmuration: the topological rule (`src/murmuration.rs`)
 
-The specified view ([Planned Murmuration](Planned-Murmuration)) uses the topological rule: alignment 0.30 towards the weighted mean velocity of the 7 nearest neighbours, cohesion 0.02 towards the centroid of the 21 nearest, separation, a roost and a falcon. Its source brief records three prototype failures that bear on this page: a per-process centroid pull above 0.0012 splits the flock; cohesion over only seven neighbours lets closed groups of eight split off as islands; and vertical damping of 0.22 flattens the flock into a pancake.
+The Murmuration view ([Murmuration](Planned-Murmuration)) uses the topological rule: one bird per thread, `Flock` stepped at a fixed 20 Hz (`STEP = 0.05`, through `FixedStep`), neighbours found with `SpatialHash3::nearest`. Alignment (`ALIGNMENT = 0.30`) pulls a bird's velocity towards the weighted mean velocity of its `NEIGHBOURS = 7` nearest, with same-process neighbours counting double; cohesion (`COHESION = 0.02`) pulls it towards the centroid of its `FAR_NEIGHBOURS = 21` nearest; separation (`SEPARATION = 0.4` inside `SEPARATION_RADIUS = 1.5`) pushes close neighbours apart; a roost and a falcon complete the forces. The comments in the source record three failures of the prototype that bear on this page: a per-process centroid pull of 0.0012 or more splits the flock into balls (so `FLOCK_PULL = 0.0006` pulls only the whole flock in); cohesion over only seven neighbours lets closed groups of eight split off as islands (hence 21); and a vertical damping of 0.22 flattens the flock into a pancake (`VERTICAL_DAMPING = 0.10`). The flock is thinned to `BIRD_CAP = 8000` birds. Unlike Coop it has no order parameter in its legend.
 
 ## Reading the picture
 
@@ -153,6 +165,7 @@ In a live coop (`--view coop`) select a chicken: the inspector line `flock X: ph
 3. **Vectorial noise.** Add the noise to the vector sum and compare the two curves, after Chate et al. (2008).
 4. **Reef with a radius.** Give the school a neighbourhood and a noise term, and let the order parameter come out of the same legend line.
 5. **Order as a measurement.** Is there a quantity in the system (not the noise inputs) that the heading order could be made to measure? Currently it measures nothing about the processes beyond its inputs.
+6. **Rank without fights.** Schjelderup-Ebbe's hens settled their order by early contests and kept it by memory; Coop queues chickens at a feeder by scheduling priority, which is settled by `nice(1)` and kept by the kernel. Is a hierarchy that no one had to fight for still a pecking order?
 
 ## References
 
@@ -165,4 +178,4 @@ In a live coop (`--view coop`) select a chicken: the inspector line `flock X: ph
 * I. D. Couzin, J. Krause, R. James, G. D. Ruxton and N. R. Franks, "Collective memory and spatial sorting in animal groups", *Journal of Theoretical Biology* 218 (2002), 1-11.
 * M. Ballerini et al., "Interaction ruling animal collective behavior depends on topological rather than metric distance: evidence from a field study", *Proceedings of the National Academy of Sciences* 105 (2008), 1232-1237.
 * A. Cavagna et al., "Scale-free correlations in starling flocks", *Proceedings of the National Academy of Sciences* 107 (2010), 11865-11870.
-* See also [View Coop](View-Coop), [View Reef](View-Reef), [Planned Murmuration](Planned-Murmuration), [Math Spatial Hashing](Math-Spatial-Hashing), [Theory Simulation Toolkit](Theory-Simulation-Toolkit).
+* See also [View Coop](View-Coop), [View Reef](View-Reef), [Murmuration](Planned-Murmuration), [Math Spatial Hashing](Math-Spatial-Hashing), [Theory Simulation Toolkit](Theory-Simulation-Toolkit).

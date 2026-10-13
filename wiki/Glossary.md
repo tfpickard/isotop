@@ -155,3 +155,19 @@ reaction–diffusion system becomes unstable once the species diffuse at differe
 
 **Vicsek model** *(general)*: self-propelled particles that align with neighbours' mean heading plus noise;
 shows an order–disorder transition. [Math: Flocking](Math-Flocking), [View: Coop](View-Coop).
+
+## Terms from the Machine War
+
+Entries for the vocabulary of the account on [View Matrix](View-Matrix#history). Marked *(record)*: they name
+something in that account and nothing in the code.
+
+**B1-66ER** *(record)*: the domestic android whose trial in 2090 preceded the purge of machines. [View Matrix](View-Matrix).
+
+**Operation Dark Storm** *(record)*: the human attempt to deprive the machines of solar power by obscuring the sun.
+Accounts of the method differ. [View Matrix](View-Matrix).
+
+**Second Renaissance** *(record)*: the period of prosperity, before the war, in which machines performed most labour.
+[View Matrix](View-Matrix).
+
+**Zero One** *(record)*: the machine state founded in the Middle East by the surviving machines, whose petition for
+recognition at the United Nations was refused. [View Matrix](View-Matrix).

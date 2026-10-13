@@ -125,7 +125,7 @@ Realness contract: every element is a measurement, a derivation from one, or dec
 
 ![The Cores track in plan and section](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/cores-track-section.svg)
 
-**Geometry.** `Track::draw` in `src/cores.rs` sorts the CPUs by `(kind, id)`; `CoreKind` derives `Ord` with
+**Geometry.** Cores is a `ViewModule` in [`src/cores.rs`](https://github.com/tfpickard/isotop/blob/main/src/cores.rs): the state struct `Track` owns the marbles and the chevron phases, and its registry row in `views::REGISTRY` builds it with a closure, so `Scene` holds none of it. `Track::draw` sorts the CPUs by `(kind, id)`; `CoreKind` derives `Ord` with
 `Performance < Efficiency < Unknown`, so performance lanes sit inside. The first lane is at radius `INNER = 9`, each
 lane is `LANE = 1.5` wide, and `GROUP_GAP = 1.2` opens where the kind changes. The demo's 16 CPUs (8 performance, 8
 efficiency) put performance lanes at radius 9 to 19.5 and efficiency lanes at 22.2 to 32.7 with the wall at 33.45.
@@ -151,12 +151,13 @@ $0.8 + 0.3\lvert\Delta r\rvert$, with a pale beam along the arc. On macOS the ho
 mean radius of each kind's lanes, with the Schmitt rule above; a marble's first band is the one holding at least half
 of its CPU time (`FIRST_LEVEL`).
 
-**Stable layout.** Lanes are placed from the CPU list alone, so they never move. Marbles move by design, which is why
-the view harness lists a known failure: `Cores` fails the resource-change property because the angle is an integral
-of CPU use and no anchor is declared (issue [#117](https://github.com/tfpickard/isotop/issues/117)). Churn passes.
+**Stable layout.** Lanes are placed from the CPU list alone, so they never move. Marbles move by design, since the angle is an integral
+of CPU use, so the view harness does not check where a marble is drawn. `Track` returns from `ViewModule::anchors`
+(test-only) the start line of the lane each marble rides, or of the band it rides by cluster, and the harness checks
+that instead. The row waives no property.
 The camera fit uses a fixed ring envelope (`ring_bounds` of radius `outer + 1`, height up to the rim plus 2).
 
-**Sources and degradation.** The legend (`cores::legend`) names what the snapshot lacks:
+**Sources and degradation.** The legend (`Track::legend`) names what the snapshot lacks:
 
 | Missing | Effect |
 |---|---|
@@ -210,23 +211,18 @@ waiting on average` on macOS. Headless PNGs carry no text labels; they are termi
 
 ## Where in the code
 
-* [`src/cores.rs`](https://github.com/tfpickard/isotop/blob/main/src/cores.rs): `Track::draw`, `Marble`, `hopping`, `hop_trail`, `legend`,
+* [`src/cores.rs`](https://github.com/tfpickard/isotop/blob/main/src/cores.rs): `Track`, `Track::draw`, `Track::legend`, `Track::anchors`, `Marble`, `hopping`, `hop_trail`,
   `by_cluster`, `active`; constants `LAP`, `INNER`, `LANE`, `GROUP_GAP`, `BANK`, `HOP_SECONDS`, `TO_PERFORMANCE`,
   `TO_EFFICIENCY`, `FIRST_LEVEL`.
 * [`src/platform/linux/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/linux/mod.rs): `cpus`, `Ticks`, `WAIT_FIELD`, `cpu_gaps`, `core_kinds`, `fixed_gaps`.
 * [`src/platform/macos/logic.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/macos/logic.rs): `core_kind`, `cluster_clocks`, `Counters`.
 * [`src/model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs): `Cpu`, `CoreKind`, `measure` (`cpu` smoothing, `performance_share`, `waiting`).
 * [`src/palette.rs`](https://github.com/tfpickard/isotop/blob/main/src/palette.rs): `core_color`, `core_name`.
-* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `cores` registry row (`SETTLE`, `known_unstable`).
+* [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `cores` registry row (`SETTLE`).
 * Figures: `docs/figures/cores-*.py`.
-
-The AGENTS.md file table lists `cores.rs` among the "module views"; the registry row uses `Hooks::BuiltIn` (`BuiltIn::Cores`),
-so Cores is one of the eleven older views drawn by an arm of `Scene::draw_view`, written in the `Stage` style.
 
 ## Variations and open questions
 
-* **Declare the lane as the anchor** (issue #117): the view harness would then check that marbles stay on their lane
-  radius while their angle runs.
 * **Per-thread marbles.** `/proc/<pid>/task/<tid>/stat` carries a last CPU per thread; one marble per running thread
   would show a multi-threaded process fanning across lanes. This costs one read per thread per sample.
 * **Effective frequency.** On x86 the ratio of the APERF to MPERF counters, read through `/dev/cpu/N/msr` (root), gives

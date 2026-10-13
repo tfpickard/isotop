@@ -15,6 +15,20 @@ result.
 doublings (log2 MiB), mean removed. The grey dots are the sixty samples; the curve is the tip of the K-term chain.
 Figure script: `docs/figures/fourier-epicycle-reconstruction.py`.*
 
+## History
+
+The longer account lives in the repository: [docs/theory/ptolemy.md](https://github.com/tfpickard/isotop/blob/main/docs/theory/ptolemy.md).
+
+**Circles first.** Greek astronomy was asked to explain the wandering of the planets with uniform circular motion. Eudoxus answered with nested rotating spheres in the 4th century BCE. Apollonius of Perga (about 262 to 190 BCE) is the usual source for the deferent and the epicycle, and for the theorem that an eccentric model and an epicyclic one give the same motion of the Sun. Hipparchus (2nd century BCE) fitted such models to observations of the Sun and Moon.
+
+**Ptolemy.** Claudius Ptolemy's *Mathematical Syntaxis*, known by its Arabic title, the *Almagest* (about 150 CE), is the finished system. For the planets he added the equant, an off-centre point about which the epicycle's centre moves uniformly. It broke the letter of uniform circular motion and was criticised for some fourteen centuries. Nasir al-Din al-Tusi (1247) and Ibn al-Shatir (14th century) repaired it with circles alone; Copernicus (1543) moved the Sun to the middle and still used epicycles, and Kepler's ellipses (1609) removed them. How much Copernicus knew of the Islamic models is debated.
+
+**Fourier.** Joseph Fourier presented his memoir on heat conduction in 1807 and published *Theorie analytique de la chaleur* in 1822, arguing that an essentially arbitrary function on an interval can be written as a sum of sines and cosines. The complex form of the statement is the epicycle theorem of section 1. N. R. Hanson (1960) drew the historical moral: an epicyclic system with enough circles can approximate any periodic motion, so the Almagest's long success is no evidence for the heavens being built of circles.
+
+**The fast transform.** Carl Friedrich Gauss worked out a fast algorithm for the discrete transform around 1805 (the date is presumed) to interpolate the orbits of the asteroids Pallas and Juno from a few observations. He did not publish it; it appeared only in his collected works, and Heideman, Johnson and Burrus drew attention to it in 1984. J. W. Cooley and J. W. Tukey published the algorithm independently in 1965. By Cooley's own later account the occasion was a 1963 meeting of the President's Science Advisory Committee on detecting underground nuclear tests, where Tukey sketched the idea and Richard Garwin, who wanted a fast transform for his own purposes, brought it to Cooley. The Tukey of that meeting also coined the word "bit". Sources differ on what Garwin told Cooley at the time.
+
+**Machines.** The planetarium projector (Zeiss, 1923) and the orrery before it are mechanical epicycle machines: gears on gears, each a circle on the end of another.
+
 ## 1. Theory: a periodic curve is a sum of rotating vectors
 
 ### 1.1 Phasors
@@ -185,29 +199,11 @@ the sidereal period of Mars over the year, because in Ptolemy's model of a super
 pure circles-only model spends 9.1 % of the time in retrograde, 71 days of the 780-day synodic cycle; the real
 sky gives roughly two to two and a half months. Script: `docs/figures/fourier-epicycle-retrograde.py`.*
 
-## 2. A short history, kept exact
+## 2. How isotop's geometry differs from Ptolemy's
 
-* **Apollonius of Perga** (about 262-190 BCE) is the usual source for the geometry of deferent and epicycle and for the
-  theorem that the epicycle model and the eccentric model give the same motion of the Sun.
-* **Hipparchus** (about 190-120 BCE) used eccentric and epicyclic models for the Sun and Moon.
-* **Ptolemy** (about 100-170 CE) wrote the *Almagest* about 150 CE. For the planets he put the observer off the
-  deferent's centre (*eccentric*) and made the epicycle centre move *uniformly as seen from a third point*, the
-  **equant**, placed on the other side of the deferent's centre from the observer at the same distance (the bisected eccentricity; Mercury needed a further device).
-  The equant is an innovation of the planetary theory and was criticised for centuries because the motion is not uniform about the circle's own centre.
-* **Copernicus** (1543) moved the Sun to the middle and still used small epicycles to repair the orbits. **Kepler**
-  (1609) replaced the whole apparatus with ellipses and the equal-area law.
+(The history is above.) isotop's geometry is the *uncomplicated* one: Earth at the centre of every deferent, uniform angular speed about that centre (no equant, no eccentric), and a chain of epicycles of *arbitrary* number whose radii and phases are measured rather than fitted to the sky. A uniform deferent plus a chain of epicycles is exactly a Fourier series with one extra low-frequency term (the deferent itself), which is Hanson's point.
 
-isotop's geometry is the *uncomplicated* one: Earth at the centre of every deferent, uniform angular speed about
-that centre (no equant, no eccentric), and a chain of epicycles of *arbitrary* number whose radii and phases are
-measured rather than fitted to the sky. A uniform deferent plus a chain of epicycles is exactly a Fourier series with
-one extra low-frequency term (the deferent itself), which is the mathematical point made by Hanson (1960): an
-epicyclic system with enough circles can reproduce any periodic motion, so its predictive success says nothing about the
-heavens being built of circles.
-
-The same lesson is the folk theorem about overfitting: "with four parameters I can fit an elephant, and with five I
-can make him wiggle his trunk", a remark attributed to von Neumann (reported by Dyson, 2004). Mayer, Khairy and Howard (2010)
-took it literally and drew an elephant with a Fourier series of four complex parameters. Twelve complex epicycles are
-three times that budget, and the view makes no claim about elephants.
+The same lesson is the folk theorem about overfitting: "with four parameters I can fit an elephant, and with five I can make him wiggle his trunk", a remark attributed to von Neumann (reported by Dyson, 2004). Mayer, Khairy and Howard (2010) took it literally and drew an elephant with a Fourier series of four complex parameters. Twelve complex epicycles are three times that budget, and the view makes no claim about elephants.
 
 ## 3. What the code does
 
@@ -295,6 +291,7 @@ forming". Select a planet to read its sphere and epicycle count in the popup.
 ## References
 
 * J. B. J. Fourier, *Theorie analytique de la chaleur* (Paris, 1822).
+* M. T. Heideman, D. H. Johnson and C. S. Burrus, "Gauss and the history of the fast Fourier transform", *IEEE ASSP Magazine* 1(4) (1984), 14-21.
 * J. W. Cooley and J. W. Tukey, "An algorithm for the machine calculation of complex Fourier series", *Mathematics of Computation* 19 (1965), 297-301.
 * F. J. Harris, "On the use of windows for harmonic analysis with the discrete Fourier transform", *Proceedings of the IEEE* 66 (1978), 51-83.
 * E. Jacobsen and R. Lyons, "The sliding DFT", *IEEE Signal Processing Magazine* 20(2) (2003), 74-80.

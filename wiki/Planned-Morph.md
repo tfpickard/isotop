@@ -23,6 +23,16 @@ $$
 
 the trivial state $(u,v) = (1,0)$ is always stable, so patterns need finite-amplitude seeds, and a patch whose $v$ has vanished cannot revive itself.
 
+## History
+
+The question is older than chemistry's answer to it. How a uniform egg becomes a patterned animal was a standing problem of embryology when Alan Turing, in "The chemical basis of morphogenesis" (*Philosophical Transactions of the Royal Society B* 237, 1952, pp. 37-72), showed that two reacting and diffusing substances can destabilise a uniform state and leave a stationary pattern whose scale is set by the chemistry. It was one of the last papers he published; he died in 1954. For some decades the idea was admired and not demonstrated.
+
+The chemistry came from engineers. P. Gray and S. K. Scott studied the autocatalytic step $A + 2B \to 3B$ in a continuously stirred reactor in papers of 1983 and 1984 (*Chemical Engineering Science* 38 and 39); their model, with diffusion added, is the one on this page and is named after them. A Turing-type standing pattern was first made in the laboratory in 1990, in a gel fed with the chlorite-iodide-malonic acid reaction, by V. Castets, E. Dulos, J. Boissonade and P. De Kepper (*Physical Review Letters* 64, pp. 2953-2956). In the same 1993 issue of *Science*, K. J. Lee, W. D. McCormick, Q. Ouyang and H. L. Swinney reported patterns in a gel reactor, and John E. Pearson published "Complex patterns in a simple system" (*Science* 261, pp. 189-192), a numerical survey of the Gray-Scott equations, in which irregular patterns and spots that divide appear as the feed and kill rates are varied. The $(F,k)$ plane used by this view descends from that survey.
+
+Whether animals do this is a separate, still argued matter. S. Kondo and R. Asai reported in 1995 (*Nature* 376, pp. 765-768) that the stripes of the marine angelfish *Pomacanthus* are not fixed once and for all: they drift as the fish grows, and a new stripe appears when the body reaches roughly 4 cm, which is what a reaction-diffusion wave would do.
+
+The word in the page title has a second career. Image morphing, the warping and cross-dissolving of one picture into another from pairs of feature lines, was described by T. Beier and S. Neely in *SIGGRAPH* 1992 (*Computer Graphics* 26(2), pp. 35-42). The dish on this page never turns into anything but itself.
+
 ## 2. Theory specific to this design
 
 ### 2.1 From CPU to $(F, k)$
@@ -110,13 +120,13 @@ The realness contract: every visual element maps to a measured quantity or is de
 
 ## 4. Design: how isotop will realise it
 
-* **Module.** `src/morph.rs`, a `#[derive(Default)]` state struct implementing `views::ViewModule`, with the pure simulation state kept separate from drawing (as `medium.rs` does). One registry row: name `morph`, status name `MORPH`, `Backdrop::Dusk`, `available()` always true, no view-local key, no digit. Pure state in `Morph`; `draw(&mut Stage, &[&Process], &Snapshot) -> usize`.
+* **Module.** `src/morph.rs`, a `#[derive(Default)]` state struct implementing `views::ViewModule`, with the pure simulation state kept separate from drawing (as `medium.rs` does). One row at the end of `views::REGISTRY`, built with `ViewInfo::new(name, title, backdrop, build)`: name `morph`, status name `MORPH`, `Backdrop::Dusk`, `build` a closure returning the boxed module, `available` left at its default (everywhere), no view-local key, no digit. Pure state in `Morph`; `draw(&mut Stage, &[&Process], &Snapshot) -> usize`.
 * **Data.** Only existing fields: `cpu`, `memory`, `state`, `kind`, `name`, `id`. No new `Process` fields and no `model::demo` changes: the demo already spans 0 to about 320 % CPU and contains Z, T and D states.
 * **Rendering.** The P3 field primitive in relief mode (a lit heightfield with an owner grid for picking), identical on the CPU and GPU rasterizers. Per-cell colours and heights are baked on the CPU. The slab sides and shadow are plain quads. Hovering a patch picks its process through the owner grid; ghost cells give `NONE`.
 * **Performance.** $u$ and $v$ as `f32` structure-of-arrays with a back buffer, the interior loop without bounds checks and the edges separately; if `--processes 1000` misses 5 fps the rows are split over `std::thread::scope` (the Jacobi update keeps results bit-identical). Owners are recomputed only when a sample arrives or the population changes, pruned per 16 x 16 tile, target under 5 ms at 192 processes.
 * **Determinism.** Per-process randomness is `Rng::for_identity`; the stepping is a pure function of the step count; two renders of the same `--time` are byte-identical ([Theory-Determinism](Theory-Determinism)). Headless runs warm up the dish through the P1 registry row's warm-up declaration.
 * **Text.** Labels for the 12 largest live patches read `label_name cpu% class` through `stage.places`; the inspector shows `pattern: maze  F 0.0290  k 0.0570`, `patch: N cells (x% of dish)` and `frozen (stopped)`. Legend: ` patch = process (area ~ memory) | pattern = CPU: spots, solitons, fingerprint, maze, holes, turbulence | frozen = stopped`. All process text passes through the sanitizer ([Theory-Text-Safety](Theory-Text-Safety)).
-* **Dependencies** (ROADMAP index): P1 registry, P2 picker, P3 field primitive, S1 parity check, S2 `simulation::FixedStep`. In the tree at commit `192299b` P1, P2, S1 and S2 are merged; the P3 field primitive is not, which is what blocks this view.
+* **Dependencies** (ROADMAP index): P1 registry, P2 picker, P3 field primitive, S1 parity check, S2 `simulation::FixedStep`. In the current tree all five are merged, P3 included (`Field`, `Relief` and `Frame::field` in `src/render/field.rs`); nothing blocks the view except writing it.
 * **Platforms.** Linux: available. macOS: **available**; every consumed field exists on both platforms. macOS never reports the D state, so desaturation does not occur there. There are no degraded sources and no missing-source text in the legend.
 * **No plugin system.** Like every view, morph is a compile-time module and a `REGISTRY` row; nothing loads dynamically.
 
@@ -145,7 +155,7 @@ python3 docs/figures/reaction-diffusion-patterns.py
 
 ## 7. Where in the code
 
-Existing infrastructure the design will use: `simulation::FixedStep`, `simulation::Rng::for_identity`, `simulation::smoothstep` and `smoothing` in `src/simulation.rs`; `layout::Seats` in `src/layout.rs`; `palette::kind_color` in `src/palette.rs`; `render::label_name` and `Stage` in `src/render.rs`; `terminal::clean_text` in `src/terminal.rs`; `views::ViewInfo` and `REGISTRY` in `src/views.rs`; the CPU smoothing in `model::measure` in `src/model.rs` (`smoothing(dt, 1.5)`). Planned: `src/morph.rs`; the R2 helper the issue puts in `pack.rs` (there is no `pack.rs`; `layout.rs` is its home); the prototype `docs/mockups/code/morph.py` (numpy and scipy, reference only).
+Existing infrastructure the design will use: `simulation::FixedStep`, `simulation::Rng::for_identity`, `simulation::smoothstep` and `smoothing` in `src/simulation.rs`; `layout::Seats` in `src/layout.rs`; `palette::kind_color` in `src/palette.rs`; `render::label_name` and `Stage` in `src/render.rs`; `terminal::clean_text` in `src/terminal.rs`; `views::ViewInfo`, `views::ViewModule` and `REGISTRY` in `src/views.rs`; the field primitive (`Field`, `Relief`, `Frame::field`) in `src/render/field.rs`; the CPU smoothing in `model::measure` in `src/model.rs` (`smoothing(dt, 1.5)`). Planned: `src/morph.rs`; the R2 helper the issue puts in `pack.rs` (there is no `pack.rs`; `layout.rs` is its home); the prototype `docs/mockups/code/morph.py` (numpy and scipy, reference only).
 
 ## 8. Variations and open questions
 
