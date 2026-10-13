@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 66 | 64,155 | 1,465 | 3,702 |
+| Rust | 73 | 64,232 | 1,465 | 3,711 |
 | SVG | 89 | 39,904 | 9 | 0 |
 | Python | 121 | 22,902 | 830 | 3,069 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 13,855 | 4,928 |
+| Markdown | 82 | 0 | 13,861 | 4,928 |
 | Plain Text | 7 | 0 | 303 | 0 |
-| **Total** | **370** | **127,282** | **16,490** | **11,750** |
+| **Total** | **377** | **127,359** | **16,496** | **11,759** |
 
 ## Rust by module
 
@@ -27,7 +27,6 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/coop.rs` | 2,716 | 1,367 |
 | `src/necropolis.rs` | 1,995 | 610 |
 | `src/main.rs` | 1,969 | 2,934 |
-| `src/render.rs` | 1,708 | 938 |
 | `src/arbor.rs` | 1,668 | 1,198 |
 | `src/cortex.rs` | 1,220 | 540 |
 | `src/platform/macos/mod.rs` | 1,197 | 609 |
@@ -46,6 +45,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/render/field.rs` | 572 | 719 |
 | `src/neurons.rs` | 569 | 333 |
 | `src/horizon.rs` | 565 | 630 |
+| `src/render/scene.rs` | 529 | 0 |
 | `src/cells.rs` | 523 | 540 |
 | `src/cores.rs` | 500 | 318 |
 | `src/platform/mod.rs` | 500 | 106 |
@@ -54,31 +54,38 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/globe.rs` | 483 | 500 |
 | `src/views/flow.rs` | 475 | 43 |
 | `src/terminal.rs` | 473 | 185 |
+| `src/render/scene/tests.rs` | 411 | 0 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
 | `src/render/strokes.rs` | 386 | 317 |
 | `src/views/ripple.rs` | 374 | 286 |
 | `src/matrix.rs` | 341 | 236 |
 | `src/platform/linux/net.rs` | 320 | 278 |
+| `src/render/raster.rs` | 295 | 38 |
 | `src/blackbody.rs` | 292 | 146 |
+| `src/render/frame.rs` | 285 | 302 |
 | `src/views/city.rs` | 285 | 86 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
 | `src/places.rs` | 270 | 0 |
 | `src/threads.rs` | 252 | 256 |
 | `src/medium.rs` | 240 | 66 |
 | `src/geo.rs` | 229 | 134 |
+| `src/render/draw.rs` | 228 | 17 |
 | `src/journal.rs` | 217 | 74 |
 | `src/strata.rs` | 210 | 128 |
+| `src/render.rs` | 205 | 0 |
 | `src/platform/linux/files.rs` | 201 | 187 |
 | `src/picker.rs` | 195 | 44 |
 | `src/platform/linux/counters.rs` | 170 | 279 |
 | `src/views/orbit.rs` | 169 | 141 |
 | `src/history.rs` | 150 | 157 |
 | `src/stellar.rs` | 149 | 161 |
+| `src/render/stage.rs` | 131 | 95 |
 | `src/platform/linux/pipes.rs` | 130 | 111 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
 | `src/glyphs.rs` | 107 | 0 |
 | `src/platform/macos/events.rs` | 107 | 60 |
+| `src/render/camera.rs` | 106 | 81 |
 | `src/layout.rs` | 105 | 76 |
 | `src/platform/linux/journal.rs` | 101 | 53 |
 | `src/platform/linux/threads.rs` | 101 | 100 |
@@ -89,7 +96,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 570 |
-| **Total** | **36,937** | **27,233** |
+| **Total** | **37,419** | **26,828** |
 
 ## Largest files
 
@@ -101,12 +108,12 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | `src/main.rs` | 5,414 | over limit |
 | `src/coop.rs` | 4,489 | over limit |
 | `src/arbor.rs` | 3,230 | over limit |
-| `src/render.rs` | 3,152 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
 | `src/platform/macos/mod.rs` | 2,223 | over limit |
 | `src/murmuration.rs` | 1,966 | over limit |
 | `src/cortex.rs` | 1,965 | over limit |
 | `src/tesseract.rs` | 1,849 | over limit |
+| `src/simulation.rs` | 1,746 | over limit |
 
 ## Debt counters
 
