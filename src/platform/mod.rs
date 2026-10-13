@@ -77,6 +77,12 @@
 //!     `io_detail::IO_PROCESSES` that get a `Process::io_detail`: its syscall rate on Linux, its
 //!     disk I/O rate on macOS, which has no syscall counters. None for a process that has no
 //!     reading yet.
+//!   - `WaitScan::new() -> WaitScan` and `WaitScan::sample(&mut self, pids: &[u32]) ->
+//!     Option<HashMap<u32, Wait>>`: where each of at most `WAIT_PROCESSES` of `pids` is blocked in
+//!     the kernel, as far as pipes go (`Wait`), read only while `Source::WaitChannel` is
+//!     demanded; resumes after the last pid it read. None when the platform has no wait channel
+//!     to read (macOS) or the kernel hides them all (the collector then reports
+//!     `Source::WaitChannel` missing).
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -226,6 +232,10 @@ pub enum Source {
     /// `wchar`), which macOS lacks, and a demanded `Source::IoDetail` is then read without them:
     /// nothing bounds a file's claim and nothing says what remains.
     UnattributedIo,
+    /// `Snapshot::waits`: whether a process is blocked writing to or reading from a pipe
+    /// (`/proc/<pid>/wchan`), read for the processes that hold pipes while a view demands it.
+    /// macOS has no wait channel to read.
+    WaitChannel,
 }
 
 impl Source {
@@ -265,6 +275,7 @@ impl Source {
         Source::Pipes,
         Source::IoDetail,
         Source::UnattributedIo,
+        Source::WaitChannel,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -304,6 +315,7 @@ impl Source {
             Source::Pipes => "pipes",
             Source::IoDetail => "io detail",
             Source::UnattributedIo => "unattributed io",
+            Source::WaitChannel => "wait channel",
         }
     }
 
@@ -861,6 +873,23 @@ pub struct PipeSample {
     pub partial: bool,
 }
 
+/// Where a process that holds pipes is blocked in the kernel, from `/proc/<pid>/wchan`. The
+/// kernel's symbol is compared and never kept: it differs from one kernel to the next, and it is
+/// process-visible text that must not reach the terminal raw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// Asleep in a write to a full pipe (`pipe_write`): the pipe is backed up.
+    PipeWrite,
+    /// Asleep in a read from an empty pipe (`pipe_read`): the pipe is dry.
+    PipeRead,
+    /// Asleep somewhere else.
+    Other,
+    /// The file reads `0`, which is what the kernel prints for a task that is running right now
+    /// and for one this user may not inspect, or it could not be read at all. It says nothing
+    /// about pipes either way, so it is not "not blocked".
+    Unreadable,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,7 +901,7 @@ mod tests {
         for (index, source) in Source::ALL.iter().enumerate() {
             assert_eq!(*source as usize, index, "{} is out of order", source.name());
         }
-        assert_eq!(Source::UnattributedIo as usize + 1, Source::ALL.len());
+        assert_eq!(Source::WaitChannel as usize + 1, Source::ALL.len());
     }
 
     #[test]

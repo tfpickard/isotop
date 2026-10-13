@@ -27,7 +27,7 @@ use crate::model::{
     Softirq, Unit,
 };
 use crate::platform::{
-    Files, Locks, Network, PipeEnd, PipeSample, RawProcess, Shadow, Source, Sources, Taken,
+    Files, Locks, Network, PipeEnd, PipeSample, RawProcess, Shadow, Source, Sources, Taken, Wait,
 };
 use crate::threads::{Listing, RawThread, Target, ThreadReader};
 
@@ -1213,6 +1213,23 @@ const PIPE_BOUNDS: PipeBounds = PipeBounds {
     listed: 16384,
     scan: 65536,
 };
+
+/// The wait channel scan. macOS has no wait channel to read: a process's sleep is not named
+/// anywhere a process may read (`proc_pidinfo` gives a run state, not what it waits for), so the
+/// scan finds nothing and the collector reports `Source::WaitChannel` missing.
+#[derive(Default)]
+pub struct WaitScan;
+
+impl WaitScan {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Always None: there is no wait channel to read.
+    pub fn sample(&mut self, _pids: &[u32]) -> Option<HashMap<u32, Wait>> {
+        None
+    }
+}
 
 /// The pipe and FIFO scan across processes, which resumes where the previous pass ran out of
 /// budget.

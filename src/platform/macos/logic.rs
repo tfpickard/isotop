@@ -1757,6 +1757,7 @@ mod tests {
         assert_eq!(
             pipes,
             [Pipe {
+                id: reading.id,
                 reader: consumer,
                 writer: producer,
                 two_way: false,

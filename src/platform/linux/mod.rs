@@ -14,6 +14,7 @@ mod net;
 mod nvml;
 mod pipes;
 mod threads;
+mod wait;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -35,6 +36,7 @@ pub use memory::{MEMORY_DETAIL, oom_scores, rollup};
 pub use nvml::Nvml as Gpu;
 pub use pipes::PipeScan;
 pub use threads::Threads;
+pub use wait::WaitScan;
 
 /// What `Process::memory` measures here: the resident set size.
 pub const MEMORY_LABEL: &str = "RSS";
