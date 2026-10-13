@@ -248,7 +248,7 @@ specification asks for. Each page links the mockup beside its theory.
 
 ![Anthill mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/anthill.jpg)
 
-### [Switchboard](Planned-Switchboard)
+### [Switchboard](View-Switchboard)
 
 ![Switchboard mockup](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/mockups/switchboard.jpg)
 

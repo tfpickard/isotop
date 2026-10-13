@@ -51,7 +51,7 @@
 
 [Mold](Planned-Mold) &middot; [Chamber](Planned-Chamber)<br>
 [Hive](View-Hive)<br>
-[Anthill](Planned-Anthill) &middot; [Switchboard](Planned-Switchboard)<br>
+[Anthill](Planned-Anthill) &middot; [Switchboard](View-Switchboard)<br>
 [Plumbing](Planned-Plumbing) &middot; [Morph](Planned-Morph)<br>
 [Ouija](Planned-Ouija) &middot; [Canyon](Planned-Canyon)<br>
 [Die](Planned-Die)
