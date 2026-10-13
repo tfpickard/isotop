@@ -219,7 +219,9 @@ mod tests {
     fn popup_lines(app: &App, frame: &mut Frame) -> Option<Vec<String>> {
         let radius = THING_LAYOUT.pick_radius(true);
         let (_, panels) = app.overlay(frame, &THING_LAYOUT, radius);
-        panels.first().map(|panel| panel.lines.clone())
+        panels
+            .first()
+            .map(|panel| panel.lines.iter().map(ToString::to_string).collect())
     }
 
     #[test]
@@ -236,15 +238,16 @@ mod tests {
         let tags: Vec<String> = labels
             .into_iter()
             .filter(|label| label.tone == Tone::Tag)
-            .map(|label| label.text)
+            .map(|label| label.text.to_string())
             .collect();
         assert_eq!(
             tags,
-            [format!(
+            [SafeText::new(&format!(
                 " {} - {} ",
                 testing::lantern_title(101),
                 testing::WICK
-            )],
+            ))
+            .to_string()],
             "a hovered thing shows its title and its card's first line"
         );
         app.pointer.hover = None;
@@ -258,10 +261,11 @@ mod tests {
         assert_eq!(
             popup_lines(&app, &mut frame).expect("the card is open"),
             [
-                testing::lantern_title(100).as_str(),
-                testing::WICK,
-                "Esc close"
-            ]
+                SafeText::new(&testing::lantern_title(100)).to_string(),
+                SafeText::new(testing::WICK).to_string(),
+                "Esc close".to_owned()
+            ],
+            "the card's lines are cleaned where the popup is made"
         );
         app.render(THING_LAYOUT.width, THING_LAYOUT.height, 512);
         assert_eq!(
@@ -329,8 +333,16 @@ mod tests {
         app.pointer.hover = None;
         let (_, panels) = app.overlay(&mut frame, &THING_LAYOUT, radius);
         let tag = labels.iter().find(|label| label.tone == Tone::Tag);
-        assert!(tag.expect("the hover tag").text.contains('\x1b'));
-        assert!(panels[0].lines.iter().any(|line| line == testing::WICK));
+        let tag = tag.expect("the hover tag");
+        assert!(
+            tag.text.as_str().starts_with(" lantern 100?]0;flare?"),
+            "the tag is cleaned where the label is made: {:?}",
+            tag.text
+        );
+        assert!(!tag.text.as_str().contains('\x1b'));
+        let wick = SafeText::new(testing::WICK);
+        assert!(testing::WICK.contains('\x1b'), "the card's line is raw");
+        assert!(panels[0].lines.contains(&wick));
         let mut output = Vec::new();
         for label in &labels {
             terminal::draw_label(&mut output, label, THING_LAYOUT.columns).unwrap();

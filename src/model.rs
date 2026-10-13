@@ -409,7 +409,7 @@ pub type CpuCount = (u32, u64, Option<f32>);
 pub type Softirq = (String, Vec<CpuCount>);
 
 /// One row of the interrupt table (`Snapshot::interrupts`). Text is as the kernel wrote it:
-/// whoever shows it cleans it (`terminal::clean_text`).
+/// whoever shows it makes it `terminal::SafeText`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interrupt {
     /// The row's label without its colon: an interrupt number (`27`) or a name (`LOC`, `NMI`,

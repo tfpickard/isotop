@@ -13,7 +13,7 @@ use crate::journal::Journal;
 use crate::model::{Collector, Demand};
 use crate::platform::Source;
 use crate::render::Frame;
-use crate::terminal::{Popup, Terminal};
+use crate::terminal::{Popup, SafeText, Terminal};
 
 /// How far behind the clock the journal feed starts, in seconds: after a pause or a slow frame
 /// it catches up over this much time instead of the whole gap.
@@ -202,8 +202,8 @@ impl<'a> Live<'a> {
         } else {
             format!("{:.1} KiB/frame inline", self.wire as f32 / 1024.0)
         };
-        let text = if self.app.panel_shown() {
-            self.app.text(
+        let text: Vec<SafeText> = if self.app.panel_shown() {
+            self.app.status_rows(
                 render_ms,
                 &transport,
                 self.options.fps,

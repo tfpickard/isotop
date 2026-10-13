@@ -2,10 +2,27 @@ use crate::model::{Snapshot, bytes};
 use crate::platform::{self, Source};
 use crate::render::Links;
 
+use crate::terminal::SafeText;
+
 use super::App;
 use super::tour::Tour;
 
 impl App {
+    /// The status rows as the terminal takes them: `text` with each row made a `SafeText`,
+    /// because the rows hold process names, commands and a view's own lines.
+    pub(crate) fn status_rows(
+        &self,
+        render_ms: f32,
+        transport: &str,
+        fps: u32,
+        limit: usize,
+    ) -> Vec<SafeText> {
+        self.text(render_ms, transport, fps, limit)
+            .iter()
+            .map(|row| SafeText::new(row))
+            .collect()
+    }
+
     pub(crate) fn text(
         &self,
         render_ms: f32,
@@ -211,13 +228,15 @@ mod tests {
             popup
                 .lines
                 .iter()
-                .any(|line| line.contains(&format!("| {label} "))),
+                .any(|line| line.as_str().contains(&format!("| {label} "))),
             "{:?}",
             popup.lines
         );
         // macOS reports the physical footprint, which is not a resident set size.
         if cfg!(target_os = "macos") {
-            assert!(!text[1].contains("RSS") && popup.lines.iter().all(|l| !l.contains("RSS")));
+            assert!(
+                !text[1].contains("RSS") && popup.lines.iter().all(|l| !l.as_str().contains("RSS"))
+            );
         }
     }
 

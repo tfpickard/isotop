@@ -12,6 +12,8 @@ mod search;
 mod status;
 mod switcher;
 mod tour;
+#[cfg(test)]
+mod untrusted;
 
 use std::time::{Duration, Instant};
 

@@ -429,12 +429,13 @@ fn cut_labels_survive_terminal_text_cleaning_unchanged() {
         "systemd",
     ] {
         let label = label_name(name);
-        let shown = crate::terminal::clean_text(&label, 64);
+        let shown = crate::terminal::SafeText::new(&label);
         assert_eq!(
-            shown, label,
+            shown,
+            label.as_ref(),
             "{name} lost characters on the way to the terminal"
         );
-        assert!(!shown.contains('?'), "{shown}");
-        assert!(shown.chars().count() <= LABEL_NAME_CELLS);
+        assert!(!shown.as_str().contains('?'), "{shown}");
+        assert!(shown.width() <= LABEL_NAME_CELLS);
     }
 }

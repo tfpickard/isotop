@@ -65,7 +65,7 @@ The README covers usage. This file covers how to work on the code.
    on wgpu (Vulkan, Metal or DX12). Both produce colour, depth and a pick buffer.
 4. **Present** (`terminal.rs`). Frames go to the terminal through POSIX shared memory (`t=s`),
    or inline as zlib and base64. Labels, popups and the status lines are drawn as terminal
-   text over the image.
+   text over the image, and are made of `SafeText` only.
 
 | File | Owns |
 |---|---|
@@ -84,6 +84,7 @@ The README covers usage. This file covers how to work on the code.
 | `app/overlay.rs` | The text drawn over the scene: `App::overlay` (labels, titles, the hover tag, the tour callout), `popup` and `thing_popup` (the inspector) |
 | `app/status.rs` | The status panel's lines (`App::text`) and their helpers (`known_bytes`, `pressure_text`, `unreadable_text`, `sampler_text`) |
 | `app/screen.rs` | `Layout` (the frame and the terminal's cells), `Board` (cells already claimed by panels and labels), `place_panel` and `place_lines`, `PANEL_ROWS` |
+| `app/untrusted.rs` | Test only: every string the system supplies replaced by hostile text (`HOSTILE`), every view drawn with a selection, hover, tour and each thing opened, and the terminal output searched for what a terminal would act on |
 | `app/renderer.rs` | `Renderer { gpu, kind }`: the choice of rasterizer, `rasterize` for a recorded frame on the GPU or the CPU, and the fall back to the CPU when the GPU fails |
 | `app/feed.rs` | `JournalFeed`: when the journal follower runs (`JOURNAL_LINGER`) and the numbering of the lines `App::feed_journal` attaches to the newest sample |
 | `app/fixtures.rs` | Test only: the helpers (`all_available`, `press`, `probe_app`, `guided_app`, `globe_at`, `options`, ...) that the tests of the `app/` files share |
@@ -153,7 +154,8 @@ The README covers usage. This file covers how to work on the code.
 | `history.rs` | The shared per-process CPU and memory history: `History` (a ring of `CAPACITY` samples sorted by `Identity`, recorded by `Scene` on every sample whichever view is shown; `window` by `elapsed` time, `recent` and `series` by count, `changes` for the births and exits between consecutive samples), `Reading`, `Sample` (with an absolute `sequence`), `Change`. Views read it through `Stage::history`; `warm_up` replays it for headless demo runs |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer; the field pass samples one storage buffer by hand (no hardware sampler) and `store_fields` rewrites only the slots whose field was shaded again |
-| `terminal.rs` | Graphics and Kitty keyboard capability probe (the keyboard flags are pushed when the terminal answers, and `restore_screen` pops them before the alternate screen is left), frame transfer, text overlay, terminal restoration |
+| `terminal.rs` | Graphics and Kitty keyboard capability probe (the keyboard flags are pushed when the terminal answers, and `restore_screen` pops them before the alternate screen is left), frame transfer, text overlay (`Label`, `Popup` and the status rows, all `SafeText`), terminal restoration |
+| `terminal/text.rs` | `SafeText`, the only text the terminal overlay takes (`new` and `braille` clean, `trusted` takes a literal, `width` and `cut` count cells), and the cell widths: `cell_width` and `display_width` over the zero-width and double-width ranges |
 | `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, the bounded open-file scan (`FileScan`, one `proc_pidfdinfo` per vnode), the pipe and FIFO scan (`PipeScan`: `PROC_PIDFDPIPEINFO`, and a vnode call per vnode descriptor to find FIFOs), the thread reader (`Threads`: `PROC_PIDLISTTHREADIDS`, then `PROC_PIDTHREADID64INFO` per thread), `oom_scores` (root only: `memorystatus_control`), and what it reports through `missing`, `per_cluster` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions; `memorystatus_control` and the jetsam priority entry |
 | `platform/macos/logic.rs` | Pure macOS decisions with no FFI: jetsam priority lists (`jetsam_priorities`) and their rank (`jetsam_oom`), kinds, groups, parents, the Mach scheduling policy, `KERN_PROCARGS2` parsing, tick conversion, cluster clocks from cycle counters, socket pairing and queues, open and deleted-but-open files and pipe ends from `vinfo_stat` and `pipe_info`, thread run states and ids |
@@ -212,7 +214,7 @@ writes back `stage.positions` (picking anchors, labels, the tour and the exit fl
 `stage.headroom` (how high content stands above the ground, for the fit of a view that gives no bounds),
 `stage.places`, `stage.titles` (the names of systems, labelled under their outer edges),
 `stage.notes` (popup lines after the sockets), `stage.sparklines` (generated
-braille lines right after them, cleaned by `terminal::clean_sparkline`, never process text),
+braille lines right after them, made `SafeText::braille` by the app, never process text),
 `stage.tour` (`TourTarget { id,
 position, weight }`, which the tour visits heaviest first) `stage.popup` (popup lines right
 after the process's own figures) and `stage.callout` (lines for the tour's callout of a process), and returns how many processes it showed; the rest count as
@@ -269,10 +271,17 @@ not shown still has its history when it opens.
   its own boundary (`unwrap_or(0.0)`) only to draw what it drew before.
 - **Sampling stays off the frame loop.** Anything slower than a `/proc/<pid>/stat` read belongs
   on the background thread.
-- **Process text is untrusted.** Names and command lines are sanitized before they reach the
-  terminal (`process_text_cannot_inject_terminal_controls`). Keep it that way for any new text:
-  thread names (`Thread::name`) are stored raw and reach the terminal only through
-  `terminal::clean_text`.
+- **Process text is untrusted.** Names, command lines, thread and cgroup names, journal lines,
+  socket peers and file paths are stored raw in the model and reach the terminal only as
+  `terminal::SafeText`: its field is private to `terminal/text.rs`, `SafeText::new` replaces
+  everything but printable ASCII with `?`, `braille` does the same for generated sparklines and
+  `trusted` takes only a `'static` literal. `Label::text`, `Popup::lines` and the status rows
+  of `Terminal::present` are `SafeText`, so text that skipped the sanitizer does not compile
+  (`process_text_cannot_inject_terminal_controls`). A view hands `Stage` plain strings and the
+  app wraps each in `SafeText::new` where it builds a label, a popup or a status row; lay text
+  out by `SafeText::width` (cells, never `len`) and cut it with `SafeText::cut`. Allowing
+  printable Unicode is a separate decision: it needs the width tables checked in Ghostty and
+  Kitty, and changes only the constructors.
 - **No network access.** isotop never sends anything off the machine. Lookups such as GeoIP use
   local databases only.
 - **Unsafe code** is limited to FFI (libc, netlink, shared memory, NVML) and the SSE4.1

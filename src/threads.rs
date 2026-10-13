@@ -40,8 +40,8 @@ pub struct Thread {
     /// ticks since boot on Linux, the unique 64-bit thread id on macOS, which is never reused
     /// within a boot.
     pub start: u64,
-    /// The name the thread gave itself, raw. It is untrusted text, so every display path passes
-    /// it through `terminal::clean_text`.
+    /// The name the thread gave itself, raw. It is untrusted text, so every display path
+    /// makes it a `terminal::SafeText`.
     pub name: String,
     /// Percent of one core over the last background interval; None on its first observation.
     pub cpu: Option<f32>,

@@ -2,7 +2,7 @@ pub(crate) use camera::SCALE;
 pub use camera::{Camera, ISOMETRIC, LOWEST_PITCH, ORIGIN_Y};
 pub(crate) use draw::{cover, glows, mass_radius, similar};
 pub use frame::{Backdrop, Buffers, Card, Frame, Item, Sky, THING, Target, Thing};
-pub use scene::{Scene, label_name, without_apple_prefix};
+pub use scene::{Scene, label_name, thread_label, without_apple_prefix};
 pub use stage::{RenderInput, Title, TourTarget};
 pub(crate) use stage::{Stage, ring_bounds};
 mod camera;

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::model::{GpuMemory, Identity, Process, bytes, describe};
 use crate::platform::{self};
 use crate::render::{Card, Frame, Point, Target, Thing, label_name};
-use crate::terminal::{Label, Popup, Tone};
+use crate::terminal::{Label, Popup, SafeText, Tone};
 
 use super::App;
 use super::screen::{Board, Layout, place_lines, place_panel};
@@ -53,8 +53,6 @@ impl App {
         }
         let id = self.inspected()?;
         let snapshot = self.snapshot();
-        // The lines `Stage::sparklines` supplied, which the terminal cleans as braille.
-        let mut braille = Vec::new();
         let lines = match snapshot.processes.iter().find(|p| p.id == id) {
             Some(p) => {
                 let mut lines = vec![
@@ -108,26 +106,32 @@ impl App {
                     ));
                 }
                 lines.extend(self.scene.notes.get(&id).into_iter().flatten().cloned());
-                for line in self.scene.sparklines.get(&id).into_iter().flatten() {
-                    braille.push(lines.len());
-                    lines.push(line.clone());
-                }
+                let mut lines: Vec<SafeText> =
+                    lines.iter().map(|line| SafeText::new(line)).collect();
+                // The lines `Stage::sparklines` supplied are braille, which text is not.
+                lines.extend(
+                    self.scene
+                        .sparklines
+                        .get(&id)
+                        .into_iter()
+                        .flatten()
+                        .map(|line| SafeText::braille(line)),
+                );
                 lines.extend([
-                    p.group.clone(),
-                    p.command.clone(),
-                    "f focus subtree | Esc close".into(),
+                    SafeText::new(&p.group),
+                    SafeText::new(&p.command),
+                    SafeText::trusted("f focus subtree | Esc close"),
                 ]);
                 lines
             }
             None => vec![
-                format!("pid {}", id.pid),
-                "exited / unavailable in this snapshot".into(),
-                "Esc close".into(),
+                SafeText::new(&format!("pid {}", id.pid)),
+                SafeText::trusted("exited / unavailable in this snapshot"),
+                SafeText::trusted("Esc close"),
             ],
         };
         place_lines(
             lines,
-            braille,
             frame.anchor.map(|a| layout.cell_of(a)),
             layout,
             false,
@@ -148,7 +152,8 @@ impl App {
         text: String,
     ) -> Option<Label> {
         let at = frame.locate(&self.camera.current, star)?;
-        let width = text.chars().count() as u16;
+        let text = SafeText::new(&text);
+        let width = text.width() as u16;
         let edge = frame
             .locate(&self.camera.current, self.camera.current.front(star, reach))
             .filter(|edge| edge[1] - at[1] < layout.cell_size()[1] * 6.0)
@@ -249,7 +254,8 @@ impl App {
         if let Some(hover) = self.pointer.hover
             && let Some(text) = tag
         {
-            let width = text.chars().count() as u16;
+            let text = SafeText::new(&text);
+            let width = text.width() as u16;
             let column = (hover.cell.0 + 2).min(layout.columns.saturating_sub(width));
             let row = hover.cell.1.saturating_sub(1);
             if board.claim(column, row, width, 1) {
@@ -266,14 +272,15 @@ impl App {
         }
         for (point, text) in &self.scene.places {
             if let Some(at) = frame.locate(&self.camera.current, *point) {
-                let width = text.chars().count() as u16;
+                let text = SafeText::new(text);
+                let width = text.width() as u16;
                 let (column, row) = layout.cell_of(at);
                 let column = column.saturating_sub(width / 2);
                 if row < layout.rows && board.claim(column, row, width, 1) {
                     labels.push(Label {
                         column,
                         row,
-                        text: text.clone(),
+                        text,
                         tone: Tone::Quiet,
                     });
                 }
@@ -297,9 +304,9 @@ impl App {
         busy.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         for p in busy.into_iter().take(6) {
             if let Some(at) = self.screen(frame, p.id) {
-                let text = format!("{} {:.0}%", label_name(&p.name), p.cpu);
+                let text = SafeText::new(&format!("{} {:.0}%", label_name(&p.name), p.cpu));
                 let (column, row) = layout.cell_of(at);
-                if board.claim(column + 2, row, text.chars().count() as u16, 1) {
+                if board.claim(column + 2, row, text.width() as u16, 1) {
                     labels.push(Label {
                         column: column + 2,
                         row,
@@ -374,17 +381,25 @@ mod tests {
         let busy: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Quiet).collect();
         assert!(!busy.is_empty());
         for label in &busy {
-            assert!(label.text.starts_with("com.google.Ba.. "), "{}", label.text);
-            assert!(label.text.chars().count() <= 15 + 5, "{}", label.text);
+            assert!(
+                label.text.as_str().starts_with("com.google.Ba.. "),
+                "{}",
+                label.text
+            );
+            assert!(label.text.width() <= 15 + 5, "{}", label.text);
         }
         let tags: Vec<&Label> = labels.iter().filter(|l| l.tone == Tone::Tag).collect();
         assert_eq!(tags.len(), 1, "the hovered process has a tag");
         assert!(
-            tags[0].text.contains("WidgetExtension"),
+            tags[0].text.as_str().contains("WidgetExtension"),
             "the tag keeps the full name"
         );
         for label in labels.iter().filter(|l| l.tone == Tone::Bright) {
-            assert!(!label.text.contains("WidgetExtension"), "{}", label.text);
+            assert!(
+                !label.text.as_str().contains("WidgetExtension"),
+                "{}",
+                label.text
+            );
         }
     }
 
@@ -491,7 +506,7 @@ mod tests {
             .position(|line| line == views::testing::GUIDE_LINE)
             .expect("the view's line is in the popup");
         assert!(
-            lines[at - 1].starts_with("CPU "),
+            lines[at - 1].as_str().starts_with("CPU "),
             "right after the process's own figures: {lines:?}"
         );
         let other = app.snapshot().processes[0].id;
@@ -522,7 +537,11 @@ mod tests {
             .iter()
             .position(|line| line == views::testing::GUIDE_SPARKLINE)
             .expect("the sparkline is in the popup");
-        assert_eq!(popup.braille, [at]);
+        assert_eq!(
+            popup.lines[at].width(),
+            40,
+            "a sparkline is a cell a dot, whatever a dot weighs in bytes"
+        );
         assert!(
             popup.width >= 44,
             "forty cells and the border fit: {}",
@@ -535,9 +554,9 @@ mod tests {
             text.contains(views::testing::GUIDE_SPARKLINE),
             "braille survives in a sparkline line"
         );
-        // The same braille in an ordinary line is cleaned away.
+        // The same braille as an ordinary line is cleaned away.
         let mut plain = popup;
-        plain.braille.clear();
+        plain.lines[at] = SafeText::new(views::testing::GUIDE_SPARKLINE);
         let mut output = Vec::new();
         crate::terminal::draw_popup(&mut output, &plain).expect("drawn");
         let text = String::from_utf8(output).expect("text");
@@ -564,18 +583,24 @@ mod tests {
             .popup(&frame, &layout)
             .expect("the selection has a popup");
         assert!(
-            popup.lines.iter().any(|line| line.contains(" a b c d = ")),
+            popup
+                .lines
+                .iter()
+                .any(|line| line.as_str().contains(" a b c d = ")),
             "{:?}",
             popup.lines
         );
-        assert_eq!(popup.braille.len(), 2, "two lines of trace");
-        for &index in &popup.braille {
-            let line = &popup.lines[index];
-            assert_eq!(line.chars().count(), 40);
-            assert!(
-                line.chars()
-                    .all(|c| c == ' ' || ('\u{2800}'..='\u{28ff}').contains(&c))
-            );
+        let braille = |c: char| ('\u{2800}'..='\u{28ff}').contains(&c);
+        let trace: Vec<&SafeText> = popup
+            .lines
+            .iter()
+            .filter(|line| line.as_str().chars().all(|c| c == ' ' || braille(c)))
+            .filter(|line| line.width() == 40)
+            .collect();
+        assert_eq!(trace.len(), 2, "two lines of trace");
+        for line in trace {
+            assert_eq!(line.width(), 40);
+            assert!(line.as_str().chars().all(|c| c == ' ' || braille(c)));
         }
         assert!(popup.width >= 44, "forty cells fit: {}", popup.width);
         let legend = app.scene.legend(app.view, app.snapshot());
@@ -604,11 +629,13 @@ mod tests {
         let mut frame = app.render(320, 180, 7);
         let legend = |app: &App| app.scene.legend(app.view, app.snapshot());
         assert_eq!(legend(&app), " witness: toured None | focus None | limit 7");
-        let callouts = |app: &App, frame: &mut Frame| -> Vec<String> {
+        let callouts = |app: &App, frame: &mut Frame| -> Vec<SafeText> {
             let (_, panels) = app.overlay(frame, &layout, 4.0);
             panels.into_iter().flat_map(|panel| panel.lines).collect()
         };
-        assert!(!callouts(&app, &mut frame).contains(&views::testing::WITNESS_CALLOUT.into()));
+        assert!(
+            !callouts(&app, &mut frame).contains(&SafeText::new(views::testing::WITNESS_CALLOUT))
+        );
         app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
         let target = app.tour.as_ref().map(|tour| tour.target).expect("a tour");
         let mut frame = app.render(320, 180, 7);
@@ -624,7 +651,7 @@ mod tests {
             .iter()
             .position(|line| line == views::testing::WITNESS_CALLOUT)
             .expect("the view's line is in the callout");
-        assert!(lines[at - 1].starts_with("CPU "), "{lines:?}");
+        assert!(lines[at - 1].as_str().starts_with("CPU "), "{lines:?}");
         app.tour = None;
         app.focus = Some(target);
         app.render(320, 180, 7);

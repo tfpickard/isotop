@@ -90,7 +90,7 @@ pub enum Target {
 }
 
 /// The inspector popup of a thing, built on demand by the view that drew it. Its text is
-/// untrusted, like process text, and reaches the terminal only through `terminal::clean_text`.
+/// untrusted, like process text, and reaches the terminal only as `terminal::SafeText`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Card {
     pub title: String,

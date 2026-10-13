@@ -15,7 +15,7 @@ pub(crate) use crate::model::{self, Demand, Identity, bytes};
 pub(crate) use crate::platform::{self, Source};
 pub(crate) use crate::render::{self, Camera, Frame, ISOMETRIC, ORIGIN_Y, Scene, Thing};
 pub(crate) use crate::simulation::Rng;
-pub(crate) use crate::terminal::{Label, Tone};
+pub(crate) use crate::terminal::{Label, SafeText, Tone};
 pub(crate) use crate::views::{self, REGISTRY, View, testing, view};
 pub(crate) use crate::{demo_snapshot, globe, picker, terminal};
 pub(crate) use clap::Parser;

@@ -34,7 +34,7 @@ pub fn without_apple_prefix(name: &str) -> &str {
 
 /// A process name as a scene label: the Apple prefix dropped, then anything still longer than
 /// `LABEL_NAME_CELLS` keeps its first 13 characters and ends in `..`, so a label is never wider
-/// than 15 cells. The ellipsis is ASCII because `terminal::clean_text` turns every other character
+/// than 15 cells. The ellipsis is ASCII because `terminal::SafeText` turns every other character
 /// into `?`. Hover tags, the inspector and search keep the full name.
 pub fn label_name(name: &str) -> Cow<'_, str> {
     let name = without_apple_prefix(name);
@@ -44,6 +44,13 @@ pub fn label_name(name: &str) -> Cow<'_, str> {
     let mut cut: String = name.chars().take(LABEL_NAME_CELLS - 2).collect();
     cut.push_str("..");
     Cow::Owned(cut)
+}
+
+/// A thread name as a scene label: its first `LABEL_NAME_CELLS` characters, raw like the name
+/// itself. `SafeText` turns each character into one cell on its way to the terminal, so the cut
+/// is a width in cells there.
+pub fn thread_label(name: &str) -> String {
+    name.chars().take(LABEL_NAME_CELLS).collect()
 }
 
 /// What persists between frames and belongs to the frame, not to any one view: the smoothing of

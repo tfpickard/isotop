@@ -165,9 +165,9 @@ pub(crate) struct Stage<'a> {
     /// Extra lines for a process's inspector popup, after its sockets.
     pub notes: &'a mut HashMap<Identity, Vec<String>>,
     /// Braille sparkline lines for a process's inspector popup, right after its notes. Only
-    /// generated Braille Patterns (U+2800 to U+28FF) and spaces: the terminal draws them through
-    /// `terminal::clean_sparkline`, which turns everything else into `?`, so text from the system
-    /// never belongs here.
+    /// generated Braille Patterns (U+2800 to U+28FF) and spaces: the app makes them
+    /// `terminal::SafeText::braille`, which turns everything else into `?`, so text from the
+    /// system never belongs here.
     pub sparklines: &'a mut HashMap<Identity, Vec<String>>,
     /// Processes the tour should visit; a hub is passed over, since it has no callout.
     pub tour: &'a mut Vec<TourTarget>,

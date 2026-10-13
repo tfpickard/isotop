@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::terminal::Popup;
+use crate::terminal::{Popup, SafeText};
 
 use super::pointer::Spot;
 
@@ -126,7 +126,8 @@ impl Board {
     }
 }
 
-/// Places a bordered panel beside (or above) an anchor cell, staying inside the scene.
+/// Places a bordered panel beside (or above) an anchor cell, staying inside the scene. The lines
+/// are text from the sample (names, commands, a view's notes), so each becomes a `SafeText` here.
 pub(super) fn place_panel(
     lines: Vec<String>,
     anchor: Option<(u16, u16)>,
@@ -134,32 +135,21 @@ pub(super) fn place_panel(
     above: bool,
     min_width: usize,
 ) -> Option<Popup> {
-    place_lines(lines, Vec::new(), anchor, layout, above, min_width)
+    let lines = lines.iter().map(|line| SafeText::new(line)).collect();
+    place_lines(lines, anchor, layout, above, min_width)
 }
 
-/// `place_panel` for lines of which those at the indices in `braille` are sparklines: one cell
-/// per character, where the others are measured in bytes.
+/// `place_panel` for lines already made safe, sparklines among them (`SafeText::braille`). The
+/// panel is as wide as its widest line in cells.
 pub(super) fn place_lines(
-    lines: Vec<String>,
-    braille: Vec<usize>,
+    lines: Vec<SafeText>,
     anchor: Option<(u16, u16)>,
     layout: &Layout,
     above: bool,
     min_width: usize,
 ) -> Option<Popup> {
     let (columns, rows) = (layout.columns, layout.rows);
-    let longest = lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            if braille.contains(&index) {
-                line.chars().count()
-            } else {
-                line.len()
-            }
-        })
-        .max()
-        .unwrap_or(0);
+    let longest = lines.iter().map(SafeText::width).max().unwrap_or(0);
     let width = (longest + 4).clamp(min_width, 64).min(columns as usize) as u16;
     let height = lines.len() as u16 + 2;
     if height > rows {
@@ -186,13 +176,57 @@ pub(super) fn place_lines(
         row,
         width,
         lines,
-        braille,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LAYOUT: Layout = Layout {
+        columns: 120,
+        rows: 40,
+        width: 960,
+        height: 640,
+        cell: None,
+    };
+
+    #[test]
+    fn a_panel_is_as_wide_as_its_longest_line_in_cells_not_bytes() {
+        let ascii = place_panel(
+            vec!["abcdefghijklmnopqrstuvwxyz0123".into()],
+            None,
+            &LAYOUT,
+            false,
+            10,
+        )
+        .expect("fits");
+        // Thirty ideographs are ninety bytes, and thirty `?` once cleaned.
+        let wide = place_panel(vec!["日".repeat(30)], None, &LAYOUT, false, 10).expect("fits");
+        assert_eq!(
+            wide.width, ascii.width,
+            "{} against {}",
+            wide.width, ascii.width
+        );
+        assert_eq!(wide.width, 34, "thirty cells and the border");
+        assert_eq!(wide.lines[0].width(), 30);
+    }
+
+    #[test]
+    fn a_sparkline_counts_a_cell_a_dot_and_text_a_cell_a_character() {
+        let lines = vec![SafeText::braille(&"⣿".repeat(40)), SafeText::new("short")];
+        let popup = place_lines(lines, None, &LAYOUT, false, 10).expect("fits");
+        assert_eq!(popup.width, 44, "forty cells and the border");
+        let popup = place_lines(
+            vec![SafeText::new(&"x".repeat(200))],
+            None,
+            &LAYOUT,
+            false,
+            10,
+        )
+        .expect("fits");
+        assert_eq!(popup.width, 64, "no panel is wider than 64 cells");
+    }
 
     #[test]
     fn labels_on_one_row_keep_a_free_column_between_them() {

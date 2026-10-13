@@ -193,7 +193,12 @@ mod tests {
             height: rows as u32 * 16,
             cell: None,
         };
-        app.picker_popup(&layout).expect("the picker fits").lines
+        app.picker_popup(&layout)
+            .expect("the picker fits")
+            .lines
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     #[test]
