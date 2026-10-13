@@ -26,13 +26,6 @@ const MOST_DASHES: f32 = 4096.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Width {
     /// World units, scaled with the zoom: `w * zoom * SCALE` pixels.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "arbor sizes its strokes in pixels; a later view may not"
-        )
-    )]
     World(f32),
     /// Frame pixels, whatever the zoom.
     Pixels(f32),

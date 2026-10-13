@@ -51,7 +51,8 @@ impl App {
 
     /// Attaches the journal lines of this frame to the newest sample (`Snapshot::journal`),
     /// where the view that draws them finds them: synthetic ones arriving in `(from, to]` demo
-    /// seconds, or whatever `journalctl` has written since the last call.
+    /// seconds (the shown row's demo options say which: `DemoOptions::job_results`), or whatever
+    /// `journalctl` has written since the last call.
     pub(crate) fn feed_journal(
         &mut self,
         source: Option<&Journal>,
@@ -60,6 +61,7 @@ impl App {
         to: f64,
     ) {
         let lines = match (demo, source) {
+            (true, _) if self.row().demo.job_results => journal::demo_spirits(from, to),
             (true, _) => journal::demo(from, to),
             (false, Some(source)) => source.drain(),
             (false, None) => Vec::new(),

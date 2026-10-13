@@ -226,6 +226,9 @@ pub enum Source {
     /// `wchar`), which macOS lacks, and a demanded `Source::IoDetail` is then read without them:
     /// nothing bounds a file's claim and nothing says what remains.
     UnattributedIo,
+    /// `journal::Line::job`, the `JOB_RESULT` of the journal entries that end a job: none on macOS,
+    /// whose unified log has no such field. It travels with `Journal`, which a view demands.
+    JobResults,
 }
 
 impl Source {
@@ -265,6 +268,7 @@ impl Source {
         Source::Pipes,
         Source::IoDetail,
         Source::UnattributedIo,
+        Source::JobResults,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -304,6 +308,7 @@ impl Source {
             Source::Pipes => "pipes",
             Source::IoDetail => "io detail",
             Source::UnattributedIo => "unattributed io",
+            Source::JobResults => "job results",
         }
     }
 
@@ -872,7 +877,7 @@ mod tests {
         for (index, source) in Source::ALL.iter().enumerate() {
             assert_eq!(*source as usize, index, "{} is out of order", source.name());
         }
-        assert_eq!(Source::UnattributedIo as usize + 1, Source::ALL.len());
+        assert_eq!(Source::JobResults as usize + 1, Source::ALL.len());
     }
 
     #[test]

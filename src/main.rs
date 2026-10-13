@@ -14,10 +14,6 @@ mod gpu;
 #[cfg(test)]
 mod harness;
 mod headless;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first used by a view that draws stroke text")
-)]
 mod hershey;
 mod history;
 mod horizon;
@@ -32,6 +28,7 @@ mod model;
 mod murmuration;
 mod necropolis;
 mod neurons;
+mod ouija;
 mod palette;
 mod picker;
 mod places;

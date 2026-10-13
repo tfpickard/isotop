@@ -190,13 +190,6 @@ pub(crate) struct Stage<'a> {
     /// played): the app then quits. Start at false each frame; a frame that leaves it false while
     /// a quit is pending keeps the app open. Nothing else reads it, so a view that never defers a
     /// quit never touches it.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no view defers a quit yet; the first with a farewell writes it"
-        )
-    )]
     pub quit: &'a mut bool,
 }
 

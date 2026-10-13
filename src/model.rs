@@ -2667,6 +2667,12 @@ pub struct DemoOptions {
     /// so the files together take well under what it reads and writes and a remainder is left
     /// unattributed. Off, `io_detail` is `Pending` for every process, as in `demo`.
     pub io_detail: bool,
+    /// Feeds the demo journal (`journal::demo_spirits`, which the app attaches to the newest
+    /// sample) the lines that end a job, with their `JOB_RESULT`, every seven seconds, and one in
+    /// 25 of the ordinary lines, which `journal::demo` has no result for. Off, the journal demo is
+    /// `journal::demo`, as it has always been. The processes and every other field are the same
+    /// either way.
+    pub job_results: bool,
 }
 
 impl DemoOptions {
@@ -2686,6 +2692,7 @@ impl DemoOptions {
         thread_churn: false,
         unreadable_parent: false,
         io_detail: false,
+        job_results: false,
     };
 }
 

@@ -54,6 +54,13 @@ const TRIPLEX: &str = include_str!("hershey/romant.jhf");
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
     /// Roman Simplex, the single-stroke face.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ouija draws in Triplex, whose strokes stand out at a weight"
+        )
+    )]
     Simplex,
     /// Roman Triplex, the same letters drawn with extra strokes, so they stand out at a weight.
     Triplex,
@@ -63,10 +70,24 @@ pub enum Face {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Align {
     /// The point is the left edge of the first glyph's advance.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ouija centres its text; no view writes from the left yet"
+        )
+    )]
     Start,
     /// The point is the middle of the whole advance.
     Middle,
     /// The point is the right edge of the last glyph's advance.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ouija centres its text; no view writes from the right yet"
+        )
+    )]
     End,
 }
 
@@ -238,6 +259,13 @@ impl Font {
     }
 
     /// Whether every character of `text` has a glyph of its own.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "ouija filters its text by the board, not by the font"
+        )
+    )]
     pub fn covers(&self, text: &str) -> bool {
         text.chars().all(|character| self.get(character).is_some())
     }
