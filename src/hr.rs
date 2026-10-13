@@ -1042,11 +1042,14 @@ struct Star<'a> {
     process: &'a Process,
     /// Its index in the process slice: its pick.
     pick: u32,
-    /// The magnitude it has before the flashes and the twinkle, and its temperature.
+    /// The magnitude it has before the flashes and the twinkle.
     magnitude: f32,
-    kelvin: f32,
     /// The variation of its CPU over the last ten seconds.
     variation: f32,
+    /// Its temperature and magnitude as the newest sample read them, which the main-sequence fit
+    /// was made from: the class and residual are worked out from these, so they change with the
+    /// samples and not with the easing between them.
+    sampled: (f32, f32),
     /// Its place in sky units, in the world and in the frame.
     at: [f32; 2],
     world: Point,
@@ -1507,8 +1510,8 @@ impl Hr {
                 process,
                 pick: pick as u32,
                 magnitude,
-                kelvin,
                 variation,
+                sampled: (temperature(record.cpu), star_magnitude(record.memory)),
                 at,
                 world: plot.world(at),
                 screen: plot.screen(stage.frame, at),
@@ -1864,7 +1867,7 @@ impl Hr {
                     text: format!(
                         "{} {}",
                         label_name(&star.process.name),
-                        classification(star.kelvin, star.magnitude, self.fit)
+                        classification(star.sampled.0, star.sampled.1, self.fit)
                     ),
                 });
             }
@@ -1911,17 +1914,16 @@ impl Hr {
     /// The lines the inspector adds for a star: its class, temperature and magnitude, where it
     /// stands against the main sequence, and the variation its twinkle follows.
     fn inspector_lines(&self, star: &Star) -> Vec<String> {
+        let (kelvin, magnitude) = star.sampled;
         let mut lines = vec![format!(
-            "class {} | T {:.0} K | m {:+.2}",
-            classification(star.kelvin, star.magnitude, self.fit),
-            star.kelvin,
-            star.magnitude
+            "class {} | T {kelvin:.0} K | m {magnitude:+.2}",
+            classification(kelvin, magnitude, self.fit),
         )];
         if let Some(fit) = self.fit {
             lines.push(format!(
                 "main sequence m {:+.2} | residual {:+.2} mag",
-                fit.at(star.kelvin.log10()),
-                fit.residual(star.kelvin, star.magnitude)
+                fit.at(kelvin.log10()),
+                fit.residual(kelvin, magnitude)
             ));
         }
         lines.push(format!(
@@ -2991,6 +2993,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_stars_class_comes_from_the_sample_the_fit_was_made_from_not_from_the_easing() {
+        let mut hot = population();
+        hot.iter_mut()
+            .find(|process| process.id.pid == 901)
+            .expect("the supergiant")
+            .cpu = cpu_at(9000.0);
+        let now = snapshot(10.0, population());
+        let mut scene = Scene::new();
+        draw(&mut scene, &snapshot(9.0, hot), 9.0);
+        // A tenth of a second on, the supergiant's eased CPU is still mostly the hot one.
+        draw(&mut scene, &now, 9.1);
+        let giant = now
+            .processes
+            .iter()
+            .find(|process| process.id.pid == 901)
+            .expect("the supergiant");
+        let expected = format!(
+            "{} {}",
+            label_name(&giant.name),
+            classification(
+                temperature(giant.cpu),
+                star_magnitude(giant.memory),
+                main_sequence(&now)
+            )
+        );
+        let labels: Vec<&str> = scene.tags.iter().map(|tag| tag.text.as_str()).collect();
+        assert!(
+            labels.contains(&expected.as_str()),
+            "{expected} in {labels:?}"
+        );
     }
 
     #[test]
