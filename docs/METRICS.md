@@ -13,9 +13,9 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 | Python | 121 | 22,902 | 830 | 3,069 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 13,861 | 4,928 |
+| Markdown | 82 | 0 | 13,937 | 4,962 |
 | Plain Text | 7 | 0 | 303 | 0 |
-| **Total** | **377** | **127,359** | **16,496** | **11,759** |
+| **Total** | **377** | **127,359** | **16,572** | **11,793** |
 
 ## Rust by module
 
@@ -136,7 +136,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 |:--|--:|
 | `#[test]` functions | 868 |
 | Views in the registry | 18 |
-| Views with a README mapping table | 8 of 18 |
+| Views with a README mapping table | 18 of 18 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
