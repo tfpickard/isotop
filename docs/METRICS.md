@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 66 | 64,155 | 1,465 | 3,702 |
+| Rust | 73 | 64,541 | 1,446 | 3,784 |
 | SVG | 89 | 39,904 | 9 | 0 |
 | Python | 121 | 22,902 | 830 | 3,069 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 13,855 | 4,928 |
+| Markdown | 82 | 0 | 13,866 | 4,928 |
 | Plain Text | 7 | 0 | 303 | 0 |
-| **Total** | **370** | **127,282** | **16,490** | **11,750** |
+| **Total** | **377** | **127,668** | **16,482** | **11,832** |
 
 ## Rust by module
 
@@ -24,7 +24,6 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | File | Production | Test |
 |:--|--:|--:|
 | `src/model.rs` | 3,129 | 4,017 |
-| `src/coop.rs` | 2,716 | 1,367 |
 | `src/necropolis.rs` | 1,995 | 610 |
 | `src/main.rs` | 1,969 | 2,934 |
 | `src/render.rs` | 1,708 | 938 |
@@ -40,23 +39,29 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/simulation.rs` | 647 | 762 |
 | `src/platform/linux/mod.rs` | 609 | 370 |
 | `src/platform/macos/ffi.rs` | 594 | 12 |
+| `src/coop/draw.rs` | 589 | 0 |
 | `src/reef.rs` | 588 | 147 |
 | `src/platform/macos/logic.rs` | 587 | 807 |
 | `src/platform/linux/events.rs` | 581 | 317 |
+| `src/coop/creatures.rs` | 576 | 0 |
 | `src/render/field.rs` | 572 | 719 |
 | `src/neurons.rs` | 569 | 333 |
 | `src/horizon.rs` | 565 | 630 |
 | `src/cells.rs` | 523 | 540 |
 | `src/cores.rs` | 500 | 318 |
 | `src/platform/mod.rs` | 500 | 106 |
+| `src/coop/roles.rs` | 497 | 263 |
 | `src/views.rs` | 495 | 631 |
 | `src/model/kernel.rs` | 492 | 474 |
 | `src/globe.rs` | 483 | 500 |
 | `src/views/flow.rs` | 475 | 43 |
 | `src/terminal.rs` | 473 | 185 |
+| `src/coop/sim.rs` | 448 | 252 |
+| `src/coop/layout.rs` | 416 | 298 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
 | `src/render/strokes.rs` | 386 | 317 |
+| `src/coop/mod.rs` | 379 | 238 |
 | `src/views/ripple.rs` | 374 | 286 |
 | `src/matrix.rs` | 341 | 236 |
 | `src/platform/linux/net.rs` | 320 | 278 |
@@ -75,6 +80,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/views/orbit.rs` | 169 | 141 |
 | `src/history.rs` | 150 | 157 |
 | `src/stellar.rs` | 149 | 161 |
+| `src/coop/feeding.rs` | 142 | 240 |
+| `src/coop/fixtures.rs` | 131 | 0 |
 | `src/platform/linux/pipes.rs` | 130 | 111 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
 | `src/glyphs.rs` | 107 | 0 |
@@ -89,7 +96,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 19 | 51 |
 | `src/harness.rs` | 0 | 570 |
-| **Total** | **36,937** | **27,233** |
+| **Total** | **37,399** | **27,157** |
 
 ## Largest files
 
@@ -99,7 +106,6 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 |:--|--:|:--|
 | `src/model.rs` | 8,397 | over limit |
 | `src/main.rs` | 5,414 | over limit |
-| `src/coop.rs` | 4,489 | over limit |
 | `src/arbor.rs` | 3,230 | over limit |
 | `src/render.rs` | 3,152 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
@@ -107,6 +113,7 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | `src/murmuration.rs` | 1,966 | over limit |
 | `src/cortex.rs` | 1,965 | over limit |
 | `src/tesseract.rs` | 1,849 | over limit |
+| `src/simulation.rs` | 1,746 | over limit |
 
 ## Debt counters
 
@@ -114,8 +121,8 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 
 | Counter | Count |
 |:--|--:|
-| `#[expect(clippy::too_many_lines` | 14 |
-| `#[expect(clippy::too_many_arguments` | 7 |
+| `#[expect(clippy::too_many_lines` | 12 |
+| `#[expect(clippy::too_many_arguments` | 6 |
 | `unsafe` blocks | 115 |
 | `unwrap_or(0` sites | 30 |
 | `unwrap_or(0.0` sites | 16 |
