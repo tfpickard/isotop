@@ -23,7 +23,7 @@ By default the frame loop of [the section below](#the-frame-loop-and-its-clocks)
 | **Sample** | What does the kernel say right now? | `Collector`, `Snapshot`, `Process`, `Identity` | `model.rs`, `platform/` |
 | **Record** | What should a frame contain, in screen space? | `Scene`, `Stage`, `Frame`, `Item` | `render.rs`, view modules |
 | **Rasterize** | Which pixel gets which colour, depth and pick? | `Frame::rasterize`, `Gpu::render` | `render.rs`, `gpu.rs`, `shaders.wgsl` |
-| **Present** | How do pixels and text reach the screen? | `Terminal::present`, `Label`, `Popup` | `terminal.rs`, `main.rs` |
+| **Present** | How do pixels and text reach the screen? | `Terminal::present`, `Label`, `Popup` | `terminal.rs`, `interactive.rs` |
 
 ```mermaid
 flowchart LR
@@ -58,7 +58,7 @@ flowchart LR
     TERM -. "mouse, keys" .-> COL
 ```
 
-**Sample.** `Collector::sample` reads `/proc` (Linux) or libproc and Mach (macOS) once per `--sample-ms` (default 1000, range 100 to 10000) and returns a `Snapshot`. It runs on the frame thread, because reading `stat` and `io` for a few hundred processes is cheap. Anything slower runs on the background thread `isotop-sampler`, which wakes every `BACKGROUND_PERIOD` (2 s) and whose results are merged in against the pids the cycle scanned; the optional sources only some views draw are read only while the shown view declares them (`Demand`). A second thread, `isotop-events`, exists only while a view demands `Source::LifeEvents`. The details are in [Theory Sampling Linux](Theory-Sampling-Linux), [Theory Sampling macOS](Theory-Sampling-macOS), [Theory Background Sampler and Demand](Theory-Background-Sampler-and-Demand), [Theory Model and Rates](Theory-Model-and-Rates) and [Theory Life Events](Theory-Life-Events). The snapshot is pushed onto a ring (`App.history`, `--history`, default 120 snapshots) and, through `Scene::record`, into every view's `record` hook and the shared per-process [history](Theory-History).
+**Sample.** `Collector::sample` reads `/proc` (Linux) or libproc and Mach (macOS) once per `--sample-ms` (default 1000, range 100 to 10000) and returns a `Snapshot`. It runs on the frame thread, because reading `stat` and `io` for a few hundred processes is cheap. Anything slower runs on the background thread `isotop-sampler`, which wakes every `BACKGROUND_PERIOD` (2 s) and whose results are merged in against the pids the cycle scanned; the optional sources only some views draw are read only while the shown view declares them (`Demand`). A second thread, `isotop-events`, exists only while a view demands `Source::LifeEvents`. The details are in [Theory Sampling Linux](Theory-Sampling-Linux), [Theory Sampling macOS](Theory-Sampling-macOS), [Theory Background Sampler and Demand](Theory-Background-Sampler-and-Demand), [Theory Model and Rates](Theory-Model-and-Rates) and [Theory Life Events](Theory-Life-Events). The snapshot is pushed onto a ring (`App.history`, a `HistoryPlayer`; `--history`, default 120 snapshots) and, through `Scene::record`, into every view's `record` hook and the shared per-process [history](Theory-History).
 
 **Record.** `Scene::render` turns one snapshot plus a camera into a `Frame`: a sky description and a `Vec<Item>` of triangles, lines, sphere impostors, glows, beams, stars, glyphs and pick discs, in the order they must be painted. The scene persists between frames, so it can hold layout, easing and the simulated media. See [Theory Scene and Display List](Theory-Scene-and-Display-List) and [Theory Camera and Projection](Theory-Camera-and-Projection).
 
@@ -72,7 +72,7 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    main["main.rs<br/>CLI, App, main loop,<br/>headless output"]
+    main["main.rs, cli.rs, interactive.rs,<br/>headless.rs, app/<br/>CLI, App, main loop,<br/>headless output"]
     harness["harness.rs<br/>(tests only)"]
     gpu["gpu.rs + shaders.wgsl"]
     terminal["terminal.rs"]
@@ -115,12 +115,12 @@ The invariants that follow from this picture, all stated in `AGENTS.md`: nothing
 
 ## The frame loop and its clocks
 
-`run` in `main.rs` is one loop on one thread. Per iteration, in this order:
+`Live::run` in `interactive.rs` is one loop on one thread, each step of it a function (`sample`, `follow_journal`, `render`, `present`, `input`, `finish`). Per iteration, in this order:
 
 1. `elapsed` is the time since the previous iteration began. Unless paused, `app.animation += elapsed`: the animation clock is wall time with the paused intervals removed.
 2. If not paused and `last_sample.elapsed() >= --sample-ms`, take a sample (`collector.sample()`, or `demo_snapshot` under `--demo`), call `Scene::record`, push it on `app.history` (dropping the oldest beyond `--history`).
 3. Manage the journal follower: it runs while the shown view's demand contains `Source::Journal` and for `JOURNAL_LINGER` (30 s) after. While it is demanded, the lines that arrived are attached to the newest sample as `Snapshot.journal` (a `journal::Delivery`), where the Matrix view reads them.
-4. `camera.approach(&goal, smoothing(elapsed, 0.2))`, then `update_tour`.
+4. `App::steer`: `CameraController::approach` (`smoothing(elapsed, 0.2)`), then `update_tour`.
 5. `App::render`: `Scene::render`, camera fitting if requested, then `Frame::rasterize` or `Gpu::render`. If the GPU reports an error, the app drops the GPU and rasterizes on the CPU from then on.
 6. `hover_over`, `overlay` (labels and popups), `Terminal::present`.
 7. Wait for input until `frame_start + 1/fps` (`--fps`, default 10, range 1 to 60), handling every event that arrives; once past the deadline, `poll(0)` keeps draining queued input but never sleeps.
@@ -191,7 +191,7 @@ For the views themselves start at [Home](Home) and the [Gallery](Gallery); [Glos
 
 | What | Where |
 |---|---|
-| The main loop, `Options`, `Layout`, `App`, headless output, `warm_up` | [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `run`, `App::render`, `App::overlay`, `warm_up` |
+| The main loop, `Options`, `Layout`, `App`, headless output, `warm_up` | [`src/interactive.rs`](https://github.com/tfpickard/isotop/blob/main/src/interactive.rs): `run`; [`src/cli.rs`](https://github.com/tfpickard/isotop/blob/main/src/cli.rs): `Options`; [`src/headless.rs`](https://github.com/tfpickard/isotop/blob/main/src/headless.rs): `run`, `warm_up`; [`src/app/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/mod.rs): `App::render`; [`src/app/overlay.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/overlay.rs): `App::overlay` |
 | `Collector`, `Snapshot`, `BACKGROUND_PERIOD` | [`src/model.rs`](https://github.com/tfpickard/isotop/blob/main/src/model.rs) |
 | `Scene`, `Stage`, `FrameClock`, `MAX_DT`, `Frame`, `Item`, `Camera` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
 | The registry, `ViewModule`, `ViewInfo`, `Contract` | [`src/views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs) |

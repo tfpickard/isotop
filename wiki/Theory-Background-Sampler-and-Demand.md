@@ -146,7 +146,7 @@ view draws. `main` turns the shown view's row into a `Demand` at startup and on 
 | `Source::Oom`, `Source::OomKills` | Horizon (and `OomKills` for Murmuration) | background cycle | `MemoryReads::read`, `KernelScan::scan` |
 | `Source::Threads` | Murmuration, Arbor | background cycle | `read_threads` |
 | `Source::Pipes` | Cortex | background cycle | `Reads::read` |
-| `Source::Journal` (the system log) | Matrix | frame loop (`main.rs`) | `App::journal_wanted` starts or stops the follower; its lines reach the view on `Snapshot::journal` (a `journal::Delivery`); see [Journal](Theory-Journal) |
+| `Source::Journal` (the system log) | Matrix | frame loop (`interactive.rs`) | `App::journal_wanted` starts or stops the follower; its lines reach the view on `Snapshot::journal` (a `journal::Delivery`); see [Journal](Theory-Journal) |
 | `Source::LifeEvents` (fork, exec, exit) | Necropolis | `Collector::sample` | `Life::start` opens the event sources and the `isotop-events` thread; see [Life events](Theory-Life-Events) |
 
 Sources in the enum that no shipped row declares today (`MemoryDetail`, `Interrupts`, `Softirqs`, `IrqAffinity`) are read the same way when a row does. Every other view declares no sources. The sockets (with the Unix queues), GPU, cgroups, open files and locks are not demand-gated: they run every cycle whichever view is shown. The mechanism is general (a new source is a `Source` variant plus a `read_if`).
@@ -216,8 +216,9 @@ the `Journal` value stops the follower and joins its reader.
   [`threads.rs`](https://github.com/tfpickard/isotop/blob/main/src/threads.rs): `ThreadScan`, `targets`.
   [`journal.rs`](https://github.com/tfpickard/isotop/blob/main/src/journal.rs): `Delivery`.
 * [`platform/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/platform/mod.rs): `Source`, `Sources`.
-* [`main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `App::journal_wanted`, `JOURNAL_LINGER`,
-  `sampler_text`, the demand update after view changes.
+* [`app/feed.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/feed.rs): `App::journal_wanted`, `JOURNAL_LINGER`;
+  [`app/status.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/status.rs): `sampler_text`;
+  [`interactive.rs`](https://github.com/tfpickard/isotop/blob/main/src/interactive.rs): the demand update after view changes.
 * [`views.rs`](https://github.com/tfpickard/isotop/blob/main/src/views.rs): the `sources` field of `ViewInfo`.
 * [`status.rs`](https://github.com/tfpickard/isotop/blob/main/src/status.rs): `missing_note`, `sources_note`.
 

@@ -65,7 +65,7 @@ Note what it does *not* do: it picks the nearest *pixel*, not the nearest *objec
 
 ### The radius and cell-coarse input
 
-`Layout` (in `main.rs`) holds the frame size, the terminal's cell grid, and, when the terminal reports its window size, the pixels per cell. Frame pixels per cell are $w = W/\text{columns}$ and $h = H/\text{scene rows}$ (the frame is scaled to fill the scene's cells; the five bottom rows are the status panel). A mouse report becomes a frame-space point as follows:
+`Layout` (in `app/screen.rs`) holds the frame size, the terminal's cell grid, and, when the terminal reports its window size, the pixels per cell. Frame pixels per cell are $w = W/\text{columns}$ and $h = H/\text{scene rows}$ (the frame is scaled to fill the scene's cells; the five bottom rows are the status panel). A mouse report becomes a frame-space point as follows:
 
 | Report | Point | Radius $\rho$ |
 |---|---|---|
@@ -103,7 +103,7 @@ A selected thing opens a *card*, built on demand by `ViewModule::card(thing, sna
 | `NONE`, `THING`, `Frame::picks`, `identities`, `things`, `thing_pick`, `target`, `pick_near`, `target_near`, `nearest`, `Item::Pick`, `pick_disc`, `Target`, `Thing`, `Card` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
 | `NONE` shared with the shader | [`src/render/shared.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/shared.rs) |
 | Pick attachment, write masks, `PICK_WINDOW`, readback window | [`src/gpu.rs`](https://github.com/tfpickard/isotop/blob/main/src/gpu.rs), [`src/shaders.wgsl`](https://github.com/tfpickard/isotop/blob/main/src/shaders.wgsl) |
-| `Layout::pointer`, `pick_radius`, `hover_over`, click handling in `pointer_event`, `thing_popup` | [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs) |
+| `Layout::spot`, `pick_radius`, `Pointer::hover_over`, click handling in `pointer_event`, `thing_popup` | [`src/app/screen.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/screen.rs), [`src/app/pointer.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/pointer.rs), [`src/app/overlay.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/overlay.rs) |
 | The pick rules for view authors | [`docs/VIEW_CONVENTIONS.md`](https://github.com/tfpickard/isotop/blob/main/docs/VIEW_CONVENTIONS.md), section "Picking" |
 | The `ValidPicks` property | [`src/harness.rs`](https://github.com/tfpickard/isotop/blob/main/src/harness.rs) |
 

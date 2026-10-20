@@ -66,6 +66,23 @@
 //!     them (`Listing::Unreadable` for another user's process). The pass that walks the
 //!     processes within the caps and derives per-thread CPU is `threads::ThreadScan`, shared by
 //!     both platforms.
+//!   - `Descriptors::new() -> Descriptors`, an `io_detail::DescriptorReader`, read only while
+//!     `Source::IoDetail` is demanded: `read(id, budget)` takes one process's regular files with
+//!     their access mode, position and size, counts its other descriptors by kind, and (where
+//!     `counts_bytes()`) brackets the walk with two readings of the byte counters of read and
+//!     write calls (`Reading::Unreadable` for another user's process). The pass that walks the
+//!     processes within the caps and derives per-file I/O is `io_detail::IoScan`, shared by both
+//!     platforms;
+//!   - `io_rank(process: &Process) -> Option<f64>`: how busy a process is, for choosing the
+//!     `io_detail::IO_PROCESSES` that get a `Process::io_detail`: its syscall rate on Linux, its
+//!     disk I/O rate on macOS, which has no syscall counters. None for a process that has no
+//!     reading yet.
+//!   - `WaitScan::new() -> WaitScan` and `WaitScan::sample(&mut self, pids: &[u32]) ->
+//!     Option<HashMap<u32, Wait>>`: where each of at most `WAIT_PROCESSES` of `pids` is blocked in
+//!     the kernel, as far as pipes go (`Wait`), read only while `Source::WaitChannel` is
+//!     demanded; resumes after the last pid it read. None when the platform has no wait channel
+//!     to read (macOS) or the kernel hides them all (the collector then reports
+//!     `Source::WaitChannel` missing).
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -207,6 +224,21 @@ pub enum Source {
     /// demands it; the unread bytes of Unix sockets (`Snapshot::unix_queues`) come with the
     /// socket scan and are not behind it.
     Pipes,
+    /// `Process::io_detail`: which open files the busiest processes read and write (`io_detail`
+    /// module), from the positions of their descriptors.
+    IoDetail,
+    /// `IoDetail::unattributed`, the part of a process's read and write calls that no file
+    /// position explains. It needs the byte counters of read and write calls (`rchar` and
+    /// `wchar`), which macOS lacks, and a demanded `Source::IoDetail` is then read without them:
+    /// nothing bounds a file's claim and nothing says what remains.
+    UnattributedIo,
+    /// `journal::Line::job`, the `JOB_RESULT` of the journal entries that end a job: none on macOS,
+    /// whose unified log has no such field. It travels with `Journal`, which a view demands.
+    JobResults,
+    /// `Snapshot::waits`: whether a process is blocked writing to or reading from a pipe
+    /// (`/proc/<pid>/wchan`), read for the processes that hold pipes while a view demands it.
+    /// macOS has no wait channel to read.
+    WaitChannel,
 }
 
 impl Source {
@@ -244,6 +276,10 @@ impl Source {
         Source::OomKills,
         Source::Threads,
         Source::Pipes,
+        Source::IoDetail,
+        Source::UnattributedIo,
+        Source::JobResults,
+        Source::WaitChannel,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -281,6 +317,10 @@ impl Source {
             Source::OomKills => "oom kills",
             Source::Threads => "threads",
             Source::Pipes => "pipes",
+            Source::IoDetail => "io detail",
+            Source::UnattributedIo => "unattributed io",
+            Source::JobResults => "job results",
+            Source::WaitChannel => "wait channel",
         }
     }
 
@@ -384,8 +424,9 @@ pub struct RawProcess {
     /// state, memory, threads, core, cgroup, priority, nice, written, policy and started. The
     /// derived fields (cpu, the I/O rates, system_share, syscall_io, major_faults, cpu_time and
     /// gpu_memory) are left at zero or None, and those the
-    /// background thread fills (files, locks_held and blocked_on) at Pending or None, except
-    /// that a Linux kernel thread's files are known to be none.
+    /// background thread fills (files, locks_held, blocked_on, oom, memory_detail, thread_list
+    /// and io_detail) at Pending or None, except that a Linux kernel thread's files are known to
+    /// be none.
     pub process: Process,
     /// Cumulative CPU time in ticks of `Sampler::hz()`.
     pub ticks: u64,
@@ -777,8 +818,9 @@ pub struct Locks {
     pub unattributed: u32,
 }
 
-/// How a process may use one end of a pipe or FIFO, from the open flags of its descriptor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How a process may use a descriptor, from its open flags: one end of a pipe or FIFO, or an open
+/// file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AccessMode {
     Read,
     Write,
@@ -836,6 +878,23 @@ pub struct PipeSample {
     pub partial: bool,
 }
 
+/// Where a process that holds pipes is blocked in the kernel, from `/proc/<pid>/wchan`. The
+/// kernel's symbol is compared and never kept: it differs from one kernel to the next, and it is
+/// process-visible text that must not reach the terminal raw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// Asleep in a write to a full pipe (`pipe_write`): the pipe is backed up.
+    PipeWrite,
+    /// Asleep in a read from an empty pipe (`pipe_read`): the pipe is dry.
+    PipeRead,
+    /// Asleep somewhere else.
+    Other,
+    /// The file reads `0`, which is what the kernel prints for a task that is running right now
+    /// and for one this user may not inspect, or it could not be read at all. It says nothing
+    /// about pipes either way, so it is not "not blocked".
+    Unreadable,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,7 +906,7 @@ mod tests {
         for (index, source) in Source::ALL.iter().enumerate() {
             assert_eq!(*source as usize, index, "{} is out of order", source.name());
         }
-        assert_eq!(Source::Pipes as usize + 1, Source::ALL.len());
+        assert_eq!(Source::WaitChannel as usize + 1, Source::ALL.len());
     }
 
     #[test]

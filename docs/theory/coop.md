@@ -1,6 +1,6 @@
 # Coop: a fenced chicken yard of flocking processes
 
-**View:** `coop` · **Code:** `src/coop.rs`, `simulation::{FixedStep, SpatialHash}` · **Prototype:** none (this view predates the mockups)
+**View:** `coop` · **Code:** `src/coop/`, `simulation::{FixedStep, SpatialHash}` · **Prototype:** none (this view predates the mockups)
 
 ## What you are looking at
 
@@ -60,7 +60,7 @@ $$\eta = 0.5 + 0.5\,\min(c_v, 2) + 5.5\,\frac{\psi}{\psi + 15}$$
 
 ![Heading noise against CPU pressure and speed against CPU use](figures/coop-mappings.svg)
 
-*The two mappings from measurements to behaviour, drawn from the constants in `coop.rs`: heading noise $\eta$ against CPU pressure for three burstiness values, and foraging speed against a process's own CPU use.*
+*The two mappings from measurements to behaviour, drawn from the constants in `coop/sim.rs`: heading noise $\eta$ against CPU pressure for three burstiness values, and foraging speed against a process's own CPU use.*
 
 ### Speed
 

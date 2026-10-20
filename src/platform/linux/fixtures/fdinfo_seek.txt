@@ -1,0 +1,6 @@
+# Real capture: Linux 6.18.44 x86_64, 2026-10-13. /proc/self/fdinfo/N of a regular file opened
+# O_RDONLY after an lseek to 50000 and no read: the position moved and no byte did.
+pos:	50000
+flags:	02100000
+mnt_id:	28
+ino:	1632461

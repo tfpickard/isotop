@@ -1845,7 +1845,7 @@ mod tests {
     use crate::model::testing::process;
     use crate::model::{Rollup, demo_with};
     use crate::render::{Camera, Frame, RenderInput, Scene};
-    use crate::terminal::clean_text;
+    use crate::terminal::SafeText;
     use crate::threads::ThreadList;
     use crate::views::View;
     use std::sync::Arc;
@@ -2936,7 +2936,7 @@ mod tests {
             "{busiest:?}"
         );
         // The name is stored raw, and the popup cleans it.
-        assert!(!clean_text(busiest, 80).contains('\x1b'));
+        assert!(!SafeText::new(busiest).cut(80).contains('\x1b'));
     }
 
     #[test]

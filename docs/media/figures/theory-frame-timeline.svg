@@ -122,5 +122,5 @@
 <text x="24.00" y="470.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">Every stage is on the one frame thread; only the slow sources and the event thread run beside it.</text>
 <text x="24.00" y="488.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">At 10 fps the budget is 100 ms. A frame that overruns skips the wait and starts the next at once;</text>
 <text x="24.00" y="506.00" font-size="12" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="normal" font-family="system-ui, sans-serif">the animation clock still advances by real time, and Stage::dt caps one step at MAX_DT = 0.5 s.</text>
-<text x="24.00" y="535.00" font-size="10.5" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="italic" font-family="system-ui, sans-serif">sources: src/main.rs (run, App::render, Options), src/model.rs (BACKGROUND_PERIOD), src/render.rs (MAX_DT)</text>
+<text x="24.00" y="535.00" font-size="10.5" fill="#8b949e" text-anchor="start" font-weight="normal" font-style="italic" font-family="system-ui, sans-serif">sources: src/interactive.rs, src/cli.rs, src/model.rs (BACKGROUND_PERIOD), src/render.rs (MAX_DT)</text>
 </svg>

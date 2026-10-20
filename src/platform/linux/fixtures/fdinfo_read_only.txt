@@ -1,0 +1,6 @@
+# Real capture: Linux 6.18.44 x86_64, 2026-10-13. /proc/self/fdinfo/N of a regular file opened
+# O_RDONLY (Python adds O_CLOEXEC) after reading 4096 bytes of it; unmodified below.
+pos:	4096
+flags:	02100000
+mnt_id:	28
+ino:	1632461
