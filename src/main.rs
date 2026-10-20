@@ -1,6 +1,7 @@
 mod anthill;
 mod app;
 mod arbor;
+mod armorial;
 mod blackbody;
 mod cells;
 mod cli;

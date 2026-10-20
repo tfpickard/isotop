@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 151 | 95,672 | 2,116 | 5,932 |
+| Rust | 152 | 97,455 | 2,122 | 5,950 |
 | SVG | 89 | 39,920 | 9 | 0 |
-| Python | 121 | 22,919 | 833 | 3,073 |
+| Python | 121 | 22,920 | 833 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 14,328 | 5,054 |
-| Plain Text | 11 | 0 | 333 | 0 |
-| **Total** | **459** | **158,832** | **17,647** | **14,110** |
+| Markdown | 83 | 0 | 14,418 | 5,104 |
+| Plain Text | 11 | 0 | 334 | 0 |
+| **Total** | **461** | **160,616** | **17,744** | **14,178** |
 
 ## Rust by module
 
@@ -29,6 +29,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/arbor.rs` | 1,669 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
 | `src/platform/macos/mod.rs` | 1,313 | 690 |
+| `src/armorial.rs` | 1,309 | 461 |
 | `src/cortex.rs` | 1,220 | 541 |
 | `src/tesseract.rs` | 1,054 | 561 |
 | `src/gpu.rs` | 1,007 | 377 |
@@ -42,7 +43,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/views/systems.rs` | 680 | 416 |
 | `src/platform/macos/logic.rs` | 658 | 926 |
 | `src/simulation.rs` | 651 | 762 |
-| `src/views.rs` | 636 | 740 |
+| `src/views.rs` | 648 | 740 |
 | `src/platform/linux/mod.rs` | 614 | 370 |
 | `src/platform/macos/ffi.rs` | 613 | 12 |
 | `src/coop/draw.rs` | 589 | 0 |
@@ -137,7 +138,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/app/screen.rs` | 152 | 67 |
 | `src/plumbing/floor.rs` | 152 | 146 |
 | `src/history.rs` | 150 | 157 |
-| `src/main.rs` | 148 | 55 |
+| `src/main.rs` | 149 | 55 |
 | `src/ouija/ribbon.rs` | 148 | 142 |
 | `src/app/pointer.rs` | 146 | 337 |
 | `src/ouija.rs` | 144 | 326 |
@@ -174,7 +175,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **56,786** | **38,911** |
+| **Total** | **58,108** | **39,372** |
 
 ## Largest files
 
@@ -212,10 +213,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,307 |
-| Views in the registry | 24 |
-| Views with a README mapping table | 24 of 24 |
+| `#[test]` functions | 1,323 |
+| Views in the registry | 25 |
+| Views with a README mapping table | 25 of 25 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`, `armorial`.

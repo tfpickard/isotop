@@ -46,7 +46,8 @@
 [Necropolis](View-Necropolis) &middot; [Cortex](View-Cortex)<br>
 [Horizon](View-Horizon) &middot; [Murmuration](View-Murmuration)<br>
 [Arbor](View-Arbor) &middot; [HR](View-HR)<br>
-[Hive](View-Hive) &middot; [Switchboard](View-Switchboard)
+[Hive](View-Hive) &middot; [Switchboard](View-Switchboard)<br>
+[Armorial](View-Armorial)
 
 **Planned**
 

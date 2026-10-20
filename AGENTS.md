@@ -96,6 +96,7 @@ The README covers usage. This file covers how to work on the code.
 
 | File | Owns |
 |---|---|
+| `armorial.rs` | The Armorial module view: house arms generated from the path hash, measured cadency, counterchanged tinctures and blazon, reserved bays and seats, pickable cloth fields, kind helms and mourning hatchments |
 | `main.rs` | `main` and `run` (`preflight`, then a headless or an interactive run), `start` (the first sample, the collector, the journal follower and the `App` a run begins with) and `demo_snapshot` (every demo sample goes through it with the shown view's `DemoOptions`, and the time of the sample before, for the life events in between). It re-exports `App`, `Options` and `warm_up` for the test-only harness; the golden render test is in `headless.rs` |
 | `cli.rs` | `Options` (every flag), `RendererChoice` and `Power` (the values of `--renderer` and `--gpu-power`), and `preflight` (`--verbose`, `--list-views`, `--keys` and views this platform lacks, before the terminal is touched) and `parse`, which ends `--help` with the controls from the keymap |
 | `headless.rs` | `--output` and `--benchmark`: `run` draws the frame after `warm_up`, which replays the shared history (headless demo runs, unless the row's `Phase::History` fills it) and runs the shown view's warm-up phases before the frame (the golden render test calls it too); `benchmark` times `App::draw` (record) and `App::rasterize` (raster) apart and `Timing::report` prints both |
