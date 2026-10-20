@@ -18,8 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         # macos-15 is Apple Silicon (arm64); macos-14 is marked deprecated in
-        # GitHub's runner-images.
-        os: [ubuntu-latest, macos-15]
+        # GitHub's runner-images. Linux is pinned, not ubuntu-latest: the golden render
+        # hashes are checked on Linux x86_64, and ubuntu-26.04's glibc rounds some libm
+        # results differently from 24.04's, which moves the coop, horizon and hr hashes.
+        os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
     # Warm runs take about 2 minutes; this leaves room for a cold cache and more renders.
     timeout-minutes: 15
@@ -82,7 +84,7 @@ jobs:
           sudo ./target/release/isotop --view orbit --width 960 --output live-root-macOS.png
           sudo chown "$(id -u)" live-root-macOS.png
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: renders-${{ runner.os }}
@@ -119,7 +121,7 @@ jobs:
         run: |
           ./target/release/isotop --demo --view coop --renderer gpu \
             --width 960 --time 12 --output coop-gpu-${{ runner.os }}.png
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: runner.os == 'macOS'
         continue-on-error: true
         with:
@@ -146,7 +148,7 @@ jobs:
             echo "$view: $line" | tee -a parity.txt
           done
           exit $status
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && runner.os == 'macOS'
         continue-on-error: true
         with:

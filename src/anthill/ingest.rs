@@ -30,7 +30,10 @@ impl Anthill {
     /// Takes in the sample `snapshot`, of which `processes` are the drawn ones, at the stage's
     /// time.
     pub(super) fn ingest(&mut self, stage: &Stage, processes: &[&Process], snapshot: &Snapshot) {
-        let key = (snapshot.elapsed.to_bits(), processes.len());
+        let key = (
+            snapshot.elapsed.to_bits(),
+            crate::simulation::identities_key(processes.iter().map(|process| process.id)),
+        );
         if self.taken == Some(key) {
             return;
         }
