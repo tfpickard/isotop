@@ -16,10 +16,11 @@ use crate::model::{Identity, Kind, Measured, Process, Snapshot, bounded, bytes};
 use crate::palette::{mix, tint};
 use crate::platform::{Shadow, Source};
 use crate::render::strokes::{Width, lit};
-use crate::render::{Color, Item, NONE, Point, SCALE, Stage, TourTarget, label_name, ring_bounds};
+use crate::render::{
+    Color, Item, NONE, Point, SCALE, Stage, TourTarget, label_name, ring_bounds, thread_label,
+};
 use crate::simulation::{FixedStep, Rng, hash_identity, smoothstep};
 use crate::status::{missing_note, unreadable_note};
-use crate::terminal::clean_text;
 use crate::threads::Thread;
 use crate::views::ViewModule;
 
@@ -1707,7 +1708,7 @@ impl Arbor {
         roots.sort_by(heavier);
         let name = |index: usize| {
             let slot = tree.nodes[index].process.expect("a process");
-            clean_text(&label_name(&processes[slot].name), 15)
+            label_name(&processes[slot].name).into_owned()
         };
         for &index in crown.iter().take(TOUR_BRANCHES) {
             let slot = tree.nodes[index].process.expect("a process");
@@ -1818,7 +1819,7 @@ impl Arbor {
                     .collect();
                 busy.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.tid.cmp(&b.1.tid)));
                 lines.extend(busy.iter().take(3).map(|(cpu, thread)| {
-                    format!("{} {} {cpu:.0}%", thread.tid, clean_text(&thread.name, 15))
+                    format!("{} {} {cpu:.0}%", thread.tid, thread_label(&thread.name))
                 }));
             }
             _ => lines.push("threads not read: leaves use process CPU".to_owned()),

@@ -7,7 +7,7 @@ use std::fs;
 use crate::model::{CpuCount, Interrupt, Softirq};
 
 /// A file's text with invalid UTF-8 replaced, so a device name that is not text is still read.
-/// Names are kept as read; whoever shows one cleans it (`terminal::clean_text`).
+/// Names are kept as read; whoever shows one makes it `terminal::SafeText`.
 fn read_text(path: &str) -> Option<String> {
     fs::read(path)
         .ok()

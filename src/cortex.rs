@@ -1542,6 +1542,7 @@ mod tests {
     fn pipe_spikes_travel_only_from_writer_to_reader() {
         let (mut snapshot, writer, reader) = two(Kind::System);
         snapshot.pipes = vec![Pipe {
+            id: crate::platform::PipeId::Anonymous(1),
             reader,
             writer,
             two_way: false,

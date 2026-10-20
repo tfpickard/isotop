@@ -2938,8 +2938,8 @@ mod tests {
             width: 60,
             lines: std::iter::once(card.title.clone())
                 .chain(card.lines.clone())
+                .map(|line| crate::terminal::SafeText::new(&line))
                 .collect(),
-            braille: Vec::new(),
         };
         let mut output = Vec::new();
         crate::terminal::draw_popup(&mut output, &popup).expect("drawn");

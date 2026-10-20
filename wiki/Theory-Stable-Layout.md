@@ -247,7 +247,7 @@ too. Ripple has its own copy of the same slot logic, with `cluster.slots` instea
 
 **Hidden processes keep their seats.** Reef, Cells, Coop, Globe and Ripple reserve seats and places
 for *every sampled process, drawn or not* (the comments in `Ripple::scatter` and in `cells.rs`, `reef.rs`,
-`coop.rs` and `globe.rs` say so), and the Orbit and Flow systems keep a hidden root's place in `Galaxy::place`
+`coop/layout.rs` and `globe.rs` say so), and the Orbit and Flow systems keep a hidden root's place in `Galaxy::place`
 (`src/views/systems.rs`). Focusing a subtree or lowering `--limit` hides processes without freeing their seats, so
 clearing the focus brings everything back where it was (Cores has the same test for its marbles). This is the same rule as stability under churn, one
 level up: the *view of the data* (focus, limit) must not move anything either. The commits
@@ -428,7 +428,7 @@ Regenerate the figure with `python3 docs/figures/layout-vogel.py` from the repos
   [`src/views/ripple.rs`](https://github.com/tfpickard/isotop/blob/main/src/views/ripple.rs): `Ripple::scatter`.
 * [`src/cells.rs`](https://github.com/tfpickard/isotop/blob/main/src/cells.rs),
   [`src/reef.rs`](https://github.com/tfpickard/isotop/blob/main/src/reef.rs),
-  [`src/coop.rs`](https://github.com/tfpickard/isotop/blob/main/src/coop.rs),
+  [`src/coop/layout.rs`](https://github.com/tfpickard/isotop/blob/main/src/coop/layout.rs),
   [`src/globe.rs`](https://github.com/tfpickard/isotop/blob/main/src/globe.rs),
   [`src/necropolis.rs`](https://github.com/tfpickard/isotop/blob/main/src/necropolis.rs),
   [`src/cortex.rs`](https://github.com/tfpickard/isotop/blob/main/src/cortex.rs): the users of `Seats` and `Discs`.

@@ -3,7 +3,7 @@
 <desc>Six panels: foraging speed against CPU, eggs against open files, dust puffs against read rate, peer pull against traffic and co-activity, and fox eyes against memory pressure.</desc>
 <rect width="100%" height="100%" fill="#0e1116"/>
 <text x="24" y="28" font-size="16" text-anchor="start" fill="#c9d1d9" font-weight="700">The coop's transfer functions</text>
-<text x="24" y="47" font-size="11.5" text-anchor="start" fill="#8b949e">constants from src/coop.rs and README.md; every curve saturates, so no process can dominate the yard</text>
+<text x="24" y="47" font-size="11.5" text-anchor="start" fill="#8b949e">constants from src/coop/sim.rs and README.md; every curve saturates, so no process can dominate the yard</text>
 <line x1="62" y1="96" x2="62" y2="296" stroke="#21262d" stroke-width="1"/>
 <line x1="62" y1="296" x2="62" y2="300" stroke="#484f58" stroke-width="1"/>
 <text x="62" y="312" font-size="10" text-anchor="middle" fill="#8b949e">0</text>

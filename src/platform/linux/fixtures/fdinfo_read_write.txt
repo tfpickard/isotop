@@ -1,0 +1,6 @@
+# Real capture: Linux 6.18.44 x86_64, 2026-10-13. /proc/self/fdinfo/N of a regular file opened
+# O_RDWR after writing 6 bytes through it; unmodified below.
+pos:	6
+flags:	02100002
+mnt_id:	28
+ino:	1632461

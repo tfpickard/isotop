@@ -21,12 +21,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Child;
 use std::time::Instant;
 
+use crate::io_detail::{Budget, DescriptorReader, Held, Reading};
 use crate::model::{
     CoreKind, Cpu, GpuMemory, Identity, Interrupt, IoBytes, Kind, Measured, Oom, Process, Rollup,
     Softirq, Unit,
 };
 use crate::platform::{
-    Files, Locks, Network, PipeEnd, PipeSample, RawProcess, Shadow, Source, Sources, Taken,
+    Files, Locks, Network, PipeEnd, PipeSample, RawProcess, Shadow, Source, Sources, Taken, Wait,
 };
 use crate::threads::{Listing, RawThread, Target, ThreadReader};
 
@@ -281,6 +282,7 @@ impl Sampler {
             // macOS has no smaps_rollup: `Source::MemoryDetail` is one of its gaps.
             memory_detail: Measured::Unreadable,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         };
         let responsible = self.responsible.and_then(|responsible| {
             // SAFETY: the SPI takes any pid and returns -1 when it has no answer.
@@ -1212,6 +1214,23 @@ const PIPE_BOUNDS: PipeBounds = PipeBounds {
     scan: 65536,
 };
 
+/// The wait channel scan. macOS has no wait channel to read: a process's sleep is not named
+/// anywhere a process may read (`proc_pidinfo` gives a run state, not what it waits for), so the
+/// scan finds nothing and the collector reports `Source::WaitChannel` missing.
+#[derive(Default)]
+pub struct WaitScan;
+
+impl WaitScan {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Always None: there is no wait channel to read.
+    pub fn sample(&mut self, _pids: &[u32]) -> Option<HashMap<u32, Wait>> {
+        None
+    }
+}
+
 /// The pipe and FIFO scan across processes, which resumes where the previous pass ran out of
 /// budget.
 pub struct PipeScan {
@@ -1404,6 +1423,140 @@ fn vnode_info(pid: c_int, fd: i32) -> io::Result<ffi::vnode_fdinfo> {
     }
     // SAFETY: vnode_fdinfo holds only integers, and the kernel filled all of it.
     Ok(unsafe { info.assume_init() })
+}
+
+/// An open vnode's `vnode_fdinfowithpath`: its position (`fi_offset`), open flags, attributes and
+/// path, only when the kernel wrote exactly the size of ours, which proves the layouts agree. Unlike
+/// `vnode_info` it builds the path, which runs the `fsgetpath` MAC check; a policy may refuse it,
+/// and the error says so.
+fn vnode_path_info(pid: c_int, fd: i32) -> io::Result<ffi::vnode_fdinfowithpath> {
+    let mut info = MaybeUninit::<ffi::vnode_fdinfowithpath>::zeroed();
+    let size = size_of::<ffi::vnode_fdinfowithpath>() as c_int;
+    // SAFETY: the buffer is valid for writes of `size` bytes.
+    let written = unsafe {
+        libc::proc_pidfdinfo(
+            pid,
+            fd,
+            ffi::PROC_PIDFDVNODEPATHINFO,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written <= 0 {
+        // libproc returns 0 only when the call failed, which set errno.
+        return Err(io::Error::last_os_error());
+    }
+    if written != size {
+        return Err(io::Error::other(
+            "vnode_fdinfowithpath size differs from the kernel's",
+        ));
+    }
+    // SAFETY: vnode_fdinfowithpath holds only integers and characters, and the kernel filled all
+    // of it (the zeroed buffer was valid before, and still is).
+    Ok(unsafe { info.assume_init() })
+}
+
+/// Reads the descriptors of one process for `Source::IoDetail`: the listing tells pipes, sockets
+/// and kernel objects without a call, and each vnode costs one `proc_pidfdinfo` call
+/// (`PROC_PIDFDVNODEPATHINFO`) for its path, position, open flags and attributes. macOS has no
+/// counters of the bytes passed to read and write calls, so a reading has no `characters` and
+/// the remainder is not told (`Source::UnattributedIo` is missing). Another user's process is
+/// refused with EPERM, as for the other flavors. A vnode whose path the kernel refuses to build
+/// (the `fsgetpath` MAC check) counts as `other` and makes the reading partial.
+pub struct Descriptors {
+    /// The listing buffer, reused between processes.
+    descriptors: Vec<libc::proc_fdinfo>,
+}
+
+impl Descriptors {
+    pub fn new() -> Self {
+        Descriptors {
+            descriptors: Vec::new(),
+        }
+    }
+}
+
+impl DescriptorReader for Descriptors {
+    fn counts_bytes(&self) -> bool {
+        false
+    }
+
+    fn read(&mut self, id: Identity, budget: Budget) -> Reading {
+        let pid = id.pid as c_int;
+        let (listed, truncated) =
+            match list_descriptors(pid, &mut self.descriptors, budget.descriptors) {
+                Ok(listing) => listing,
+                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Reading::Gone,
+                Err(_) => return Reading::Unreadable,
+            };
+        let mut held = Held {
+            examined: listed,
+            partial: truncated,
+            ..Held::default()
+        };
+        for descriptor in &self.descriptors[..listed] {
+            match logic::fd_kind(descriptor.proc_fdtype) {
+                logic::FdKind::Pipe => held.counts.pipes += 1,
+                logic::FdKind::Socket => held.counts.sockets += 1,
+                logic::FdKind::Anonymous => held.counts.anonymous += 1,
+                logic::FdKind::Vnode => match vnode_path_info(pid, descriptor.proc_fd) {
+                    Ok(info) => {
+                        let path = c_text(&info.pvip.vip_path);
+                        let stat = info.pvip.vip_vi.vi_stat;
+                        let vnode = logic::PathedVnode {
+                            stat: logic::VnodeStat {
+                                device: stat.vst_dev,
+                                mode: stat.vst_mode,
+                                links: stat.vst_nlink,
+                                inode: stat.vst_ino,
+                                size: stat.vst_size,
+                            },
+                            path: &path,
+                            open_flags: info.pfi.fi_openflags,
+                            offset: info.pfi.fi_offset,
+                        };
+                        match logic::vnode(descriptor.proc_fd as u32, vnode) {
+                            logic::Vnode::File(file) if held.files.len() < budget.files => {
+                                held.files.push(file);
+                            }
+                            logic::Vnode::File(_) => held.partial = true,
+                            logic::Vnode::Tty => held.counts.ttys += 1,
+                            logic::Vnode::Other => held.counts.other += 1,
+                        }
+                    }
+                    // xnu answers EBADF for a descriptor that is no longer open or no longer a
+                    // vnode: there is nothing to count.
+                    Err(error) if error.raw_os_error() == Some(libc::EBADF) => {}
+                    // The path lookup was refused, or the vnode was revoked, or the layouts
+                    // differ: the descriptor is something that could not be read.
+                    Err(_) => {
+                        held.counts.other += 1;
+                        held.partial = true;
+                    }
+                },
+            }
+        }
+        // The process is the one asked for if its start time still is: a pid is not given to
+        // another process while it lives. A zombie lists nothing and is gone as far as this goes.
+        match pid_info::<libc::proc_bsdinfo>(pid, libc::PROC_PIDTBSDINFO, 0) {
+            Ok(bsd)
+                if bsd
+                    .pbi_start_tvsec
+                    .saturating_mul(1_000_000)
+                    .saturating_add(bsd.pbi_start_tvusec)
+                    == id.start =>
+            {
+                Reading::Taken(held)
+            }
+            _ => Reading::Gone,
+        }
+    }
+}
+
+/// How busy `process` is for choosing the processes to read: its disk I/O rate, since macOS has
+/// no syscall counters (`logic::by_disk_rate`).
+pub fn io_rank(process: &Process) -> Option<f64> {
+    logic::by_disk_rate(process)
 }
 
 /// File locks. macOS keeps no table of them that can be read: `fcntl(F_GETLK)` only tests a
@@ -1973,6 +2126,97 @@ mod tests {
             vnode_descriptor(me, socket.as_raw_fd()),
             Some(logic::Descriptor::Other)
         );
+    }
+
+    /// This process, as the sampler names it.
+    fn own_identity() -> Identity {
+        let mut sampler = Sampler::new();
+        sampler
+            .processes()
+            .unwrap()
+            .into_iter()
+            .find(|raw| raw.process.id.pid == std::process::id())
+            .expect("the sampler lists this process")
+            .process
+            .id
+    }
+
+    #[test]
+    fn a_vnode_descriptor_reads_with_its_path_position_and_flags() {
+        use std::io::{Seek, SeekFrom};
+        let path = temporary("positions");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&[3; 10_000]).unwrap();
+        file.seek(SeekFrom::Start(1234)).unwrap();
+        // The kernel writes exactly the 1200 bytes of vnode_fdinfowithpath, or the call fails.
+        let me = std::process::id() as c_int;
+        let info = vnode_path_info(me, file.as_raw_fd()).expect("PROC_PIDFDVNODEPATHINFO size");
+        assert_eq!(info.pfi.fi_offset, 1234);
+        assert_eq!(info.pfi.fi_openflags & 0x0003, 0x0002, "FWRITE only");
+        assert_eq!(info.pvip.vip_vi.vi_stat.vst_size, 10_000);
+        // The path is the canonical one, which resolves /var to /private/var.
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        assert_eq!(c_text(&info.pvip.vip_path), canonical.to_str().unwrap());
+
+        let mut reader = Descriptors::new();
+        assert!(!reader.counts_bytes());
+        let budget = Budget {
+            descriptors: 4096,
+            files: 256,
+        };
+        let Reading::Taken(held) = reader.read(own_identity(), budget) else {
+            panic!("this process can read itself");
+        };
+        let ours = held
+            .files
+            .iter()
+            .find(|open| open.path == canonical.to_str().unwrap())
+            .expect("the open file is listed");
+        assert_eq!((ours.position, ours.size), (1234, 10_000));
+        assert_eq!(ours.access, AccessMode::Write);
+        assert!(held.characters.is_none(), "macOS counts no such bytes");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn descriptors_that_are_not_files_are_counted_by_kind() {
+        let (read, write) = {
+            let mut fds = [0; 2];
+            // SAFETY: fds is a valid array of two descriptors for pipe to fill.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            (fds[0], fds[1])
+        };
+        let socket = UnixDatagram::unbound().unwrap();
+        let mut reader = Descriptors::new();
+        let budget = Budget {
+            descriptors: 4096,
+            files: 256,
+        };
+        let Reading::Taken(held) = reader.read(own_identity(), budget) else {
+            panic!("this process can read itself");
+        };
+        assert!(held.counts.pipes >= 2, "{held:?}");
+        assert!(held.counts.sockets >= 1, "{held:?}");
+        // SAFETY: both descriptors were just returned by pipe and are closed once.
+        unsafe {
+            libc::close(read);
+            libc::close(write);
+        }
+        drop(socket);
+    }
+
+    #[test]
+    fn a_process_that_has_another_start_is_not_read() {
+        let me = own_identity();
+        let wrong = Identity {
+            start: me.start + 1,
+            ..me
+        };
+        let budget = Budget {
+            descriptors: 4096,
+            files: 256,
+        };
+        assert_eq!(Descriptors::new().read(wrong, budget), Reading::Gone);
     }
 
     #[test]

@@ -4,7 +4,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::model::{CoreKind, Kind, Oom, Policy, Queue};
+use crate::io_detail::OpenFile;
+use crate::model::{CoreKind, Kind, Oom, Policy, Process, Queue};
 use crate::platform::{
     AccessMode, DeletedFile, Files, Network, PipeEnd, PipeId, Remote, Source, Sources,
 };
@@ -208,7 +209,8 @@ pub fn pressure(level: Option<i32>) -> ([f32; 3], Sources) {
 /// run queue, cgroups, socket traffic, the lock table, GPU memory (Apple GPUs share memory
 /// with the CPU and report none per process), syscall I/O (no per-process counters of the
 /// bytes and calls of read and write), memory by kind (no smaps_rollup) and the kernel counters
-/// (no interrupt or softirq table, no IRQ affinity, and no readable count of OOM kills). The clock is missing too unless it is measured
+/// (no interrupt or softirq table, no IRQ affinity, and no readable count of OOM kills) and the
+/// job results of the journal (the unified log has no `JOB_RESULT`). The clock is missing too unless it is measured
 /// per cluster (`clocked`), and the core kinds when the IORegistry names none (`kinds_known`).
 pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
     let mut missing = Sources::from([
@@ -226,6 +228,7 @@ pub fn missing(clocked: bool, kinds_known: bool) -> Sources {
         Source::Softirqs,
         Source::IrqAffinity,
         Source::OomKills,
+        Source::JobResults,
     ]);
     if !clocked {
         missing.insert(Source::CpuClock);
@@ -798,6 +801,116 @@ pub fn fifo_end(stat: VnodeStat, open_flags: u32) -> Option<PipeEnd> {
     })
 }
 
+/// `PROX_FDTYPE_VNODE`, `_SOCKET` and `_PIPE` (bsd/sys/proc_info.h): the `proc_fdtype` of the
+/// descriptors that are files, sockets and pipes. Every other type is a kernel object with no
+/// file behind it: a kqueue, shared memory, a semaphore, the filesystem events device, a network
+/// policy or channel.
+const PROX_FDTYPE_VNODE: u32 = 1;
+const PROX_FDTYPE_SOCKET: u32 = 2;
+const PROX_FDTYPE_PIPE: u32 = 6;
+
+/// What a descriptor is, from the `proc_fdtype` the listing gives, which costs no call per
+/// descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FdKind {
+    /// A vnode: a file, a directory, a device or a named pipe. Only a call per descriptor tells.
+    Vnode,
+    Pipe,
+    Socket,
+    /// A kqueue, shared memory or the like: the nearest thing macOS has to Linux's `anon_inode`.
+    Anonymous,
+}
+
+pub fn fd_kind(proc_fdtype: u32) -> FdKind {
+    match proc_fdtype {
+        PROX_FDTYPE_VNODE => FdKind::Vnode,
+        PROX_FDTYPE_SOCKET => FdKind::Socket,
+        PROX_FDTYPE_PIPE => FdKind::Pipe,
+        _ => FdKind::Anonymous,
+    }
+}
+
+/// The file type of a character device (bsd/sys/stat.h).
+const S_IFCHR: u16 = 0o020000;
+
+/// `FAPPEND`, the kernel's `O_APPEND` (bsd/sys/fcntl.h), as `fi_openflags` holds it.
+const FAPPEND: u32 = 0x0008;
+
+/// One vnode descriptor as `PROC_PIDFDVNODEPATHINFO` describes it.
+#[derive(Clone, Copy, Debug)]
+pub struct PathedVnode<'a> {
+    pub stat: VnodeStat,
+    /// The path of the vnode, raw (lossily decoded); empty for a file the kernel can no longer
+    /// name.
+    pub path: &'a str,
+    /// `fi_openflags`.
+    pub open_flags: u32,
+    /// `fi_offset`, the position of the open file.
+    pub offset: i64,
+}
+
+/// What a vnode descriptor is for the per-file I/O detail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Vnode {
+    /// A regular file opened for reading, writing or both.
+    File(OpenFile),
+    /// A terminal: a character device under `/dev/tty*` or `/dev/console`.
+    Tty,
+    /// A directory, any other device, a named pipe, a file opened for neither reading nor writing
+    /// (a descriptor for events or paths only), and a file whose position or size the kernel gave
+    /// as negative, which are no numbers of bytes.
+    Other,
+}
+
+/// Whether the character device at `path` is a terminal: macOS names them `/dev/ttys000`, with
+/// `/dev/tty` for the controlling terminal and `/dev/console`.
+fn terminal(path: &str) -> bool {
+    path.starts_with("/dev/tty") || path.starts_with("/dev/console")
+}
+
+/// Classifies a vnode descriptor `fd`. A regular file whose link count is 0 was deleted while
+/// open, as for `descriptor`. `fi_offset` is its position (`pos` of Linux's fdinfo), and
+/// `fi_openflags` gives its access mode and whether it appends.
+pub fn vnode(fd: u32, vnode: PathedVnode) -> Vnode {
+    let PathedVnode {
+        stat,
+        path,
+        open_flags,
+        offset,
+    } = vnode;
+    match stat.mode & S_IFMT {
+        S_IFCHR if terminal(path) => Vnode::Tty,
+        S_IFREG => match (
+            access(open_flags),
+            u64::try_from(offset),
+            u64::try_from(stat.size),
+        ) {
+            (Some(access), Ok(position), Ok(size)) => Vnode::File(OpenFile {
+                fd,
+                device: u64::from(stat.device),
+                inode: stat.inode,
+                size,
+                path: path.to_owned(),
+                deleted: stat.links == 0,
+                access,
+                appending: open_flags & FAPPEND != 0,
+                position,
+            }),
+            _ => Vnode::Other,
+        },
+        _ => Vnode::Other,
+    }
+}
+
+/// How busy `process` is for choosing which get an `IoDetail`. macOS has no counters of the
+/// calls to read and write, which Linux ranks by, so it ranks by the bytes that reached storage
+/// per second: the growth of `ri_diskio_bytesread` plus `ri_diskio_byteswritten` between samples,
+/// which `Process::io_rate` is. That leaves out I/O the page cache absorbed, so a process that
+/// reads and writes files already in memory ranks low. None until a second reading exists.
+pub fn by_disk_rate(process: &Process) -> Option<f64> {
+    process.io_rate.map(f64::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1211,6 +1324,15 @@ mod tests {
                 assert!(gaps.contains(source), "{gaps:?}");
             }
         }
+    }
+
+    #[test]
+    fn macos_reports_job_results_as_missing() {
+        for clocked in [false, true] {
+            let gaps = missing(clocked, true);
+            assert!(gaps.contains(Source::JobResults), "{gaps:?}");
+        }
+        assert_eq!(Source::JobResults.name(), "job results");
     }
 
     #[test]
@@ -1646,6 +1768,7 @@ mod tests {
         assert_eq!(
             pipes,
             [Pipe {
+                id: reading.id,
                 reader: consumer,
                 writer: producer,
                 two_way: false,
@@ -1680,5 +1803,129 @@ mod tests {
             None,
             "opened for neither"
         );
+    }
+
+    /// A vnode descriptor at `offset`, opened with `open_flags`, whose file has `mode`.
+    fn vnode_at(mode: u16, links: u16, open_flags: u32, offset: i64, path: &str) -> Vnode {
+        vnode(
+            9,
+            PathedVnode {
+                stat: stat(mode, links, 4242, 1 << 20),
+                path,
+                open_flags,
+                offset,
+            },
+        )
+    }
+
+    #[test]
+    fn macos_open_flags_and_fd_types_map_to_access_and_target() {
+        // The listing alone tells the kinds that are not vnodes; a kqueue, shared memory and the
+        // like are the anonymous ones.
+        for (proc_fdtype, kind) in [
+            (1, FdKind::Vnode),
+            (2, FdKind::Socket),
+            (6, FdKind::Pipe),
+            (0, FdKind::Anonymous),
+            (3, FdKind::Anonymous),
+            (4, FdKind::Anonymous),
+            (5, FdKind::Anonymous),
+            (7, FdKind::Anonymous),
+            (9, FdKind::Anonymous),
+            (10, FdKind::Anonymous),
+            (11, FdKind::Anonymous),
+            (99, FdKind::Anonymous),
+        ] {
+            assert_eq!(fd_kind(proc_fdtype), kind, "proc_fdtype {proc_fdtype}");
+        }
+        // The open flags are the kernel's: FREAD 1, FWRITE 2, FAPPEND 8.
+        let regular = 0o100644;
+        let file = |flags, offset| match vnode_at(regular, 1, flags, offset, "/Users/demo/log.txt")
+        {
+            Vnode::File(file) => file,
+            other => panic!("a regular file, not {other:?}"),
+        };
+        let read = file(FREAD, 4096);
+        assert_eq!(
+            (read.access, read.position, read.appending, read.deleted),
+            (AccessMode::Read, 4096, false, false)
+        );
+        assert_eq!(
+            (read.fd, read.device, read.inode, read.size),
+            (9, 0x0100_0004, 4242, 1 << 20)
+        );
+        assert_eq!(read.path, "/Users/demo/log.txt");
+        assert_eq!(file(FWRITE, 0).access, AccessMode::Write);
+        assert_eq!(file(FREAD | FWRITE, 0).access, AccessMode::Both);
+        let append = file(FWRITE | 0x0008 | 0x0200, 100);
+        assert!(append.appending, "FAPPEND is 8, whatever else is set");
+        assert!(!file(FWRITE | 0x0200, 100).appending);
+        // A file with no link left was deleted while open.
+        let Vnode::File(gone) = vnode_at(regular, 0, FWRITE, 7, "") else {
+            panic!("a deleted regular file");
+        };
+        assert!(gone.deleted);
+        // Terminals are character devices under /dev/tty* and /dev/console; other devices, the
+        // directories, named pipes and descriptors opened for neither reading nor writing are
+        // none of the kinds, and a negative offset is no position.
+        let device = 0o020620;
+        for path in ["/dev/ttys003", "/dev/tty", "/dev/console"] {
+            assert_eq!(vnode_at(device, 1, FREAD | FWRITE, 0, path), Vnode::Tty);
+        }
+        for (mode, flags, offset, path) in [
+            (device, FWRITE, 0, "/dev/null"),
+            (0o020666, FREAD, 0, "/dev/random"),
+            (0o040755, FREAD, 0, "/Users/demo"),
+            (0o010600, FREAD, 0, "/tmp/fifo"),
+            (0o120755, FREAD, 0, "/tmp/link"),
+            (regular, 0, 0, "/tmp/opened-for-events"),
+            (regular, FREAD, -1, "/tmp/negative"),
+        ] {
+            assert_eq!(
+                vnode_at(mode, 1, flags, offset, path),
+                Vnode::Other,
+                "{path}"
+            );
+        }
+        // A size that is negative is no size either, and is not made up as zero.
+        let unsized_file = PathedVnode {
+            stat: stat(regular, 1, 4243, -1),
+            path: "/tmp/unsized",
+            open_flags: FREAD,
+            offset: 0,
+        };
+        assert_eq!(vnode(9, unsized_file), Vnode::Other);
+    }
+
+    #[test]
+    fn macos_selects_by_disk_io_rate() {
+        use crate::io_detail::{IO_PROCESSES, select};
+        use crate::model::{SyscallIo, testing};
+        // Thirty processes whose disk rate is their pid; the busiest by syscalls are the lowest
+        // pids, which would be chosen if macOS ranked by calls, and are not.
+        let process = |pid: u32, disk: Option<f32>| Process {
+            io_rate: disk,
+            syscall_io: Some(SyscallIo {
+                reads: 1000.0 - pid as f32,
+                ..SyscallIo::default()
+            }),
+            ..testing::process(pid, 1)
+        };
+        let mut processes: Vec<Process> =
+            (1..=30).map(|pid| process(pid, Some(pid as f32))).collect();
+        processes.push(process(31, None));
+        processes.push(process(32, Some(0.0)));
+        let chosen: Vec<u32> = select(&processes, by_disk_rate)
+            .iter()
+            .map(|id| id.pid)
+            .collect();
+        let expected: Vec<u32> = (7..=30).rev().collect();
+        assert_eq!(
+            chosen, expected,
+            "24 processes, the largest disk rates first"
+        );
+        assert_eq!(chosen.len(), IO_PROCESSES);
+        assert_eq!(by_disk_rate(&processes[30]), None, "no second reading yet");
+        assert_eq!(by_disk_rate(&processes[3]), Some(4.0));
     }
 }
