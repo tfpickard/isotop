@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in twenty-five views: a process
+A living picture of your machine inside the terminal, in twenty-six views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, the system log (the systemd
@@ -11,8 +11,9 @@ whose neurons fire with CPU, a black hole whose orbits rank the processes the OO
 killer will take next, a murmuration of starlings with one bird for each thread, the
 process tree as a tree, the journal spelled letter by letter by the planchette of a
 talking board, an anthill whose ants carry the bytes of read and write calls between
-nests and files, and a boiler room whose pipes, tubes and hoses are the channels between
-processes, and a roll of arms whose cadency describes the process tree. Written in
+nests and files, a boiler room whose pipes, tubes and hoses are the channels between
+processes, a roll of arms whose cadency describes the process tree, and a night
+coast of lighthouses identified by their flashes. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -47,7 +48,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), ouija, anthill, plumbing, armorial
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), ouija, anthill, plumbing, armorial, lights
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ./target/release/isotop --view hr --hr-diagram # hr starts on its Hertzsprung-Russell diagram; `m` flies between it and the sky
@@ -180,6 +181,7 @@ cache is stale.
 
 | Missing on macOS | How it shows |
 |---|---|
+| I/O pressure, cgroups and state D (lights) | Clear weather and nominal range, headlands from process groups, and no occulting class from uninterruptible sleep; the legend names the missing pressure and cgroups |
 | CPU and I/O pressure | The status line prints `n/a` for each: `pressure cpu n/a mem 0% io n/a`. The coop's heading noise comes from CPU variation only, and its legend says so |
 | Memory pressure as a stall percentage | The kernel's pressure level stands in for it: normal reads 0, warning 25, critical 75. The sky's memory tint and the coop's fox eyes show that level, not a stall percentage |
 | Last CPU of each process | macOS says only how each process's CPU time divided between the performance and the efficiency cores (`proc_pid_rusage`, `RUSAGE_INFO_V6`). Cores draws every running process as a marble on one of two bands, like an electron on an energy level, once it has a share since the last sample (a process seen for the first time, or one whose counters macOS will not give out, has no marble): the middle of the gold lanes or the middle of the teal lanes, starting on the gold band when at least half of its CPU time was on performance cores. It hops to the gold band when a sample's share reaches 60% and back to the teal band when it falls to 40% or below, along the same arc as a migration between lanes; in between it stays where it is, so an even split does not make it hop every sample, and a process that used no CPU time keeps its band. The inspector gives the share and counts the cluster hops, and the lane labels leave out the running and idle counts, which belong to a core. Where the split is not reported (a kernel without V6, or cores with no kind), Cores draws the lanes with their load and no marbles, and its legend says so. In the coop, running chickens share one trough instead of walking to the feeder of the core they ran on; the feeders are still drawn, brightened by how busy each core is |
@@ -241,8 +243,8 @@ The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. The view registry
 (`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
 truth for the list of views, their Tab order and their digits: Tab cycles
-the twenty-five views in that order (twenty-four on macOS), the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive, (on Linux) the switchboard, ouija, anthill, plumbing and armorial are reached with Tab, Shift+Tab,
+the twenty-six views in that order (twenty-five on macOS), the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive, (on Linux) the switchboard, ouija, anthill, plumbing, armorial and lights are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -1096,6 +1098,34 @@ The process tree as a roll of arms: houses occupy reserved wall bays, and descen
 
 **Platform.** Linux uses the cgroup path where present. macOS uses the app/user group, physical memory footprint, and its reported parent and start time; no additional source or privilege is required. Armorial has no local keys. Select a banner for its wrapped blazon and parent/cadency line. The wiki gives the history and theory: [View Armorial](https://github.com/tfpickard/isotop/wiki/View-Armorial).
 
+### Lights
+
+![Lights: lighthouse towers along a night coast, flashing lanterns and reflections on dark water](docs/media/lights.webp)
+
+Every process is a lighthouse whose characteristic identifies it in time.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Lighthouse and headland | Identity, cgroup leaf (process group without a cgroup) | A stable seat for every sampled process; headlands along a gentle arc, four columns of seats 2.3 units across and 2.8 behind |
+| Character class | State and CPU, percent of one core | Z extinguished, T/traced t fixed F, D occulting Oc(n); otherwise CPU >= 200% VQ (120/min), R or CPU >= 80% Q (60/min), others Fl(n) |
+| Flashes per group n | Threads | clamp(round(log2(max(threads, 1))) + 1, 1, 6) |
+| Group period | Mean CPU over the available last 30 s of shared history, else current CPU | 30 / (1 + CPU / 15) s, rounded up to {2.5, 3, 4, 5, 6, 7.5, 10, 12, 15, 20, 30}; at least 1.5 n + 1 s for n half-second flashes, one-second gaps and a two-second final eclipse |
+| Colour and bands | Kind | System W white, session R red, container G green, kernel Y yellow; tower bands white, red/white or black/white |
+| Intensity and nominal range | Memory, RSS on Linux and physical footprint on macOS | Log-linear 10 cd at 1 MiB to 1e6 cd at 10 GiB, clamped; solve Allard E = I T^(d / 1852) / d^2 = 2e-7 lux with T = 0.74, by 64 bisections; report d / 1852 nautical miles |
+| Glow size and strength | Luminous range and waveform | Outer radius min(22 + 3 range, 115) pixels at 900 px height; outer strength 0.55 times waveform, inner bloom and star core only during flashes |
+| Rotating beams | Characteristic, luminous range and I/O pressure | n beams for Fl(n), one for Q/VQ, facing the viewer at each flash midpoint; length 8 + 2.8 range world units, scattering 0.12 + 0.24 p / (p + 15) |
+| Reflections | Waveform | Broken streaks mixed from local water illumination towards the light with weight 0.025 + 0.45 times waveform, fading towards the foreground |
+| Fog and luminous range | I/O stall pressure p | Visibility V = 20 / (1 + p / 5) M; T = 0.05^(1 / V); re-solve Allard; Gaussian coastal fog peak 0.08 + 0.3 p / (p + 15) |
+| Focal-plane elevation | Lifetime CPU time in seconds | min(8 + 12 log10(1 + CPU time), 80) metres; tower height is elevation / 5 world units |
+| Established and extinguished lights | Consecutive sampled identities | Brief brightening over 1.5 s on birth; fade over 1.5 s at the last seat on exit; newest three Notices to Mariners in the legend and inspector |
+| Inspector and tour | Characteristic, range and elevation | Full notation such as Fl(3)W.15.0s 41m 23M and words; tour visits highest nominal ranges first |
+
+**Decorative:** the coastline and headland shapes, tower taper and roofs, the faint warm lantern interior between flashes, the night sky and stars, subtle sea swell, reflection shapes and shimmer, beam spread and upward tilt, clear-weather baseline fog and the stable identity-hashed phase. The beam faces the viewer at the midpoint of a flash; it is not a measured direction.
+
+**Time and caps.** The intensity waveform is a pure function of time, characteristic and phase; no simulation step is needed. Quick and very quick lights have a 30% lit duty cycle; occulting groups are the complement of flashing groups. At most 64 lights are drawn, including up to eight fading exits within the frame limit; living lights are admitted largest memory first, and the legend counts the collapsed processes. Every sampled process keeps its seat, including when focus or a limit hides it. An already unlit zombie does not acquire an exit glow. Notices and exit records keep at most 1024 entries each for 180 seconds.
+
+**What cannot be measured.** Missing I/O pressure uses clear weather and nominal range, and the legend says so. Headlands use process groups where cgroups are absent. Births and exits are sampled changes; processes which live entirely between samples are not announced. The candela and elevation are derived analogies, not physical measurements. On macOS there is no I/O PSI, cgroup or state D: lights use groups and clear weather, with no occulting class from uninterruptible sleep. Watch a full period to identify a light; a still image cannot show its group. Lights has no local keys. Theory and history: [View Lights](https://github.com/tfpickard/isotop/wiki/View-Lights).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -1362,7 +1392,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-97,480 lines of Rust (58,108 production, 39,372 test) in 152 files, 1,323 tests, 25 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+98,812 lines of Rust (59,052 production, 39,760 test) in 153 files, 1,340 tests, 26 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

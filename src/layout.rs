@@ -46,7 +46,7 @@ pub(crate) fn spin(name: &str) -> f32 {
 
 /// Seat numbers within named groups. A member keeps its seat for life; a freed seat goes to the
 /// next newcomer of that group.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Seats {
     taken: HashMap<String, HashMap<usize, Identity>>,
     seats: HashMap<Identity, (String, usize)>,

@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 152 | 97,455 | 2,122 | 5,950 |
+| Rust | 153 | 98,787 | 2,157 | 5,954 |
 | SVG | 89 | 39,920 | 9 | 0 |
-| Python | 121 | 22,920 | 833 | 3,073 |
+| Python | 121 | 22,921 | 833 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 83 | 0 | 14,418 | 5,104 |
-| Plain Text | 11 | 0 | 334 | 0 |
-| **Total** | **461** | **160,616** | **17,744** | **14,178** |
+| Markdown | 84 | 0 | 14,548 | 5,168 |
+| Plain Text | 11 | 0 | 335 | 0 |
+| **Total** | **463** | **161,949** | **17,910** | **14,246** |
 
 ## Rust by module
 
@@ -34,6 +34,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/tesseract.rs` | 1,054 | 561 |
 | `src/gpu.rs` | 1,007 | 377 |
 | `src/ptolemy.rs` | 983 | 421 |
+| `src/lights.rs` | 929 | 388 |
 | `src/murmuration.rs` | 923 | 792 |
 | `src/plumbing/paint.rs` | 806 | 0 |
 | `src/horizon/disk.rs` | 796 | 274 |
@@ -41,9 +42,9 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/switchboard.rs` | 695 | 352 |
 | `src/switchboard/lines.rs` | 694 | 621 |
 | `src/views/systems.rs` | 680 | 416 |
+| `src/views.rs` | 662 | 740 |
 | `src/platform/macos/logic.rs` | 658 | 926 |
 | `src/simulation.rs` | 651 | 762 |
-| `src/views.rs` | 648 | 740 |
 | `src/platform/linux/mod.rs` | 614 | 370 |
 | `src/platform/macos/ffi.rs` | 613 | 12 |
 | `src/coop/draw.rs` | 589 | 0 |
@@ -138,7 +139,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/app/screen.rs` | 152 | 67 |
 | `src/plumbing/floor.rs` | 152 | 146 |
 | `src/history.rs` | 150 | 157 |
-| `src/main.rs` | 149 | 55 |
+| `src/main.rs` | 150 | 55 |
 | `src/ouija/ribbon.rs` | 148 | 142 |
 | `src/app/pointer.rs` | 146 | 337 |
 | `src/ouija.rs` | 144 | 326 |
@@ -175,7 +176,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **58,108** | **39,372** |
+| **Total** | **59,052** | **39,760** |
 
 ## Largest files
 
@@ -213,10 +214,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,323 |
-| Views in the registry | 25 |
-| Views with a README mapping table | 25 of 25 |
+| `#[test]` functions | 1,340 |
+| Views in the registry | 26 |
+| Views with a README mapping table | 26 of 26 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`, `armorial`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`, `armorial`, `lights`.

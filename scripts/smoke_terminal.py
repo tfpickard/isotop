@@ -38,6 +38,7 @@ PICKER_VISITS = [
     "anthill",
     "plumbing",
     "armorial",
+    "lights",
     # Last, so that the live run's final `q` is pressed on the board and plays its farewell.
     "ouija",
 ]
