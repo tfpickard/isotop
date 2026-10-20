@@ -660,6 +660,18 @@ fn tower(
         );
     }
 }
+/// The atmosphere's colour at a frame point, from its nearest node.
+fn water(frame: &Frame, point: Point) -> Color {
+    let field = &frame.fields[0];
+    let column = (point[0] / frame.width as f32 * (field.columns - 1) as f32)
+        .round()
+        .clamp(0.0, (field.columns - 1) as f32) as usize;
+    let row = (point[1] / frame.height as f32 * (field.rows - 1) as f32)
+        .round()
+        .clamp(0.0, (field.rows - 1) as f32) as usize;
+    let texel = field.texels[row * field.columns + column].to_le_bytes();
+    [texel[0], texel[1], texel[2]]
+}
 /// `front` is the depth of the star core, just before the coast.
 fn shine(
     stage: &mut Stage,
@@ -689,8 +701,13 @@ fn shine(
                 strength: (strength * weight).min(1.0),
             });
         }
-        // The star core is geometry, not a backend-dependent one-pixel beam.
-        let core = mix(light.color, [255, 255, 241], 0.6);
+        // The star core is geometry, not a backend-dependent one-pixel beam. Opaque, it fades
+        // with the light by mixing towards the atmosphere behind it.
+        let core = mix(
+            water(stage.frame, at),
+            mix(light.color, [255, 255, 241], 0.6),
+            strength.min(1.0),
+        );
         stage.frame.hairline_between(
             [at[0] - 8.0 * scale, at[1], front],
             [at[0] + 8.0 * scale, at[1], front],
@@ -719,15 +736,7 @@ fn shine(
         ];
         let shimmer = (step as f32 * 2.39 + stage.time * 1.8 + position[0]).sin() * 0.5 + 0.5;
         let half = (0.12 + t * 1.1) * (0.25 + shimmer * 0.75);
-        let point = stage.frame.project(stage.camera, center);
-        let field = &stage.frame.fields[0];
-        let column = (point[0] / stage.frame.width as f32 * (field.columns - 1) as f32)
-            .round()
-            .clamp(0.0, (field.columns - 1) as f32) as usize;
-        let row = (point[1] / stage.frame.height as f32 * (field.rows - 1) as f32)
-            .round()
-            .clamp(0.0, (field.rows - 1) as f32) as usize;
-        let water = field.texels[row * field.columns + column].to_le_bytes();
+        let water = water(stage.frame, stage.frame.project(stage.camera, center));
         stage.frame.hairline(
             stage.camera,
             [
@@ -741,7 +750,7 @@ fn shine(
                 center[2],
             ],
             mix(
-                [water[0], water[1], water[2]],
+                water,
                 light.color,
                 (0.025 + 0.45 * strength) * (1.0 - t) * (0.4 + shimmer * 0.6),
             ),
@@ -1281,5 +1290,40 @@ mod tests {
                 around > radius && gap + radius <= around
             }));
         }
+    }
+    #[test]
+    fn the_star_core_fades_with_an_extinguished_light() {
+        let lit = process(1, 0);
+        let core = mix(characteristic(&lit, 0.0).color, [255, 255, 241], 0.6);
+        let mut scene = Scene::with_rows(ROWS);
+        scene.record(
+            &Snapshot {
+                elapsed: 1.0,
+                processes: vec![lit],
+                ..Snapshot::default()
+            },
+            1.0,
+        );
+        let gone = Snapshot {
+            elapsed: 2.0,
+            ..Snapshot::default()
+        };
+        scene.record(&gone, 2.0);
+        let camera = Camera::default();
+        // Halfway through the 1.5 s fade.
+        let frame = scene.render(&RenderInput::small(&gone, View::at(0), &camera, 2.75));
+        assert!(
+            frame
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Puff { color, .. } if *color == characteristic(&process(1, 0), 0.0).color)),
+            "the exit is drawn"
+        );
+        assert!(
+            !frame
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Triangle(_, color, _) if *color == core))
+        );
     }
 }
