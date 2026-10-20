@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 151 | 96,602 | 2,124 | 5,899 |
+| Rust | 153 | 98,787 | 2,157 | 5,954 |
 | SVG | 89 | 39,920 | 9 | 0 |
-| Python | 121 | 22,920 | 833 | 3,073 |
+| Python | 121 | 22,921 | 833 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 83 | 0 | 14,462 | 5,117 |
-| Plain Text | 11 | 0 | 334 | 0 |
-| **Total** | **460** | **159,763** | **17,790** | **14,140** |
+| Markdown | 84 | 0 | 14,548 | 5,168 |
+| Plain Text | 11 | 0 | 335 | 0 |
+| **Total** | **463** | **161,949** | **17,910** | **14,246** |
 
 ## Rust by module
 
@@ -24,11 +24,12 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | File | Production | Test |
 |:--|--:|--:|
 | `src/model.rs` | 3,402 | 4,454 |
-| `src/necropolis.rs` | 1,995 | 610 |
+| `src/necropolis.rs` | 2,027 | 705 |
 | `src/hr.rs` | 1,725 | 1,158 |
 | `src/arbor.rs` | 1,669 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
 | `src/platform/macos/mod.rs` | 1,313 | 690 |
+| `src/armorial.rs` | 1,309 | 461 |
 | `src/cortex.rs` | 1,220 | 541 |
 | `src/tesseract.rs` | 1,054 | 561 |
 | `src/gpu.rs` | 1,007 | 377 |
@@ -41,9 +42,9 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/switchboard.rs` | 695 | 352 |
 | `src/switchboard/lines.rs` | 694 | 621 |
 | `src/views/systems.rs` | 680 | 416 |
+| `src/views.rs` | 662 | 740 |
 | `src/platform/macos/logic.rs` | 658 | 926 |
 | `src/simulation.rs` | 651 | 762 |
-| `src/views.rs` | 650 | 740 |
 | `src/platform/linux/mod.rs` | 614 | 370 |
 | `src/platform/macos/ffi.rs` | 613 | 12 |
 | `src/coop/draw.rs` | 589 | 0 |
@@ -131,13 +132,14 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/switchboard/cord.rs` | 167 | 92 |
 | `src/io_detail/demo.rs` | 161 | 191 |
 | `src/plumbing/draw.rs` | 161 | 0 |
+| `src/lunar.rs` | 160 | 114 |
 | `src/platform/linux/descriptors.rs` | 160 | 328 |
 | `src/app/input.rs` | 156 | 234 |
 | `src/render/stage.rs` | 153 | 95 |
 | `src/app/screen.rs` | 152 | 67 |
 | `src/plumbing/floor.rs` | 152 | 146 |
 | `src/history.rs` | 150 | 157 |
-| `src/main.rs` | 148 | 55 |
+| `src/main.rs` | 150 | 55 |
 | `src/ouija/ribbon.rs` | 148 | 142 |
 | `src/app/pointer.rs` | 146 | 337 |
 | `src/ouija.rs` | 144 | 326 |
@@ -174,7 +176,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **57,537** | **39,090** |
+| **Total** | **59,052** | **39,760** |
 
 ## Largest files
 
@@ -185,8 +187,8 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | `src/model.rs` | 9,263 | over limit |
 | `src/hr.rs` | 3,365 | over limit |
 | `src/arbor.rs` | 3,231 | over limit |
+| `src/necropolis.rs` | 3,074 | over limit |
 | `src/hive.rs` | 3,040 | over limit |
-| `src/necropolis.rs` | 2,906 | over limit |
 | `src/platform/macos/mod.rs` | 2,467 | over limit |
 | `src/murmuration.rs` | 1,974 | over limit |
 | `src/cortex.rs` | 1,966 | over limit |
@@ -212,10 +214,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,313 |
-| Views in the registry | 25 |
-| Views with a README mapping table | 25 of 25 |
+| `#[test]` functions | 1,340 |
+| Views in the registry | 26 |
+| Views with a README mapping table | 26 of 26 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`, `lights`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`, `armorial`, `lights`.

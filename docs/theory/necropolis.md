@@ -70,15 +70,19 @@ Process lifetimes are heavy-tailed. Harchol-Balter and Downey measured Unix proc
 
 ### The moon
 
-The phase is a pure function of the date. The synodic month (new moon to new moon) is 29.530588853 days, the reference new moon is 2000-01-06 18:14 UTC, and the lit fraction of the disc at age $a$ days is
+The moon is a pure function of the date and, when isotop knows where the machine is, of the place. `lunar::Moon::at` evaluates the Astronomical Almanac's low-precision series for the sun and the moon. With $\psi$ the moon's elongation from the sun, the lit fraction of the disc is
 
-$$\frac{1 - \cos(2\pi a / 29.530588853)}{2}$$
+$$f = \frac{1 - \cos\psi}{2}, \qquad \cos\psi = \cos\beta\,\cos(\lambda_\text{moon} - \lambda_\text{sun}),$$
 
-This treats the moon's orbit as a circle at constant speed. The real synodic month varies by about half a day around its mean because the orbit is an ellipse and the sun perturbs it, so the drawn phase can be off by up to roughly half a day, which is invisible in a picture. `moon_phase` names the quarter and crescent states from the same number.
+and the moon is waxing while its ecliptic longitude is east of the sun's. From the sidereal time and the longitude of the place it gets the moon's altitude and azimuth (with the parallax of up to a degree taken out) and, from the position angle of the bright limb less the parallactic angle (Meeus, ch. 14 and 48), the angle of the lit side from the zenith, which is what tilts a crescent differently over Amsterdam and Sydney. Against an independent ephemeris the altitude is good to 0.3 degrees, the azimuth to 0.6 and $f$ to 0.003.
+
+The camera looks down on the cemetery, so the sky is the strip along the top of the frame. The cemetery faces the equator and the moon crosses the strip from left to right by azimuth, a little higher on the frame the higher it is in the sky, and is not drawn below the horizon. `Moon::phase` names the quarter and crescent states from $f$ and the direction.
+
+The first version of the view took the phase from the mean synodic month, $a = (t - t_0) \bmod 29.530588853$ days with $f = \tfrac12(1 - \cos 2\pi a / 29.530588853)$. That treats the orbit as a circle at constant speed; the real elongation does not advance uniformly (the orbit is an ellipse and the sun perturbs it), so true phases differ from the mean ones by up to half a day and the lit fraction by up to 0.1. The elongation is now computed.
 
 ![Stone height, stone width and the lit fraction of the moon](figures/necropolis-scales.svg)
 
-*The scales behind the picture: stone height and width are logarithmic in lifetime CPU and peak memory with caps, and the lit fraction of the moon follows the synodic month.*
+*The scales behind the picture: stone height and width are logarithmic in lifetime CPU and peak memory with caps. The lit-fraction panel is the mean-month curve the view no longer uses.*
 
 ## How isotop implements it
 
@@ -90,9 +94,9 @@ This treats the moon's orbit as a circle at constant speed. The real synodic mon
 
 ## Faithful, stylized, invented
 
-- **Faithful:** the wait-status decoding, the epitaph rules, the zombie and pid-reuse mechanics, the moon's phase to within half a day, the OOM correlation, stone height and width as measurements.
+- **Faithful:** the wait-status decoding, the epitaph rules, the zombie and pid-reuse mechanics, the moon's phase and place to a fraction of a degree, the OOM correlation, stone height and width as measurements.
 - **Stylized:** one stone per death, with the family grouping, the 600-grave cap and the unmarked-marker field being scale devices. Fog thickness is a bounded map of memory pressure.
-- **Invented:** the cemetery. A process has no body to bury and no moon shines on a datacentre. The moon carries no data at all.
+- **Invented:** the cemetery. A process has no body to bury and no moon shines on a datacentre. The moon carries no data at all, and its strip of sky is a picture of a sky.
 
 ## Reading the picture
 
@@ -108,4 +112,4 @@ This treats the moon's orbit as a circle at constant speed. The real synodic mon
 - On Brookwood and the Necropolis Railway: John M. Clarke, *The Brookwood Necropolis Railway* (various editions).
 - Harchol-Balter, M. & Downey, A. B. (1997), "Exploiting process lifetime distributions for dynamic load balancing", *ACM TOCS* 15(3).
 - Stevens & Rago, *Advanced Programming in the UNIX Environment*, on `wait`, zombies and exit status.
-- Meeus, *Astronomical Algorithms*, ch. 49 (the real moon-phase computation, if the half-day error ever matters).
+- Meeus, *Astronomical Algorithms* (2nd ed.), ch. 14 (the parallactic angle) and ch. 48 (the illuminated fraction and the position angle of the bright limb); *The Astronomical Almanac*, the low-precision formulae for the sun and moon.

@@ -47,7 +47,7 @@
 [Horizon](View-Horizon) &middot; [Murmuration](View-Murmuration)<br>
 [Arbor](View-Arbor) &middot; [HR](View-HR)<br>
 [Hive](View-Hive) &middot; [Switchboard](View-Switchboard)<br>
-[Lights](View-Lights)
+[Armorial](View-Armorial) &middot; [Lights](View-Lights)
 
 **Planned**
 

@@ -1,6 +1,7 @@
 mod anthill;
 mod app;
 mod arbor;
+mod armorial;
 mod blackbody;
 mod cells;
 mod cli;
@@ -26,6 +27,7 @@ mod journal;
 mod keys;
 mod layout;
 mod lights;
+mod lunar;
 mod matrix;
 mod medium;
 mod model;

@@ -928,6 +928,18 @@ pub static REGISTRY: &[ViewInfo] = &[
         })
     },
     ViewInfo {
+        pitch: Some(0.35),
+        link_strokes: true,
+        flash: false,
+        demo: DemoOptions {
+            churn: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("armorial", "ARMORIAL", Backdrop::Void, || {
+            Box::new(crate::armorial::Armorial::default())
+        })
+    },
+    ViewInfo {
         link_strokes: true,
         flash: false,
         haze: false,
