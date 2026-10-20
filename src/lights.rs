@@ -350,7 +350,7 @@ fn night(
             field.colors[row * columns + column] = mix(color, HAZE, bank);
         }
     }
-    let viewer = stage.camera.viewer();
+    let seaward = seaward(stage.camera);
     for lamp in lamps {
         if !matches!(
             lamp.light.class,
@@ -370,7 +370,7 @@ fn night(
             1
         };
         for beam in 0..count {
-            let angle = viewer[1].atan2(viewer[0])
+            let angle = seaward[1].atan2(seaward[0])
                 + beam_angle(
                     f64::from(stage.time),
                     lamp.light,
@@ -660,6 +660,13 @@ fn tower(
         );
     }
 }
+/// The horizontal unit vector from the coast towards the viewer, from the rotation alone: the
+/// viewer's own horizontal part vanishes at a top-down pitch, where f32 cos(pi/2) is slightly
+/// negative and would turn it round.
+fn seaward(camera: &Camera) -> [f32; 2] {
+    let (sin, cos) = (camera.rotation + std::f32::consts::FRAC_PI_4).sin_cos();
+    [sin, cos]
+}
 /// The atmosphere's colour at a frame point, from its nearest node.
 fn water(frame: &Frame, point: Point) -> Color {
     let field = &frame.fields[0];
@@ -721,9 +728,7 @@ fn shine(
             scale,
         );
     }
-    let viewer = stage.camera.viewer();
-    let length = viewer[0].hypot(viewer[1]);
-    let direction = [viewer[0] / length, viewer[1] / length];
+    let direction = seaward(stage.camera);
     // Glitter is decorative, but its brightness follows the observed flash. Mix against
     // local water illumination, so a dim reflection cannot cut black stripes into a beam.
     for step in 0..52 {
@@ -1289,6 +1294,23 @@ mod tests {
                 let gap = (other[0] - center[0]).hypot(other[1] - center[1]);
                 around > radius && gap + radius <= around
             }));
+        }
+    }
+    #[test]
+    fn the_coast_keeps_its_direction_at_a_top_down_pitch() {
+        let tilted = Camera::default();
+        for rotation in [0.0, 0.7, 2.0, -1.3] {
+            let isometric = seaward(&Camera {
+                rotation,
+                ..tilted.clone()
+            });
+            let top_down = seaward(&Camera {
+                rotation,
+                pitch: std::f32::consts::FRAC_PI_2,
+                ..tilted.clone()
+            });
+            assert!((isometric[0] - top_down[0]).abs() < 1e-5, "{rotation}");
+            assert!((isometric[1] - top_down[1]).abs() < 1e-5, "{rotation}");
         }
     }
     #[test]
