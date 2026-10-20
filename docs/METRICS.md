@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 76 | 75,825 | 1,685 | 4,295 |
+| Rust | 76 | 76,008 | 1,687 | 4,296 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 22,917 | 832 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 83 | 0 | 14,101 | 5,031 |
 | Plain Text | 7 | 0 | 307 | 0 |
-| **Total** | **381** | **138,983** | **16,962** | **12,450** |
+| **Total** | **381** | **139,166** | **16,964** | **12,451** |
 
 ## Rust by module
 
@@ -31,7 +31,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/hr.rs` | 1,725 | 1,158 |
 | `src/arbor.rs` | 1,668 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
-| `src/armorial.rs` | 1,250 | 337 |
+| `src/armorial.rs` | 1,309 | 461 |
 | `src/cortex.rs` | 1,220 | 540 |
 | `src/platform/macos/mod.rs` | 1,197 | 609 |
 | `src/tesseract.rs` | 1,053 | 561 |
@@ -99,7 +99,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 570 |
-| **Total** | **44,244** | **31,599** |
+| **Total** | **44,303** | **31,723** |
 
 ## Largest files
 
@@ -137,7 +137,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 987 |
+| `#[test]` functions | 991 |
 | Views in the registry | 22 |
 | Views with a README mapping table | 12 of 22 |
 | Direct crate dependencies | 10 |
