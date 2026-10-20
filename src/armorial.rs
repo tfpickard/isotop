@@ -739,7 +739,8 @@ impl Banner {
 #[derive(Default)]
 pub struct Armorial {
     bays: BTreeMap<String, Bay>,
-    columns: [usize; 2],
+    /// Bays ever made, so a new bay's index is never one a banner still names.
+    created: usize,
     banners: HashMap<Identity, Banner>,
     sample: Option<f64>,
     drawn: usize,
@@ -756,6 +757,7 @@ impl Armorial {
         }
         self.banners
             .retain(|_, banner| banner.exited.is_none_or(|exit| time - exit < 1.0));
+        self.reclaim();
         if self.sample != Some(snapshot.elapsed)
             || !admitted.iter().all(|p| self.banners.contains_key(&p.id))
         {
@@ -792,6 +794,7 @@ impl Armorial {
                 self.banners.remove(&process.id);
             }
         }
+        self.reclaim();
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for process in admitted {
             *counts.entry(house(process)).or_default() += 1;
@@ -801,11 +804,10 @@ impl Armorial {
             .filter(|p| selected.contains(&p.id))
         {
             if !self.bays.contains_key(house(process)) {
-                let side = usize::from(self.columns[0] > self.columns[1]);
-                let index = self.bays.len() * 2 + side;
-                let count = counts[house(process)].div_ceil(TIERS);
-                let columns = (self.columns[side]..self.columns[side] + count).collect();
-                self.columns[side] += count;
+                let side = usize::from(self.held(0) > self.held(1));
+                let index = self.created * 2 + side;
+                self.created += 1;
+                let columns = self.vacant(side, counts[house(process)].div_ceil(TIERS));
                 self.bays
                     .insert(house(process).to_owned(), Bay { index, columns });
             }
@@ -819,12 +821,12 @@ impl Armorial {
                             .any(|b| b.bay == bay.index && b.slot == *slot)
                     })
                     .expect("a house has a vacant seat");
-                let bay = self.bays.get_mut(house(process)).expect("reserved bay");
                 if slot / TIERS == bay.columns.len() {
-                    let side = bay.index % 2;
-                    bay.columns.push(self.columns[side]);
-                    self.columns[side] += 1;
+                    let column = self.vacant(bay.index % 2, 1);
+                    let bay = self.bays.get_mut(house(process)).expect("reserved bay");
+                    bay.columns.extend(column);
                 }
+                let bay = &self.bays[house(process)];
                 self.banners.insert(
                     process.id,
                     Banner {
@@ -857,6 +859,38 @@ impl Armorial {
             }
         }
     }
+    /// How many columns deep the hall must reach to hold every bay.
+    fn extent(&self) -> usize {
+        self.bays
+            .values()
+            .flat_map(|bay| &bay.columns)
+            .max()
+            .map_or(0, |column| column + 1)
+    }
+    /// The columns the bays on `side` hold.
+    fn holding(&self, side: usize) -> impl Iterator<Item = usize> + '_ {
+        self.bays
+            .values()
+            .filter(move |bay| bay.index % 2 == side)
+            .flat_map(|bay| bay.columns.iter().copied())
+    }
+    fn held(&self, side: usize) -> usize {
+        self.holding(side).count()
+    }
+    /// The `count` nearest columns on `side` that no bay holds, so a reclaimed bay's columns
+    /// are taken again before the hall grows.
+    fn vacant(&self, side: usize, count: usize) -> Vec<usize> {
+        let held: HashSet<usize> = self.holding(side).collect();
+        (0..)
+            .filter(|column| !held.contains(column))
+            .take(count)
+            .collect()
+    }
+    /// Frees the bays that no banner, live or lowering, sits in; no other bay moves.
+    fn reclaim(&mut self) {
+        let occupied: HashSet<usize> = self.banners.values().map(|banner| banner.bay).collect();
+        self.bays.retain(|_, bay| occupied.contains(&bay.index));
+    }
     fn ghosts(&self, time: f32, focused: bool) -> Vec<Identity> {
         if focused {
             return Vec::new();
@@ -875,7 +909,7 @@ impl Armorial {
         ghosts
     }
     fn hall(&self, stage: &mut Stage) {
-        let columns = self.columns[0].max(self.columns[1]).max(6);
+        let columns = self.extent().max(6);
         let end = distance(columns as f32 + 0.6);
         for row in 0..columns * 3 {
             let near = distance(row as f32 / 3.0);
@@ -1508,6 +1542,37 @@ mod tests {
         let seats: HashSet<(usize, usize)> =
             module.banners.values().map(|b| (b.bay, b.slot)).collect();
         assert_eq!(seats.len(), module.banners.len());
+    }
+    #[test]
+    fn the_bays_of_departed_houses_are_reclaimed_without_moving_survivors() {
+        let house_process = |pid: u32, cgroup: String| {
+            let mut process = process(pid, 1);
+            process.cgroup = cgroup;
+            process
+        };
+        let stay = house_process(2, "/stay".into());
+        let mut module = Armorial::default();
+        let mut anchor = None;
+        for round in 0..50 {
+            let snapshot = Snapshot {
+                elapsed: 12.0 + 2.0 * round as f64,
+                processes: vec![
+                    stay.clone(),
+                    house_process(100 + round, format!("/house/{round}")),
+                ],
+                ..Snapshot::default()
+            };
+            module.refresh(
+                &snapshot,
+                &snapshot.processes.iter().collect::<Vec<_>>(),
+                snapshot.elapsed as f32,
+            );
+            let here = module.banners[&stay.id].anchor();
+            assert_eq!(*anchor.get_or_insert(here), here);
+        }
+        // The survivor's house, the newest house and the one still lowering its banner.
+        assert!(module.bays.len() <= 3, "{} bays", module.bays.len());
+        assert!(module.extent() <= 3, "{} columns", module.extent());
     }
     #[test]
     fn the_same_house_path_generates_the_same_arms() {
