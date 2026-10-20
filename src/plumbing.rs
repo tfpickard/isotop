@@ -81,7 +81,7 @@ pub struct Plumbing {
     floor: Floor,
     router: Router,
     /// `Snapshot::elapsed` of the sample last taken in.
-    sample: Option<f64>,
+    sample: Option<(f64, u64)>,
     /// The pipework of that sample.
     room: Room,
     /// When each process last had a link, for the tank that stays after its links close.
@@ -110,10 +110,16 @@ impl Plumbing {
     /// (another user's process, a pass that has not reached it) is told from one that closed its
     /// end by having been seen to hold it.
     fn take_in(&mut self, time: f32, snapshot: &Snapshot, shown: &HashSet<Identity>) {
-        if self.sample == Some(snapshot.elapsed) {
+        // The shown set is part of the key: clearing a focus while paused shows other processes of
+        // the same sample.
+        let key = (
+            snapshot.elapsed,
+            crate::simulation::identities_key(shown.iter().copied()),
+        );
+        if self.sample == Some(key) {
             return;
         }
-        self.sample = Some(snapshot.elapsed);
+        self.sample = Some(key);
         self.room = Room::read(snapshot, shown);
         let severed: HashSet<(Identity, PipeId)> = self.room.severed.iter().copied().collect();
         for &key in &severed {
