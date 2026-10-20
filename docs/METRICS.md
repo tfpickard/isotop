@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 150 | 95,270 | 2,089 | 5,895 |
+| Rust | 151 | 95,672 | 2,116 | 5,932 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 22,919 | 833 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 82 | 0 | 14,332 | 5,053 |
+| Markdown | 82 | 0 | 14,328 | 5,054 |
 | Plain Text | 11 | 0 | 333 | 0 |
-| **Total** | **458** | **158,430** | **17,624** | **14,072** |
+| **Total** | **459** | **158,832** | **17,647** | **14,110** |
 
 ## Rust by module
 
@@ -24,7 +24,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | File | Production | Test |
 |:--|--:|--:|
 | `src/model.rs` | 3,402 | 4,454 |
-| `src/necropolis.rs` | 1,995 | 610 |
+| `src/necropolis.rs` | 2,027 | 705 |
 | `src/hr.rs` | 1,725 | 1,158 |
 | `src/arbor.rs` | 1,669 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
@@ -130,14 +130,15 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/switchboard/cord.rs` | 167 | 92 |
 | `src/io_detail/demo.rs` | 161 | 191 |
 | `src/plumbing/draw.rs` | 161 | 0 |
+| `src/lunar.rs` | 160 | 114 |
 | `src/platform/linux/descriptors.rs` | 160 | 328 |
 | `src/app/input.rs` | 156 | 234 |
 | `src/render/stage.rs` | 153 | 95 |
 | `src/app/screen.rs` | 152 | 67 |
 | `src/plumbing/floor.rs` | 152 | 146 |
 | `src/history.rs` | 150 | 157 |
+| `src/main.rs` | 148 | 55 |
 | `src/ouija/ribbon.rs` | 148 | 142 |
-| `src/main.rs` | 147 | 55 |
 | `src/app/pointer.rs` | 146 | 337 |
 | `src/ouija.rs` | 144 | 326 |
 | `src/coop/feeding.rs` | 142 | 240 |
@@ -173,7 +174,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **56,593** | **38,702** |
+| **Total** | **56,786** | **38,911** |
 
 ## Largest files
 
@@ -184,8 +185,8 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | `src/model.rs` | 9,263 | over limit |
 | `src/hr.rs` | 3,365 | over limit |
 | `src/arbor.rs` | 3,231 | over limit |
+| `src/necropolis.rs` | 3,074 | over limit |
 | `src/hive.rs` | 3,040 | over limit |
-| `src/necropolis.rs` | 2,906 | over limit |
 | `src/platform/macos/mod.rs` | 2,467 | over limit |
 | `src/murmuration.rs` | 1,974 | over limit |
 | `src/cortex.rs` | 1,966 | over limit |
@@ -211,7 +212,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,296 |
+| `#[test]` functions | 1,307 |
 | Views in the registry | 24 |
 | Views with a README mapping table | 24 of 24 |
 | Direct crate dependencies | 10 |
