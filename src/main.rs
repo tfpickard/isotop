@@ -26,6 +26,7 @@ mod io_detail;
 mod journal;
 mod keys;
 mod layout;
+mod lunar;
 mod matrix;
 mod medium;
 mod model;
