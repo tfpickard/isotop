@@ -1160,6 +1160,20 @@ impl Armorial {
         }
     }
 }
+/// The `budget` largest processes by memory, the selected one (if a candidate) taking the last
+/// place when it would fall out, as the scene's own admission keeps it.
+fn admit(candidates: &[Process], budget: usize, selected: Option<Identity>) -> Vec<&Process> {
+    let mut admitted = top_n(candidates, budget, |p| p.memory as f64);
+    if let Some(id) = selected
+        && budget > 0
+        && !admitted.iter().any(|p| p.id == id)
+        && let Some(process) = candidates.iter().find(|p| p.id == id)
+    {
+        admitted.truncate(budget - 1);
+        admitted.push(process);
+    }
+    admitted
+}
 fn helm(stage: &mut Stage, at: Point, kind: Kind, pick: u32, scale: f32) {
     let color = if kind == Kind::Kernel {
         GOLD
@@ -1208,15 +1222,17 @@ impl ViewModule for Armorial {
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         let budget = CAP.min(stage.limit);
         let candidates: Vec<Process> = processes.iter().map(|p| (*p).clone()).collect();
-        let admitted = top_n(&candidates, budget, |p| p.memory as f64);
+        let selected = stage
+            .selected
+            .filter(|id| candidates.iter().any(|p| p.id == *id));
+        let admitted = admit(&candidates, budget, selected);
         self.refresh(snapshot, &admitted, stage.time);
         let mut ghosts = self.ghosts(stage.time, stage.focus.is_some());
-        ghosts.truncate(budget);
-        let chosen: HashSet<Identity> =
-            top_n(&candidates, budget - ghosts.len(), |p| p.memory as f64)
-                .iter()
-                .map(|p| p.id)
-                .collect();
+        ghosts.truncate(budget.saturating_sub(usize::from(selected.is_some())));
+        let chosen: HashSet<Identity> = admit(&candidates, budget - ghosts.len(), selected)
+            .iter()
+            .map(|p| p.id)
+            .collect();
         let eligible: HashMap<Identity, u32> = processes
             .iter()
             .enumerate()
@@ -1526,6 +1542,41 @@ mod tests {
         let frame = scene.render(&input);
         assert_eq!(frame.fields.len(), 8);
         assert_eq!(scene.visible, 0);
+    }
+
+    #[test]
+    fn the_selected_process_keeps_a_banner_while_lowering_banners_fill_the_budget() {
+        let mut snapshot = crate::model::demo(12.0, 64);
+        let mut scene = Scene::new();
+        let camera = Camera::default();
+        let selected = top_n(&snapshot.processes, snapshot.processes.len(), |p| {
+            p.memory as f64
+        })
+        .last()
+        .map(|p| p.id);
+        let input = RenderInput {
+            limit: 8,
+            selected,
+            ..RenderInput::small(&snapshot, view("armorial"), &camera, 12.0)
+        };
+        scene.render(&input);
+        assert!(scene.positions.contains_key(&selected.unwrap()));
+        let departed: HashSet<Identity> = scene
+            .positions
+            .keys()
+            .copied()
+            .filter(|id| Some(*id) != selected)
+            .collect();
+        snapshot.processes.retain(|p| !departed.contains(&p.id));
+        snapshot.elapsed = 12.1;
+        let input = RenderInput {
+            limit: 8,
+            selected,
+            ..RenderInput::small(&snapshot, view("armorial"), &camera, 12.1)
+        };
+        let frame = scene.render(&input);
+        assert!(scene.positions.contains_key(&selected.unwrap()));
+        assert_eq!(frame.fields.len(), 8);
     }
 
     #[test]
