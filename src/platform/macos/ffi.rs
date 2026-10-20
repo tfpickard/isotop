@@ -597,6 +597,32 @@ pub struct vnode_fdinfo {
     pub pvi: vnode_info,
 }
 
+// struct vnode_fdinfowithpath and its member, from the same header. They are the vnode record with
+// the path of the file after it, which the per-file I/O detail needs for its names. Building the
+// path runs `fsgetpath`, whose MAC check a security policy may refuse for a vnode, which is why
+// the open-file scan keeps to `PROC_PIDFDVNODEINFO`. libc 0.2.190 has `vnode_info_path` (as a
+// 32 by 32 array of characters) but not the fdinfo wrapper or its flavor.
+
+/// `PROC_PIDFDVNODEPATHINFO` flavor for `proc_pidfdinfo`: the open file's `vnode_info` and path.
+pub const PROC_PIDFDVNODEPATHINFO: c_int = 2;
+
+/// `MAXPATHLEN` (bsd/sys/param.h): the bytes of path in a `vnode_info_path`, with the NUL.
+pub const MAXPATHLEN: usize = 1024;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vnode_info_path {
+    pub vip_vi: vnode_info,
+    pub vip_path: [c_char; MAXPATHLEN],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct vnode_fdinfowithpath {
+    pub pfi: proc_fileinfo,
+    pub pvip: vnode_info_path,
+}
+
 // The jetsam priority list, from xnu bsd/sys/kern_memorystatus.h, which the public SDK does not
 // ship. Only root may ask (`memorystatus_control` answers EPERM to anyone else).
 
@@ -762,6 +788,13 @@ assert_layout!(vnode_fdinfo, 176, 8);
 assert_offset!(vnode_info, vi_type, 136);
 assert_offset!(vnode_info, vi_fsid, 144);
 assert_offset!(vnode_fdinfo, pvi, 24);
+// vnode_info_path is the 152 bytes of vnode_info and 1024 of path (1176), and the fdinfo wrapper
+// puts the 24-byte proc_fileinfo in front (1200), which is PROC_PIDFDVNODEPATHINFO_SIZE.
+assert_layout!(vnode_info_path, 1176, 8);
+assert_layout!(vnode_fdinfowithpath, 1200, 8);
+assert_offset!(vnode_info_path, vip_path, 152);
+assert_offset!(vnode_fdinfowithpath, pvip, 24);
+const _: () = assert!(size_of::<libc::vnode_info_path>() == size_of::<vnode_info_path>());
 assert_offset!(vinfo_stat, vst_mode, 4);
 assert_offset!(vinfo_stat, vst_nlink, 6);
 assert_layout!(pipe_info, 160, 8);

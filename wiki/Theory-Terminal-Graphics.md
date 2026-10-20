@@ -149,7 +149,7 @@ What reaches the screen is the frame the rasterizer produced, scaled by the term
 | What | Where |
 |---|---|
 | `Terminal`, `enter`, `present`, `clear`, `Drop`, `probe`, `write_shared`, `frame_name`, `draw_label`, `draw_popup`, `clean_text` | [`src/terminal.rs`](https://github.com/tfpickard/isotop/blob/main/src/terminal.rs) |
-| `Layout::measure`, `PANEL_ROWS`, `App::overlay`, `Board`, the frame loop that calls `present` | [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs) |
+| `Layout::measure`, `PANEL_ROWS`, `App::overlay`, `Board`, the frame loop that calls `present` | [`src/app/screen.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/screen.rs), [`src/app/overlay.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/overlay.rs), [`src/interactive.rs`](https://github.com/tfpickard/isotop/blob/main/src/interactive.rs) |
 | Emulated terminal and restoration checks | [`scripts/smoke_terminal.py`](https://github.com/tfpickard/isotop/blob/main/scripts/smoke_terminal.py) |
 | Visual-check recipe for Ghostty | [`AGENTS.md`](https://github.com/tfpickard/isotop/blob/main/AGENTS.md), "Visual checks" |
 

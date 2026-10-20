@@ -1,0 +1,6 @@
+# Real capture: Linux 6.18.44 x86_64, 2026-10-13. /proc/self/fdinfo/N of a 100000 byte regular
+# file opened O_WRONLY|O_APPEND after appending 6 bytes: the position is the end of the file.
+pos:	100006
+flags:	02102001
+mnt_id:	28
+ino:	1632461

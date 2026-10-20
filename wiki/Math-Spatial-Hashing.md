@@ -311,7 +311,7 @@ python3 docs/figures/hashing-op-counts.py
   `face_distance`, `width`), `Cell`, `CellHasher`, `CELL_LIMIT`, `rank`, `closer`; the tests
   `spatial_hash_finds_exactly_the_points_brute_force_finds`, `nearest_finds_exactly_what_brute_force_finds`,
   `neighbours_in_3d_finds_exactly_what_brute_force_finds`, `timing_nearest_22_of_8000_flock_points_and_fft_1024`.
-* [`src/coop.rs`](https://github.com/tfpickard/isotop/blob/main/src/coop.rs): the one user of `SpatialHash`.
+* [`src/coop/sim.rs`](https://github.com/tfpickard/isotop/blob/main/src/coop/sim.rs): the one user of `SpatialHash`.
 * [`src/murmuration.rs`](https://github.com/tfpickard/isotop/blob/main/src/murmuration.rs): the one user of `SpatialHash3` (`Flock`, `Grid::adapt`).
 * `docs/mockups/code/murmuration.py`: the flock the tests are scaled from.
 

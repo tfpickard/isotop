@@ -24,8 +24,8 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    arbor, cells, coop, cores, cortex, globe, hive, horizon, hr, matrix, murmuration, necropolis,
-    ptolemy, reef, strata, switchboard, tesseract,
+    anthill, arbor, cells, coop, cores, cortex, globe, hive, horizon, hr, matrix, murmuration,
+    necropolis, ouija, plumbing, ptolemy, reef, strata, switchboard, tesseract,
 };
 
 /// A view, as its index into the table the scene draws from: `REGISTRY`, outside tests.
@@ -328,7 +328,7 @@ pub enum Phase {
     /// that second the whole history and rasterizes a frame at it; then leaves the history at the
     /// sample of `time`. It replays demo samples, so it belongs under `When::DemoOutput`. Every
     /// frame it rasterizes records its sample in the scene's history, so a row with a due
-    /// `History` phase skips `main.rs`'s replay of the shared history.
+    /// `History` phase skips `headless.rs`'s replay of the shared history.
     History { seconds: u32 },
     /// Feeds the demo samples of the `seconds` whole seconds before `time` to `Scene::record`,
     /// skipping those before 0, without rasterizing.
@@ -377,19 +377,22 @@ const SETTLE: Warmup = Warmup {
     when: When::Output,
 };
 
-/// The keys a view may claim for itself. Every other key is global.
-pub const LOCAL_KEYS: &str = "bijkmopuxyz,.;";
-
 /// A key press offered to the shown view, while no search is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewKey {
-    /// One of `LOCAL_KEYS`, which have no global meaning.
+    /// One of `keys::LOCAL_KEYS`, which have no global meaning.
     Local(char),
     /// Home or `r`. The global reset happens as well, whatever the hook returns.
     Reset,
     /// Esc. When the hook returns true the press is consumed; the view then leaves the next Esc
     /// to its global meaning.
     Escape,
+    /// `q`, the quit key, while the view is shown and no search or picker is open. Return true to
+    /// defer the quit: the app then stays open until the view sets `Stage::quit`, and a second
+    /// offer (another `q`) lets the view end it early by returning false. Return false, the
+    /// default, and the app quits at once. Ctrl-C is not offered: it always quits. A headless run
+    /// presses no key, so nothing is ever deferred there.
+    Quit,
 }
 
 /// Command-line settings that only some views read, handed to every module once, before its first
@@ -842,6 +845,89 @@ pub static REGISTRY: &[ViewInfo] = &[
         })
     },
     ViewInfo {
+        // The pressure haze would tint the black the velvet fades into.
+        haze: false,
+        // The board draws no process: nothing flashes where one left, and the tour has no one to
+        // visit.
+        flash: false,
+        tour: false,
+        // Steeper than isometric, so the letters read.
+        pitch: Some(ouija::PITCH),
+        sources: Sources::of(&[Source::Journal]),
+        // The board shows no process and collapses none, whatever the machine runs.
+        header: Some(|_| (0, 0)),
+        // The demo's journal carries the lines that end a job, with their results.
+        demo: DemoOptions {
+            job_results: true,
+            ..DemoOptions::NONE
+        },
+        // The board draws journal lines, not processes.
+        contract: Contract {
+            draws_processes: false,
+            ..Contract::DEFAULT
+        },
+        // The journal of the eight seconds before a captured frame, as a live run would have
+        // been fed it, so that frame lands in the middle of a line.
+        warmup: &[Warmup {
+            phase: Phase::Journal {
+                frames: 161,
+                step: 0.05,
+                lead: 8.0,
+            },
+            when: When::Headless,
+        }],
+        ..ViewInfo::new("ouija", "OUIJA", Backdrop::Void, || {
+            Box::new(ouija::Ouija::default())
+        })
+    },
+    ViewInfo {
+        // Every process is a nest, and the tunnels and blankets are the view's own; the scene's
+        // links would say it twice.
+        links: LinkRule::DrawnByView,
+        // The colony settles for ten seconds, a step at a time, as a live run would have drawn
+        // them, so the trails are laid and the ants are on their way in the captured frame.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 10,
+                step: 0.05,
+            },
+            when: When::DemoHeadless,
+        }],
+        // Which files the busiest processes read and write, only while the view is shown.
+        sources: Sources::of(&[Source::IoDetail, Source::Pipes]),
+        demo: DemoOptions {
+            io_detail: true,
+            channels: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("anthill", "ANTHILL", Backdrop::Dusk, || {
+            Box::new(anthill::Anthill::default())
+        })
+    },
+    ViewInfo {
+        // The runs between processes are the view's own: pipes, tubes and hoses, each its own
+        // thing to pick, whatever the `c` key says.
+        links: LinkRule::DrawnByView,
+        // The pipes, the descriptors and the wait channels are read only while it is shown.
+        sources: Sources::of(&[Source::Pipes, Source::IoDetail, Source::WaitChannel]),
+        // Twelve seconds of the demo as a live run drew it: the water has travelled, and the
+        // sample in which gzip drops its end of the pipe has been seen.
+        warmup: &[Warmup {
+            phase: Phase::Play {
+                seconds: 12,
+                step: 0.1,
+            },
+            when: When::DemoHeadless,
+        }],
+        demo: DemoOptions {
+            plumbing: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("plumbing", "PLUMBING", Backdrop::Dusk, || {
+            Box::new(plumbing::Plumbing::default())
+        })
+    },
+    ViewInfo {
         pitch: Some(0.35),
         link_strokes: true,
         flash: false,
@@ -943,9 +1029,55 @@ pub mod testing {
                     self.keys.push('E');
                     std::mem::take(&mut self.mode)
                 }
+                ViewKey::Quit => false,
             }
         }
     }
+
+    /// How many frames `Farewell` plays after the first `q` before it lets the app quit.
+    pub const FAREWELL_FRAMES: u32 = 3;
+
+    /// A module view that defers the quit, as a view with a goodbye animation would: the first
+    /// `q` starts a farewell of `FAREWELL_FRAMES` frames, after which it sets `Stage::quit`, and
+    /// a second `q` during it quits at once. Its legend counts the farewell frames drawn.
+    #[derive(Default)]
+    pub struct Farewell {
+        leaving: bool,
+        frames: u32,
+    }
+
+    impl ViewModule for Farewell {
+        fn draw(
+            &mut self,
+            stage: &mut Stage,
+            processes: &[&Process],
+            snapshot: &Snapshot,
+        ) -> usize {
+            if self.leaving {
+                self.frames += 1;
+                *stage.quit = self.frames >= FAREWELL_FRAMES;
+            }
+            Probe::default().draw(stage, processes, snapshot)
+        }
+
+        fn legend(&self, _snapshot: &Snapshot) -> String {
+            format!(" farewell: {} frames", self.frames)
+        }
+
+        fn key(&mut self, key: ViewKey) -> bool {
+            key == ViewKey::Quit && !std::mem::replace(&mut self.leaving, true)
+        }
+    }
+
+    /// `farewell`, which defers the quit, then `probe`, which does not.
+    pub static FAREWELLS: &[ViewInfo] = &[
+        ViewInfo::new("farewell", "FAREWELL", Backdrop::Space, || {
+            Box::new(Farewell::default())
+        }),
+        ViewInfo::new("probe", "PROBE", Backdrop::Space, || {
+            Box::new(Probe::default())
+        }),
+    ];
 
     /// The same as `Probe`, except that it replaces the inspector line.
     #[derive(Default)]
@@ -1683,7 +1815,7 @@ mod tests {
             .collect();
         assert_eq!(
             replacing,
-            ["matrix", "switchboard"],
+            ["matrix", "switchboard", "ouija"],
             "a view replaces the inspector line through ViewModule, and only a view that draws no \
              processes has reason to"
         );
