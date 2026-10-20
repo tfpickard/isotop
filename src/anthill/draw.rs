@@ -10,7 +10,7 @@ use super::flows::Way;
 use crate::geometry::dot;
 use crate::geometry::normalize;
 use crate::palette::{mix, tint};
-use crate::render::strokes::{Dash, Width};
+use crate::render::strokes::{Dash, THINNEST_RIBBON, Width};
 use crate::render::{Camera, Color, Frame, Item, LIGHT, NONE, Point, SCALE};
 use crate::simulation::{Rng, hash};
 
@@ -485,7 +485,8 @@ pub struct Lane {
 }
 
 /// One lane of a tunnel along `path` (world points). A ribbon is only triangles, so it draws alike
-/// on the CPU and the GPU.
+/// on the CPU and the GPU, as long as it is not so thin that `ribbon` falls back to lines: a lane
+/// is never drawn under `THINNEST_RIBBON` pixels wide.
 pub fn lane(frame: &mut Frame, camera: &Camera, path: &[Point], lane: Lane) {
     let Lane {
         offset,
@@ -521,7 +522,7 @@ pub fn lane(frame: &mut Frame, camera: &Camera, path: &[Point], lane: Lane) {
     frame.ribbon(
         camera,
         &points,
-        Width::World(cut.width),
+        Width::Pixels((cut.width * camera.zoom * SCALE).max(THINNEST_RIBBON)),
         color,
         NONE,
         Some(Dash {
