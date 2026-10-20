@@ -28,7 +28,9 @@ limits that must not drift, and one script writes to GitHub.
 - CI runs `code_report.py --self-test` and `compare_png.py --self-test`; keep those fixtures passing.
 
 ## ANTI-PATTERNS
-- Never loosen the parity limits. Line-dominant views already use `--max-mean 0.5 --max-share 1.0`; no new view may.
+- Never loosen the parity limits. `compare_png.py` has no per-view selection: pass the line-dominant limit by hand,
+  `--max-mean 0.5 --max-share 1.0`, for the views `docs/VIEW_CONVENTIONS.md` lists as line-dominant (city, ripple,
+  cores, cells, globe). No new view may use it.
 - Do not weaken existing smoke-test assertions.
 - Do not add a pip or crate dependency to a script.
 - Do not run `setup_project.py` unprompted: it writes to GitHub (use `--dry-run` to inspect).
@@ -37,6 +39,7 @@ limits that must not drift, and one script writes to GitHub.
 ## COMMANDS
 - `python3 scripts/smoke_terminal.py [binary]`
 - `python3 scripts/compare_png.py cpu.png gpu.png`
+- `python3 scripts/compare_png.py --max-mean 0.5 --max-share 1.0 cpu.png gpu.png` (line-dominant views only)
 - `python3 scripts/compare_png.py --self-test`
 - `python3 scripts/code_report.py [--check|--self-test]`
 - `python3 scripts/check_wiki.py`
