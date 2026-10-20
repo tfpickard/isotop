@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 151 | 95,655 | 2,113 | 5,931 |
+| Rust | 151 | 95,672 | 2,116 | 5,932 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 22,919 | 833 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 82 | 0 | 14,328 | 5,054 |
 | Plain Text | 11 | 0 | 333 | 0 |
-| **Total** | **459** | **158,815** | **17,644** | **14,109** |
+| **Total** | **459** | **158,832** | **17,647** | **14,110** |
 
 ## Rust by module
 
@@ -24,7 +24,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | File | Production | Test |
 |:--|--:|--:|
 | `src/model.rs` | 3,402 | 4,454 |
-| `src/necropolis.rs` | 2,027 | 688 |
+| `src/necropolis.rs` | 2,027 | 705 |
 | `src/hr.rs` | 1,725 | 1,158 |
 | `src/arbor.rs` | 1,669 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
@@ -174,7 +174,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **56,786** | **38,894** |
+| **Total** | **56,786** | **38,911** |
 
 ## Largest files
 
@@ -185,7 +185,7 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | `src/model.rs` | 9,263 | over limit |
 | `src/hr.rs` | 3,365 | over limit |
 | `src/arbor.rs` | 3,231 | over limit |
-| `src/necropolis.rs` | 3,053 | over limit |
+| `src/necropolis.rs` | 3,074 | over limit |
 | `src/hive.rs` | 3,040 | over limit |
 | `src/platform/macos/mod.rs` | 2,467 | over limit |
 | `src/murmuration.rs` | 1,974 | over limit |
@@ -212,7 +212,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,306 |
+| `#[test]` functions | 1,307 |
 | Views in the registry | 24 |
 | Views with a README mapping table | 24 of 24 |
 | Direct crate dependencies | 10 |

@@ -1683,7 +1683,8 @@ fn moon_center(
     let across = in_window(&sky, latitude)? as f32 / SKY_WINDOW as f32;
     let margin = radius * 2.0;
     let horizon = height * SKY_HORIZON;
-    let top = radius * 1.5;
+    // Never below the horizon line, or a wide shallow frame would turn altitude upside down.
+    let top = (radius * 1.5).min(horizon);
     Some([
         margin + (across * 0.5 + 0.5) * (width - 2.0 * margin),
         horizon - sky.altitude as f32 / 90.0 * (horizon - top),
@@ -1697,7 +1698,8 @@ fn moon_center(
 /// waxes. Below the horizon, or outside the sky window, it is not drawn.
 fn draw_moon(frame: &mut Frame, moon: &Moon, observer: Option<(f64, f64)>, depth: f32) {
     let (width, height) = (frame.width as f32, frame.height as f32);
-    let radius = (width * 0.028).max(4.0);
+    // A wide shallow frame (a terminal of few rows) gets a moon its strip of sky can hold.
+    let radius = (width * 0.028).max(4.0).min(height * 0.06);
     let placed = moon.sky.zip(observer.map(|(latitude, _)| latitude));
     let Some(center) = moon_center(placed, width, height, radius) else {
         return;
@@ -2781,6 +2783,25 @@ mod tests {
         assert!((north[0] - 800.0).abs() < 1.0, "{north:?}");
         assert!(center(30.0, 60.0, -34.0).unwrap()[0] > north[0]);
         assert!(center(30.0, 300.0, -34.0).unwrap()[0] < north[0]);
+    }
+
+    #[test]
+    fn a_higher_moon_is_never_lower_in_a_wide_shallow_frame() {
+        // A 120 by 12 terminal with the default panel is a frame of 960 by 112 pixels.
+        let sky = |altitude| moon_at(altitude, 180.0, 0.0).sky.unwrap();
+        let at = |altitude| moon_center(Some((sky(altitude), 52.0)), 960.0, 112.0, 26.9).unwrap();
+        let heights: Vec<f32> = [0.0, 10.0, 30.0, 60.0, 90.0]
+            .iter()
+            .map(|&altitude| at(altitude)[1])
+            .collect();
+        assert!(
+            heights.windows(2).all(|pair| pair[1] <= pair[0]),
+            "{heights:?}"
+        );
+        assert!(
+            heights[4] >= 0.0 && heights[0] <= 0.11 * 112.0 + 0.001,
+            "{heights:?}"
+        );
     }
 
     #[test]
