@@ -748,17 +748,27 @@ pub struct Armorial {
     houses: usize,
 }
 impl Armorial {
+    /// Seats new banners and repaints changed ones once per sample, then gives every admitted
+    /// banner this frame's eased CPU and memory, which change between samples.
     fn refresh(&mut self, snapshot: &Snapshot, admitted: &[&Process], time: f32) {
         if self.sample.is_some_and(|sample| snapshot.elapsed < sample) {
             *self = Self::default();
         }
         self.banners
             .retain(|_, banner| banner.exited.is_none_or(|exit| time - exit < 1.0));
-        if self.sample == Some(snapshot.elapsed)
-            && admitted.iter().all(|p| self.banners.contains_key(&p.id))
+        if self.sample != Some(snapshot.elapsed)
+            || !admitted.iter().all(|p| self.banners.contains_key(&p.id))
         {
-            return;
+            self.seat(snapshot, admitted, time);
         }
+        for process in admitted {
+            if let Some(banner) = self.banners.get_mut(&process.id) {
+                banner.process.cpu = process.cpu;
+                banner.process.memory = process.memory;
+            }
+        }
+    }
+    fn seat(&mut self, snapshot: &Snapshot, admitted: &[&Process], time: f32) {
         let initial = self.sample.is_none();
         self.sample = Some(snapshot.elapsed);
         let alive: HashSet<Identity> = snapshot.processes.iter().map(|p| p.id).collect();
@@ -1411,6 +1421,28 @@ mod tests {
             {
                 assert_eq!(*anchor, banner.anchor());
             }
+        }
+    }
+    #[test]
+    fn banners_take_the_eased_resources_of_every_frame_between_samples() {
+        let snapshot = crate::model::demo(12.0, 64);
+        let mut module = Armorial::default();
+        module.refresh(
+            &snapshot,
+            &top_n(&snapshot.processes, CAP, |p| p.memory as f64),
+            12.0,
+        );
+        let mut eased = snapshot.processes.clone();
+        for process in &mut eased {
+            process.memory = process.memory * 2 + 1;
+            process.cpu += 7.0;
+        }
+        let admitted = top_n(&eased, CAP, |p| p.memory as f64);
+        module.refresh(&snapshot, &admitted, 12.1);
+        for process in admitted {
+            let banner = &module.banners[&process.id];
+            assert_eq!(banner.process.memory, process.memory);
+            assert_eq!(banner.process.cpu, process.cpu);
         }
     }
     #[test]
