@@ -812,6 +812,11 @@ impl ViewModule for Lights {
         self.last = Some(snapshot.elapsed);
     }
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
+        // The app draws its startup sample without recording it, so the first frame seeds the
+        // sample diff; otherwise the births and exits up to the next sample would be missed.
+        if self.last.is_none() {
+            self.record(snapshot, stage.time);
+        }
         let rewound: Seating;
         let placement = if self.last.is_some_and(|last| snapshot.elapsed < last) {
             // A rewound sample is seated on a copy, so the seats and headlands kept for the
@@ -1295,6 +1300,24 @@ mod tests {
                 around > radius && gap + radius <= around
             }));
         }
+    }
+    #[test]
+    fn the_startup_sample_seeds_the_sample_diff() {
+        let sample = |elapsed: f64, pids: &[u32]| Snapshot {
+            elapsed,
+            processes: pids.iter().map(|&pid| process(pid, 1)).collect(),
+            ..Snapshot::default()
+        };
+        // The app draws its startup sample before it records any, as `App::new` does.
+        let startup = sample(1.0, &[10, 20]);
+        let mut scene = Scene::with_rows(ROWS);
+        let camera = Camera::default();
+        scene.render(&RenderInput::small(&startup, View::at(0), &camera, 1.0));
+        let second = sample(2.0, &[20, 30]);
+        scene.record(&second, 2.0);
+        let legend = scene.legend(View::at(0), &second);
+        assert!(legend.contains("p10 Fl(1)W.30.0s extinguished"), "{legend}");
+        assert!(legend.contains("p30 Fl(1)W.30.0s established"), "{legend}");
     }
     #[test]
     fn the_coast_keeps_its_direction_at_a_top_down_pitch() {
