@@ -436,11 +436,16 @@ struct Exit {
     position: Point,
     light: Characteristic,
 }
+/// Where every sampled process stands: its headland and its seat on it.
+#[derive(Clone, Default)]
+struct Seating {
+    seats: Seats,
+    houses: BTreeMap<String, usize>,
+}
 /// Every process is seated, including processes hidden by memory admission, focus or limit.
 #[derive(Default)]
 pub struct Lights {
-    seats: Seats,
-    houses: BTreeMap<String, usize>,
+    placement: Seating,
     seen: HashMap<Identity, (Process, Point)>,
     born: HashMap<Identity, f64>,
     exits: VecDeque<Exit>,
@@ -450,7 +455,7 @@ pub struct Lights {
     collapsed: usize,
     weather: Option<Field>,
 }
-impl Lights {
+impl Seating {
     fn seat(&mut self, snapshot: &Snapshot) {
         self.seats.assign(
             snapshot
@@ -484,6 +489,8 @@ impl Lights {
             0.8,
         )
     }
+}
+impl Lights {
     fn notice(&mut self, process: &Process, at: f64, event: &str) {
         self.notices.push_back(Notice {
             at,
@@ -494,45 +501,51 @@ impl Lights {
             ),
         });
     }
-    fn coast(&mut self, stage: &mut Stage, snapshot: &Snapshot, lamps: &[Lamp<'_>]) {
-        let live: BTreeSet<&str> = snapshot.processes.iter().map(house).collect();
-        let width = live
-            .iter()
-            .map(|name| headland(self.houses[*name]).0.abs() + 8.0)
-            .fold(22.0, f32::max);
-        let far = live
-            .iter()
-            .map(|name| {
-                headland(self.houses[*name]).1
-                    - self.seats.span(name).div_ceil(4) as f32 * 2.8
-                    - 3.0
-            })
-            .fold(-18.0, f32::min);
-        // Reserve foreground rather than empty sky; admission never changes this envelope.
-        stage.bounds.extend([
-            world(-width, far, 18.0),
-            world(width, far, 18.0),
-            world(-width, 95.0, -0.1),
-            world(width, 95.0, -0.1),
-        ]);
-        let field = self.weather.get_or_insert_with(|| Field::new(SALT, 2, 2));
-        night(stage, field, [width, far], lamps, fog(snapshot));
-        for name in live {
-            let (across, along) = headland(self.houses[name]);
-            let depth = self.seats.span(name).div_ceil(4).max(2) as f32 * 2.8;
-            let shore = |u: f32| world(u, -5.5 - 0.002 * u * u + 1.5 * (u * 0.42).sin(), 0.10);
-            for side in 0..8 {
-                let a = across - 6.5 + side as f32 * 1.625;
-                stage
-                    .frame
-                    .hairline(stage.camera, shore(a), shore(a + 1.625), [34, 51, 62], 0.8);
-            }
-            stage.titles.push(Title {
-                at: world(across, along - depth * 0.5, 0.0),
-                reach: 5.5,
-                text: label_name(name).into_owned(),
-            });
+}
+fn coast(
+    stage: &mut Stage,
+    snapshot: &Snapshot,
+    lamps: &[Lamp<'_>],
+    placement: &Seating,
+    weather: &mut Option<Field>,
+) {
+    let live: BTreeSet<&str> = snapshot.processes.iter().map(house).collect();
+    let width = live
+        .iter()
+        .map(|name| headland(placement.houses[*name]).0.abs() + 8.0)
+        .fold(22.0, f32::max);
+    let far = live
+        .iter()
+        .map(|name| {
+            headland(placement.houses[*name]).1
+                - placement.seats.span(name).div_ceil(4) as f32 * 2.8
+                - 3.0
+        })
+        .fold(-18.0, f32::min);
+    // Reserve foreground rather than empty sky; admission never changes this envelope.
+    stage.bounds.extend([
+        world(-width, far, 18.0),
+        world(width, far, 18.0),
+        world(-width, 95.0, -0.1),
+        world(width, 95.0, -0.1),
+    ]);
+    let field = weather.get_or_insert_with(|| Field::new(SALT, 2, 2));
+    night(stage, field, [width, far], lamps, fog(snapshot));
+    for name in live {
+        let (across, along) = headland(placement.houses[name]);
+        let depth = placement.seats.span(name).div_ceil(4).max(2) as f32 * 2.8;
+        let shore = |u: f32| world(u, -5.5 - 0.002 * u * u + 1.5 * (u * 0.42).sin(), 0.10);
+        for side in 0..8 {
+            let a = across - 6.5 + side as f32 * 1.625;
+            stage
+                .frame
+                .hairline(stage.camera, shore(a), shore(a + 1.625), [34, 51, 62], 0.8);
         }
+        stage.titles.push(Title {
+            at: world(across, along - depth * 0.5, 0.0),
+            reach: 5.5,
+            text: label_name(name).into_owned(),
+        });
     }
 }
 /// An eight-sided tapered, banded tower and its pickable lantern room.
@@ -711,7 +724,7 @@ impl ViewModule for Lights {
             });
             self.notice(&process, snapshot.elapsed, "extinguished");
         }
-        self.seat(snapshot);
+        self.placement.seat(snapshot);
         let mut processes: Vec<&Process> = snapshot.processes.iter().collect();
         processes.sort_by_key(|p| p.id);
         for process in processes {
@@ -719,8 +732,10 @@ impl ViewModule for Lights {
                 self.born.insert(process.id, snapshot.elapsed);
                 self.notice(process, snapshot.elapsed, "established");
             }
-            self.seen
-                .insert(process.id, (process.clone(), self.position(process)));
+            self.seen.insert(
+                process.id,
+                (process.clone(), self.placement.position(process)),
+            );
         }
         self.born.retain(|id, _| alive.contains(id));
         self.exits
@@ -736,7 +751,18 @@ impl ViewModule for Lights {
         self.last = Some(snapshot.elapsed);
     }
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
-        self.seat(snapshot);
+        let rewound: Seating;
+        let placement = if self.last.is_some_and(|last| snapshot.elapsed < last) {
+            // A rewound sample is seated on a copy, so the seats and headlands kept for the
+            // newest sample are not released and handed out again when time resumes.
+            let mut copy = self.placement.clone();
+            copy.seat(snapshot);
+            rewound = copy;
+            &rewound
+        } else {
+            self.placement.seat(snapshot);
+            &self.placement
+        };
         let time = f64::from(stage.time);
         let fading = self
             .exits
@@ -794,14 +820,14 @@ impl ViewModule for Lights {
                 Lamp {
                     process,
                     pick: index as u32,
-                    position: self.position(process),
+                    position: placement.position(process),
                     light,
                     range: luminous_range(process, snapshot),
                     strength: waveform(time, light, phase(process.id)) * established,
                 }
             })
             .collect();
-        self.coast(stage, snapshot, &lamps);
+        coast(stage, snapshot, &lamps, placement, &mut self.weather);
         for lamp in &lamps {
             let Lamp {
                 process,
@@ -1012,11 +1038,11 @@ mod tests {
     fn lights_keep_their_seats_when_cpu_memory_and_population_change() {
         let mut snapshot = crate::model::demo(12.0, 192);
         let mut lights = Lights::default();
-        lights.seat(&snapshot);
+        lights.placement.seat(&snapshot);
         let before: HashMap<_, _> = snapshot
             .processes
             .iter()
-            .map(|p| (p.id, lights.position(p)))
+            .map(|p| (p.id, lights.placement.position(p)))
             .collect();
         for process in &mut snapshot.processes {
             process.cpu *= 4.0;
@@ -1024,10 +1050,10 @@ mod tests {
         }
         snapshot.processes.remove(3);
         snapshot.processes.push(process(9999, 1));
-        lights.seat(&snapshot);
+        lights.placement.seat(&snapshot);
         for process in &snapshot.processes {
             if let Some(position) = before.get(&process.id) {
-                assert_eq!(*position, lights.position(process));
+                assert_eq!(*position, lights.placement.position(process));
             }
         }
         // These shared checks compare only identities visible before and after hiding.
@@ -1103,7 +1129,7 @@ mod tests {
         lights.record(&snapshot, 2.0);
         lights.record(&snapshot, 2.0);
         assert_eq!(lights.notices.len(), 1);
-        let old = lights.position(&snapshot.processes[1]);
+        let old = lights.placement.position(&snapshot.processes[1]);
         snapshot.elapsed = 3.0;
         snapshot.processes.pop();
         lights.record(&snapshot, 3.0);
@@ -1135,5 +1161,29 @@ mod tests {
         );
         assert!(selected.contains_key(&smallest));
         assert_eq!(selected.len(), CAP);
+    }
+    #[test]
+    fn drawing_a_rewound_sample_leaves_the_seats_of_the_newest_alone() {
+        let sample = |elapsed: f64, pids: &[u32]| Snapshot {
+            elapsed,
+            processes: pids.iter().map(|&pid| process(pid, 1)).collect(),
+            ..Snapshot::default()
+        };
+        let older = sample(1.0, &[10, 30]);
+        let newest = sample(2.0, &[30, 40]);
+        let mut scene = Scene::with_rows(ROWS);
+        scene.record(&older, 1.0);
+        scene.record(&newest, 2.0);
+        let view = View::at(0);
+        let before = hiding::place(&mut scene, &newest, view, 2.0, 4096, None, None);
+        hiding::place(&mut scene, &older, view, 1.0, 4096, None, None);
+        // A newcomer with a smaller identity than 40 would take 40's seat had the rewound
+        // frame given that seat back to 10.
+        let next = sample(3.0, &[20, 30, 40]);
+        scene.record(&next, 3.0);
+        let after = hiding::place(&mut scene, &next, view, 3.0, 4096, None, None);
+        for (id, position) in &before {
+            assert_eq!(after[id], *position);
+        }
     }
 }
