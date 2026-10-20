@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 76 | 75,310 | 1,695 | 4,282 |
+| Rust | 76 | 75,557 | 1,716 | 4,282 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 22,917 | 832 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 83 | 0 | 14,143 | 5,045 |
 | Plain Text | 7 | 0 | 307 | 0 |
-| **Total** | **381** | **138,468** | **17,014** | **12,451** |
+| **Total** | **381** | **138,715** | **17,035** | **12,451** |
 
 ## Rust by module
 
@@ -36,8 +36,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/tesseract.rs` | 1,053 | 561 |
 | `src/gpu.rs` | 1,007 | 377 |
 | `src/ptolemy.rs` | 983 | 421 |
+| `src/lights.rs` | 929 | 388 |
 | `src/murmuration.rs` | 925 | 782 |
-| `src/lights.rs` | 865 | 205 |
 | `src/horizon/disk.rs` | 796 | 274 |
 | `src/switchboard/lines.rs` | 694 | 621 |
 | `src/switchboard.rs` | 692 | 352 |
@@ -99,7 +99,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 33 | 40 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 570 |
-| **Total** | **43,861** | **31,467** |
+| **Total** | **43,925** | **31,650** |
 
 ## Largest files
 
@@ -137,7 +137,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 984 |
+| `#[test]` functions | 992 |
 | Views in the registry | 22 |
 | Views with a README mapping table | 12 of 22 |
 | Direct crate dependencies | 10 |
