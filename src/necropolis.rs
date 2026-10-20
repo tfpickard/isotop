@@ -14,6 +14,7 @@ use std::f32::consts::PI;
 
 use crate::geometry::{dot, normalize};
 use crate::layout::Seats;
+use crate::lunar::{Moon, Sky, wrap_degrees};
 use crate::model::{Identity, Kind, Process, Snapshot, bounded};
 use crate::palette::{STATE_ZOMBIE, mix, stone_color, tint};
 use crate::platform::{Cause, ExitRecord, LifeKind, LifeSource, Source};
@@ -103,43 +104,24 @@ const OAK: Color = [22, 22, 30];
 /// Moonlight, from high on the right behind the viewer's shoulder.
 const LIGHT: Point = [0.55, -0.35, 0.76];
 
-/// New moon of 2000-01-06 18:14 UTC, in seconds since the Unix epoch.
-const NEW_MOON: f64 = 947_182_440.0;
-/// The synodic month in days.
-pub const SYNODIC_DAYS: f64 = 29.530_588_853;
+/// How far either side of the direction the cemetery faces the sky reaches, in degrees of
+/// azimuth. The moon rises and sets up to 30 degrees off east and west at mid-latitudes.
+const SKY_WINDOW: f64 = 125.0;
+/// The altitude, in degrees, the moon's centre must reach to be drawn: its disc has half a
+/// degree across and the air lifts it by about as much at the horizon.
+const HORIZON: f64 = -0.5;
 
-/// The moon's age in days since the last new moon at `wall` seconds since the Unix epoch.
-pub fn moon_age(wall: f64) -> f64 {
-    ((wall - NEW_MOON) / 86400.0).rem_euclid(SYNODIC_DAYS)
+/// The azimuth the cemetery faces, in degrees clockwise from north: towards the equator, where
+/// the sun and the moon cross the sky.
+fn facing(latitude: f64) -> f64 {
+    if latitude < 0.0 { 0.0 } else { 180.0 }
 }
 
-/// The lit fraction of the moon's disc at `age` days.
-pub fn moon_lit(age: f64) -> f64 {
-    (1.0 - (std::f64::consts::TAU * age / SYNODIC_DAYS).cos()) / 2.0
-}
-
-/// The name of the phase at `age` days.
-fn moon_phase(age: f64) -> &'static str {
-    let lit = moon_lit(age);
-    let waxing = age < SYNODIC_DAYS / 2.0;
-    if lit < 0.01 {
-        "new moon"
-    } else if lit > 0.99 {
-        "full moon"
-    } else if (lit - 0.5).abs() < 0.02 {
-        if waxing {
-            "first quarter"
-        } else {
-            "last quarter"
-        }
-    } else {
-        match (waxing, lit < 0.5) {
-            (true, true) => "waxing crescent",
-            (true, false) => "waxing gibbous",
-            (false, true) => "waning crescent",
-            (false, false) => "waning gibbous",
-        }
-    }
+/// Where the moon is against the view's sky window, as degrees of azimuth right of the middle,
+/// or `None` when it is below the horizon or out of the window.
+fn in_window(sky: &Sky, latitude: f64) -> Option<f64> {
+    let across = wrap_degrees(sky.azimuth - facing(latitude));
+    (sky.altitude >= HORIZON && across.abs() <= SKY_WINDOW).then_some(across)
 }
 
 /// A lifetime as the epitaph says it: milliseconds under a second, tenths of a second under a
@@ -1680,15 +1662,55 @@ impl Necropolis {
     }
 }
 
-/// Draws the moon in screen space at the top right, its lit part bounded by the limb and an
-/// elliptical terminator, with a glow, behind everything at `depth`.
-fn draw_moon(frame: &mut Frame, wall: f64, depth: f32) {
-    let age = moon_age(wall);
-    let lit = moon_lit(age) as f32;
-    let waxing = age < SYNODIC_DAYS / 2.0;
+/// Where the sky window's horizon is on the frame, as a fraction of its height from the top.
+/// The camera looks down on the cemetery, which fills the frame below the strip of sky along its
+/// top edge, so the moon travels in that strip: a low moon is a little lower, never behind the
+/// ground.
+const SKY_HORIZON: f32 = 0.11;
+
+/// Where the moon's centre is on a frame of `width` by `height` pixels, with a disc of `radius`
+/// pixels: left to right across the sky window by azimuth, and from the horizon line up to the
+/// top of the strip by altitude. Without an observer it sits in the top right corner.
+fn moon_center(
+    placed: Option<(Sky, f64)>,
+    width: f32,
+    height: f32,
+    radius: f32,
+) -> Option<[f32; 2]> {
+    let Some((sky, latitude)) = placed else {
+        return Some([width - radius * 3.2, height * 0.04 + radius * 2.2]);
+    };
+    let across = in_window(&sky, latitude)? as f32 / SKY_WINDOW as f32;
+    let margin = radius * 2.0;
+    let horizon = height * SKY_HORIZON;
+    // Never below the horizon line, or a wide shallow frame would turn altitude upside down.
+    let top = (radius * 1.5).min(horizon);
+    Some([
+        margin + (across * 0.5 + 0.5) * (width - 2.0 * margin),
+        horizon - sky.altitude as f32 / 90.0 * (horizon - top),
+    ])
+}
+
+/// Draws the moon in screen space, its lit part bounded by the limb and an elliptical
+/// terminator, with a glow, behind everything at `depth`. With an `observer` (latitude and
+/// longitude in degrees) it stands where it is in the sky and its lit side faces the sun as
+/// seen from there; without one it stays in the top right corner, lit on the right while it
+/// waxes. Below the horizon, or outside the sky window, it is not drawn.
+fn draw_moon(frame: &mut Frame, moon: &Moon, observer: Option<(f64, f64)>, depth: f32) {
     let (width, height) = (frame.width as f32, frame.height as f32);
-    let radius = (width * 0.028).max(4.0);
-    let center = [width - radius * 3.2, height * 0.04 + radius * 2.2];
+    // A wide shallow frame (a terminal of few rows) gets a moon its strip of sky can hold.
+    let radius = (width * 0.028).max(4.0).min(height * 0.06);
+    let placed = moon.sky.zip(observer.map(|(latitude, _)| latitude));
+    let Some(center) = moon_center(placed, width, height, radius) else {
+        return;
+    };
+    // The unit vector from the centre to the middle of the lit limb, on the screen (y down).
+    let toward = match placed {
+        Some((sky, _)) => [-sky.limb.sin() as f32, -sky.limb.cos() as f32],
+        None if moon.waxing => [1.0, 0.0],
+        None => [-1.0, 0.0],
+    };
+    let lit = moon.lit as f32;
     frame.items.push(Item::Glow {
         center,
         radius: radius * 3.5,
@@ -1714,10 +1736,12 @@ fn draw_moon(frame: &mut Frame, wall: f64, depth: f32) {
             NONE,
         ));
     }
-    // The terminator's half-width at each height is k times the limb's: from the limb (new)
-    // through the centre (quarter) to the far limb (full).
+    // In the moon's own frame u runs towards the lit limb and v across it. The terminator's
+    // half-width at each height is k times the limb's: from the limb (new) through the centre
+    // (quarter) to the far limb (full).
     let k = 1.0 - 2.0 * lit;
     let lit_depth = depth + 0.001;
+    let across = [-toward[1], toward[0]];
     for row in 0..STEPS {
         let (v0, v1) = (
             -1.0 + 2.0 * row as f32 / STEPS as f32,
@@ -1725,14 +1749,16 @@ fn draw_moon(frame: &mut Frame, wall: f64, depth: f32) {
         );
         let span = |v: f32| {
             let limb = (1.0 - v * v).max(0.0).sqrt();
-            if waxing {
-                (k * limb, limb)
-            } else {
-                (-limb, -k * limb)
-            }
+            (k * limb, limb)
         };
         let (a, b) = (span(v0), span(v1));
-        let at = |u: f32, v: f32| [center[0] + radius * u, center[1] + radius * v, lit_depth];
+        let at = |u: f32, v: f32| {
+            [
+                center[0] + radius * (u * toward[0] + v * across[0]),
+                center[1] + radius * (u * toward[1] + v * across[1]),
+                lit_depth,
+            ]
+        };
         let quad = [at(a.0, v0), at(a.1, v0), at(b.1, v1), at(b.0, v1)];
         frame
             .items
@@ -2083,8 +2109,40 @@ fn pit_y(seat: usize) -> f32 {
     ROW_LEFT - 0.8 - seat as f32 * 2.2
 }
 
+/// The moon at `snapshot`'s wall clock (`fallback` when it has none) as seen from its home, and
+/// the home's latitude and longitude in degrees.
+fn moon_over(snapshot: &Snapshot, fallback: f64) -> (Moon, Option<(f64, f64)>) {
+    let wall = if snapshot.wall > 0.0 {
+        snapshot.wall
+    } else {
+        fallback
+    };
+    let observer = snapshot
+        .home
+        .as_ref()
+        .map(|home| (f64::from(home.latitude), f64::from(home.longitude)));
+    (Moon::at(wall, observer), observer)
+}
+
+/// The legend's words for where the moon is: nothing without an observer.
+fn where_is(moon: &Moon, observer: Option<(f64, f64)>) -> String {
+    let (Some(sky), Some((latitude, _))) = (moon.sky, observer) else {
+        return String::new();
+    };
+    if sky.altitude < HORIZON {
+        ", below the horizon".to_owned()
+    } else if in_window(&sky, latitude).is_none() {
+        format!(
+            ", {:.0}° up at {:.0}°, out of view",
+            sky.altitude, sky.azimuth
+        )
+    } else {
+        format!(", {:.0}° up at {:.0}°", sky.altitude, sky.azimuth)
+    }
+}
+
 /// Draws the stars and the moon at `depth`, behind everything.
-fn draw_sky(frame: &mut Frame, wall: f64, depth: f32) {
+fn draw_sky(frame: &mut Frame, moon: &Moon, observer: Option<(f64, f64)>, depth: f32) {
     let (width, height) = (frame.width, frame.height);
     for index in 0..160_u32 {
         let hash = crate::simulation::hash::knuth(index.wrapping_mul(2_654_435_761) ^ 0x6e63);
@@ -2096,7 +2154,7 @@ fn draw_sky(frame: &mut Frame, wall: f64, depth: f32) {
             .push(Item::Star([x, y], [bright, bright, bright + 20]));
     }
 
-    draw_moon(frame, wall, depth);
+    draw_moon(frame, moon, observer, depth);
 }
 
 impl ViewModule for Necropolis {
@@ -2119,7 +2177,8 @@ impl ViewModule for Necropolis {
         let fog = Fog::new(stage.frame, camera, back, snapshot.pressure[1], stage.time);
         stage.bounds.extend(corners);
         stage.bounds.extend(corners.map(|[x, y, _]| [x, y, 2.5]));
-        draw_sky(stage.frame, snapshot.wall, fog.far - 1.0);
+        let (moon, observer) = moon_over(snapshot, self.wall);
+        draw_sky(stage.frame, &moon, observer, fog.far - 1.0);
         let zombies: Vec<(usize, &&Process)> = processes
             .iter()
             .enumerate()
@@ -2164,12 +2223,7 @@ impl ViewModule for Necropolis {
         } else {
             sources.join(" + ")
         };
-        let wall = if snapshot.wall > 0.0 {
-            snapshot.wall
-        } else {
-            self.wall
-        };
-        let age = moon_age(wall);
+        let (moon, observer) = moon_over(snapshot, self.wall);
         let mausoleums = self.mausoleums.len();
         let notes: String = [
             missing_note(
@@ -2184,10 +2238,11 @@ impl ViewModule for Necropolis {
         .flatten()
         .collect();
         format!(
-            " row = minute of death, newest in front | height = lifetime CPU (log) | width = peak RSS | tint = kind | pink = zombie | fog = memory pressure {:.0}% | deaths: {sources} | moon: {} {:.0}% lit | {} graves | {mausoleums} mausoleum{} | {} deaths/min{notes}",
+            " row = minute of death, newest in front | height = lifetime CPU (log) | width = peak RSS | tint = kind | pink = zombie | fog = memory pressure {:.0}% | deaths: {sources} | moon: {} {:.0}% lit{} | {} graves | {mausoleums} mausoleum{} | {} deaths/min{notes}",
             snapshot.pressure[1],
-            moon_phase(age),
-            moon_lit(age) * 100.0,
+            moon.phase(),
+            moon.lit * 100.0,
+            where_is(&moon, observer),
             self.standing(),
             if mausoleums == 1 { "" } else { "s" },
             self.per_minute(),
@@ -2694,30 +2749,143 @@ mod tests {
         assert_eq!(card.lines[0], "unit stopped, 4 graves");
     }
 
+    /// A moon at `altitude` and `azimuth` (degrees) with its bright limb at `limb`.
+    fn moon_at(altitude: f64, azimuth: f64, limb: f64) -> Moon {
+        Moon {
+            lit: 0.5,
+            waxing: true,
+            sky: Some(Sky {
+                altitude,
+                azimuth,
+                limb,
+            }),
+        }
+    }
+
+    fn center(altitude: f64, azimuth: f64, latitude: f64) -> Option<[f32; 2]> {
+        let sky = moon_at(altitude, azimuth, 0.0).sky.unwrap();
+        moon_center(Some((sky, latitude)), 1600.0, 900.0, 45.0)
+    }
+
     #[test]
-    fn the_moon_phase_matches_known_new_and_full_moons() {
-        // New moon 2024-01-11 11:57 UTC, full moon 2024-01-25 17:54 UTC, first quarter
-        // 2024-01-18 03:53 UTC, new moon 2026-10-10 15:50 UTC.
-        let new = moon_age(1_704_974_220.0);
-        assert!(!(0.5..SYNODIC_DAYS - 0.5).contains(&new), "{new}");
-        assert!(moon_lit(new) < 0.01);
-        let full = moon_age(1_706_205_240.0);
-        assert!((full - SYNODIC_DAYS / 2.0).abs() < 0.5, "{full}");
-        assert!(moon_lit(full) > 0.99);
-        assert_eq!(moon_phase(full), "full moon");
-        let quarter = moon_age(1_705_549_980.0);
+    fn the_moon_crosses_the_sky_from_the_east_on_the_left_to_the_west_on_the_right() {
+        let rising = center(5.0, 100.0, 52.0).unwrap();
+        let south = center(5.0, 180.0, 52.0).unwrap();
+        let setting = center(5.0, 260.0, 52.0).unwrap();
+        assert!(rising[0] < south[0] && south[0] < setting[0]);
+        assert!((south[0] - 800.0).abs() < 1.0, "{south:?}");
+        // Higher is nearer the top of the frame, and always above the ground's far corner.
+        let high = center(60.0, 180.0, 52.0).unwrap();
+        assert!(high[1] < south[1]);
+        assert!(south[1] < 0.15 * 900.0, "{south:?}");
+        // The southern hemisphere faces north, where azimuth grows towards the right.
+        let north = center(30.0, 0.0, -34.0).unwrap();
+        assert!((north[0] - 800.0).abs() < 1.0, "{north:?}");
+        assert!(center(30.0, 60.0, -34.0).unwrap()[0] > north[0]);
+        assert!(center(30.0, 300.0, -34.0).unwrap()[0] < north[0]);
+    }
+
+    #[test]
+    fn a_higher_moon_is_never_lower_in_a_wide_shallow_frame() {
+        // A 120 by 12 terminal with the default panel is a frame of 960 by 112 pixels.
+        let sky = |altitude| moon_at(altitude, 180.0, 0.0).sky.unwrap();
+        let at = |altitude| moon_center(Some((sky(altitude), 52.0)), 960.0, 112.0, 26.9).unwrap();
+        let heights: Vec<f32> = [0.0, 10.0, 30.0, 60.0, 90.0]
+            .iter()
+            .map(|&altitude| at(altitude)[1])
+            .collect();
         assert!(
-            (moon_lit(quarter) - 0.5).abs() < 0.12,
-            "{}",
-            moon_lit(quarter)
+            heights.windows(2).all(|pair| pair[1] <= pair[0]),
+            "{heights:?}"
         );
-        assert_eq!(moon_phase(quarter + 1.0), "waxing gibbous");
-        let demo = moon_age(DEMO_EPOCH);
         assert!(
-            (28.0..28.6).contains(&demo),
-            "the demo's night is the eve of a new moon: {demo}"
+            heights[4] >= 0.0 && heights[0] <= 0.11 * 112.0 + 0.001,
+            "{heights:?}"
         );
-        assert_eq!(moon_phase(demo), "waning crescent");
+    }
+
+    #[test]
+    fn the_moon_is_not_drawn_below_the_horizon_or_behind_the_viewer() {
+        assert!(center(-10.0, 180.0, 52.0).is_none());
+        assert!(center(30.0, 0.0, 52.0).is_none());
+        assert!(center(30.0, 180.0, -34.0).is_none());
+        assert!(center(30.0, 180.0, 52.0).is_some());
+        // Without an observer the moon keeps the top right corner.
+        let corner = moon_center(None, 1600.0, 900.0, 45.0).unwrap();
+        assert!(corner[0] > 1400.0 && corner[1] < 150.0, "{corner:?}");
+    }
+
+    #[test]
+    fn the_legend_says_where_the_moon_is() {
+        let at = |altitude, azimuth| where_is(&moon_at(altitude, azimuth, 0.0), Some((52.0, 5.0)));
+        assert_eq!(at(31.4, 112.0), ", 31° up at 112°");
+        assert_eq!(at(31.4, 0.0), ", 31° up at 0°, out of view");
+        assert_eq!(at(-12.0, 112.0), ", below the horizon");
+        assert_eq!(where_is(&moon_at(31.4, 112.0, 0.0), None), "");
+    }
+
+    /// The pixels of a 400 by 225 frame with only the moon drawn, or none of it for `None`.
+    fn moon_pixels(moon: Option<&Moon>, observer: Option<(f64, f64)>) -> Vec<u8> {
+        let sky = crate::render::Sky {
+            backdrop: crate::render::Backdrop::Space,
+            haze: [0.0; 3],
+            time: 0.0,
+        };
+        let mut frame = Frame::new(400, 225, sky, crate::render::Buffers::default());
+        frame.items.clear();
+        if let Some(moon) = moon {
+            draw_moon(&mut frame, moon, observer, 1.0);
+        }
+        frame.rasterize();
+        frame.pixels
+    }
+
+    /// How many pixels are lit by moonlight left or right of column `split`.
+    fn lit_pixels(pixels: &[u8], split: usize, left: bool) -> usize {
+        pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(index, pixel)| ((index % 400) < split) == left && pixel[0] > 200)
+            .count()
+    }
+
+    #[test]
+    fn the_lit_limb_faces_the_way_the_observer_sees_the_sun() {
+        let observer = Some((52.0, 5.0));
+        let quarter = |limb: f64| Moon {
+            lit: 0.5,
+            ..moon_at(40.0, 180.0, limb)
+        };
+        // A limb at three quarters of a turn is lit on the right, at a quarter turn on the left.
+        let right = moon_pixels(Some(&quarter(0.75 * std::f64::consts::TAU)), observer);
+        assert!(lit_pixels(&right, 200, false) > 4 * lit_pixels(&right, 200, true).max(1));
+        let left = moon_pixels(Some(&quarter(0.25 * std::f64::consts::TAU)), observer);
+        assert!(lit_pixels(&left, 200, true) > 4 * lit_pixels(&left, 200, false).max(1));
+        // Lit at the top, the disc has as much light on one side as the other.
+        let top = moon_pixels(Some(&quarter(0.0)), observer);
+        let (a, b) = (lit_pixels(&top, 200, true), lit_pixels(&top, 200, false));
+        assert!(a > 0 && a.abs_diff(b) <= a / 5 + 2, "{a} {b}");
+        // Without an observer the moon is in the corner, a waxing one lit on the right and a
+        // waning one on the left of its middle, at column 364.
+        let waxing = moon_pixels(Some(&moon_at(0.0, 0.0, 0.0)), None);
+        assert!(lit_pixels(&waxing, 364, false) > 0 && lit_pixels(&waxing, 364, true) == 0);
+        let waning = Moon {
+            waxing: false,
+            ..moon_at(0.0, 0.0, 0.0)
+        };
+        let waning = moon_pixels(Some(&waning), None);
+        assert!(lit_pixels(&waning, 364, true) > 0 && lit_pixels(&waning, 364, false) == 0);
+    }
+
+    #[test]
+    fn a_moon_below_the_horizon_draws_nothing() {
+        let observer = Some((52.0, 5.0));
+        let pixels = moon_pixels(Some(&moon_at(-20.0, 180.0, 0.0)), observer);
+        assert_eq!(pixels, moon_pixels(None, observer));
+        let up = moon_pixels(Some(&moon_at(20.0, 180.0, 0.0)), observer);
+        assert_ne!(up, moon_pixels(None, observer));
     }
 
     #[test]
@@ -2836,7 +3004,7 @@ mod tests {
         let snapshot = crate::demo_snapshot(row, 11.0, 12.0, 192);
         let legend = cemetery.legend(&snapshot);
         assert!(
-            legend.starts_with(" row = minute of death, newest in front | height = lifetime CPU (log) | width = peak RSS | tint = kind | pink = zombie | fog = memory pressure 18% | deaths: taskstats + proc connector + sample diff | moon: waning crescent 2% lit | "),
+            legend.starts_with(" row = minute of death, newest in front | height = lifetime CPU (log) | width = peak RSS | tint = kind | pink = zombie | fog = memory pressure 18% | deaths: taskstats + proc connector + sample diff | moon: new moon 0% lit, below the horizon | "),
             "{legend}"
         );
         assert!(legend.ends_with(" mausoleum | 35 deaths/min"), "{legend}");

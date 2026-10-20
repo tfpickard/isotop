@@ -40,6 +40,10 @@ pub type Lane = Option<Queue>;
 pub struct TubeRun {
     pub low: Identity,
     pub high: Identity,
+    /// How many Unix sockets join the pair: one tube is drawn for them all, but each is a
+    /// descriptor each end holds, which the flow rule counts as an outlet apiece. Where the pair
+    /// also has TCP sockets the count cannot be told apart and the tube counts one.
+    pub connections: u32,
     /// What `high` has not read of what `low` wrote, and the other way round.
     pub toward_high: Lane,
     pub toward_low: Lane,
@@ -124,7 +128,7 @@ impl Room {
                 || snapshot.link_traffic.contains_key(&(b, a))
         };
         let mut seen = BTreeSet::new();
-        for &(a, b, _) in &snapshot.links {
+        for &(a, b, sockets) in &snapshot.links {
             let (low, high) = (a.min(b), a.max(b));
             if low == high || !shown.contains(&low) || !shown.contains(&high) {
                 continue;
@@ -136,6 +140,11 @@ impl Room {
                 room.tubes.push(TubeRun {
                     low,
                     high,
+                    connections: if traffic(low, high) {
+                        1
+                    } else {
+                        sockets.max(1)
+                    },
                     toward_high: snapshot.unix_queues.get(&(high, low)).copied(),
                     toward_low: snapshot.unix_queues.get(&(low, high)).copied(),
                 });
@@ -190,7 +199,7 @@ impl Room {
     }
 
     /// The outflow of `process`, from its descriptors and the connections drawn for it.
-    fn outflow_of(&self, snapshot: &Snapshot, process: &Process) -> Outflow {
+    pub(super) fn outflow_of(&self, snapshot: &Snapshot, process: &Process) -> Outflow {
         let id = process.id;
         let mut sockets = Sockets {
             unix_pairs: self
@@ -198,6 +207,12 @@ impl Room {
                 .iter()
                 .filter(|tube| tube.low == id || tube.high == id)
                 .count() as u32,
+            unix_connections: self
+                .tubes
+                .iter()
+                .filter(|tube| tube.low == id || tube.high == id)
+                .map(|tube| tube.connections)
+                .sum(),
             ..Sockets::default()
         };
         for hose in self

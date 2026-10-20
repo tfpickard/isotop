@@ -927,6 +927,34 @@ pub static REGISTRY: &[ViewInfo] = &[
             Box::new(plumbing::Plumbing::default())
         })
     },
+    ViewInfo {
+        pitch: Some(0.35),
+        link_strokes: true,
+        flash: false,
+        demo: DemoOptions {
+            churn: true,
+            ..DemoOptions::NONE
+        },
+        ..ViewInfo::new("armorial", "ARMORIAL", Backdrop::Void, || {
+            Box::new(crate::armorial::Armorial::default())
+        })
+    },
+    ViewInfo {
+        link_strokes: true,
+        flash: false,
+        haze: false,
+        pitch: Some(LOWEST_PITCH),
+        demo: DemoOptions {
+            churn: true,
+            exact_cpu_time: true,
+            ..DemoOptions::NONE
+        },
+        // The view paints its own full-screen atmosphere and stars; the space backdrop's stars
+        // would sit behind it on the CPU and in front of it on the GPU.
+        ..ViewInfo::new("lights", "LIGHTS", Backdrop::Void, || {
+            Box::new(crate::lights::Lights::default())
+        })
+    },
 ];
 
 /// The registered view called `name`, for tests.
