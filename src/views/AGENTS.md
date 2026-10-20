@@ -11,7 +11,7 @@ Orbit, Flow, Ripple and City modules plus the shared `systems.rs`, declared priv
 | The module trait | `../views.rs` | `ViewModule` (defaults: `configure`, `record`, `key`, `inspector_line`, `card`, `state`, `anchors`) |
 | Harness contract | `../views.rs` | `Contract`, `Property`, `Unstable` |
 | Warm-up phases | `../views.rs` | `Warmup`, `Phase`, `When`, `SETTLE` |
-| View-local keys | `../views.rs` | `LOCAL_KEYS`, `ViewKey` |
+| View-local keys | `../keys.rs`, `../views.rs` | `LOCAL_KEYS` in `keys.rs`, `ViewKey` in `views.rs` |
 | Test fixtures for modules | `../views.rs` | `pub mod testing` (`Scene::with_rows` tables) |
 | Nested Keplerian systems | `systems.rs` | `layout`, `Galaxy`, `Tree`, `hubs`; shared by Orbit and Flow |
 | Orbit, Flow | `orbit.rs`, `flow.rs` | `Orbits`, `Wells` (each owns its own `Galaxy`) |
@@ -23,7 +23,7 @@ Orbit, Flow, Ripple and City modules plus the shared `systems.rs`, declared priv
   `systems.rs` is layout code, not a view: no row, no `ViewModule`.
 - Rows use struct-update style and name only the options they turn on:
   `ViewInfo { links: LinkRule::All, ..ViewInfo::new(name, title, backdrop, || Box::new(..)) }`.
-- `LOCAL_KEYS` is `"bijkmopuxyz,.;"`; every other key is global and none reaches a view while a search is open.
+- `keys::LOCAL_KEYS` is `"bijkmopuxyz,.;"`; every other key is global and none reaches a view while a search is open.
 - A new view still gets a root file-table row; `src/views/` files are listed there as `views/<name>.rs`.
 - Orbit and Flow share layout code but never state: switching views must not show wells where Orbit turned its systems.
 - Body placement inside a system is not yet stable under memory and population changes (issue 142).

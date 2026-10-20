@@ -5,8 +5,6 @@ isotop is a process visualizer for the terminal on Linux and macOS, written in R
 frames through the Kitty graphics protocol. The primary terminal is Ghostty; Kitty also works.
 The README covers usage. This file covers how to work on the code.
 
-Generated: 2026-10-13 | Commit: 3dde589 | Branch: main
-
 ## Pipeline
 
 1. **Sample** (`model.rs`, `platform/`). `Collector::sample` reads the operating system through
@@ -248,11 +246,11 @@ files by path relative to `src/` in the first column; a row may list several.
 | Add a view | `src/<name>.rs`, row in `views.rs` `REGISTRY` | See "Code conventions" and `docs/VIEW_CONVENTIONS.md`; also README, `tests/golden.txt`, `scripts/smoke_terminal.py` `PICKER_VISITS`, wiki page |
 | Add an optional Source | `src/platform/mod.rs`, both platform dirs, `model.rs`, a row's `sources` | Eight steps in `src/platform/AGENTS.md` |
 | Add a Process field | `model.rs`, `platform/linux/mod.rs`, `platform/macos/mod.rs` | The four exhaustive literals, under "Code conventions" |
-| Change rasterization | `render.rs` with `shaders.wgsl` | Together, with the parity check under Invariants; `src/render/AGENTS.md` |
+| Change rasterization | `render/raster.rs` with `gpu.rs` and `shaders.wgsl` | Together, with the parity check under Invariants; `src/render/AGENTS.md` |
 | Add a constant both backends use | `render/shared.rs` | The `shared!` macro; never write it in WGSL |
 | Add a wide line or a grid of colours | `render/strokes.rs`, `render/field.rs` | `Frame::ribbon`, `Frame::tube`, `Frame::field` |
-| Add a view-local key | `ViewModule::key`, the row's `keys` | Only the `LOCAL_KEYS` set in `views.rs` |
-| Add a per-view flag | `views::ViewOptions`, `Options::view_options` in `main.rs` | Named `--<view>-<option>`; the module reads it in `ViewModule::configure` |
+| Add a view-local key | `ViewModule::key`, the row's `keys` | Only the `LOCAL_KEYS` set in `keys.rs` |
+| Add a per-view flag | `views::ViewOptions`, `Options::view_options` in `cli.rs` | Named `--<view>-<option>`; the module reads it in `ViewModule::configure` |
 | Share layout between views | `views/systems.rs`, `layout.rs` | Orbit and Flow share layout code, never state |
 | Work on macOS | `platform/macos/` | Pure logic in `logic.rs` and `journal.rs` runs in Linux tests; FFI in `ffi.rs` |
 | Bless golden hashes | `tests/golden.txt` | `ISOTOP_BLESS=1 cargo test every_view_matches`; say why in the PR |
@@ -265,22 +263,22 @@ files by path relative to `src/` in the first column; a row may list several.
 
 ## Code map
 
-| Symbol | Kind | Location | Refs | Role |
-|---|---|---|---|---|
-| Identity | type | `model.rs` | ~576 | A process's key (pid plus start time); a reused pid never equals it |
-| Process | struct | `model.rs` | ~367 | One sampled process; new fields go in the four literals |
-| Snapshot | struct | `model.rs` | ~359 | One sample of the machine; what every view reads |
-| Scene | struct | `render.rs` | ~320 | Frame-wide state; calls each module through `ViewModule` |
-| Stage | struct | `render.rs` | ~144 | What a view draws into and writes outputs back through |
-| Frame | struct | `render.rs` | ~181 | Display list, CPU rasterizer and picking |
-| Item | enum | `render.rs` | ~197 | One screen-space primitive of the display list |
-| Color | type | `render.rs` | ~230 | `[u8; 3]` colour |
-| Thing | struct | `render.rs` | ~97 | A pickable that is not a process |
-| ViewModule | trait | `views.rs` | ~53 | The contract a view module implements |
-| ViewInfo | struct | `views.rs` | ~37 | One registry row: everything that sets a view apart |
-| REGISTRY | static | `views.rs` | ~42 | Rows in Tab order; the first ten are the digit keys |
-
-Refs are approximate matching lines under `src/` on the generation date.
+| Symbol | Kind | Location | Role |
+|---|---|---|---|
+| Identity | type | `model.rs` | A process's key (pid plus start time); a reused pid never equals it |
+| Process | struct | `model.rs` | One sampled process; new fields go in the four literals |
+| Snapshot | struct | `model.rs` | One sample of the machine; what every view reads |
+| Scene | struct | `render/scene.rs` | Frame-wide state; calls each module through `ViewModule` |
+| Stage | struct | `render/stage.rs` | What a view draws into and writes outputs back through |
+| Frame | struct | `render/frame.rs` | Display list and picking; `Frame::rasterize` is in `render/raster.rs` |
+| Item | enum | `render/frame.rs` | One screen-space primitive of the display list |
+| Color | type | `render.rs` | `[u8; 3]` colour |
+| Thing | struct | `render/frame.rs` | A pickable that is not a process |
+| ViewModule | trait | `views.rs` | The contract a view module implements |
+| ViewInfo | struct | `views.rs` | One registry row: everything that sets a view apart |
+| REGISTRY | static | `views.rs` | Rows in Tab order; the first ten are the digit keys |
+| KEYMAP | static | `keys.rs` | Every key binding, and the README's controls tables |
+| SafeText | struct | `terminal/text.rs` | The only text the terminal overlay takes; process text is cleaned into it |
 
 ## Architecture
 
@@ -414,12 +412,13 @@ the first ten rows, `Scene` fields, `unsafe` comments) are not repeated here. Al
 - Hand-editing `docs/METRICS.md` or the README metrics block; run `scripts/code_report.py`.
 - Running `docs/mockups/code/*.py` as truth or shipping them; they are prototypes whose numbers need checking.
 - Loosening the parity limits in `scripts/compare_png.py` or the smoke test's assertions.
-- A fifth figure kit under `docs/figures/`, or a third-party import there.
+- A new figure kit under `docs/figures/` when one listed in `docs/figures/AGENTS.md` fits, or a third-party import there.
 - An `AGENTS.md` under `wiki/`: every file there is published to the GitHub wiki.
 - Line numbers in wiki citations or in any `AGENTS.md`; cite files and symbols.
 - Running `scripts/setup_project.py` unprompted: it writes to GitHub.
-- A row whose first cell in an `AGENTS.md` table starts with a backtick unless it is a `.rs` file under `src/`:
-  `agents_file_table_lists_every_source_file` reads every line starting with "| `" as a file-table row.
+- A row in this root file whose first cell starts with a backtick unless it names `.rs` files under `src/`:
+  `agents_table_paths` in `main.rs` reads every line of the root `AGENTS.md` starting with "| `" as a file-table
+  row. The subdirectory guides are not read by it, so their tables may start a row with any path.
 - Putting a constant in `shaders.wgsl` instead of `render/shared.rs`, or moving `LIGHT` into it.
 - A stroke piece wider than 32 px an edge in `render/strokes.rs`.
 
@@ -595,7 +594,7 @@ scripts in `docs/figures/` and the rule that a planned view's page says it is a 
 Each file below covers only what goes deeper than this one.
 
 - `src/platform/AGENTS.md`: the OS contract, cfg gating, adding a `Source` end to end, `unsafe` rules and fixtures.
-- `src/render/AGENTS.md`: shared CPU/GPU constants, strokes, the field primitive and their parity rules.
+- `src/render/AGENTS.md`: the `render/` split (camera, frame, raster, draw, stage, scene, text), shared CPU/GPU constants, strokes, the field primitive and their parity rules.
 - `src/views/AGENTS.md`: the Orbit, Flow, Ripple and City modules, `systems.rs` and registry rows.
 - `src/horizon/AGENTS.md`: Horizon physics in G = c = M = 1, orbits and the lensed disk mesh.
 - `docs/AGENTS.md`: precedence of issue, conventions and brief; theory pages, mockups and generated metrics.
