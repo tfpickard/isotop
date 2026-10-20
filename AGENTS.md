@@ -242,6 +242,47 @@ The README covers usage. This file covers how to work on the code.
 `agents_file_table_lists_every_source_file` fails when a `.rs` file under `src/` has no row. Name
 files by path relative to `src/` in the first column; a row may list several.
 
+## Where to look
+
+| Task | Location | Notes |
+|---|---|---|
+| Add a view | `src/<name>.rs`, row in `views.rs` `REGISTRY` | See "Code conventions" and `docs/VIEW_CONVENTIONS.md`; also README, `tests/golden.txt`, `scripts/smoke_terminal.py` `PICKER_VISITS`, wiki page |
+| Add an optional Source | `src/platform/mod.rs`, both platform dirs, `model.rs`, a row's `sources` | Eight steps in `src/platform/AGENTS.md` |
+| Add a Process field | `model.rs`, `platform/linux/mod.rs`, `platform/macos/mod.rs` | The four exhaustive literals, under "Code conventions" |
+| Change rasterization | `render/raster.rs` with `gpu.rs` and `shaders.wgsl` | Together, with the parity check under Invariants; `src/render/AGENTS.md` |
+| Add a constant both backends use | `render/shared.rs` | The `shared!` macro; never write it in WGSL |
+| Add a wide line or a grid of colours | `render/strokes.rs`, `render/field.rs` | `Frame::ribbon`, `Frame::tube`, `Frame::field` |
+| Add a view-local key | `ViewModule::key`, the row's `keys` | Only the `LOCAL_KEYS` set in `keys.rs` |
+| Add a per-view flag | `views::ViewOptions`, `Options::view_options` in `cli.rs` | Named `--<view>-<option>`; the module reads it in `ViewModule::configure` |
+| Share layout between views | `views/systems.rs`, `layout.rs` | Orbit and Flow share layout code, never state |
+| Work on macOS | `platform/macos/` | Pure logic in `logic.rs` and `journal.rs` runs in Linux tests; FFI in `ffi.rs` |
+| Bless golden hashes | `tests/golden.txt` | `ISOTOP_BLESS=1 cargo test every_view_matches`; say why in the PR |
+| Debug a live render | `./target/release/isotop --view <name> --output /tmp/live.png` | Two samples; `--demo --time` for repeatable frames; "Visual checks" |
+| Compare CPU and GPU | `scripts/compare_png.py` | Tolerance in `docs/VIEW_CONVENTIONS.md`; `scripts/AGENTS.md` |
+| Regenerate metrics | `scripts/code_report.py` | Writes `docs/METRICS.md` and the README block; `--check` is the last gate |
+| Add a wiki page | `wiki/`, `wiki/_Sidebar.md` | `python3 scripts/check_wiki.py`; `wiki/Guide-Contributing-to-the-Wiki.md` |
+| Add a figure | `docs/figures/<page>-<slug>.py` | Stdlib SVG kits; `docs/figures/AGENTS.md` |
+| Take a planned view | `docs/ROADMAP.md`, `docs/briefs/` | `docs/AGENTS.md` for precedence |
+
+## Code map
+
+| Symbol | Kind | Location | Role |
+|---|---|---|---|
+| Identity | type | `model.rs` | A process's key (pid plus start time); a reused pid never equals it |
+| Process | struct | `model.rs` | One sampled process; new fields go in the four literals |
+| Snapshot | struct | `model.rs` | One sample of the machine; what every view reads |
+| Scene | struct | `render/scene.rs` | Frame-wide state; calls each module through `ViewModule` |
+| Stage | struct | `render/stage.rs` | What a view draws into and writes outputs back through |
+| Frame | struct | `render/frame.rs` | Display list and picking; `Frame::rasterize` is in `render/raster.rs` |
+| Item | enum | `render/frame.rs` | One screen-space primitive of the display list |
+| Color | type | `render.rs` | `[u8; 3]` colour |
+| Thing | struct | `render/frame.rs` | A pickable that is not a process |
+| ViewModule | trait | `views.rs` | The contract a view module implements |
+| ViewInfo | struct | `views.rs` | One registry row: everything that sets a view apart |
+| REGISTRY | static | `views.rs` | Rows in Tab order; the first ten are the digit keys |
+| KEYMAP | static | `keys.rs` | Every key binding, and the README's controls tables |
+| SafeText | struct | `terminal/text.rs` | The only text the terminal overlay takes; process text is cleaned into it |
+
 ## Architecture
 
 Dependencies mostly run one way: `platform` and `model` (the data), then the shared helpers, then
@@ -365,6 +406,24 @@ not shown still has its history when it opens.
 - **Unsafe code** is limited to FFI (libc, netlink, shared memory, NVML) and the SSE4.1
   readback copy in `gpu.rs`. Each `unsafe` block is preceded by a comment that says why it is
   sound, normally a `// SAFETY:` comment.
+
+## Anti-patterns
+
+Rules stated in full elsewhere in this file (CPU/GPU parity, layouts, unknown is not zero, `#[allow]`, `known_unstable`,
+the first ten rows, `Scene` fields, `unsafe` comments) are not repeated here. Also forbidden:
+
+- Hand-editing `docs/METRICS.md` or the README metrics block; run `scripts/code_report.py`.
+- Running `docs/mockups/code/*.py` as truth or shipping them; they are prototypes whose numbers need checking.
+- Loosening the parity limits in `scripts/compare_png.py` or the smoke test's assertions.
+- A new figure kit under `docs/figures/` when one listed in `docs/figures/AGENTS.md` fits, or a third-party import there.
+- An `AGENTS.md` under `wiki/`: every file there is published to the GitHub wiki.
+- Line numbers in wiki citations or in any `AGENTS.md`; cite files and symbols.
+- Running `scripts/setup_project.py` unprompted: it writes to GitHub.
+- A row in this root file whose first cell starts with a backtick unless it names `.rs` files under `src/`:
+  `agents_table_paths` in `main.rs` reads every line of the root `AGENTS.md` starting with "| `" as a file-table
+  row. The subdirectory guides are not read by it, so their tables may start a row with any path.
+- Putting a constant in `shaders.wgsl` instead of `render/shared.rs`, or moving `LIGHT` into it.
+- A stroke piece wider than 32 px an edge in `render/strokes.rs`.
 
 ## Gates
 
@@ -532,3 +591,15 @@ scripts in `docs/figures/` and the rule that a planned view's page says it is a 
 - Run the gates before pushing a branch. The PR description says what changed and how it was
   checked, including screenshots for visual changes.
 - Commits are attributed to the human author only, with no AI `Co-authored-by` trailers.
+
+## Subdirectory guides
+
+Each file below covers only what goes deeper than this one.
+
+- `src/platform/AGENTS.md`: the OS contract, cfg gating, adding a `Source` end to end, `unsafe` rules and fixtures.
+- `src/render/AGENTS.md`: the `render/` split (camera, frame, raster, draw, stage, scene, text), shared CPU/GPU constants, strokes, the field primitive and their parity rules.
+- `src/views/AGENTS.md`: the Orbit, Flow, Ripple and City modules, `systems.rs` and registry rows.
+- `src/horizon/AGENTS.md`: Horizon physics in G = c = M = 1, orbits and the lensed disk mesh.
+- `docs/AGENTS.md`: precedence of issue, conventions and brief; theory pages, mockups and generated metrics.
+- `docs/figures/AGENTS.md`: the deterministic stdlib SVG figure scripts and their kits.
+- `scripts/AGENTS.md`: what each gate script checks, its flags and the limits never to loosen.
