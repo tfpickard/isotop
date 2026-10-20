@@ -23,7 +23,10 @@ allowed to read `/proc`, `/sys` or libproc, and where nearly all `unsafe` lives.
   in `mod.rs`, `#[cfg(all(test, not(target_os = "macos")))]` with `#[path]`). Keep them std-only: no `libc::`, no extern.
 - Platform-only items silence dead code with `#[cfg_attr(all(target_os = "macos", not(test)), expect(...))]`
   or `#[cfg(target_os = "linux")]`, never `#[allow]`.
-- Parsers are pure functions of `&str` so tests need no `/proc`. Each file ends in a `#[cfg(test)] mod tests`.
+- Parsers of textual `/proc` and `/sys` files are pure functions of `&str`, so tests need no `/proc`. Binary protocols
+  parse bytes instead (`parse_record` in `linux/events.rs` and `parse_procargs` in `macos/logic.rs` take `&[u8]`), and
+  the journal parsers read a `BufRead` stream; either way the parser stays pure and its tests feed it a fixture.
+  Each file ends in a `#[cfg(test)] mod tests`.
 - Fixtures are named `<arch>_<what>[_<condition>].txt` (`x86_interrupts_cpu2_offline.txt`); real captures say so in the header.
 - Unreadable Linux data is `None` or listed in `Sampler::missing`; `pressure` is the one exception (returns 0, reports the gap).
 - `FileScan::sample`: a pid the scan did not reach is absent from the map; `None` means the table could not be read.
