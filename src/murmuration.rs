@@ -12,10 +12,11 @@ use crate::geometry::{dot, normalize};
 use crate::model::{Identity, Measured, Process, Snapshot};
 use crate::palette::kind_color;
 use crate::platform::Source;
-use crate::render::{Color, Item, NONE, SCALE, Stage, TourTarget, label_name, ring_bounds};
+use crate::render::{
+    Color, Item, NONE, SCALE, Stage, TourTarget, label_name, ring_bounds, thread_label,
+};
 use crate::simulation::{FixedStep, Rng, SpatialHash3, hash_identity};
 use crate::status::missing_note;
-use crate::terminal::clean_text;
 use crate::views::ViewModule;
 
 /// Separates this view's draws of the identity hash from every other view's.
@@ -979,10 +980,7 @@ impl Murmuration {
             let centroid = scaled(group.sum, 1.0 / group.birds as f32);
             stage.places.push((
                 [centroid[0], centroid[1], group.highest + 4.0],
-                format!(
-                    "{}  {threads} threads",
-                    clean_text(&label_name(&process.name), 15)
-                ),
+                format!("{}  {threads} threads", label_name(&process.name)),
             ));
             let mut notes = vec![format!("{threads} threads, {} flying", group.birds)];
             notes.extend(busiest(process));
@@ -1010,7 +1008,7 @@ fn busiest(process: &Process) -> Option<String> {
     let names: Vec<String> = threads
         .iter()
         .take(3)
-        .map(|(cpu, thread)| format!("{} {cpu:.0}%", clean_text(&thread.name, 15)))
+        .map(|(cpu, thread)| format!("{} {cpu:.0}%", thread_label(&thread.name)))
         .collect();
     (!names.is_empty()).then(|| format!("busiest: {}", names.join(", ")))
 }
@@ -1115,6 +1113,7 @@ mod tests {
     use crate::model::{DemoOptions, demo_with};
     use crate::platform::Sources;
     use crate::render::{Camera, Frame, RenderInput, Scene};
+    use crate::terminal::SafeText;
     use crate::threads::{Thread, ThreadList};
     use crate::views::view;
     use std::sync::Arc;
@@ -1812,8 +1811,17 @@ mod tests {
             list.threads = Arc::from(threads);
         }
         let line = busiest(&busy).expect("a line for known threads");
+        assert!(
+            line.contains('\x1b'),
+            "the view hands the stage the raw name"
+        );
+        let line = SafeText::new(&line);
         assert_eq!(line, "busiest: bad?[2Jname 90%, worker-3 70%, worker-2 40%");
-        assert!(line.chars().all(|c| c.is_ascii_graphic() || c == ' '));
+        assert!(
+            line.as_str()
+                .chars()
+                .all(|c| c.is_ascii_graphic() || c == ' ')
+        );
         let unread = process(2, 1);
         assert_eq!(
             busiest(&unread).as_deref(),

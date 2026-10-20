@@ -6,12 +6,12 @@ seeded, so the output is the same every run (it takes a couple of minutes).
 
 Series A is the 1995 rule on a periodic square: N particles of constant speed v0 set their new
 heading to the mean heading of everything within r (themselves included) plus a uniform kick in
-[-eta/2, eta/2], then step. Series B re-implements the Coop yard's rule (src/coop.rs, Yard::step) for
+[-eta/2, eta/2], then step. Series B re-implements the Coop yard's rule (src/coop/sim.rs, Yard::step) for
 one flock of 60 foragers: the same mean-heading rule with the same noise convention, a speed of
 0.6 units/s at the 20 Hz step, an interaction radius of 4 units, the henhouse's pull beyond range 10,
 its footprint, the reflecting fence and the Jacobi separation of overlapping bodies. It uses
 Python's random module rather than the Rust generator, so it follows the rule, not the bits.
-The mapping from CPU pressure psi to eta is the one in coop.rs: eta = 0.5 + 0.5 min(CV, 2) +
+The mapping from CPU pressure psi to eta is the one in coop/sim.rs: eta = 0.5 + 0.5 min(CV, 2) +
 5.5 psi / (psi + 15), capped at 2 pi.
 """
 

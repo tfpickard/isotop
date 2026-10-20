@@ -35,7 +35,11 @@ PICKER_VISITS = [
     "hr",
     "hive",
     "switchboard",
+    "anthill",
+    "plumbing",
     "lights",
+    # Last, so that the live run's final `q` is pressed on the board and plays its farewell.
+    "ouija",
 ]
 
 # A view's own keys, sent right after the picker shows it, each with what the terminal must show

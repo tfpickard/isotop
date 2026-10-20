@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 76 | 75,557 | 1,716 | 4,282 |
+| Rust | 151 | 96,494 | 2,117 | 5,894 |
 | SVG | 89 | 39,920 | 9 | 0 |
-| Python | 121 | 22,917 | 832 | 3,073 |
+| Python | 121 | 22,920 | 833 | 3,073 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 83 | 0 | 14,143 | 5,045 |
-| Plain Text | 7 | 0 | 307 | 0 |
-| **Total** | **381** | **138,715** | **17,035** | **12,451** |
+| Markdown | 83 | 0 | 14,462 | 5,117 |
+| Plain Text | 11 | 0 | 334 | 0 |
+| **Total** | **460** | **159,655** | **17,783** | **14,135** |
 
 ## Rust by module
 
@@ -23,83 +23,158 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/model.rs` | 3,167 | 4,095 |
-| `src/coop.rs` | 2,716 | 1,367 |
-| `src/main.rs` | 2,011 | 3,093 |
+| `src/model.rs` | 3,402 | 4,454 |
 | `src/necropolis.rs` | 1,995 | 610 |
-| `src/render.rs` | 1,749 | 987 |
 | `src/hr.rs` | 1,725 | 1,158 |
-| `src/arbor.rs` | 1,668 | 1,198 |
+| `src/arbor.rs` | 1,669 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
-| `src/cortex.rs` | 1,220 | 540 |
-| `src/platform/macos/mod.rs` | 1,197 | 609 |
-| `src/tesseract.rs` | 1,053 | 561 |
+| `src/platform/macos/mod.rs` | 1,313 | 690 |
+| `src/cortex.rs` | 1,220 | 541 |
+| `src/tesseract.rs` | 1,054 | 561 |
 | `src/gpu.rs` | 1,007 | 377 |
 | `src/ptolemy.rs` | 983 | 421 |
 | `src/lights.rs` | 929 | 388 |
-| `src/murmuration.rs` | 925 | 782 |
+| `src/murmuration.rs` | 923 | 792 |
+| `src/plumbing/paint.rs` | 806 | 0 |
 | `src/horizon/disk.rs` | 796 | 274 |
+| `src/keys.rs` | 752 | 228 |
+| `src/switchboard.rs` | 695 | 352 |
 | `src/switchboard/lines.rs` | 694 | 621 |
-| `src/switchboard.rs` | 692 | 352 |
 | `src/views/systems.rs` | 680 | 416 |
+| `src/platform/macos/logic.rs` | 658 | 926 |
+| `src/views.rs` | 650 | 740 |
 | `src/simulation.rs` | 647 | 762 |
-| `src/platform/linux/mod.rs` | 609 | 370 |
-| `src/platform/macos/ffi.rs` | 594 | 12 |
+| `src/platform/linux/mod.rs` | 614 | 370 |
+| `src/platform/macos/ffi.rs` | 613 | 12 |
+| `src/coop/draw.rs` | 589 | 0 |
 | `src/reef.rs` | 588 | 147 |
-| `src/platform/macos/logic.rs` | 587 | 807 |
-| `src/views.rs` | 586 | 705 |
 | `src/platform/linux/events.rs` | 581 | 317 |
+| `src/coop/creatures.rs` | 576 | 0 |
 | `src/render/field.rs` | 575 | 719 |
 | `src/neurons.rs` | 569 | 333 |
 | `src/horizon.rs` | 565 | 630 |
+| `src/render/scene.rs` | 559 | 0 |
+| `src/anthill/flows.rs` | 543 | 439 |
 | `src/cells.rs` | 523 | 540 |
+| `src/platform/mod.rs` | 519 | 106 |
 | `src/cores.rs` | 500 | 318 |
-| `src/platform/mod.rs` | 500 | 106 |
-| `src/model/kernel.rs` | 492 | 485 |
+| `src/coop/roles.rs` | 497 | 263 |
+| `src/model/kernel.rs` | 492 | 486 |
+| `src/plumbing/tests.rs` | 488 | 0 |
 | `src/globe.rs` | 483 | 500 |
 | `src/views/flow.rs` | 475 | 43 |
-| `src/terminal.rs` | 473 | 185 |
+| `src/render/scene/tests.rs` | 463 | 0 |
+| `src/model/pipework/demo.rs` | 453 | 174 |
+| `src/coop/sim.rs` | 448 | 252 |
+| `src/terminal.rs` | 448 | 231 |
+| `src/anthill/draw.rs` | 445 | 254 |
+| `src/coop/layout.rs` | 416 | 298 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/horizon/lens.rs` | 395 | 344 |
-| `src/render/strokes.rs` | 386 | 317 |
 | `src/switchboard/scenery.rs` | 382 | 0 |
+| `src/coop/mod.rs` | 379 | 238 |
+| `src/plumbing/route.rs` | 379 | 222 |
+| `src/render/strokes.rs` | 379 | 317 |
 | `src/views/ripple.rs` | 374 | 286 |
+| `src/anthill/colony.rs` | 368 | 192 |
+| `src/app/overlay.rs` | 354 | 411 |
+| `src/ouija/seance.rs` | 343 | 290 |
+| `src/plumbing/draw/pipes.rs` | 343 | 60 |
 | `src/matrix.rs` | 341 | 236 |
 | `src/platform/linux/net.rs` | 320 | 278 |
+| `src/journal.rs` | 298 | 171 |
 | `src/switchboard/figures.rs` | 298 | 0 |
+| `src/render/raster.rs` | 295 | 38 |
+| `src/anthill/paint.rs` | 292 | 0 |
 | `src/blackbody.rs` | 292 | 146 |
 | `src/views/city.rs` | 285 | 86 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
+| `src/render/frame.rs` | 281 | 302 |
 | `src/model/exchange.rs` | 274 | 228 |
+| `src/plumbing/card.rs` | 271 | 137 |
+| `src/anthill/ingest.rs` | 270 | 0 |
 | `src/places.rs` | 270 | 0 |
+| `src/anthill/slab.rs` | 267 | 203 |
+| `src/platform/linux/files.rs` | 266 | 258 |
 | `src/threads.rs` | 252 | 256 |
+| `src/app/untrusted.rs` | 251 | 0 |
+| `src/ouija/paint.rs` | 251 | 0 |
+| `src/io_detail.rs` | 250 | 321 |
+| `src/plumbing/draw/tank.rs` | 247 | 28 |
+| `src/hershey.rs` | 244 | 257 |
+| `src/interactive.rs` | 241 | 0 |
 | `src/medium.rs` | 240 | 66 |
+| `src/ouija/props.rs` | 238 | 0 |
+| `src/io_detail/attribute.rs` | 233 | 374 |
 | `src/geo.rs` | 229 | 134 |
-| `src/journal.rs` | 217 | 74 |
+| `src/render/draw.rs` | 227 | 17 |
+| `src/plumbing.rs` | 226 | 0 |
+| `src/ouija/scenery.rs` | 219 | 77 |
+| `src/headless.rs` | 211 | 444 |
 | `src/strata.rs` | 210 | 128 |
-| `src/platform/linux/files.rs` | 201 | 187 |
+| `src/plumbing/room.rs` | 206 | 197 |
+| `src/anthill.rs` | 204 | 541 |
+| `src/anthill/words.rs` | 198 | 164 |
+| `src/render.rs` | 198 | 0 |
 | `src/picker.rs` | 195 | 44 |
+| `src/app/mod.rs` | 193 | 24 |
+| `src/plumbing/draw/scenery.rs` | 192 | 0 |
+| `src/anthill/terrain.rs` | 190 | 92 |
+| `src/plumbing/draw/tubes.rs` | 182 | 62 |
+| `src/cli.rs` | 181 | 213 |
+| `src/app/tour.rs` | 177 | 668 |
 | `src/stellar.rs` | 172 | 222 |
+| `src/terminal/text.rs` | 172 | 136 |
 | `src/platform/linux/counters.rs` | 170 | 279 |
 | `src/views/orbit.rs` | 169 | 141 |
+| `src/app/status.rs` | 167 | 316 |
 | `src/switchboard/cord.rs` | 167 | 92 |
+| `src/io_detail/demo.rs` | 161 | 191 |
+| `src/plumbing/draw.rs` | 161 | 0 |
+| `src/platform/linux/descriptors.rs` | 160 | 328 |
+| `src/app/input.rs` | 156 | 234 |
+| `src/render/stage.rs` | 153 | 95 |
+| `src/app/screen.rs` | 152 | 67 |
+| `src/plumbing/floor.rs` | 152 | 146 |
 | `src/history.rs` | 150 | 157 |
+| `src/main.rs` | 148 | 55 |
+| `src/ouija/ribbon.rs` | 148 | 142 |
+| `src/app/pointer.rs` | 146 | 337 |
+| `src/ouija.rs` | 144 | 326 |
+| `src/coop/feeding.rs` | 142 | 240 |
+| `src/ouija/layout.rs` | 140 | 74 |
+| `src/coop/fixtures.rs` | 131 | 0 |
+| `src/plumbing/flow.rs` | 131 | 210 |
 | `src/platform/linux/pipes.rs` | 130 | 111 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
+| `src/anthill/fixtures.rs` | 114 | 0 |
+| `src/app/fixtures.rs` | 114 | 0 |
+| `src/render/camera.rs` | 112 | 81 |
 | `src/glyphs.rs` | 107 | 0 |
 | `src/platform/macos/events.rs` | 107 | 60 |
+| `src/plumbing/path.rs` | 106 | 64 |
 | `src/layout.rs` | 105 | 76 |
-| `src/platform/linux/journal.rs` | 101 | 53 |
+| `src/app/camera.rs` | 104 | 155 |
+| `src/platform/linux/journal.rs` | 103 | 72 |
 | `src/platform/linux/threads.rs` | 101 | 100 |
+| `src/app/search.rs` | 99 | 111 |
 | `src/platform/linux/memory.rs` | 86 | 121 |
+| `src/app/switcher.rs` | 84 | 382 |
+| `src/app/player.rs` | 75 | 96 |
 | `src/palette.rs` | 75 | 58 |
 | `src/render/shared.rs` | 75 | 47 |
+| `src/anthill/scale.rs` | 74 | 58 |
+| `src/render/text.rs` | 66 | 334 |
+| `src/platform/linux/wait.rs` | 62 | 98 |
+| `src/app/renderer.rs` | 57 | 0 |
+| `src/model/pipework.rs` | 54 | 101 |
 | `src/switchboard/lamp.rs` | 54 | 80 |
 | `src/geometry.rs` | 50 | 15 |
-| `src/platform/linux/fdinfo.rs` | 33 | 40 |
+| `src/app/feed.rs` | 48 | 131 |
+| `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
-| `src/harness.rs` | 0 | 570 |
-| **Total** | **43,925** | **31,650** |
+| `src/harness.rs` | 0 | 569 |
+| **Total** | **57,469** | **39,050** |
 
 ## Largest files
 
@@ -107,16 +182,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 8,541 | over limit |
-| `src/main.rs` | 5,631 | over limit |
-| `src/coop.rs` | 4,489 | over limit |
+| `src/model.rs` | 9,263 | over limit |
 | `src/hr.rs` | 3,365 | over limit |
-| `src/render.rs` | 3,275 | over limit |
-| `src/arbor.rs` | 3,230 | over limit |
+| `src/arbor.rs` | 3,231 | over limit |
 | `src/hive.rs` | 3,040 | over limit |
 | `src/necropolis.rs` | 2,906 | over limit |
-| `src/platform/macos/mod.rs` | 2,223 | over limit |
-| `src/murmuration.rs` | 1,966 | over limit |
+| `src/platform/macos/mod.rs` | 2,467 | over limit |
+| `src/murmuration.rs` | 1,974 | over limit |
+| `src/cortex.rs` | 1,966 | over limit |
+| `src/platform/macos/logic.rs` | 1,931 | over limit |
+| `src/tesseract.rs` | 1,850 | over limit |
 
 ## Debt counters
 
@@ -124,9 +199,9 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 
 | Counter | Count |
 |:--|--:|
-| `#[expect(clippy::too_many_lines` | 14 |
+| `#[expect(clippy::too_many_lines` | 11 |
 | `#[expect(clippy::too_many_arguments` | 7 |
-| `unsafe` blocks | 115 |
+| `unsafe` blocks | 120 |
 | `unwrap_or(0` sites | 30 |
 | `unwrap_or(0.0` sites | 19 |
 | `known_unstable` harness entries | 0 |
@@ -137,10 +212,10 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 992 |
-| Views in the registry | 22 |
-| Views with a README mapping table | 12 of 22 |
+| `#[test]` functions | 1,309 |
+| Views in the registry | 25 |
+| Views with a README mapping table | 25 of 25 |
 | Direct crate dependencies | 10 |
 | Total crate dependencies | 168 |
 
-Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `lights`.
+Views: `city`, `orbit`, `ripple`, `flow`, `cores`, `cells`, `strata`, `globe`, `reef`, `matrix`, `coop`, `ptolemy`, `tesseract`, `necropolis`, `cortex`, `horizon`, `murmuration`, `arbor`, `hr`, `hive`, `switchboard`, `ouija`, `anthill`, `plumbing`, `lights`.

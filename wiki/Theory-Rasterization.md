@@ -136,8 +136,8 @@ Every ratio is below 16: each view has a fixed part (recording and simulating, w
 | `Frame::rasterize`, `paint_sky`, `pixel`, `triangle`, `segment`, `ball`, `splat`, `halo`, `puff`, `disc`, `ray`, `glyph`, `stroke`, `circle`, `hairline` | [`src/render.rs`](https://github.com/tfpickard/isotop/blob/main/src/render.rs) |
 | `Frame::field_triangle` (the span rasterizer of `Item::Field`) | [`src/render/field.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/field.rs) |
 | Constants used by the shaded sphere, ring and line bias | [`src/render/shared.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/shared.rs) |
-| Golden hashes of pixels, picks and depth | [`tests/golden.txt`](https://github.com/tfpickard/isotop/blob/main/tests/golden.txt), `every_view_matches_its_golden_hash` in [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs) |
-| Benchmark | `isotop --demo --renderer cpu --benchmark N` ([`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `run`) |
+| Golden hashes of pixels, picks and depth | [`tests/golden.txt`](https://github.com/tfpickard/isotop/blob/main/tests/golden.txt), `every_view_matches_its_golden_hash` in [`src/headless.rs`](https://github.com/tfpickard/isotop/blob/main/src/headless.rs) |
+| Benchmark | `isotop --demo --renderer cpu --benchmark N` ([`src/headless.rs`](https://github.com/tfpickard/isotop/blob/main/src/headless.rs): `benchmark`, which times recording and rasterizing apart) |
 
 Figure: [`docs/figures/theory-hairline-cost.py`](https://github.com/tfpickard/isotop/blob/main/docs/figures/theory-hairline-cost.py) counts bounding-box pixels exactly as the CPU loop would, for a fixed sub-pixel start.
 

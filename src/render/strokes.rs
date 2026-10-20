@@ -15,8 +15,9 @@ use crate::palette::tint;
 const PIECE: f32 = 32.0;
 /// Segments whose projection is longer are skipped, as `Frame::line` skips them.
 const REACH: f32 = 12000.0;
-/// A ribbon narrower than this many pixels is drawn as one-pixel lines.
-const THINNEST_RIBBON: f32 = 1.0;
+/// A ribbon narrower than this many pixels is drawn as one-pixel lines, which the CPU and the GPU
+/// rasterize differently; a view whose ribbons must match on both keeps them at least this wide.
+pub(crate) const THINNEST_RIBBON: f32 = 1.0;
 /// A tube segment thinner than this radius in pixels is drawn as a one-pixel line.
 const THINNEST_TUBE: f32 = 0.5;
 /// A segment holding more dashes than this is drawn solid: they would be too fine to tell apart.
@@ -26,13 +27,6 @@ const MOST_DASHES: f32 = 4096.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Width {
     /// World units, scaled with the zoom: `w * zoom * SCALE` pixels.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "arbor sizes its strokes in pixels; a later view may not"
-        )
-    )]
     World(f32),
     /// Frame pixels, whatever the zoom.
     Pixels(f32),

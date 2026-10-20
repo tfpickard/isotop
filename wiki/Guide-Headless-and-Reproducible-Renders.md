@@ -21,7 +21,7 @@ A run is headless when it has `--output` or `--benchmark` (`Options::headless`).
 | Flag | Effect in a headless run |
 |---|---|
 | `--output <PATH>` | Render one frame and write it as an 8-bit RGB PNG. Prints `Wrote PATH (WxH, N visible)` |
-| `--benchmark <N>` | Render one frame, then `N` more, timing the loop. Prints `N frames \| WxH \| V visible \| X ms/frame \| Y renderer fps on R (excludes terminal transport)` |
+| `--benchmark <N>` | Render one frame, then `N` more, timing the loop. Prints `N frames \| WxH \| V visible \| X ms/frame (record A + raster B) \| Y renderer fps on R (excludes terminal transport)`, where A is the time to record the display list and B the time to rasterize it |
 | `--width <W>` | Frame width in pixels, 160 to 2560, default 1920. The height is `W * 9 / 16`: headless frames are always 16:9 (`Options::headless_height`) |
 | `--time <T>` | The synthetic time of the frame, in seconds, default 12. Negative values are refused (the argument parser rejects `-1`; `run` also rejects non-finite or negative values) |
 | `--demo` | Use the synthetic workload. Without it, a headless run samples the real machine |
@@ -53,7 +53,7 @@ flowchart TD
     G --> H["--output? frame.write_png"]
 ```
 
-In order, from `run` in `main.rs`:
+In order, from `start` in `main.rs` and `headless::run`:
 
 1. **The first sample.** With `--demo`, `demo_snapshot(view.info(), time - sample_seconds, time, processes)`. The "time of the sample before" is one `--sample-ms` back, because a view with churn needs the life events in between. Without `--demo`, the collector takes one sample, sleeps `--sample-ms`, and takes a second, because CPU use is a rate and needs two readings.
 2. **The app.** `App::new` calls `switch(view)`, which sets `fit` and the row's `pitch` on the camera goal. The first `App::render` fits the camera to `Scene::bounds` (or the positions) and draws again from the fitted camera.
@@ -161,7 +161,7 @@ What still varies:
 
 ## The golden test
 
-`every_view_matches_its_golden_hash` (in `main.rs`) renders every registered view the way `isotop --demo --time 12 --renderer cpu --width 480 --output golden.png --view NAME` does: `Options::parse_from` with those arguments, `App::new` with `demo_snapshot`, `warm_up`, `app.animation = options.time`, `App::render`. It hashes three buffers of the frame with FNV-1a 64: the colour bytes, the pick buffer and the depth buffer. `tests/golden.txt` stores one line per view:
+`every_view_matches_its_golden_hash` (in `headless.rs`) renders every registered view the way `isotop --demo --time 12 --renderer cpu --width 480 --output golden.png --view NAME` does: `Options::parse_from` with those arguments, `App::new` with `demo_snapshot`, `warm_up`, `app.animation = options.time`, `App::render`. It hashes three buffers of the frame with FNV-1a 64: the colour bytes, the pick buffer and the depth buffer. `tests/golden.txt` stores one line per view:
 
 ```
 # view pixels picks depth: FNV-1a 64 of `--demo --time 12 --renderer cpu --width 480`
@@ -214,7 +214,7 @@ The exit statuses: `0` after a successful render; `1` when `--view` names a view
 
 | Item | Symbol |
 |---|---|
-| Flags | `Options` (`main.rs`) |
+| Flags | `Options` (`cli.rs`) |
 | Startup checks | `preflight`, `Preflight` |
 | The headless path | `run`, `Options::headless`, `Options::headless_height` |
 | The demo entry point | `demo_snapshot`; `model::demo_with`, `DemoOptions`, `demo_life`, `demo_events`, `DEMO_EPOCH` |

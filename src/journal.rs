@@ -24,11 +24,62 @@ const READER_GRACE: Duration = Duration::from_millis(500);
 /// can drain. A longer flood loses its oldest lines, counted as dropped.
 pub(crate) const KEPT: usize = BACKLOG;
 
-/// One journal entry as text, with its syslog severity.
+/// systemd's verdict on a finished job, the `JOB_RESULT` field of the journal entry that reports
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(test, target_os = "linux")),
+    expect(
+        dead_code,
+        reason = "only the Linux journal reader parses a result; macOS has none, and the demo makes two"
+    )
+)]
+pub enum JobResult {
+    Done,
+    Canceled,
+    Timeout,
+    Failed,
+    Dependency,
+    /// The job was not run because a condition did not hold: neither a success nor a failure.
+    Skipped,
+}
+
+impl JobResult {
+    /// The result a `JOB_RESULT` value names; None for one this reader does not know.
+    #[cfg_attr(
+        not(any(test, target_os = "linux")),
+        expect(dead_code, reason = "only the Linux journal reader parses a result")
+    )]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value.trim() {
+            "done" => Self::Done,
+            "canceled" => Self::Canceled,
+            "timeout" => Self::Timeout,
+            "failed" => Self::Failed,
+            "dependency" => Self::Dependency,
+            "skipped" => Self::Skipped,
+            _ => return None,
+        })
+    }
+
+    /// Whether the job did not finish what it was asked to.
+    pub fn failed(self) -> bool {
+        matches!(
+            self,
+            Self::Failed | Self::Timeout | Self::Canceled | Self::Dependency
+        )
+    }
+}
+
+/// One journal entry as text, with its syslog severity and, where the platform reports one, the
+/// result of the job it announces.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub priority: u8,
     pub text: String,
+    /// `JOB_RESULT`: None for an entry that reports no job, and on macOS, whose unified log has no
+    /// such field.
+    pub job: Option<JobResult>,
 }
 
 impl Line {
@@ -36,12 +87,18 @@ impl Line {
         Self {
             priority,
             text: text.into(),
+            job: None,
         }
+    }
+
+    /// The same line announcing a job that ended as `job`.
+    pub fn with_job(self, job: Option<JobResult>) -> Self {
+        Self { job, ..self }
     }
 }
 
 /// The journal lines that arrived while one sample was the newest, which travel on that
-/// `Snapshot` (`Snapshot::journal`) to the view that draws them. `main.rs` attaches what the
+/// `Snapshot` (`Snapshot::journal`) to the view that draws them. the app attaches what the
 /// follower (or the demo) produced each frame to the newest sample; a view takes in the lines it
 /// has not seen yet (`unseen`), so drawing the same sample twice, or an older one after a rewind,
 /// adds nothing. Empty on a sample nothing was attached to.
@@ -198,6 +255,13 @@ impl Drop for Journal {
 
 /// Synthetic journal lines that arrive in `(from, to]` seconds of demo time, deterministic in time.
 pub fn demo(from: f64, to: f64) -> Vec<Line> {
+    let first = (from / DEMO_INTERVAL).floor() as i64 + 1;
+    let last = (to / DEMO_INTERVAL).floor() as i64;
+    (first.max(0)..=last).map(demo_line).collect()
+}
+
+/// The `counter`-th line of the demo journal, which arrives at `counter * DEMO_INTERVAL`.
+fn demo_line(counter: i64) -> Line {
     const LINES: [(u8, &str); 16] = [
         (
             6,
@@ -255,18 +319,69 @@ pub fn demo(from: f64, to: f64) -> Vec<Line> {
         (6, "systemd-journald[{p}]: Journal started"),
         (6, "morpheus[{p}]: Follow the white rabbit."),
     ];
+    let hash = hash::golden_gamma_high(counter as u64);
+    let (priority, template) = LINES[hash as usize % LINES.len()];
+    let text = template
+        .replace("{n}", &(hash % 9 + 1).to_string())
+        .replace("{p}", &(1000 + hash % 60000).to_string());
+    Line::new(priority, text)
+}
+
+/// Seconds between the job lines of `demo_jobs`.
+const JOB_INTERVAL: f64 = 7.0;
+
+/// Synthetic lines that report a job, arriving in `(from, to]` seconds of demo time: every seven
+/// seconds, alternately systemd finishing a backup (priority 6, `JobResult::Done`) and failing to
+/// start a mount (priority 3, `JobResult::Failed`), the first of them at seven seconds.
+pub fn demo_jobs(from: f64, to: f64) -> Vec<Line> {
+    job_counters(from, to).map(demo_job).collect()
+}
+
+/// The counters of the job lines that arrive in `(from, to]` seconds.
+fn job_counters(from: f64, to: f64) -> std::ops::RangeInclusive<i64> {
+    let first = (from / JOB_INTERVAL).floor() as i64 + 1;
+    let last = (to / JOB_INTERVAL).floor() as i64;
+    first.max(1)..=last
+}
+
+/// The `counter`-th job line, which arrives at `counter * JOB_INTERVAL`.
+fn demo_job(counter: i64) -> Line {
+    if counter % 2 == 1 {
+        Line::new(6, "systemd[1]: Finished backup.service - Nightly backup.")
+            .with_job(Some(JobResult::Done))
+    } else {
+        Line::new(
+            3,
+            "systemd[1]: Failed to start mount-nas.service - NAS mount.",
+        )
+        .with_job(Some(JobResult::Failed))
+    }
+}
+
+/// Of the demo journal's lines, the one in this many that `demo_spirits` keeps: a line takes
+/// the board about ten seconds to spell, so the full stream would only ever flood it.
+const SPIRIT_STRIDE: i64 = 25;
+/// Which of each `SPIRIT_STRIDE` lines `demo_spirits` keeps: the fifth, so the second of them, at
+/// ten and a half seconds, is the demo's disk error.
+const SPIRIT_OFFSET: i64 = 5;
+
+/// What the demo feeds a view that spells the journal one letter at a time: the job lines of
+/// `demo_jobs` and every 25th line of `demo`, in the order they arrive. `demo` itself is
+/// unchanged, so the views that read it see what they always did.
+pub fn demo_spirits(from: f64, to: f64) -> Vec<Line> {
     let first = (from / DEMO_INTERVAL).floor() as i64 + 1;
     let last = (to / DEMO_INTERVAL).floor() as i64;
-    (first.max(0)..=last)
-        .map(|k| {
-            let hash = hash::golden_gamma_high(k as u64);
-            let (priority, template) = LINES[hash as usize % LINES.len()];
-            let text = template
-                .replace("{n}", &(hash % 9 + 1).to_string())
-                .replace("{p}", &(1000 + hash % 60000).to_string());
-            Line::new(priority, text)
-        })
-        .collect()
+    let mut arrivals: Vec<(f64, Line)> = (first.max(0)..=last)
+        .filter(|counter| counter % SPIRIT_STRIDE == SPIRIT_OFFSET)
+        .map(|counter| (counter as f64 * DEMO_INTERVAL, demo_line(counter)))
+        .collect();
+    arrivals.extend(
+        job_counters(from, to)
+            .zip(demo_jobs(from, to))
+            .map(|(counter, line)| (counter as f64 * JOB_INTERVAL, line)),
+    );
+    arrivals.sort_by(|a, b| a.0.total_cmp(&b.0));
+    arrivals.into_iter().map(|(_, line)| line).collect()
 }
 
 #[cfg(test)]
@@ -342,6 +457,109 @@ mod tests {
             3 + 2 * KEPT,
             "three reported, two samples' worth cut"
         );
+    }
+
+    #[test]
+    fn the_existing_journal_demo_text_is_unchanged() {
+        let lines = demo(0.0, 70.0);
+        // Fingerprints taken before the job lines were added: the matrix view's demo is as it was.
+        assert_eq!(lines.len(), 200);
+        let joined: String = lines
+            .iter()
+            .map(|line| format!("{} {}\n", line.priority, line.text))
+            .collect();
+        assert_eq!(hash::fnv1a_64(&joined), 17_593_658_054_892_929_715);
+        assert_eq!(
+            lines[..4],
+            [
+                Line::new(
+                    4,
+                    "gnome-shell[36769]: Window manager warning: last_user_time is ahead"
+                ),
+                Line::new(
+                    6,
+                    "kernel: usb 3-9: new high-speed USB device number 9 using xhci_hcd"
+                ),
+                Line::new(
+                    3,
+                    "kernel: nvme0: I/O 1012 QID 7 timeout, completion polled"
+                ),
+                Line::new(
+                    6,
+                    "systemd[1]: logrotate.service: Deactivated successfully."
+                ),
+            ]
+        );
+        assert!(lines.iter().all(|line| line.job.is_none()));
+    }
+
+    #[test]
+    fn demo_jobs_alternate_a_finished_backup_and_a_failed_mount_every_seven_seconds() {
+        assert!(demo_jobs(0.0, 6.99).is_empty());
+        let jobs = demo_jobs(0.0, 30.0);
+        assert_eq!(jobs.len(), 4, "at 7, 14, 21 and 28 seconds");
+        assert_eq!(
+            jobs[0],
+            Line::new(6, "systemd[1]: Finished backup.service - Nightly backup.")
+                .with_job(Some(JobResult::Done))
+        );
+        assert_eq!(
+            jobs[1],
+            Line::new(
+                3,
+                "systemd[1]: Failed to start mount-nas.service - NAS mount."
+            )
+            .with_job(Some(JobResult::Failed))
+        );
+        assert_eq!((jobs[2].priority, jobs[3].priority), (6, 3));
+        let mut pieces = demo_jobs(-5.0, 9.0);
+        pieces.extend(demo_jobs(9.0, 30.0));
+        assert_eq!(
+            pieces, jobs,
+            "splitting the interval loses and repeats nothing"
+        );
+        assert_eq!(demo_jobs(7.0, 7.0), []);
+        assert_eq!(
+            demo_jobs(6.9, 7.0).len(),
+            1,
+            "an interval is open at its start"
+        );
+    }
+
+    #[test]
+    fn the_spirits_demo_merges_jobs_and_a_thin_share_of_the_journal_in_arrival_order() {
+        let lines = demo_spirits(0.0, 30.0);
+        // Ordinary lines at 1.75, 10.5, 19.25 and 28 seconds; jobs at 7, 14, 21 and 28.
+        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[0], demo_line(5));
+        assert_eq!(lines[1].job, Some(JobResult::Done), "the backup at 7 s");
+        assert_eq!(lines[2], demo_line(30), "the disk error at 10.5 s");
+        assert!(lines[2].text.starts_with("kernel: nvme0: I/O "));
+        assert_eq!(lines[2].priority, 3);
+        assert_eq!(lines[3].job, Some(JobResult::Failed), "the mount at 14 s");
+        let mut pieces = demo_spirits(0.0, 13.3);
+        pieces.extend(demo_spirits(13.3, 30.0));
+        assert_eq!(pieces, lines);
+    }
+
+    #[test]
+    fn job_results_parse_and_failures_are_the_unhappy_ones() {
+        assert_eq!(JobResult::parse("done\n"), Some(JobResult::Done));
+        assert_eq!(JobResult::parse("dependency"), Some(JobResult::Dependency));
+        assert_eq!(JobResult::parse("assert"), None);
+        assert_eq!(JobResult::parse(""), None);
+        let failed: Vec<bool> = [
+            "done",
+            "failed",
+            "timeout",
+            "canceled",
+            "dependency",
+            "skipped",
+        ]
+        .iter()
+        .map(|value| JobResult::parse(value).expect("known").failed())
+        .collect();
+        assert_eq!(failed, [false, true, true, true, true, false]);
     }
 
     #[test]

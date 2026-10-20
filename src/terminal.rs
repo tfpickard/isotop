@@ -12,6 +12,11 @@ use flate2::{Compression, write::ZlibEncoder};
 
 use crate::render::Frame;
 
+mod text;
+
+pub use text::SafeText;
+use text::display_width;
+
 pub struct Terminal {
     active: bool,
     image: u32,
@@ -32,10 +37,9 @@ pub struct Popup {
     pub column: u16,
     pub row: u16,
     pub width: u16,
-    pub lines: Vec<String>,
-    /// The indices of the lines that are generated sparklines (`Stage::sparklines`), which are
-    /// cleaned by `clean_sparkline` instead of `clean_text`.
-    pub braille: Vec<usize>,
+    /// The lines, sparklines among them (`SafeText::braille`); each is as wide in cells as
+    /// `SafeText::width` says, whatever it holds.
+    pub lines: Vec<SafeText>,
 }
 
 impl Popup {
@@ -59,7 +63,7 @@ pub enum Tone {
 pub struct Label {
     pub column: u16,
     pub row: u16,
-    pub text: String,
+    pub text: SafeText,
     pub tone: Tone,
 }
 
@@ -127,7 +131,7 @@ impl Terminal {
         rows: u16,
         labels: &[Label],
         panels: &[Popup],
-        text: &[String],
+        text: &[SafeText],
     ) -> io::Result<usize> {
         let previous = self.image;
         self.image = if self.image == 100 { 101 } else { 100 };
@@ -194,7 +198,7 @@ impl Terminal {
                 output,
                 "\x1b[{};1H\x1b[2K\x1b[38;2;180;199;218m{}\x1b[0m",
                 rows as usize + index + 1,
-                clean_text(line, columns as usize)
+                line.cut(columns as usize)
             )?;
         }
         output.extend_from_slice(b"\x1b[?2026l");
@@ -509,7 +513,7 @@ pub(crate) fn draw_label(output: &mut Vec<u8>, label: &Label, columns: u16) -> i
         "\x1b[{};{}H{style}{}\x1b[0m",
         label.row + 1,
         label.column + 1,
-        clean_text(&label.text, room)
+        label.text.cut(room)
     )
 }
 
@@ -525,14 +529,12 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
         } else {
             "\x1b[38;2;206;220;236m"
         };
-        let text = if popup.braille.contains(&index) {
-            clean_sparkline(line, inner)
-        } else {
-            clean_text(line, inner)
-        };
+        let text = line.cut(inner);
+        // Padded by cells: `{:<inner$}` would count characters.
+        let padding = " ".repeat(inner.saturating_sub(display_width(text)));
         write!(
             output,
-            "\x1b[{};{column}H{border}│ {style}{text:<inner$}{border} │",
+            "\x1b[{};{column}H{border}│ {style}{text}{padding}{border} │",
             popup.row + 2 + index as u16,
         )?;
     }
@@ -543,64 +545,57 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
     )
 }
 
-/// A sparkline line for the terminal: the Braille Patterns block (U+2800 to U+28FF) and the space
-/// pass, and every other character becomes `?`, so a sparkline can carry nothing but the dots a
-/// view generated. It is a separate function because `clean_text` stays ASCII-only for process
-/// text, and only `Stage::sparklines` reaches it.
-pub fn clean_sparkline(text: &str, width: usize) -> String {
-    text.chars()
-        .map(|c| {
-            if ('\u{2800}'..='\u{28ff}').contains(&c) || c == ' ' {
-                c
-            } else {
-                '?'
-            }
-        })
-        .take(width)
-        .collect()
-}
-
-pub fn clean_text(text: &str, width: usize) -> String {
-    // Process names and command lines are untrusted terminal input. ASCII also keeps cell widths exact.
-    text.chars()
-        .map(|c| {
-            if c.is_ascii_graphic() || c == ' ' {
-                c
-            } else {
-                '?'
-            }
-        })
-        .take(width)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sparkline_sanitizer_passes_braille_but_not_controls_or_other_text() {
-        assert_eq!(clean_sparkline("⣀⣤⣶⣿ ⠁", 80), "⣀⣤⣶⣿ ⠁");
-        assert_eq!(clean_sparkline("\u{2800}\u{28ff}", 80), "\u{2800}\u{28ff}");
-        assert_eq!(clean_sparkline("⣿\x1b[2J\n⣿", 80), "⣿?????⣿");
-        assert_eq!(clean_sparkline("a\u{27ff}\u{2900}\u{202e}", 80), "????");
-        assert_eq!(
-            clean_sparkline("⣿⣿⣿⣿", 2),
-            "⣿⣿",
-            "cut to the width in cells"
-        );
-    }
-
-    #[test]
-    fn process_names_still_lose_braille_in_clean_text() {
-        assert_eq!(clean_text("⣿⣤name", 80), "??name");
-        assert_eq!(clean_text("\u{2800}", 80), "?");
-    }
-
-    #[test]
     fn process_text_cannot_inject_terminal_controls() {
-        assert_eq!(clean_text("bad\x1b[2J\nname", 80), "bad?[2J?name");
-        assert_eq!(clean_text("abcdef", 3), "abc");
+        assert_eq!(SafeText::new("bad\x1b[2J\nname"), "bad?[2J?name");
+        assert_eq!(SafeText::new("abcdef").cut(3), "abc");
+        let label = Label {
+            column: 0,
+            row: 0,
+            text: SafeText::new("\x1b]0;title\x07\u{9b}2J\u{202e}rtl"),
+            tone: Tone::Quiet,
+        };
+        let mut output = Vec::new();
+        draw_label(&mut output, &label, 80).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.ends_with("?]0;title??2J?rtl\x1b[0m"), "{text:?}");
+        assert_eq!(text.matches('\x1b').count(), 3, "{text:?}");
+    }
+
+    /// The text of what one popup line writes between its two borders.
+    fn drawn(line: SafeText, width: u16) -> String {
+        let popup = Popup {
+            column: 0,
+            row: 0,
+            width,
+            lines: vec![line],
+        };
+        let mut output = Vec::new();
+        draw_popup(&mut output, &popup).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn popup_lines_are_cut_and_padded_by_cells() {
+        let text = drawn(SafeText::new("abcdefghij"), 10);
+        assert!(text.contains("mabcdef\x1b"), "{text:?}");
+        let text = drawn(SafeText::new("ab"), 10);
+        assert!(
+            text.contains("ab    \x1b"),
+            "padded to the six inner cells: {text:?}"
+        );
+        // A sparkline is one cell a dot, however many bytes a dot takes.
+        let text = drawn(SafeText::braille("⣿⣿⣿⣿⣿⣿⣿⣿"), 10);
+        assert!(text.contains("m⣿⣿⣿⣿⣿⣿\x1b"), "{text:?}");
+        let text = drawn(SafeText::braille("⣿⣿"), 10);
+        assert!(text.contains("⣿⣿    \x1b"), "{text:?}");
+        // The same dots in an ordinary line are cleaned away.
+        let text = drawn(SafeText::new("⣿⣿"), 10);
+        assert!(!text.contains('⣿'), "{text:?}");
     }
 
     #[test]
@@ -617,7 +612,7 @@ mod tests {
         let label = Label {
             column: 0,
             row: 0,
-            text: format!("thread {}", thread.name),
+            text: SafeText::new(&format!("thread {}", thread.name)),
             tone: Tone::Tag,
         };
         let mut output = Vec::new();
@@ -629,6 +624,33 @@ mod tests {
             3,
             "only the cursor move, the style and the reset"
         );
+    }
+
+    #[test]
+    fn a_label_is_cut_to_the_room_left_of_it() {
+        let label = Label {
+            column: 76,
+            row: 0,
+            text: SafeText::new("abcdefgh"),
+            tone: Tone::Quiet,
+        };
+        let mut output = Vec::new();
+        draw_label(&mut output, &label, 80).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.ends_with("abcd\x1b[0m"), "{text:?}");
+    }
+
+    #[test]
+    fn popup_height_counts_the_border_and_every_line() {
+        let popup = Popup {
+            column: 2,
+            row: 3,
+            width: 10,
+            lines: vec![SafeText::new("a"), SafeText::new("b")],
+        };
+        assert_eq!(popup.height(), 4);
+        assert!(popup.contains(2, 3) && popup.contains(11, 6));
+        assert!(!popup.contains(12, 3) && !popup.contains(2, 7));
     }
 
     #[test]

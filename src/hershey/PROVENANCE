@@ -1,0 +1,34 @@
+Where the Hershey data in this directory came from.
+
+The Usenet distribution of the Hershey fonts (comp.sources.unix volume 4, formatted by James
+Hurt) is carried verbatim, as .jhf files, by the Debian and Ubuntu package hershey-fonts-data.
+The two files here were taken from that package and are not modified (cmp-identical):
+
+  Package   hershey-fonts-data 0.1-1.1build1 (Ubuntu 24.04 "noble", universe, all architectures)
+  Archive   http://archive.ubuntu.com/ubuntu/ (apt-get download hershey-fonts-data)
+  Package   SHA-256 dd9288d141a62c2c92bcf055edf907f41c365e9d8e529e8ada469a16cc9e3cc1
+  Upstream  http://www.whence.com/hershey-fonts/ (packaging by Kamal Mostafa), whose copyright
+            file lists the data as "Copyright: 1967 Dr. A. V. Hershey, James Hurt", "downloaded
+            from http://emergent.unpythonic.net/software/hershey"
+
+  This file       Package path                          SHA-256
+  romans.jhf      /usr/share/hershey-fonts/rowmans.jhf  8718fb129c0f6bce89c84fe41bc467e39534d215a6f7c3220cc5789a8a7d8618
+                  (Roman Simplex)
+  romant.jhf      /usr/share/hershey-fonts/rowmant.jhf  8b280fa0c63aa003a80cbb5bbe4ef2535e0b61ca464d3b8e6e634ce0881b9b67
+                  (Roman Triplex)
+
+The package spells the file names rowmans and rowmant; they are saved here as romans and romant,
+the names the Usenet distribution gives them. Only the names differ.
+
+NOTICE holds the distribution's notice. It is the text of the "License: hershey-license" paragraph
+of the package's /usr/share/doc/hershey-fonts-data/copyright, with the single space that the
+Debian copyright format puts in front of each line of a multi-line field removed and nothing else
+changed. The terms require it to be distributed with the font data, and forbid converting the
+data to the format distributed by the U.S. NTIS, so the data stays in .jhf form here.
+
+Each file holds 96 records, one per line. The first 95 are the printable ASCII characters 32 to
+126 in order; the 96th is an extra ring glyph that src/hershey.rs does not load.
+
+One record is odd: in romant.jhf the glyph for J (number 3010) has the bounds pair "JJ" (-8 to -8)
+around ink from -6 to 6. The file is left as it is; src/hershey.rs gives a record whose bounds miss
+its ink the ink's extent plus 2 units either side, which makes J -8 to 8.

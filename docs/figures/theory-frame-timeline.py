@@ -4,7 +4,7 @@
 Top panel: four seconds of a default interactive session (--fps 10, --sample-ms 1000) with the
 frame ticks, the samples taken on the frame thread, the background sampler's cycle and the event
 thread. Bottom panel: the order of work inside one frame, bounded by the deadline
-frame_start + 1/fps. The numbers (100 ms, 1000 ms, 2000 ms) are the defaults in src/main.rs
+frame_start + 1/fps. The numbers (100 ms, 1000 ms, 2000 ms) are the defaults in src/cli.rs
 (Options::fps, Options::sample_ms) and src/model.rs (BACKGROUND_PERIOD). Segment widths in the
 bottom panel are schematic: the loop has no fixed split.
 
@@ -143,7 +143,7 @@ def main():
     ]
     for i, line in enumerate(notes):
         svg.text(24, 470 + 18 * i, line, 12, DIM)
-    svg.text(24, 535, "sources: src/main.rs (run, App::render, Options), src/model.rs (BACKGROUND_PERIOD), "
+    svg.text(24, 535, "sources: src/interactive.rs, src/cli.rs, src/model.rs (BACKGROUND_PERIOD), "
                       "src/render.rs (MAX_DT)", 10.5, DIM, style="italic")
 
     out = pathlib.Path("docs/media/figures/theory-frame-timeline.svg")

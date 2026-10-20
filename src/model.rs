@@ -7,16 +7,19 @@ use std::time::{Duration, Instant};
 
 pub(crate) mod exchange;
 pub(crate) mod kernel;
+pub(crate) mod pipework;
 
 use crate::geo;
+use crate::io_detail::{self, IoDetail, IoScan};
 use crate::places::COUNTRIES;
 use crate::platform::{
     self, AccessMode, Cause, ExitRecord, LifeEvent, LifeKind, LifeQueue, LifeSource, Observation,
-    Observed, OpenEvents, PipeEnd, PipeId, RawProcess, Source, Sources, Taken,
+    Observed, OpenEvents, PipeEnd, PipeId, RawProcess, Source, Sources, Taken, Wait,
 };
 use crate::simulation::{Rng, hash, hash_identity, smoothing};
 use crate::threads::{self, Target, ThreadList, ThreadScan};
 use kernel::{KernelReadings, KernelScan, Readers};
+pub use pipework::{Hose, PipeHold, Severed};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -38,7 +41,7 @@ pub enum Kind {
     not(test),
     expect(
         dead_code,
-        reason = "policy and started are read by the views that come after P5 (#21)"
+        reason = "policy, started and io_detail are read by views that come after P5 and B8"
     )
 )]
 pub struct Process {
@@ -121,6 +124,14 @@ pub struct Process {
     /// `threads`: a list that is not `complete` was cut by `threads::THREADS_PER_PROCESS` or
     /// `threads::THREADS_PER_PASS`.
     pub thread_list: Measured<ThreadList>,
+    /// Where its I/O goes: which open files its descriptors' positions say it reads and writes,
+    /// and how many pipes, sockets, terminals and anonymous descriptors it holds. Read on the
+    /// background thread only for the `io_detail::IO_PROCESSES` busiest processes (by
+    /// `platform::io_rank`: syscall rate on Linux, disk I/O rate on macOS), and only while a shown
+    /// view demands `Source::IoDetail`: `Pending` otherwise, and for a process the last pass has
+    /// not reached or that is not among the busiest. `Unreadable` for another user's process
+    /// without privileges. Behind an `Arc` because the history ring clones snapshots.
+    pub io_detail: Measured<Arc<IoDetail>>,
 }
 
 /// A process's place in the out-of-memory killer's ranking.
@@ -236,6 +247,7 @@ impl Default for Process {
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         }
     }
 }
@@ -410,7 +422,7 @@ pub type CpuCount = (u32, u64, Option<f32>);
 pub type Softirq = (String, Vec<CpuCount>);
 
 /// One row of the interrupt table (`Snapshot::interrupts`). Text is as the kernel wrote it:
-/// whoever shows it cleans it (`terminal::clean_text`).
+/// whoever shows it makes it `terminal::SafeText`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Interrupt {
     /// The row's label without its colon: an interrupt number (`27`) or a name (`LOC`, `NMI`,
@@ -482,6 +494,9 @@ impl Queue {
 /// draw them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pipe {
+    /// What the descriptors of this pipe have in common whichever process holds them: its inode,
+    /// or for a FIFO the device and inode of its file. Two entries with one `id` are one pipe.
+    pub id: PipeId,
     /// The process that may read it and the one that may write it, from the open flags of their
     /// descriptors. For a pipe that carries data both ways (`two_way`), listed once, the
     /// reader is the process with the lower `Identity`.
@@ -536,6 +551,25 @@ pub struct Snapshot {
     /// per pass: processes it had not reached keep what an earlier pass read of them, and one it
     /// never reached has no pipes listed yet. False when nothing was read.
     pub pipes_partial: bool,
+    /// How many distinct pipes and FIFOs each process holds an end of, by direction, for the
+    /// processes the pipe scan reached that hold at least one (`PipeHold`). Read with `pipes`,
+    /// and empty unless `Source::Pipes` is in `sources`. A process not listed holds none, or was
+    /// not reached (`pipes_partial`) or could not be read.
+    pub pipe_holds: HashMap<Identity, PipeHold>,
+    /// The pipes and FIFOs that a process may write and no process the scan read holds a read end
+    /// of, one entry per writer, sorted (`Severed`). Read with `pipes`.
+    pub severed: Vec<Severed>,
+    /// Where the processes that hold pipes are blocked, as far as pipes go (`Source::WaitChannel`):
+    /// read for at most `platform::WAIT_PROCESSES` of them each background cycle, the rest keeping
+    /// their last reading. A process not listed was not read yet or is not a holder; one that is
+    /// listed as `Wait::Unreadable` is unknown, never "not blocked". Empty unless
+    /// `Source::WaitChannel` is in `sources`.
+    pub waits: HashMap<Identity, Wait>,
+    /// What each process sent another over loopback TCP, per direction, keyed (sender, receiver)
+    /// (`Hose`). `link_traffic` is the two directions of a pair summed; a pair measured has an
+    /// entry here for each direction, and a pair not measured (the first scan, no per-connection
+    /// counters) has none.
+    pub loopback_sent: HashMap<(Identity, Identity), Hose>,
     /// TCP connections leaving the machine, per process.
     pub outside: HashMap<Identity, u32>,
     pub cpus: Vec<Cpu>,
@@ -596,7 +630,7 @@ pub struct Snapshot {
     /// one is a new reading.
     pub kernel_pass: Option<u64>,
     /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
-    /// follower's, or the demo's. `main.rs` attaches them frame by frame, not the collector, which
+    /// follower's, or the demo's. the app attaches them frame by frame, not the collector, which
     /// does not own the follower, so a collected or demo sample starts with none. A view takes in
     /// the ones it has not seen (`Delivery::unseen`). Only the newest sample keeps its lines
     /// (`Delivery::retire`).
@@ -850,6 +884,18 @@ struct Extras {
     /// `Source::Pipes` was demanded.
     pipes: Vec<Pipe>,
     pipes_partial: bool,
+    /// What each process holds of the pipes and which pipes no process reads, from the same pass
+    /// as `pipes`; empty unless `Source::Pipes` was demanded.
+    pipe_holds: HashMap<Identity, PipeHold>,
+    severed: Vec<Severed>,
+    /// Where the processes that hold pipes are blocked, by pid: the readings kept for the
+    /// holders (`Source::WaitChannel`); empty unless it was demanded and readable.
+    waits: HashMap<u32, Wait>,
+    /// What each process sent another over loopback TCP, keyed (sender pid, receiver pid).
+    sent: HashMap<(u32, u32), Hose>,
+    /// Where the busiest processes' I/O goes (`Source::IoDetail`), by identity; empty while
+    /// nothing demands it, and holding only the processes the last pass reached.
+    io_detail: HashMap<Identity, Measured<Arc<IoDetail>>>,
 }
 
 /// The background thread, as the frame loop sees it: what it measured last and whether it is
@@ -952,6 +998,9 @@ pub struct Collector {
     /// The processes whose threads the background thread reads, busiest first, while
     /// `Source::Threads` is demanded; empty otherwise.
     thread_targets: Arc<Mutex<Vec<Target>>>,
+    /// The processes whose descriptors the background thread reads, busiest first
+    /// (`io_detail::targets`), while `Source::IoDetail` is demanded; empty otherwise.
+    io_targets: Arc<Mutex<Vec<Identity>>>,
     geoip: Option<PathBuf>,
     home: Option<Place>,
     started: bool,
@@ -974,6 +1023,7 @@ fn background(
     identities: Arc<Mutex<HashMap<u32, Identity>>>,
     rollup_pids: Arc<Mutex<Vec<u32>>>,
     thread_targets: Arc<Mutex<Vec<Target>>>,
+    io_targets: Arc<Mutex<Vec<Identity>>>,
 ) -> Option<Background> {
     Background::spawn(move || {
         let gpu = platform::Gpu::load();
@@ -990,6 +1040,10 @@ fn background(
         let mut thread_scan = ThreadScan::default();
         let mut pipe_scan = platform::PipeScan::new();
         let mut kept_pipes = KeptPipes::default();
+        let mut descriptors = platform::Descriptors::new();
+        let mut io_scan = IoScan::default();
+        let mut wait_scan = platform::WaitScan::new();
+        let mut kept_waits = KeptWaits::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -1021,7 +1075,10 @@ fn background(
                 locations.as_deref(),
                 &unread,
             );
-            let traffic = traffic(&network.loopback, &mut loopback, Instant::now());
+            let Rates {
+                pairs: traffic,
+                sent,
+            } = rates(&network.loopback, &mut loopback, Instant::now());
             let gpu_memory = timed(&mut latency, Source::GpuMemory, || {
                 gpu.as_ref().map(platform::Gpu::sample).unwrap_or_default()
             });
@@ -1057,25 +1114,38 @@ fn background(
                 &targets,
                 &mut latency,
             );
-            let sample = reads.read(Source::Pipes, || {
-                timed(&mut latency, Source::Pipes, || pipe_scan.sample())
-            });
-            let (pipes, pipes_partial) = match sample {
-                Some(sample) => {
-                    let ends = kept_pipes.update(sample.ends, &identities);
-                    let held = ends
-                        .iter()
-                        .filter_map(|(pid, ends)| Some((*identities.get(pid)?, ends.as_slice())));
-                    let (pipes, truncated) = pair_pipes(held);
-                    (pipes, sample.partial || truncated)
-                }
-                // Not demanded or not readable: what was kept would be stale when it is wanted
-                // again.
-                None => {
-                    kept_pipes = KeptPipes::default();
-                    (Vec::new(), false)
-                }
-            };
+            let io_targets = io_targets
+                .lock()
+                .map(|targets| targets.clone())
+                .unwrap_or_default();
+            let io_detail = read_io_detail(
+                &mut reads,
+                &mut io_scan,
+                &mut descriptors,
+                &io_targets,
+                &mut latency,
+            );
+            let PipeReading {
+                pipes,
+                partial: pipes_partial,
+                holds: pipe_holds,
+                severed,
+                holders,
+            } = read_pipes(
+                &mut reads,
+                &mut pipe_scan,
+                &mut kept_pipes,
+                &identities,
+                &mut latency,
+            );
+            let waits = read_waits(
+                &mut reads,
+                &mut wait_scan,
+                &mut kept_waits,
+                &holders,
+                &identities,
+                &mut latency,
+            );
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -1097,6 +1167,11 @@ fn background(
                 rollups: found.rollups,
                 pipes,
                 pipes_partial,
+                pipe_holds,
+                severed,
+                waits,
+                sent,
+                io_detail,
             }
         }
     })
@@ -1129,6 +1204,116 @@ fn read_threads(
     })
 }
 
+/// Reads the descriptors of `targets` through `reader` when `Source::IoDetail` is demanded, and
+/// records the source as read, and `Source::UnattributedIo` as missing where the reader counts no
+/// bytes of read and write calls. Nothing is read otherwise, and what the scan remembered is
+/// dropped, so a view that asks again later starts without readings instead of comparing with
+/// positions from before the gap.
+fn read_io_detail(
+    reads: &mut Reads,
+    scan: &mut IoScan,
+    reader: &mut impl io_detail::DescriptorReader,
+    targets: &[Identity],
+    latency: &mut Vec<(Source, Duration)>,
+) -> HashMap<Identity, Measured<Arc<IoDetail>>> {
+    let found = reads.read(Source::IoDetail, || {
+        Some(timed(latency, Source::IoDetail, || {
+            scan.pass(targets, reader)
+        }))
+    });
+    match found {
+        Some(found) => {
+            if !reader.counts_bytes() {
+                reads.missing.insert(Source::UnattributedIo);
+            }
+            found
+        }
+        None => {
+            scan.forget();
+            HashMap::new()
+        }
+    }
+}
+
+/// What one pass of the pipe scan found, joined to the processes of the cycle.
+#[derive(Default)]
+struct PipeReading {
+    pipes: Vec<Pipe>,
+    /// The pass or the pairing was cut short, so a pipe missing here proves nothing.
+    partial: bool,
+    holds: HashMap<Identity, PipeHold>,
+    severed: Vec<Severed>,
+    /// The pids of the processes that hold a pipe end, whose wait channels are worth reading.
+    holders: Vec<u32>,
+}
+
+/// Reads the pipe and FIFO descriptors when `Source::Pipes` is demanded and records the source as
+/// read. Nothing is read otherwise, and the ends kept are dropped: they would be stale when the
+/// source is wanted again.
+fn read_pipes(
+    reads: &mut Reads,
+    scan: &mut platform::PipeScan,
+    kept: &mut KeptPipes,
+    identities: &HashMap<u32, Identity>,
+    latency: &mut Vec<(Source, Duration)>,
+) -> PipeReading {
+    let sample = reads.read(Source::Pipes, || {
+        timed(latency, Source::Pipes, || scan.sample())
+    });
+    let Some(sample) = sample else {
+        *kept = KeptPipes::default();
+        return PipeReading::default();
+    };
+    let ends = kept.update(sample.ends, identities);
+    let held: Vec<(Identity, &[PipeEnd])> = ends
+        .iter()
+        .filter_map(|(pid, ends)| Some((*identities.get(pid)?, ends.as_slice())))
+        .collect();
+    let (pipes, truncated) = pair_pipes(held.iter().copied());
+    let (holds, severed) = pipework::roles(held.iter().copied());
+    let holders: Vec<u32> = ends
+        .iter()
+        .filter(|(pid, ends)| !ends.is_empty() && identities.contains_key(pid))
+        .map(|(&pid, _)| pid)
+        .collect();
+    PipeReading {
+        pipes,
+        partial: sample.partial || truncated,
+        holds,
+        severed,
+        holders,
+    }
+}
+
+/// Reads the wait channel of the pids in `holders` (the processes that hold pipes) when
+/// `Source::WaitChannel` is demanded, and records the source as read, or missing where the
+/// platform has none. A process the pass did not reach keeps its last reading while it still
+/// holds pipes. Nothing is read otherwise, and what was kept is dropped.
+fn read_waits(
+    reads: &mut Reads,
+    scan: &mut platform::WaitScan,
+    kept: &mut KeptWaits,
+    holders: &[u32],
+    identities: &HashMap<u32, Identity>,
+    latency: &mut Vec<(Source, Duration)>,
+) -> HashMap<u32, Wait> {
+    let found = reads.read(Source::WaitChannel, || {
+        timed(latency, Source::WaitChannel, || scan.sample(holders))
+    });
+    match found {
+        Some(scanned) => {
+            let mut waits = kept.update(scanned, identities);
+            let holding: HashSet<u32> = holders.iter().copied().collect();
+            waits.retain(|pid, _| holding.contains(pid));
+            waits
+        }
+        None => {
+            *kept = KeptWaits::default();
+            HashMap::new()
+        }
+    }
+}
+
 impl<T> Default for Kept<T> {
     fn default() -> Self {
         Kept(HashMap::new())
@@ -1140,6 +1325,9 @@ type KeptFiles = Kept<Option<platform::Files>>;
 
 /// The pipe and FIFO descriptors of each process, which the pipe scan reaches round-robin.
 type KeptPipes = Kept<Vec<PipeEnd>>;
+
+/// The wait channel of each process that holds pipes, which the wait scan reaches round-robin.
+type KeptWaits = Kept<Wait>;
 
 impl<T: Clone> Kept<T> {
     /// Takes the readings this cycle's scan took, against `identities` (the processes by pid
@@ -1194,6 +1382,11 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
             .get(&process.id)
             .cloned()
             .unwrap_or(Measured::Pending);
+        process.io_detail = extras
+            .io_detail
+            .get(&process.id)
+            .cloned()
+            .unwrap_or(Measured::Pending);
         // A holder that has exited since released its locks, so nothing waits on it any more.
         process.blocked_on = process.blocked_on.filter(|blocker| match blocker {
             Blocker::Process(holder) => id(holder).is_some(),
@@ -1238,6 +1431,28 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
         .copied()
         .collect();
     snapshot.pipes_partial = extras.pipes_partial;
+    snapshot.pipe_holds = extras
+        .pipe_holds
+        .iter()
+        .filter(|(holder, _)| current.contains(holder))
+        .map(|(&holder, &hold)| (holder, hold))
+        .collect();
+    snapshot.severed = extras
+        .severed
+        .iter()
+        .filter(|severed| current.contains(&severed.writer))
+        .copied()
+        .collect();
+    snapshot.waits = extras
+        .waits
+        .iter()
+        .filter_map(|(pid, &wait)| Some((id(pid)?, wait)))
+        .collect();
+    snapshot.loopback_sent = extras
+        .sent
+        .iter()
+        .filter_map(|(&(sender, receiver), &hose)| Some(((id(&sender)?, id(&receiver)?), hose)))
+        .collect();
     snapshot.units = extras.units.clone();
     snapshot.remotes = extras
         .remotes
@@ -1508,6 +1723,7 @@ pub(crate) fn pair_pipes<'a>(
                     continue;
                 }
                 pipes.push(Pipe {
+                    id,
                     reader,
                     writer,
                     two_way,
@@ -1613,24 +1829,30 @@ struct LoopbackScan {
 /// instead of looking new. Socket inode numbers are not reused within that time.
 const LOOPBACK_MISSES: u32 = 3;
 
+/// What one loopback scan measured: the rate of each pair, and of each direction of it.
+#[derive(Default)]
+struct Rates {
+    /// Bytes per second between pid pairs (smaller pid first), both directions together.
+    pairs: HashMap<(u32, u32), f32>,
+    /// What each pid sent another, keyed (sender, receiver).
+    sent: HashMap<(u32, u32), Hose>,
+}
+
 /// Bytes per second between pid pairs (smaller pid first) from the change in each loopback
 /// socket's received counter since the scan that last saw it, divided by the time since then.
 /// Each end counts what it received, which is what the other end sent, so both directions
-/// together count every byte once.
+/// together count every byte once, and the end of `pid` whose peer is `peer` gives what `peer`
+/// sent `pid`: `Rates::sent`, per direction.
 ///
 /// A socket not in the previous scan was opened inside the interval, so all of its received
 /// bytes fall in it. On the very first scan nothing is known about the interval, and the pairs
 /// stay absent rather than reading as measured and idle.
-fn traffic(
-    sockets: &[platform::Loopback],
-    previous: &mut LoopbackScan,
-    now: Instant,
-) -> HashMap<(u32, u32), f32> {
+fn rates(sockets: &[platform::Loopback], previous: &mut LoopbackScan, now: Instant) -> Rates {
     let interval = previous
         .at
         .map(|then| now.duration_since(then).as_secs_f32().max(0.1));
     let mut next = HashMap::new();
-    let mut rates: HashMap<(u32, u32), f32> = HashMap::new();
+    let mut found = Rates::default();
     for socket in sockets {
         next.insert(socket.inode, (socket.received, now, 0));
         let Some(interval) = interval else {
@@ -1642,9 +1864,17 @@ fn traffic(
             .map_or((0, interval), |&(received, seen, _)| {
                 (received, now.duration_since(seen).as_secs_f32().max(0.1))
             });
-        *rates
+        let rate = socket.received.saturating_sub(before) as f32 / elapsed;
+        *found
+            .pairs
             .entry((socket.pid.min(socket.peer), socket.pid.max(socket.peer)))
-            .or_default() += socket.received.saturating_sub(before) as f32 / elapsed;
+            .or_default() += rate;
+        let sent = found.sent.entry((socket.peer, socket.pid)).or_insert(Hose {
+            rate: 0.0,
+            connections: 0,
+        });
+        sent.rate += rate;
+        sent.connections += 1;
     }
     for (&inode, &(received, seen, misses)) in &previous.received {
         if misses < LOOPBACK_MISSES {
@@ -1655,7 +1885,18 @@ fn traffic(
         at: Some(now),
         received: next,
     };
-    rates
+    found
+}
+
+/// The loopback rate of each pair, both directions together: `rates` without the directions, for
+/// the tests that predate them.
+#[cfg(test)]
+fn traffic(
+    sockets: &[platform::Loopback],
+    previous: &mut LoopbackScan,
+    now: Instant,
+) -> HashMap<(u32, u32), f32> {
+    rates(sockets, previous, now).pairs
 }
 
 /// How long a proc connector exit waits for its taskstats record, and a record for its exit, in
@@ -2071,6 +2312,7 @@ impl Collector {
             identities: Arc::new(Mutex::new(HashMap::new())),
             rollup_pids: Arc::new(Mutex::new(Vec::new())),
             thread_targets: Arc::new(Mutex::new(Vec::new())),
+            io_targets: Arc::new(Mutex::new(Vec::new())),
             geoip,
             home: geo::home(home),
             started: false,
@@ -2130,6 +2372,13 @@ impl Collector {
                 Vec::new()
             };
         }
+        if let Ok(mut targets) = self.io_targets.lock() {
+            *targets = if demand.contains(Source::IoDetail) {
+                io_detail::targets(&snapshot.processes)
+            } else {
+                Vec::new()
+            };
+        }
         if let Ok(mut wanted) = self.wanted.lock() {
             *wanted = snapshot
                 .processes
@@ -2166,6 +2415,7 @@ impl Collector {
                 Arc::clone(&self.identities),
                 Arc::clone(&self.rollup_pids),
                 Arc::clone(&self.thread_targets),
+                Arc::clone(&self.io_targets),
             );
         }
         if let Some(background) = &self.background {
@@ -2422,6 +2672,23 @@ fn demo_syscall_io(index: usize, io_rate: f32, write_rate: f32) -> SyscallIo {
     }
 }
 
+/// The cumulative bytes demo process `index` has passed to read and write calls (`rchar` and
+/// `wchar`) at `time`, relative to time 0: the exact integrals of the read and write rates that
+/// `demo_syscall_io` gives it, which are its storage I/O scaled by the factors there. Zero for the
+/// processes that do no I/O (not a multiple of 7). It decreases going back before time 0.
+pub(crate) fn demo_syscall_chars(time: f64, index: usize) -> (f64, f64) {
+    if !index.is_multiple_of(7) {
+        return (0.0, 0.0);
+    }
+    // io_rate is its CPU use in percent times 65536 bytes per second.
+    let stored = demo_cpu_integral(time, index) * 65536.0;
+    let write_share = f64::from(demo_write_share(index));
+    (
+        stored * (1.0 - write_share) * (1.25 + 0.25 * (index % 4) as f64),
+        stored * write_share * (1.1 + 0.1 * (index % 3) as f64),
+    )
+}
+
 /// Major faults per second of demo process `index`: a few processes page in from storage.
 fn demo_major_faults(index: usize, phase: f32) -> f32 {
     if index % 23 == 5 {
@@ -2571,6 +2838,33 @@ pub struct DemoOptions {
     /// counts it. Applied last, so it composes with `oom_cycle`. Off, `shadows` is empty and
     /// `unreadable` 0, as in `demo`.
     pub unreadable_parent: bool,
+    /// Synthesizes `Process::io_detail` for the base processes among the `io_detail::IO_PROCESSES`
+    /// busiest by syscall rate (never the transients), and lists `Source::IoDetail` in
+    /// `Snapshot::sources`, as a live run does while the source is demanded. Each holds three to
+    /// six of eight files under `/usr/lib`, `/home/demo`, `/var/log` and `/tmp` (one of the logs
+    /// deleted while open, one opened to append), and pipes, sockets, anonymous descriptors and
+    /// sometimes a terminal. The rates are what `io_detail::IoScan` would measure from positions
+    /// that advance with the integral of the process's syscall I/O (`demo_syscall_chars`) over the
+    /// `BACKGROUND_PERIOD` ending at `time`, a pure function of the time and the process's index,
+    /// so the files together take well under what it reads and writes and a remainder is left
+    /// unattributed. Off, `io_detail` is `Pending` for every process, as in `demo`.
+    pub io_detail: bool,
+    /// Feeds the demo journal (`journal::demo_spirits`, which the app attaches to the newest
+    /// sample) the lines that end a job, with their `JOB_RESULT`, every seven seconds, and one in
+    /// 25 of the ordinary lines, which `journal::demo` has no result for. Off, the journal demo is
+    /// `journal::demo`, as it has always been. The processes and every other field are the same
+    /// either way.
+    pub job_results: bool,
+    /// Replaces the demo's links, pipes, sockets and descriptors with the boiler room of
+    /// `model::pipework::demo`: sixteen base processes renamed and resized (`cat`, `grep`, `sort`
+    /// and `uniq` in a pipeline, a blocked `browser`, a `compiler` with three outlets, Unix
+    /// streams and a datagram with queues, a loopback connection with a rate each way, and a
+    /// `redis` whose reader drops its end of the pipe every 20 s), their pipes, queues, wait
+    /// channels (`Snapshot::waits`), severed pipes and `Process::io_detail`, and lists
+    /// `Source::Pipes`, `Source::IoDetail` and `Source::WaitChannel` in `Snapshot::sources`, as a
+    /// live run does while they are demanded. Every other process keeps no link and no pipe. A
+    /// pure function of `time`, with no random stream. Off, none of it exists, as in `demo`.
+    pub plumbing: bool,
     /// With `churn`, brings the out-of-memory victim's first kill forward to `DEMO_EARLY_KILL`
     /// seconds of demo time, so a process that grew above 1 GiB has just exited when a view
     /// looks at the first seconds. Its cycle starts at a fixed `DEMO_GIANT_OFFSET` instead of
@@ -2607,6 +2901,9 @@ impl DemoOptions {
         oom_cycle: false,
         thread_churn: false,
         unreadable_parent: false,
+        io_detail: false,
+        job_results: false,
+        plumbing: false,
         early_giant: false,
         exchange: false,
     };
@@ -3190,6 +3487,7 @@ impl Transient {
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         }
     }
 }
@@ -3536,6 +3834,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             oom: Measured::Pending,
             memory_detail: Measured::Pending,
             thread_list: Measured::Pending,
+            io_detail: Measured::Pending,
         });
     }
     let id = |i: usize| processes[i % count].id;
@@ -3704,6 +4003,23 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
             process.thread_list = Measured::Known(threads::demo_list(process, time));
         }
     }
+    if options.io_detail {
+        // The base processes only: the transients' I/O integrals are not the base formulas.
+        let busiest = io_detail::select(&processes[..count], io_detail::by_syscall_rate);
+        for (index, process) in processes.iter_mut().enumerate().take(count) {
+            if busiest.contains(&process.id) {
+                process.io_detail =
+                    Measured::Known(Arc::new(io_detail::demo_detail(index, process, time)));
+            }
+        }
+    }
+    let mut sources = Sources::default();
+    if options.threads {
+        sources.insert(Source::Threads);
+    }
+    if options.io_detail {
+        sources.insert(Source::IoDetail);
+    }
     let mut snapshot = Snapshot {
         processes,
         memory_total: Some(DEMO_MEMORY_TOTAL),
@@ -3718,17 +4034,17 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         unix_queues,
         pipes,
         pipes_partial: false,
+        pipe_holds: HashMap::new(),
+        severed: Vec::new(),
+        waits: HashMap::new(),
+        loopback_sent: HashMap::new(),
         outside,
         cpus,
         units,
         remotes,
         unattributed_locks: 1,
         missing: Sources::default(),
-        sources: if options.threads {
-            Sources::from(Source::Threads)
-        } else {
-            Sources::default()
-        },
+        sources,
         unreadable: 0,
         per_cluster: Sources::default(),
         shadows: Vec::new(),
@@ -3761,6 +4077,9 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     };
     if options.oom_cycle {
         demo_kill_cycle(time, count, &mut snapshot);
+    }
+    if options.plumbing {
+        pipework::demo::apply(&mut snapshot, time, count);
     }
     if options.unreadable_parent && count > DEMO_FAMILY_SIZE {
         let hidden = snapshot.processes.remove(DEMO_FAMILY_SIZE);
@@ -3946,6 +4265,10 @@ fn demo_rollup(id: Identity, rss: u64) -> Rollup {
     }
 }
 
+/// The inode of the first of the demo's anonymous pipes, and the device of its FIFO.
+const DEMO_PIPE_INODE: u64 = 7000;
+const DEMO_FIFO_DEVICE: u64 = 0x0100_0004;
+
 /// The Unix queues and pipes `DemoOptions::channels` asks for, between the demo processes `id`
 /// names by index. Pure in `time`.
 fn demo_channels(
@@ -3988,6 +4311,7 @@ fn demo_channels(
             }
             let pulse = ((time * 1.3 + (first + stage) as f64).sin() as f32) * 0.5 + 0.5;
             pipes.push(Pipe {
+                id: PipeId::Anonymous(DEMO_PIPE_INODE + (first + stage) as u64),
                 reader,
                 writer,
                 two_way: false,
@@ -3999,6 +4323,10 @@ fn demo_channels(
     let (a, b) = (id(count / 2), id(count / 2 + 13));
     if a != b {
         pipes.push(Pipe {
+            id: PipeId::Fifo {
+                device: DEMO_FIFO_DEVICE,
+                inode: DEMO_PIPE_INODE,
+            },
             reader: a.min(b),
             writer: a.max(b),
             two_way: true,
@@ -4432,6 +4760,58 @@ mod tests {
         ];
         let rates = traffic(&third, &mut previous, start + Duration::from_millis(2010));
         assert_eq!(rates, HashMap::from([((20, 30), 1000.0 + 7770.0)]));
+    }
+
+    #[test]
+    fn loopback_traffic_is_kept_per_direction_with_the_connections_it_was_measured_on() {
+        let start = Instant::now();
+        let mut previous = LoopbackScan::default();
+        // The first scan has no interval: nothing is measured, in either direction.
+        let first = [loopback(1, 30, 20, 1000), loopback(2, 20, 30, 500)];
+        let nothing = rates(&first, &mut previous, start);
+        assert!(nothing.pairs.is_empty() && nothing.sent.is_empty());
+        // 30's end received 4000 bytes from 20 and 20's end received 1000 from 30 in 2 seconds, so
+        // 20 sent 2000 B/s and 30 sent 500 B/s, and the pair together 2500.
+        let second = [loopback(1, 30, 20, 5000), loopback(2, 20, 30, 1500)];
+        let found = rates(&second, &mut previous, start + Duration::from_secs(2));
+        assert_eq!(found.pairs, HashMap::from([((20, 30), 2500.0)]));
+        assert_eq!(
+            found.sent,
+            HashMap::from([
+                (
+                    (20, 30),
+                    Hose {
+                        rate: 2000.0,
+                        connections: 1
+                    }
+                ),
+                (
+                    (30, 20),
+                    Hose {
+                        rate: 500.0,
+                        connections: 1
+                    }
+                ),
+            ])
+        );
+        // A second connection of the pair adds its bytes and counts; its sender is the peer.
+        let third = [
+            loopback(1, 30, 20, 5000),
+            loopback(2, 20, 30, 1500),
+            loopback(3, 20, 30, 400),
+            loopback(4, 30, 20, 0),
+        ];
+        let found = rates(&third, &mut previous, start + Duration::from_secs(4));
+        assert_eq!(
+            found.sent[&(30, 20)],
+            Hose {
+                rate: 200.0,
+                connections: 2
+            },
+            "20's two ends received 400 from 30 in 2 seconds"
+        );
+        assert_eq!(found.sent[&(20, 30)].rate, 0.0);
+        assert_eq!(found.sent[&(20, 30)].connections, 2);
     }
 
     #[test]
@@ -5201,6 +5581,7 @@ mod tests {
                 ..platform::Network::default()
             },
             pipes: vec![Pipe {
+                id: PipeId::Anonymous(31),
                 reader: Identity { pid: 8, start: 8 },
                 writer: Identity { pid: 7, start: 70 },
                 two_way: false,
@@ -5284,6 +5665,124 @@ mod tests {
         );
         assert_eq!(same.unix_queues[&(other.id, scanned.id)], Queue::default());
         assert_eq!((same.pipes.len(), same.pipes_partial), (1, true));
+    }
+
+    #[test]
+    fn a_reused_pid_inherits_no_wait_hold_severed_pipe_or_loopback_rate() {
+        let (old, new) = (
+            Identity { pid: 7, start: 70 },
+            Identity { pid: 8, start: 8 },
+        );
+        let extras = Extras {
+            identities: HashMap::from([(7, old), (8, new)]),
+            pipe_holds: HashMap::from([(
+                old,
+                PipeHold {
+                    writes: 1,
+                    reads: 0,
+                },
+            )]),
+            severed: vec![Severed {
+                writer: old,
+                id: PipeId::Anonymous(5),
+            }],
+            waits: HashMap::from([(7, Wait::PipeWrite), (8, Wait::PipeRead)]),
+            sent: HashMap::from([
+                (
+                    (7, 8),
+                    Hose {
+                        rate: 10.0,
+                        connections: 1,
+                    },
+                ),
+                (
+                    (8, 7),
+                    Hose {
+                        rate: 20.0,
+                        connections: 1,
+                    },
+                ),
+            ]),
+            ..Extras::default()
+        };
+        let sample = |start_of_7| {
+            let mut snapshot = Snapshot {
+                processes: vec![
+                    Process {
+                        id: Identity {
+                            pid: 7,
+                            start: start_of_7,
+                        },
+                        ..testing::process(7, 1)
+                    },
+                    testing::process(8, 1),
+                ],
+                ..Snapshot::default()
+            };
+            merge(&mut snapshot, &extras);
+            snapshot
+        };
+        let same = sample(70);
+        assert_eq!(same.waits[&old], Wait::PipeWrite);
+        assert_eq!(same.waits[&new], Wait::PipeRead);
+        assert_eq!(same.pipe_holds[&old].writes, 1);
+        assert_eq!(same.severed.len(), 1);
+        assert_eq!(same.loopback_sent[&(old, new)].rate, 10.0);
+        // Pid 7 now belongs to a process that started at 71: nothing of the old one is its.
+        let reused = sample(71);
+        assert_eq!(
+            reused.waits.keys().copied().collect::<Vec<_>>(),
+            [new],
+            "only the survivor's wait channel"
+        );
+        assert!(reused.pipe_holds.is_empty() && reused.severed.is_empty());
+        assert!(reused.loopback_sent.is_empty());
+    }
+
+    #[test]
+    fn wait_channels_are_read_only_while_demanded_and_dropped_after() {
+        let me = Identity {
+            pid: std::process::id(),
+            start: 1,
+        };
+        let identities = HashMap::from([(me.pid, me)]);
+        let mut scan = platform::WaitScan::new();
+        let mut kept = KeptWaits::default();
+        let mut latency = Vec::new();
+        let mut asked = |demanded: bool, holders: &[u32], kept: &mut KeptWaits| {
+            let mut reads = Reads::new(if demanded {
+                Demand::from(Sources::from(Source::WaitChannel))
+            } else {
+                Demand::default()
+            });
+            let waits = read_waits(
+                &mut reads,
+                &mut scan,
+                kept,
+                holders,
+                &identities,
+                &mut latency,
+            );
+            (waits, reads)
+        };
+        let (waits, reads) = asked(false, &[me.pid], &mut kept);
+        assert!(waits.is_empty() && reads.active.is_empty() && reads.missing.is_empty());
+        let (waits, reads) = asked(true, &[me.pid], &mut kept);
+        if cfg!(target_os = "macos") {
+            // There is no wait channel to read: missing, never "not blocked".
+            assert!(waits.is_empty());
+            assert!(reads.missing.contains(Source::WaitChannel));
+        } else {
+            // Whatever the kernel says of this process (`0` while it runs, the name of a kernel
+            // function while its main thread waits for the test threads) is a reading.
+            assert!(waits.contains_key(&me.pid), "{waits:?}");
+            assert!(reads.active.contains(Source::WaitChannel));
+        }
+        // A holder that stopped holding pipes keeps no reading.
+        let (waits, _) = asked(true, &[], &mut kept);
+        assert!(waits.is_empty());
+        let (waits, _) = asked(false, &[me.pid], &mut kept);
+        assert!(waits.is_empty());
     }
 
     #[test]
@@ -5529,6 +6028,7 @@ mod tests {
                 oom: Measured::Pending,
                 memory_detail: Measured::Pending,
                 thread_list: Measured::Pending,
+                io_detail: Measured::Pending,
             });
         }
         let id = |i: usize| processes[i % count].id;
@@ -5647,6 +6147,10 @@ mod tests {
             unix_queues: HashMap::new(),
             pipes: Vec::new(),
             pipes_partial: false,
+            pipe_holds: HashMap::new(),
+            severed: Vec::new(),
+            waits: HashMap::new(),
+            loopback_sent: HashMap::new(),
             outside,
             cpus,
             units,
@@ -5698,6 +6202,10 @@ mod tests {
             unix_queues,
             pipes,
             pipes_partial,
+            pipe_holds,
+            severed,
+            waits,
+            loopback_sent,
             outside,
             cpus,
             units,
@@ -5725,9 +6233,16 @@ mod tests {
         let unix_queues: BTreeMap<_, _> = unix_queues.iter().collect();
         let outside: BTreeMap<_, _> = outside.iter().collect();
         let units: BTreeMap<_, _> = units.iter().collect();
+        let pipe_holds: BTreeMap<_, _> = pipe_holds.iter().collect();
+        let waits: BTreeMap<_, _> = waits
+            .iter()
+            .map(|(id, wait)| (id, format!("{wait:?}")))
+            .collect();
+        let loopback_sent: BTreeMap<_, _> = loopback_sent.iter().collect();
         format!(
             "{processes:?}\n{memory_total:?} {memory_available:?} {cores} {elapsed:?} {wall:?} {pressure:?}\n\
              {links:?}\n{link_traffic:?}\n{unix_links:?}\n{unix_queues:?}\n{pipes:?} {pipes_partial}\n\
+             {pipe_holds:?}\n{severed:?}\n{waits:?}\n{loopback_sent:?}\n\
              {outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
@@ -5795,14 +6310,15 @@ mod tests {
             (who(40), &both_ends[..]),
         ]);
         assert!(!truncated);
-        let pipe = |reader, writer| Pipe {
+        let pipe = |id, reader, writer| Pipe {
+            id,
             reader: who(reader),
             writer: who(writer),
             two_way: false,
             buffered: None,
             fifo: false,
         };
-        assert_eq!(pipes, [pipe(20, 10), pipe(30, 20)]);
+        assert_eq!(pipes, [pipe(first, 20, 10), pipe(second, 30, 20)]);
         // The same descriptors in another order give the same list.
         let (again, _) = pair_pipes([
             (who(20), &filter[..]),
@@ -5820,7 +6336,15 @@ mod tests {
             (who(3), &reader[..]),
             (who(4), &writer[..]),
         ]);
-        assert_eq!(shared, [pipe(2, 1), pipe(2, 4), pipe(3, 1), pipe(3, 4)]);
+        assert_eq!(
+            shared,
+            [
+                pipe(first, 2, 1),
+                pipe(first, 2, 4),
+                pipe(first, 3, 1),
+                pipe(first, 3, 4)
+            ]
+        );
     }
 
     #[test]
@@ -5834,6 +6358,7 @@ mod tests {
         assert_eq!(
             pipes,
             [Pipe {
+                id: fifo,
                 reader: who(5),
                 writer: who(9),
                 two_way: true,
@@ -5848,6 +6373,7 @@ mod tests {
         assert_eq!(
             pipes,
             [Pipe {
+                id: fifo,
                 reader: who(9),
                 writer: who(5),
                 two_way: false,
@@ -6052,15 +6578,8 @@ mod tests {
         assert!(named[0].two_way && named[0].reader < named[0].writer);
         // What the demo lists is what `pair_pipes` makes of the descriptors that would give it.
         let mut held: HashMap<Identity, Vec<PipeEnd>> = HashMap::new();
-        for (number, pipe) in pipes.iter().enumerate() {
-            let id = if pipe.fifo {
-                PipeId::Fifo {
-                    device: 1,
-                    inode: number as u64,
-                }
-            } else {
-                PipeId::Anonymous(number as u64)
-            };
+        for pipe in pipes {
+            let id = pipe.id;
             let access = |access, buffered| PipeEnd {
                 id,
                 access,
@@ -6699,6 +7218,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .expect("the sampler thread starts");
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -6847,6 +7367,7 @@ mod tests {
                 Arc::new(Mutex::new(HashMap::from([(own.pid, own)]))),
                 Arc::new(Mutex::new(Vec::new())),
                 targets,
+                Arc::new(Mutex::new(Vec::new())),
             )
             .expect("the sampler thread starts")
         };
@@ -6914,6 +7435,206 @@ mod tests {
         assert_eq!(snapshot.processes[2].thread_list, Measured::Pending);
     }
 
+    /// Holds nothing and counts the processes it was asked about; `counted` says whether its
+    /// platform counts the bytes of read and write calls.
+    struct CountingDescriptors {
+        asked: Vec<u32>,
+        counted: bool,
+    }
+
+    impl io_detail::DescriptorReader for CountingDescriptors {
+        fn counts_bytes(&self) -> bool {
+            self.counted
+        }
+
+        fn read(&mut self, id: Identity, _: io_detail::Budget) -> io_detail::Reading {
+            self.asked.push(id.pid);
+            io_detail::Reading::Taken(io_detail::Held::default())
+        }
+    }
+
+    #[test]
+    fn io_detail_is_not_sampled_without_demand() {
+        let targets = [Identity { pid: 7, start: 1 }, Identity { pid: 8, start: 1 }];
+        let mut scan = IoScan::default();
+        let mut reader = CountingDescriptors {
+            asked: Vec::new(),
+            counted: true,
+        };
+        let mut latency = Vec::new();
+
+        // Not demanded: the reader is never asked, nothing is timed, and the source is neither
+        // active nor missing, not even the part of it a platform may lack.
+        let mut idle = Reads::new(Demand::default());
+        let found = read_io_detail(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(found.is_empty() && reader.asked.is_empty() && latency.is_empty());
+        assert!(idle.active.is_empty() && idle.missing.is_empty());
+        reader.counted = false;
+        read_io_detail(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(reader.asked.is_empty() && idle.missing.is_empty());
+
+        // Demanded: every target is read, in the order given, and the source is active.
+        let mut demand = Demand::default();
+        demand.insert(Source::IoDetail);
+        let mut asked = Reads::new(demand);
+        reader.counted = true;
+        let found = read_io_detail(&mut asked, &mut scan, &mut reader, &targets, &mut latency);
+        assert_eq!(reader.asked, [7, 8]);
+        assert_eq!(found.len(), 2);
+        assert!(asked.active.contains(Source::IoDetail) && asked.missing.is_empty());
+        assert_eq!(latency.len(), 1);
+        assert_eq!(latency[0].0, Source::IoDetail);
+
+        // A platform that counts no bytes (macOS) reads all the same and is missing the part that
+        // needs them.
+        reader.counted = false;
+        let mut uncounted = Reads::new(demand);
+        let found = read_io_detail(
+            &mut uncounted,
+            &mut scan,
+            &mut reader,
+            &targets,
+            &mut latency,
+        );
+        assert_eq!(found.len(), 2);
+        assert!(uncounted.active.contains(Source::IoDetail));
+        assert_eq!(uncounted.missing, Sources::from(Source::UnattributedIo));
+
+        // A cycle that read none drops what the scan remembered: the next reading compares with
+        // nothing rather than with positions from before the gap.
+        read_io_detail(&mut idle, &mut scan, &mut reader, &targets, &mut latency);
+        assert!(scan.remembers_nothing());
+
+        // The real thread, started with nothing demanded, reads nothing and reports no detail.
+        let own = own_identity();
+        let start = |demand: Demand| {
+            background(
+                None,
+                Arc::new(Mutex::new(HashSet::new())),
+                Arc::new(Mutex::new(demand)),
+                Arc::new(Mutex::new(HashMap::from([(own.pid, own)]))),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(Mutex::new(vec![own])),
+            )
+            .expect("the sampler thread starts")
+        };
+        let wait = |thread: &Background| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while thread.extras().finished.is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                thread.extras().finished.is_some(),
+                "the first cycle finished"
+            );
+        };
+        let quiet = start(Demand::default());
+        wait(&quiet);
+        let extras = quiet.extras();
+        assert!(extras.io_detail.is_empty());
+        assert!(
+            !extras.sources.contains(Source::IoDetail)
+                && !extras.missing.contains(Source::IoDetail)
+                && !extras.missing.contains(Source::UnattributedIo)
+        );
+        assert!(
+            extras
+                .latency
+                .iter()
+                .all(|(source, _)| *source != Source::IoDetail),
+            "no descriptor was walked"
+        );
+        drop(extras);
+        // Demanded, it walks this process's own descriptors, a file this test holds open among
+        // them.
+        let path = std::env::temp_dir().join(format!("isotop-io-detail-{}", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let path = std::fs::canonicalize(&path).unwrap();
+        let busy = start(demand);
+        wait(&busy);
+        let extras = busy.extras();
+        let detail = extras.io_detail[&own]
+            .known()
+            .expect("this process is readable");
+        assert!(
+            detail
+                .files
+                .iter()
+                .any(|held| held.path == path.to_str().unwrap()),
+            "{detail:?}"
+        );
+        std::fs::remove_file(&path).unwrap();
+        drop(file);
+        assert!(extras.sources.contains(Source::IoDetail));
+        assert_eq!(
+            extras.missing.contains(Source::UnattributedIo),
+            cfg!(target_os = "macos"),
+            "only a platform with no byte counters lacks the remainder"
+        );
+    }
+
+    #[test]
+    fn no_process_is_chosen_for_io_detail_until_a_view_demands_it() {
+        let mut collector = Collector::new(None, None);
+        collector.sample().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        collector.sample().unwrap();
+        assert!(
+            collector.io_targets.lock().unwrap().is_empty(),
+            "nothing demanded it"
+        );
+        collector.demand(Demand::from(Sources::from(Source::IoDetail)));
+        let snapshot = collector.sample().unwrap();
+        let chosen = collector.io_targets.lock().unwrap().clone();
+        assert!(chosen.len() <= io_detail::IO_PROCESSES);
+        assert_eq!(chosen, io_detail::targets(&snapshot.processes));
+        collector.demand(Demand::default());
+        collector.sample().unwrap();
+        assert!(collector.io_targets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_process_takes_only_the_io_detail_read_for_its_own_identity() {
+        let current = Identity { pid: 5, start: 10 };
+        let reused = Identity { pid: 5, start: 99 };
+        let detail = Measured::Known(Arc::new(IoDetail {
+            pipes: 2,
+            ..IoDetail::default()
+        }));
+        let extras = Extras {
+            identities: HashMap::from([(5, current)]),
+            io_detail: HashMap::from([
+                (current, detail.clone()),
+                (Identity { pid: 7, start: 1 }, Measured::Unreadable),
+            ]),
+            ..Extras::default()
+        };
+        let mut snapshot = Snapshot {
+            processes: vec![
+                Process {
+                    id: current,
+                    ..testing::process(5, 1)
+                },
+                Process {
+                    id: reused,
+                    ..testing::process(5, 1)
+                },
+                Process {
+                    id: Identity { pid: 7, start: 1 },
+                    ..testing::process(7, 1)
+                },
+                testing::process(6, 1),
+            ],
+            ..Snapshot::default()
+        };
+        merge(&mut snapshot, &extras);
+        assert_eq!(snapshot.processes[0].io_detail, detail);
+        assert_eq!(snapshot.processes[1].io_detail, Measured::Pending);
+        assert_eq!(snapshot.processes[2].io_detail, Measured::Unreadable);
+        assert_eq!(snapshot.processes[3].io_detail, Measured::Pending);
+    }
+
     #[test]
     fn a_demanded_pipe_scan_runs_and_is_reported_active() {
         let thread = background(
@@ -6921,6 +7642,7 @@ mod tests {
             Arc::new(Mutex::new(HashSet::new())),
             Arc::new(Mutex::new(Demand::from(Sources::from(Source::Pipes)))),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
         )
