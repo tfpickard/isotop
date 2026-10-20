@@ -29,6 +29,8 @@ rules for planned work and several files that are generated or are prototypes, n
 - Media paths are named by the pages and README that link them; `scripts/check_wiki.py` requires every
   raw.githubusercontent `docs/...` link to name a committed file.
 - Mockup prototypes write to `$ISOTOP_MOCKUP_OUT`, default `docs/mockups/out`. Shared helpers: `mockkit.py`, `isostyle.py`.
+  Three ignore it and need the output path as their first argument: `morph.py` and `murmuration.py` take a directory
+  (`main(sys.argv[1])`), and `presets.py` takes the image file it writes.
 - Where a prototype is wrong the theory page says so.
 
 ## ANTI-PATTERNS
