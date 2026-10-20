@@ -626,17 +626,21 @@ fn tower(
             );
         }
     }
-    frame.sphere(
-        camera,
-        [position[0], position[1], position[2] + height + 0.5],
-        0.48,
-        [46, 54, 64],
-        pick,
-        false,
-    );
+    // The lantern room is open glazing between the gallery floor and the roof, so the coloured
+    // lamp drawn at its centre shows through the posts.
     for side in 0..8 {
         let a = side as f32 * TAU / 8.0;
         let b = (side + 1) as f32 * TAU / 8.0;
+        frame.facet(
+            camera,
+            [
+                at(a, 0.74, height),
+                at(b, 0.74, height),
+                at(0.0, 0.0, height),
+            ],
+            [46, 54, 64],
+            pick,
+        );
         frame.facet(
             camera,
             [
@@ -1250,5 +1254,32 @@ mod tests {
                 .iter()
                 .any(|item| matches!(item, Item::Star(..)))
         );
+    }
+    #[test]
+    fn no_opaque_housing_encloses_a_coloured_lantern() {
+        let snapshot = crate::model::demo(12.0, 64);
+        let mut scene = Scene::with_rows(ROWS);
+        scene.record(&snapshot, 12.0);
+        // Close enough that no sphere is held at the smallest body size.
+        let camera = Camera {
+            zoom: 40.0,
+            ..Camera::default()
+        };
+        let frame = scene.render(&RenderInput::small(&snapshot, View::at(0), &camera, 12.0));
+        let spheres: Vec<(Point, f32)> = frame
+            .items
+            .iter()
+            .filter_map(|item| match *item {
+                Item::Sphere { center, radius, .. } => Some((center, radius)),
+                _ => None,
+            })
+            .collect();
+        assert!(!spheres.is_empty());
+        for &(center, radius) in &spheres {
+            assert!(!spheres.iter().any(|&(other, around)| {
+                let gap = (other[0] - center[0]).hypot(other[1] - center[1]);
+                around > radius && gap + radius <= around
+            }));
+        }
     }
 }
