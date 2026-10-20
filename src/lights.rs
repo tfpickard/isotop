@@ -954,7 +954,7 @@ mod tests {
     use crate::model::testing::process;
     use crate::render::{Backdrop, RenderInput, Scene, hiding};
     use crate::views::{View, ViewInfo, view};
-    static ROWS: &[ViewInfo] = &[ViewInfo::new("lights", "LIGHTS", Backdrop::Space, || {
+    static ROWS: &[ViewInfo] = &[ViewInfo::new("lights", "LIGHTS", Backdrop::Void, || {
         Box::new(Lights::default())
     })];
     #[test]
@@ -1230,5 +1230,25 @@ mod tests {
         let high = depths.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         // The coast reaches 95 units towards the viewer and a few dozen away from it.
         assert!(high - low < 200.0, "depths span {low} to {high}");
+    }
+    #[test]
+    fn the_backdrop_adds_no_stars_that_only_the_gpu_would_show() {
+        // The CPU draws backdrop stars behind the atmosphere and the GPU in front of it.
+        let snapshot = crate::model::demo(12.0, 64);
+        let mut scene = Scene::new();
+        scene.record(&snapshot, 12.0);
+        let camera = Camera::default();
+        let frame = scene.render(&RenderInput::small(
+            &snapshot,
+            view("lights"),
+            &camera,
+            12.0,
+        ));
+        assert!(
+            !frame
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Star(..)))
+        );
     }
 }
