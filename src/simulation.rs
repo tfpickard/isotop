@@ -728,6 +728,15 @@ pub fn hash_identity(id: Identity, salt: u64) -> u64 {
     splitmix_finalizer(splitmix_finalizer(splitmix_finalizer(u64::from(id.pid)) ^ id.start) ^ salt)
 }
 
+/// One number for a set of processes, whatever order they come in: the sum of their seeds. A view
+/// that caches work per sample keys it with this as well, so a change of which processes are
+/// shown (focus, `--limit`) that leaves the sample alone still redoes it. Two different sets
+/// share a key only by a 64-bit collision.
+pub fn identities_key(ids: impl IntoIterator<Item = Identity>) -> u64 {
+    ids.into_iter()
+        .fold(0, |sum: u64, id| sum.wrapping_add(hash_identity(id, 0)))
+}
+
 impl Rng {
     /// Starts a stream from `seed`.
     pub fn new(seed: u64) -> Self {

@@ -1233,6 +1233,7 @@ impl ViewModule for Tesseract {
             ViewKey::Escape => {
                 return std::mem::take(&mut self.boost.request) != Request::Off;
             }
+            ViewKey::Quit => {}
         }
         false
     }

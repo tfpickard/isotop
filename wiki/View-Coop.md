@@ -137,7 +137,11 @@ Keys: only the global ones (Tab, `v` the picker, `f` focus a subtree, `c` link m
 
 ## Where in the code
 
-* `src/coop.rs`: `Coop` (state; `record`, `draw`, `decide`, `paint`, `legend`, `anchors`), `Yard` (`step`, `separate`, `confine`, `order`, `flock_orders`), `Chicken`, `Role`, `Flock`, `Feeder`, `Nest`, `Fox`, `nest_seats`, `clutch`, `place_feeders`, `ladder`, `seat_offset`, `body_radius`, `noise`, `speed`, `variation`, `peer_weight`, `puffs`.
+* `src/coop/mod.rs`: `Coop` (state; `record`, `draw`, `legend`, `anchors`), `Fox`, `Drawn`, `puffs`.
+* `src/coop/sim.rs`: `Yard` (`step`, `separate`, `confine`, `order`, `flock_orders`), `Chicken`, `Role`, `noise`, `speed`, `peer_weight`.
+* `src/coop/layout.rs`: `Coop::arrange`, `Flock`, `Feeder`, `Nest`, `nest_seats`, `place_feeders`, `ladder`, `seat_offset`, `body_radius`.
+* `src/coop/roles.rs`: `Coop::decide` and the steps it takes, `variation`; `src/coop/feeding.rs`: the feeder queues.
+* `src/coop/draw.rs`: `paint`, `clutch`; `src/coop/creatures.rs`: `draw_chicken`, `draw_chicks`, `draw_fox`.
 * `src/simulation.rs`: `FixedStep`, `SpatialHash`, `Rng::for_identity`; `src/layout.rs`: `Seats`, `Discs`, `spin`; `src/model.rs`: `bounded`; `src/platform/linux/files.rs`, `net.rs`, `mod.rs` (cgroup OOM counts, pressure); `src/palette.rs`: `core_color`, `kind_color`.
 * `src/views.rs`: the `coop` row (`Backdrop::Dusk`, warm-up `Phase::Record { seconds: 30 }` for demo output plus `SETTLE`, harness `anchors`). The row builds `coop::Coop` (`ViewInfo::new("coop", "COOP", Backdrop::Dusk, ..)`), a `ViewModule` whose state the scene owns; there is no coop field on `Scene`.
 * Tests: `flocks_order_at_low_noise_and_dissolve_past_critical_noise`, `a_blocked_waiter_walks_to_the_holders_nest_in_another_flock`, `an_oom_kill_sends_a_fox_for_the_departed_member`, `kills_recorded_while_another_view_is_shown_do_not_replay_on_switching_to_coop`, `houses_and_perches_stay_put_when_resources_or_population_change`.

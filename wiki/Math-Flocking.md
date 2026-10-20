@@ -9,7 +9,7 @@ at the sizes isotop uses, and says exactly where [Coop](View-Coop) and [Reef](Vi
 ![Order parameter against heading noise, for the 1995 rule and for the Coop yard](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/figures/flocking-vicsek-order.svg)
 
 *Panel A: $\varphi$ against $\eta$ for the 1995 rule on a periodic square (blue) and for the Coop yard's rule (orange). Panel B: the
-noise `coop.rs` assigns to a CPU pressure $\psi$ and CPU variation CV. Panel C: panel A read through panel B. Computed by
+noise `coop/sim.rs` assigns to a CPU pressure $\psi$ and CPU variation CV. Panel C: panel A read through panel B. Computed by
 `docs/figures/flocking-vicsek-order.py` with the Python standard library; the yard series re-implements `Yard::step`
 and follows the rule, not the Rust generator's bits.*
 
@@ -89,7 +89,7 @@ disturbances. Neither is something isotop's flocks of tens of chickens can show.
 
 ## What the code does
 
-### Coop: the Vicsek rule with additions (`Yard::step` in `src/coop.rs`)
+### Coop: the Vicsek rule with additions (`Yard::step` in `src/coop/sim.rs`)
 
 Foragers are the chickens that are not roosting, feeding, brooding, waiting, frozen, stuck or zombie (`Role::Foraging`). One step, $h = 0.05$ s (a fixed 20 Hz clock,
 `FixedStep::new(H, MAX_STEPS = 10, MAX_GAP = 0.5)`, so the frame rate does not change the dynamics):
@@ -154,7 +154,7 @@ In a live coop (`--view coop`) select a chicken: the inspector line `flock X: ph
 
 ## Where in the code
 
-* `src/coop.rs`: `Yard::step`, `separate`, `confine`, `order`, `flock_orders`, `noise`, `speed`, `variation`, `peer_weight`; constants `NEIGHBOURHOOD`, `ETA_BASE`, `K_CV`, `K_PSI`, `PSI_KNEE`, `V_MIN`, `V_SPAN`, `SPEED_KNEE`, `FLEE`, `H`. Tests: `vicsek_step_does_not_depend_on_update_order`, `order_parameter_is_the_magnitude_of_the_summed_velocity`, `flocks_order_at_low_noise_and_dissolve_past_critical_noise`, `chickens_align_only_with_their_own_flock`, `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second`.
+* `src/coop/sim.rs`: `Yard::step`, `separate`, `confine`, `order`, `flock_orders`, `noise`, `speed`, `peer_weight`; `src/coop/roles.rs`: `variation`; constants `NEIGHBOURHOOD`, `ETA_BASE`, `K_CV`, `K_PSI`, `PSI_KNEE`, `V_MIN`, `V_SPAN`, `SPEED_KNEE`, `FLEE`, `H`. Tests: `vicsek_step_does_not_depend_on_update_order`, `order_parameter_is_the_magnitude_of_the_summed_velocity`, `flocks_order_at_low_noise_and_dissolve_past_critical_noise`, `chickens_align_only_with_their_own_flock`, `flock_follows_the_same_path_at_ten_and_sixty_frames_per_second`.
 * `src/simulation.rs`: `SpatialHash`, `Rng`, `FixedStep`. `src/reef.rs`: `Reef::school`.
 * Figure scripts: `docs/figures/flock_sim_w6.py` (both simulations), `flocking-vicsek-order.py`, `flocking-snapshots.py`.
 

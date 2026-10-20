@@ -166,7 +166,7 @@ A frame from the GPU is the same *content* as one from the CPU, rasterized under
 | `Gpu`, `Gpu::new`, `Gpu::render`, passes and styles, readback, `copy_mapped`, struct layouts | [`src/gpu.rs`](https://github.com/tfpickard/isotop/blob/main/src/gpu.rs) |
 | Shader entry points, `normalized`, `clip`, `ball_fragment`, `glow_fragment`, `sky_fragment` | [`src/shaders.wgsl`](https://github.com/tfpickard/isotop/blob/main/src/shaders.wgsl) |
 | Shared constants and `prelude` | [`src/render/shared.rs`](https://github.com/tfpickard/isotop/blob/main/src/render/shared.rs) |
-| Renderer choice and fallback | [`src/main.rs`](https://github.com/tfpickard/isotop/blob/main/src/main.rs): `App::choose_renderer`, `App::render` |
+| Renderer choice and fallback | [`src/app/renderer.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/renderer.rs): `Renderer::choose`, `Renderer::rasterize`; [`src/app/mod.rs`](https://github.com/tfpickard/isotop/blob/main/src/app/mod.rs): `App::render` |
 | Comparison script | [`scripts/compare_png.py`](https://github.com/tfpickard/isotop/blob/main/scripts/compare_png.py) |
 | Tolerance and measurements | [`docs/VIEW_CONVENTIONS.md`](https://github.com/tfpickard/isotop/blob/main/docs/VIEW_CONVENTIONS.md), section "CPU/GPU parity" |
 | CI parity job | [`.github/workflows/ci.yml`](https://github.com/tfpickard/isotop/blob/main/.github/workflows/ci.yml) |

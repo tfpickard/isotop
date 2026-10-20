@@ -1,6 +1,6 @@
 """Reference simulations for the flocking figures (flocking-vicsek-order.py and
 flocking-snapshots.py): the 1995 Vicsek rule on a periodic square, and the rule of the Coop yard
-(src/coop.rs, Yard::step) for one flock. Standard library only; every random stream is seeded.
+(src/coop/sim.rs, Yard::step) for one flock. Standard library only; every random stream is seeded.
 """
 
 import math
@@ -129,5 +129,5 @@ def yard(eta, steps=1200, average=300, n=60, seed=1, speed=0.6, h=0.05, radius=4
 
 
 def noise(psi, cv=0.0):
-    """eta of src/coop.rs: ETA_BASE + K_CV min(cv, 2) + K_PSI psi / (psi + PSI_KNEE), at most 2 pi."""
+    """eta of src/coop/sim.rs: ETA_BASE + K_CV min(cv, 2) + K_PSI psi / (psi + PSI_KNEE), at most 2 pi."""
     return min(0.5 + 0.5 * min(cv, 2.0) + 5.5 * psi / (psi + 15.0), TAU)
