@@ -782,6 +782,16 @@ impl Armorial {
             }
         }
         let marks = ancestry(snapshot);
+        // A process that changed house gives up its seat and is seated anew in its new bay below.
+        for process in &snapshot.processes {
+            if self
+                .banners
+                .get(&process.id)
+                .is_some_and(|banner| house(&banner.process) != house(process))
+            {
+                self.banners.remove(&process.id);
+            }
+        }
         let mut counts: HashMap<&str, usize> = HashMap::new();
         for process in admitted {
             *counts.entry(house(process)).or_default() += 1;
@@ -1460,6 +1470,44 @@ mod tests {
             assert_eq!(banner.process.memory, process.memory);
             assert_eq!(banner.process.cpu, process.cpu);
         }
+    }
+    #[test]
+    fn a_banner_moves_to_the_bay_of_its_new_house() {
+        let house_process = |pid: u32, cgroup: &str| {
+            let mut process = process(pid, 1);
+            process.cgroup = cgroup.into();
+            process
+        };
+        let mut snapshot = Snapshot {
+            elapsed: 12.0,
+            processes: vec![
+                house_process(1, "/a"),
+                house_process(2, "/a"),
+                house_process(3, "/a"),
+                house_process(4, "/b"),
+            ],
+            ..Snapshot::default()
+        };
+        let mut module = Armorial::default();
+        module.refresh(
+            &snapshot,
+            &snapshot.processes.iter().collect::<Vec<_>>(),
+            12.0,
+        );
+        snapshot.elapsed = 13.0;
+        snapshot.processes[2].cgroup = "/b".into();
+        module.refresh(
+            &snapshot,
+            &snapshot.processes.iter().collect::<Vec<_>>(),
+            13.0,
+        );
+        let moved = &module.banners[&snapshot.processes[2].id];
+        let destination = &module.bays["/b"];
+        assert_eq!(moved.bay, destination.index);
+        assert!(destination.columns.contains(&moved.column));
+        let seats: HashSet<(usize, usize)> =
+            module.banners.values().map(|b| (b.bay, b.slot)).collect();
+        assert_eq!(seats.len(), module.banners.len());
     }
     #[test]
     fn the_same_house_path_generates_the_same_arms() {
