@@ -752,10 +752,23 @@ impl ViewModule for Lights {
             });
         let budget = CAP.min(stage.limit) - fading.clone().count();
         let candidates: Vec<Process> = processes.iter().map(|p| (*p).clone()).collect();
-        let admitted: HashSet<Identity> = top_n(&candidates, budget, |p| p.memory as f64)
+        let mut admitted: HashSet<Identity> = top_n(&candidates, budget, |p| p.memory as f64)
             .into_iter()
             .map(|p| p.id)
             .collect();
+        // As the scene's own admission does, the selection keeps its light: it takes the slot
+        // of the smallest admitted light rather than going dark.
+        if let Some(id) = stage.selected
+            && budget > 0
+            && !admitted.contains(&id)
+            && processes.iter().any(|p| p.id == id)
+        {
+            admitted = top_n(&candidates, budget - 1, |p| p.memory as f64)
+                .into_iter()
+                .map(|p| p.id)
+                .chain([id])
+                .collect();
+        }
         let lamps: Vec<Lamp<'_>> = processes
             .iter()
             .enumerate()
@@ -1096,5 +1109,31 @@ mod tests {
         lights.record(&snapshot, 3.0);
         assert_eq!(lights.notices.len(), 2);
         assert_eq!(lights.exits[0].position, old);
+    }
+    #[test]
+    fn the_selected_process_keeps_a_light_when_memory_admission_is_full() {
+        let snapshot = crate::model::demo(12.0, 192);
+        let smallest = snapshot
+            .processes
+            .iter()
+            .min_by_key(|p| (p.memory, p.id))
+            .expect("the demo has processes")
+            .id;
+        let mut scene = Scene::new();
+        let view = view("lights");
+        let unselected = hiding::place(&mut scene, &snapshot, view, 12.0, 4096, None, None);
+        assert!(!unselected.contains_key(&smallest));
+        let mut scene = Scene::new();
+        let selected = hiding::place(
+            &mut scene,
+            &snapshot,
+            view,
+            12.0,
+            4096,
+            Some(smallest),
+            None,
+        );
+        assert!(selected.contains_key(&smallest));
+        assert_eq!(selected.len(), CAP);
     }
 }
