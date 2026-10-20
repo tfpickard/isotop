@@ -29,7 +29,8 @@ allowed to read `/proc`, `/sys` or libproc, and where nearly all `unsafe` lives.
 - `FileScan::sample`: a pid the scan did not reach is absent from the map; `None` means the table could not be read.
 - Adding a `Source` end to end:
   1. Variant with doc comment in `Source`, appended to `Source::ALL`, arm in `Source::name` (no wildcard).
-  2. Keep the length test true: `Source::Pipes as usize + 1 == Source::ALL.len()` means the last variant stays in `ALL`.
+  2. Move the sentinel in `source_all_lists_every_source_in_declaration_order` to the new last variant: it asserts
+     `Source::<last> as usize + 1 == Source::ALL.len()`, and today that variant is `Source::WaitChannel`.
   3. Document the function in the `//!` contract; implement it in `linux/` and `macos/` under the same name.
   4. Read it in `model.rs` through `Reads::read` or `Demand::read_if` so it lands in `Snapshot.sources` or `missing`.
   5. Declare `sources: Sources::of(&[Source::X])` on the drawing view's row in `views.rs`.
