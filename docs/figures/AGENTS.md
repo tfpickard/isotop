@@ -1,7 +1,7 @@
 # docs/figures
 
 ## OVERVIEW
-About 90 deterministic stdlib-only Python scripts, each writing one or more SVGs to `docs/media/figures/`. Own file
+Deterministic stdlib-only Python scripts, each writing one or more SVGs to `docs/media/figures/`. Own file
 because the figure rules (kits, determinism, slugs) are strict and differ from the rest of `docs/`.
 
 ## WHERE TO LOOK
@@ -26,7 +26,8 @@ because the figure rules (kits, determinism, slugs) are strict and differ from t
 - Commit the script and its SVG together.
 
 ## ANTI-PATTERNS
-- Do not add a fifth kit; extend or reuse `figkit_w4.py`, `svgkit_w6.py`, `svgkit_w8.py`, `sampling_plot.py` or `svgplot_planned.py`.
+- Don't add a new kit while one of the seven fits: extend or reuse `figkit_w3.py`, `figkit_w4.py`, `svgkit_w6.py`,
+  `svgkit_w8.py`, `sampling_plot.py`, `svgplot_planned.py` or `svgplot_views_cores_reef.py`.
 - Do not import matplotlib, numpy or any third-party package here.
 - Do not hand-draw an SVG or commit a screenshot of a plot.
 - Do not let a plotted constant disagree with the Rust source.
