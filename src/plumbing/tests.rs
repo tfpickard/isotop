@@ -9,6 +9,7 @@ use crate::io_detail::{IoDetail, Unattributed};
 use crate::model::testing::process;
 use crate::model::{DemoOptions, Measured, Pipe, Severed, demo_with};
 use crate::platform::Wait;
+use crate::plumbing::flow::Outflow;
 use crate::render::{Camera, Frame, Item, RenderInput, Scene};
 use crate::views::View;
 
@@ -548,4 +549,47 @@ fn an_empty_machine_draws_no_tanks() {
     let frame = draw(&mut scene, &Snapshot::default(), 1.0);
     assert_eq!(state(&scene).drawn.tanks, 0);
     assert!(frame.things.is_empty());
+}
+
+#[test]
+fn changing_which_processes_are_shown_rebuilds_the_room_of_the_same_sample() {
+    let snapshot = joined(5.0);
+    let both: HashSet<Identity> = [who(1), who(2)].into_iter().collect();
+    let one: HashSet<Identity> = [who(1)].into_iter().collect();
+    let mut plumbing = Plumbing::default();
+    plumbing.take_in(5.0, &snapshot, &one);
+    assert!(plumbing.room.pipes.is_empty(), "the reader is not shown");
+    // A focus cleared while paused: the sample is the same, the shown set is not.
+    plumbing.take_in(5.0, &snapshot, &both);
+    assert_eq!(
+        plumbing.room.pipes.len(),
+        1,
+        "the pipe between them appears"
+    );
+}
+
+#[test]
+fn several_unix_sockets_to_one_peer_are_one_outlet_and_all_accounted() {
+    let mut snapshot = joined(5.0);
+    snapshot.pipes.clear();
+    snapshot.pipe_holds.clear();
+    snapshot.links = vec![(who(1), who(2), 3)];
+    snapshot.unix_links.insert((who(1), who(2)));
+    if let Measured::Known(detail) = &mut snapshot.processes[0].io_detail {
+        Arc::make_mut(detail).sockets = 3;
+    }
+    let shown: HashSet<Identity> = [who(1), who(2)].into_iter().collect();
+    let room = Room::read(&snapshot, &shown);
+    assert_eq!(room.tubes.len(), 1, "one tube for the pair");
+    assert_eq!(room.tubes[0].connections, 3);
+    let outflow = room.outflow_of(&snapshot, &snapshot.processes[0]);
+    match outflow {
+        Outflow::Measured { outlets, .. } => {
+            assert!(
+                outlets.is_single(),
+                "all three sockets are the one tube: {outlets:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }

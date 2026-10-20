@@ -126,8 +126,8 @@ pub struct Anthill {
     scale: Scale,
     /// Whether the ground must be painted again: the pheromone moved.
     stale: bool,
-    /// The sample taken in: its time, and how many processes were drawn from it.
-    taken: Option<(u64, usize)>,
+    /// The sample taken in: its time, and which processes were drawn from it (`identities_key`).
+    taken: Option<(u64, u64)>,
     /// The time of the newest sample seen.
     newest: f64,
     plan: Option<Plan>,
@@ -354,6 +354,27 @@ mod tests {
         assert_eq!(one.pixels, two.pixels);
         assert_eq!(one.picks, two.picks);
         assert!(one.pixels.iter().any(|&byte| byte != 0));
+    }
+
+    #[test]
+    fn a_different_set_of_the_same_size_is_taken_in_again_from_the_same_sample() {
+        let snapshot = colony_of_four();
+        let mut scene = scene();
+        let camera = Camera::default();
+        let mut taken = Vec::new();
+        for focus in [1, 2] {
+            let input = RenderInput {
+                focus: Some(snapshot.processes[focus - 1].id),
+                ..RenderInput::small(&snapshot, View::at(0), &camera, 5.0)
+            };
+            scene.render(&input);
+            taken.push(state(&scene).taken);
+        }
+        assert!(taken[0].is_some() && taken[1].is_some());
+        assert_ne!(
+            taken[0], taken[1],
+            "one process shown either time, but not the same one"
+        );
     }
 
     #[test]
