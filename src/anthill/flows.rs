@@ -437,11 +437,14 @@ type Ties = HashMap<Identity, Vec<Tie>>;
 /// is drawn or not.
 fn tunnels_of(snapshot: &Snapshot, drawn: &HashSet<Identity>) -> (Vec<Tunnel>, Ties) {
     let mut found: HashMap<(Identity, Identity, Medium), Tunnel> = HashMap::new();
+    // Every tunnel seen, drawn or not: a hidden peer sharing several pipes is one tie, as a
+    // drawn one is one tunnel.
+    let mut seen: HashSet<(Identity, Identity, Medium)> = HashSet::new();
     let mut every = Ties::new();
     let mut note =
         |from: Identity, to: Identity, medium: Medium, one_way: bool, traffic: Option<f32>| {
             let (low, high) = pair(from, to);
-            if from == to || found.contains_key(&(low, high, medium)) {
+            if from == to || !seen.insert((low, high, medium)) {
                 return;
             }
             for (end, partner) in [(from, to), (to, from)] {
@@ -952,6 +955,29 @@ mod tests {
         assert_eq!(plan.tunnels.len(), 1);
         assert_eq!(plan.tunnels[0].medium, Medium::Unix);
         assert!(!plan.tunnels[0].one_way);
+    }
+
+    #[test]
+    fn several_pipes_to_a_peer_that_is_not_drawn_are_one_tie() {
+        let both = |pid| {
+            holding(
+                counting(process(pid, 10), 10.0, 1000.0, 0.0, 0.0),
+                vec![],
+                Some(left(10_000.0, 0.0, 0.0)),
+                1,
+            )
+        };
+        let mut snapshot = snapshot(vec![both(1), both(2)], 5.0);
+        snapshot.pipes = vec![pipe(1, 2), pipe(1, 2), pipe(1, 2)];
+        // Only process 1 is drawn: its partner is hidden, and the pipes between them are one tie.
+        let drawn: HashSet<Identity> = [id(1)].into_iter().collect();
+        let (tunnels, ties) = tunnels_of(&snapshot, &drawn);
+        assert!(tunnels.is_empty(), "no tunnel to a hidden nest");
+        assert_eq!(ties[&id(1)].len(), 1, "{:?}", ties[&id(1)]);
+        // Drawn, the same pipes are one tunnel and one tie, as before.
+        let drawn: HashSet<Identity> = [id(1), id(2)].into_iter().collect();
+        let (tunnels, ties) = tunnels_of(&snapshot, &drawn);
+        assert_eq!((tunnels.len(), ties[&id(1)].len()), (1, 1));
     }
 
     #[test]

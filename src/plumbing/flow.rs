@@ -153,8 +153,12 @@ impl Outflow {
 /// What the view knows of one process's connections, joined from the sample.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sockets {
-    /// Unix socket pairs with processes that are drawn.
+    /// Unix socket pairs with processes that are drawn: one outlet each, however many sockets
+    /// join the pair.
     pub unix_pairs: u32,
+    /// The descriptors of those pairs, which are not counted again as other sockets (at least
+    /// one a pair).
+    pub unix_connections: u32,
     /// Loopback TCP connections of this process whose send rate was measured, and what it sent
     /// over them per second.
     pub loopback_connections: u32,
@@ -191,7 +195,9 @@ pub fn outflow(
         return Outflow::Unmeasured(Why::PipesUnknown);
     }
     let sent = sockets.loopback_sent + sockets.remote_sent;
-    let accounted = sockets.unix_pairs + sockets.loopback_connections + sockets.remote_connections;
+    let accounted = sockets.unix_connections.max(sockets.unix_pairs)
+        + sockets.loopback_connections
+        + sockets.remote_connections;
     Outflow::Measured {
         rate: (remainder.write - sent).max(0.0),
         outlets: Outlets {
