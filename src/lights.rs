@@ -293,7 +293,15 @@ fn sweep(field: &mut Field, size: [f32; 2], origin: Point, end: Point, color: Co
         }
     }
 }
-fn night(stage: &mut Stage, field: &mut Field, coast: [f32; 2], lamps: &[Lamp<'_>], density: f32) {
+/// `back` is the depth of the screen-space atmosphere, just behind the coast.
+fn night(
+    stage: &mut Stage,
+    field: &mut Field,
+    coast: [f32; 2],
+    back: f32,
+    lamps: &[Lamp<'_>],
+    density: f32,
+) {
     let [reach, far] = coast;
     let width = stage.frame.width as f32;
     let height = stage.frame.height as f32;
@@ -409,7 +417,7 @@ fn night(stage: &mut Stage, field: &mut Field, coast: [f32; 2], lamps: &[Lamp<'_
                 *point = [
                     node[0] / (columns - 1) as f32 * width,
                     node[1] / (rows - 1) as f32 * height,
-                    -1_000.0,
+                    back,
                 ];
             }
         }
@@ -491,6 +499,22 @@ impl Seating {
     }
 }
 impl Lights {
+    /// The newest exits still fading out at the stage's time, at most eight, none while focused.
+    fn fading<'a>(&'a self, stage: &Stage) -> impl Iterator<Item = &'a Exit> + use<'a> {
+        let time = f64::from(stage.time);
+        let shown = if stage.focus.is_none() {
+            8.min(CAP).min(stage.limit)
+        } else {
+            0
+        };
+        self.exits
+            .iter()
+            .rev()
+            .filter(move |exit| {
+                exit.light.class != Class::Extinguished && (0.0..1.5).contains(&(time - exit.at))
+            })
+            .take(shown)
+    }
     fn notice(&mut self, process: &Process, at: f64, event: &str) {
         self.notices.push_back(Notice {
             at,
@@ -508,7 +532,7 @@ fn coast(
     lamps: &[Lamp<'_>],
     placement: &Seating,
     weather: &mut Option<Field>,
-) {
+) -> f32 {
     let live: BTreeSet<&str> = snapshot.processes.iter().map(house).collect();
     let width = live
         .iter()
@@ -529,8 +553,18 @@ fn coast(
         world(-width, 95.0, -0.1),
         world(width, 95.0, -0.1),
     ]);
+    // Screen-space layers sit just outside the depths of the coast's box, because the GPU
+    // normalizes depth over every vertex: a far-off layer would crush the scene's depths.
+    let depths: Vec<f32> = [-width, width]
+        .into_iter()
+        .flat_map(|across| [far, 95.0].map(move |along| (across, along)))
+        .flat_map(|(across, along)| [-0.1, 18.0].map(move |height| world(across, along, height)))
+        .map(|corner| stage.frame.project(stage.camera, corner)[2])
+        .collect();
+    let back = depths.iter().copied().fold(f32::INFINITY, f32::min) - 1.0;
+    let front = depths.iter().copied().fold(f32::NEG_INFINITY, f32::max) + 1.0;
     let field = weather.get_or_insert_with(|| Field::new(SALT, 2, 2));
-    night(stage, field, [width, far], lamps, fog(snapshot));
+    night(stage, field, [width, far], back, lamps, fog(snapshot));
     for name in live {
         let (across, along) = headland(placement.houses[name]);
         let depth = placement.seats.span(name).div_ceil(4).max(2) as f32 * 2.8;
@@ -547,6 +581,7 @@ fn coast(
             text: label_name(name).into_owned(),
         });
     }
+    front
 }
 /// An eight-sided tapered, banded tower and its pickable lantern room.
 fn tower(
@@ -621,7 +656,15 @@ fn tower(
         );
     }
 }
-fn shine(stage: &mut Stage, position: Point, light: Characteristic, strength: f32, range: f64) {
+/// `front` is the depth of the star core, just before the coast.
+fn shine(
+    stage: &mut Stage,
+    position: Point,
+    light: Characteristic,
+    strength: f32,
+    range: f64,
+    front: f32,
+) {
     if light.class == Class::Extinguished {
         return;
     }
@@ -645,14 +688,14 @@ fn shine(stage: &mut Stage, position: Point, light: Characteristic, strength: f3
         // The star core is geometry, not a backend-dependent one-pixel beam.
         let core = mix(light.color, [255, 255, 241], 0.6);
         stage.frame.hairline_between(
-            [at[0] - 8.0 * scale, at[1], 1_000.0],
-            [at[0] + 8.0 * scale, at[1], 1_000.0],
+            [at[0] - 8.0 * scale, at[1], front],
+            [at[0] + 8.0 * scale, at[1], front],
             core,
             scale,
         );
         stage.frame.hairline_between(
-            [at[0], at[1] - 5.0 * scale, 1_000.0],
-            [at[0], at[1] + 5.0 * scale, 1_000.0],
+            [at[0], at[1] - 5.0 * scale, front],
+            [at[0], at[1] + 5.0 * scale, front],
             core,
             scale,
         );
@@ -764,19 +807,7 @@ impl ViewModule for Lights {
             &self.placement
         };
         let time = f64::from(stage.time);
-        let fading = self
-            .exits
-            .iter()
-            .rev()
-            .filter(|exit| {
-                exit.light.class != Class::Extinguished && (0.0..1.5).contains(&(time - exit.at))
-            })
-            .take(if stage.focus.is_none() {
-                8.min(CAP).min(stage.limit)
-            } else {
-                0
-            });
-        let budget = CAP.min(stage.limit) - fading.clone().count();
+        let budget = CAP.min(stage.limit) - self.fading(stage).count();
         let candidates: Vec<Process> = processes.iter().map(|p| (*p).clone()).collect();
         let mut admitted: HashSet<Identity> = top_n(&candidates, budget, |p| p.memory as f64)
             .into_iter()
@@ -827,7 +858,7 @@ impl ViewModule for Lights {
                 }
             })
             .collect();
-        coast(stage, snapshot, &lamps, placement, &mut self.weather);
+        let front = coast(stage, snapshot, &lamps, placement, &mut self.weather);
         for lamp in &lamps {
             let Lamp {
                 process,
@@ -856,7 +887,7 @@ impl ViewModule for Lights {
                 pick,
                 stage.highlight.contains(&process.id),
             );
-            shine(stage, position, light, strength, range);
+            shine(stage, position, light, strength, range, front);
             stage.positions.insert(process.id, position);
             stage.tour.push(TourTarget {
                 id: process.id,
@@ -878,25 +909,15 @@ impl ViewModule for Lights {
                 stage.callout.push((process.id, light.full()));
             }
         }
-        for exit in self
-            .exits
-            .iter()
-            .rev()
-            .filter(|exit| {
-                exit.light.class != Class::Extinguished && (0.0..1.5).contains(&(time - exit.at))
-            })
-            .take(if stage.focus.is_none() {
-                8.min(CAP).min(stage.limit)
-            } else {
-                0
-            })
-        {
+        let fading: Vec<&Exit> = self.fading(stage).collect();
+        for exit in fading {
             shine(
                 stage,
                 exit.position,
                 exit.light,
                 (1.0 - (time - exit.at) / 1.5) as f32,
                 exit.light.nominal,
+                front,
             );
         }
         stage
@@ -1185,5 +1206,29 @@ mod tests {
         for (id, position) in &before {
             assert_eq!(after[id], *position);
         }
+    }
+    #[test]
+    fn screen_space_layers_keep_their_depths_within_the_coast() {
+        let snapshot = crate::model::demo(12.0, 192);
+        let mut scene = Scene::with_rows(ROWS);
+        scene.record(&snapshot, 12.0);
+        let camera = Camera::default();
+        let frame = scene.render(&RenderInput::small(&snapshot, View::at(0), &camera, 12.0));
+        // The depths the GPU normalizes over, as `Gpu::render` tracks them.
+        let mut depths = Vec::new();
+        for item in &frame.items {
+            match *item {
+                Item::Triangle(points, ..) => depths.extend(points.map(|p| p[2])),
+                Item::Field { points, .. } => depths.extend(points.map(|p| p[2])),
+                Item::Sphere { center, depth, .. } => {
+                    depths.extend([center[2] - depth, center[2] + depth]);
+                }
+                _ => {}
+            }
+        }
+        let low = depths.iter().copied().fold(f32::INFINITY, f32::min);
+        let high = depths.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        // The coast reaches 95 units towards the viewer and a few dozen away from it.
+        assert!(high - low < 200.0, "depths span {low} to {high}");
     }
 }
