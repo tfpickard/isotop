@@ -363,6 +363,7 @@ fn scene_has_no_view_specific_fields() {
         rows: _,
         modules: _,
         spare: _,
+        scratch: _,
         visible: _,
         collapsed: _,
     } = scene;

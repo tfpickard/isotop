@@ -39,14 +39,7 @@ pub enum Kind {
     Container,
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "policy, started and io_detail are read by views that come after P5 and B8"
-    )
-)]
+#[derive(Debug)]
 pub struct Process {
     pub id: Identity,
     pub parent: u32,
@@ -212,6 +205,90 @@ pub struct SyscallIo {
     pub writes: f32,
 }
 
+impl Clone for Process {
+    fn clone(&self) -> Self {
+        let mut copy = Process::default();
+        copy.clone_from(self);
+        copy
+    }
+
+    /// Copies `source` into this process, reusing the capacity of its strings and lists: a
+    /// scene that keeps a process per sample and refreshes it each frame allocates nothing in
+    /// steady state. Every field is named, with no `..`, so a new one cannot be forgotten.
+    fn clone_from(&mut self, source: &Self) {
+        let Process {
+            id,
+            parent,
+            name,
+            command,
+            group,
+            kind,
+            state,
+            cpu,
+            memory,
+            io_rate,
+            read_rate,
+            write_rate,
+            written,
+            priority,
+            nice,
+            threads,
+            gpu_memory,
+            core,
+            cpu_time,
+            cgroup,
+            performance_share,
+            waiting,
+            files,
+            locks_held,
+            blocked_on,
+            system_share,
+            policy,
+            syscall_io,
+            major_faults,
+            started,
+            oom,
+            memory_detail,
+            thread_list,
+            io_detail,
+        } = source;
+        self.id = *id;
+        self.parent = *parent;
+        self.name.clone_from(name);
+        self.command.clone_from(command);
+        self.group.clone_from(group);
+        self.kind = *kind;
+        self.state = *state;
+        self.cpu = *cpu;
+        self.memory = *memory;
+        self.io_rate = *io_rate;
+        self.read_rate = *read_rate;
+        self.write_rate = *write_rate;
+        self.written = *written;
+        self.priority = *priority;
+        self.nice = *nice;
+        self.threads = *threads;
+        self.gpu_memory = *gpu_memory;
+        self.core = *core;
+        self.cpu_time = *cpu_time;
+        self.cgroup.clone_from(cgroup);
+        self.performance_share = *performance_share;
+        self.waiting = *waiting;
+        self.files.clone_from(files);
+        self.locks_held.clone_from(locks_held);
+        self.blocked_on.clone_from(blocked_on);
+        self.system_share = *system_share;
+        self.policy = *policy;
+        self.syscall_io = *syscall_io;
+        self.major_faults = *major_faults;
+        self.started = *started;
+        self.oom.clone_from(oom);
+        self.memory_detail.clone_from(memory_detail);
+        self.thread_list.clone_from(thread_list);
+        self.io_detail.clone_from(io_detail);
+    }
+}
+
 impl Default for Process {
     /// A harmless placeholder: pid 0 (never a real process), a sleeping system process, and
     /// nothing measured yet.
@@ -322,7 +399,7 @@ pub enum Blocker {
 }
 
 /// A measurement taken on the background thread, which may not have reached a process yet.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub enum Measured<T> {
     /// Not measured yet: before the first background pass, a process born since the last one,
     /// or one a budget-limited scan has not reached.
@@ -331,6 +408,24 @@ pub enum Measured<T> {
     /// Could not be read, normally for lack of permission.
     Unreadable,
     Known(T),
+}
+
+impl<T: Clone> Clone for Measured<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Measured::Pending => Measured::Pending,
+            Measured::Unreadable => Measured::Unreadable,
+            Measured::Known(value) => Measured::Known(value.clone()),
+        }
+    }
+
+    /// A known reading over a known reading is copied in place, keeping its allocations.
+    fn clone_from(&mut self, source: &Self) {
+        match (&mut *self, source) {
+            (Measured::Known(held), Measured::Known(value)) => held.clone_from(value),
+            _ => *self = source.clone(),
+        }
+    }
 }
 
 impl<T> Measured<T> {
