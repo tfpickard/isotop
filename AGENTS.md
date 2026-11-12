@@ -92,7 +92,15 @@ The README covers usage. This file covers how to work on the code.
    on wgpu (Vulkan, Metal or DX12). Both produce colour, depth and a pick buffer.
 4. **Present** (`terminal.rs`). Frames go to the terminal through POSIX shared memory (`t=s`),
    or inline as zlib and base64. Labels, popups and the status lines are drawn as terminal
-   text over the image, and are made of `SafeText` only.
+   text over the image, and are made of `SafeText` only. A shared-memory frame is one new
+   object each (a terminal unlinks it after reading and gives no read-complete signal, so a
+   segment is never reused: `terminal/shared.rs`); a failure sends that frame inline and the
+   next try waits 1 s, doubling to 60 s, unless the error is permanent (`shared::Medium`). An
+   inline frame is copied into a `Job` for the `isotop-encoder` thread (`terminal/inline.rs`),
+   which compresses, encodes and writes it, so the frame loop never waits for that; the newest
+   waiting frame replaces an older one. The terminal is armed (`terminal/restore.rs`) right
+   after raw mode is on, so a panic or a SIGINT, SIGTERM or SIGHUP restores it as `Drop` does,
+   once.
 
 | File | Owns |
 |---|---|
@@ -231,7 +239,10 @@ The README covers usage. This file covers how to work on the code.
 | `history.rs` | The shared per-process CPU and memory history: `History` (a ring of `CAPACITY` samples sorted by `Identity`, recorded by `Scene` on every sample whichever view is shown; `window` by `elapsed` time, `recent` and `series` by count, `changes` for the births and exits between consecutive samples), `Reading`, `Sample` (with an absolute `sequence`), `Change`. Views read it through `Stage::history`; `warm_up` replays it for headless demo runs |
 | `medium.rs` | Pure simulation state for the Ripple (wave equation) and Flow (particles) views |
 | `gpu.rs`, `shaders.wgsl` | wgpu backend that mirrors the CPU rasterizer; the field pass samples one storage buffer by hand (no hardware sampler) and `store_fields` rewrites only the slots whose field was shaded again |
-| `terminal.rs` | Graphics and Kitty keyboard capability probe (the keyboard flags are pushed when the terminal answers, and `restore_screen` pops them before the alternate screen is left), frame transfer, text overlay (`Label`, `Popup` and the status rows, all `SafeText`), terminal restoration |
+| `terminal.rs` | Graphics and Kitty keyboard capability probe (the keyboard flags are pushed when the terminal answers, and `restore_screen` pops them before the alternate screen is left), the image ids (`IMAGE_A`, `IMAGE_B`), `Terminal::present` (builds a frame's head and tail, sends it through shared memory or as an inline `Job`), `FrameSink` (every frame write, counted by the `Restoration`), text overlay (`Label`, `Popup` and the status rows, all `SafeText`), terminal restoration (`Drop`, and `restore_bytes`, the bytes `restore_screen` writes, made ahead of time for the other paths) |
+| `terminal/restore.rs` | `Restoration` (one `static`, armed right after raw mode: the modes from before it, the precomputed restore bytes with and without the keyboard pop, the pid and the owning thread), `claim` (the compare-and-swap every path calls, so a restore runs once), `restore` (raw `write(2)` of the bytes, `tcsetattr(2)`, `shm_unlink(3)` of the objects the run may have left: no lock, no allocation, async-signal-safe), `frame` (counts a frame write, refuses it after a claim; the restore waits up to 200 ms for writes under way), `on_panic` (the hook's rule: the owning thread always restores, any other thread only when panics abort) and `install` (the hook and the SIGINT, SIGTERM and SIGHUP handlers, once; a signal restores, resets to the default action and raises it) |
+| `terminal/shared.rs` | Shared-memory frames: `Name` (stack buffer of at most 31 bytes, `/isotop-<pid>-<serial>`, `/isotop-<pid>-probe`), `create` (`O_EXCL`), `Segments` (the serial, a ring of the last 8 names, a taken name skipped for up to 4 serials and never unlinked), `unlink_recent` (the 64 newest serials and the probe, for the panic and signal paths), `Medium` (when shared memory is tried again: 1 s, doubling to 60 s; `is_permanent` for ENOSYS, ENOTSUP, ENAMETOOLONG). The module doc says why a segment is never reused |
+| `terminal/inline.rs` | Inline frames off the frame loop: `Job` (head bytes, placement, a copy of the pixels, tail bytes), `Inline` (a one-slot mailbox and the `isotop-encoder` thread, started on the first frame; `submit` replaces a waiting job, `settle` drops it and waits for the one being written, `shutdown` is bounded at 2 s and 500 ms, a failed write is reported by the next `submit`, a panicking worker leaves an error and wakes everyone; the caller encodes when no thread starts) and `Worker` (the encoding, byte for byte what the loop used to write) |
 | `terminal/text.rs` | `SafeText`, the only text the terminal overlay takes (`new` and `braille` clean, `trusted` takes a literal, `width` and `cut` count cells), and the cell widths: `cell_width` and `display_width` over the zero-width and double-width ranges |
 | `platform/macos/mod.rs` | macOS `Sampler` (libproc, Mach, sysctl, IORegistry, `proc_pid_rusage` V6 with fallbacks), the cluster clocks, the socket scan, the bounded open-file scan (`FileScan`, one `proc_pidfdinfo` per vnode), the pipe and FIFO scan (`PipeScan`: `PROC_PIDFDPIPEINFO`, and a vnode call per vnode descriptor to find FIFOs), the thread reader (`Threads`: `PROC_PIDLISTTHREADIDS`, then `PROC_PIDTHREADID64INFO` per thread), the descriptor reader behind `Source::IoDetail` (`Descriptors`: the listing tells pipes, sockets and kernel objects, and one `PROC_PIDFDVNODEPATHINFO` call per vnode gives its path, `fi_offset` and `fi_openflags`; no byte counters, so `counts_bytes` is false; the pid's start time is checked afterwards), `oom_scores` (root only: `memorystatus_control`), and what it reports through `missing`, `per_cluster` and `unreadable` |
 | `platform/macos/ffi.rs` | Every extern declaration and `#[repr(C)]` struct that `libc` lacks, with size assertions (`vnode_fdinfowithpath`, the vnode record with its path, among them); `memorystatus_control` and the jetsam priority entry |
@@ -406,6 +417,15 @@ not shown still has its history when it opens.
 - **Unsafe code** is limited to FFI (libc, netlink, shared memory, NVML) and the SSE4.1
   readback copy in `gpu.rs`. Each `unsafe` block is preceded by a comment that says why it is
   sound, normally a `// SAFETY:` comment.
+- **Every way the run can end restores the terminal once.** `Drop`, the panic hook and the
+  signal handlers all go through `terminal::restore::Restoration::claim`; only the winner
+  restores, with precomputed bytes and async-signal-safe calls (no allocation, no lock, no
+  `format!` in `restore.rs` or in what `shared::unlink_recent` calls). A frame write goes
+  through `Restoration::frame`, never straight to standard output. The hook restores only for a
+  panic on the thread that owns the terminal, or in a build with `panic = "abort"`: a panic on
+  another thread of an unwinding build only chains to the previous hook, because the sampler,
+  journal and events threads may die and the app carries on. `ISOTOP_FORCE_PANIC=main|thread`
+  (hidden) forces either after the third frame; the smoke test checks each ending.
 
 ## Anti-patterns
 

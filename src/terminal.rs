@@ -1,5 +1,4 @@
-use std::collections::VecDeque;
-use std::ffi::CString;
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
 
@@ -8,29 +7,74 @@ use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::{cursor, execute, terminal};
-use flate2::{Compression, write::ZlibEncoder};
 
 use crate::render::Frame;
 
+mod inline;
+mod restore;
+mod shared;
 mod text;
 
+use inline::Inline;
+use restore::Restoration;
+use shared::{Medium, Name, Segments};
 pub use text::SafeText;
 use text::display_width;
+
+/// The Kitty image id of the frame drawn first, and of every second one after it. A frame is
+/// placed under the id the previous frame does not have, and only then is the previous image
+/// deleted, so the screen is never without an image between two frames.
+const IMAGE_A: u32 = 100;
+/// The id of every other frame; see `IMAGE_A`.
+const IMAGE_B: u32 = 101;
+/// The id of the capability probe's inline query (`a=q,t=d`); the terminal answers `i=31;OK`.
+const PROBE_INLINE: u32 = 31;
+/// The id of the probe's shared-memory query (`a=q,t=s`); the terminal answers `i=32;OK`.
+const PROBE_SHARED: u32 = 32;
+
+/// Where frames are written: standard output, each write counted by the `Restoration` so that
+/// none starts after the terminal was restored (a write after that is dropped as if it had
+/// worked). Cloning it is cheap; the encoder thread has its own.
+#[derive(Clone)]
+struct FrameSink(&'static Restoration);
+
+impl Write for FrameSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.0.frame(|| {
+            let mut out = io::stdout().lock();
+            out.write_all(bytes)?;
+            out.flush()
+        });
+        written.unwrap_or(Ok(())).map(|()| bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 pub struct Terminal {
     active: bool,
     image: u32,
     /// The terminal reports mouse positions in pixels (SGR-Pixels, mode 1016).
     pub pixel_mouse: bool,
-    /// Frames travel through POSIX shared memory instead of compressed inline data.
+    /// The last frame went through POSIX shared memory instead of compressed inline data (and
+    /// before the first, whether shared memory is in use at all).
     pub shared_memory: bool,
     /// The Kitty keyboard protocol is on (`KEYBOARD_FLAGS` pushed), so Shift+Space arrives apart
     /// from Space. Restoring the terminal pops it.
     pub keyboard: bool,
-    serial: u64,
-    /// Recently written shared-memory names; the terminal unlinks each after reading it, and
-    /// anything it never read is removed once it is old enough or when isotop exits.
-    pending: VecDeque<String>,
+    restoration: &'static Restoration,
+    sink: FrameSink,
+    /// The objects frames were written to; removed as they age out and when the terminal is
+    /// dropped. A terminal unlinks each after reading it.
+    segments: Segments,
+    /// Whether shared memory is used now, or waits after a failure (`shared::Medium`).
+    medium: Medium,
+    /// Frames sent inline, encoded and written off the frame loop.
+    inline: Inline<FrameSink>,
+    /// Bytes and frames written through shared memory.
+    shared_written: (u64, u64),
 }
 
 pub struct Popup {
@@ -74,15 +118,31 @@ impl Terminal {
                 "interactive mode needs a terminal; use --output scene.png or --benchmark for headless rendering",
             ));
         }
+        let modes = restore::modes(libc::STDIN_FILENO);
         terminal::enable_raw_mode()?;
+        // From here a panic or a signal restores the terminal as well as `Drop` does.
+        let restoration = restore::shared();
+        restoration.arm(
+            libc::STDOUT_FILENO,
+            libc::STDIN_FILENO,
+            modes,
+            restore_bytes(false),
+            restore_bytes(true),
+        );
+        restore::install(restoration);
+        let sink = FrameSink(restoration);
         let mut guard = Self {
             active: true,
-            image: 100,
+            image: IMAGE_A,
             pixel_mouse: false,
             shared_memory: false,
             keyboard: false,
-            serial: 0,
-            pending: VecDeque::new(),
+            restoration,
+            sink: sink.clone(),
+            segments: Segments::new(std::process::id()),
+            medium: Medium::new(false),
+            inline: Inline::new(sink),
+            shared_written: (0, 0),
         };
         execute!(
             io::stdout(),
@@ -102,28 +162,33 @@ impl Terminal {
             write!(io::stdout(), "\x1b[?1016h")?;
             guard.pixel_mouse = true;
         }
-        guard.shared_memory = support.shared_memory && !direct;
+        guard.medium = Medium::new(support.shared_memory && !direct);
+        guard.shared_memory = guard.medium.offered();
         if support.keyboard {
             // Set before the push is written, so a restore that follows a failed write still pops.
             guard.keyboard = true;
+            restoration.keyboard_pushed();
             execute!(io::stdout(), PushKeyboardEnhancementFlags(KEYBOARD_FLAGS))?;
         }
         Ok(guard)
     }
 
-    fn transmit_shared(&mut self, frame: &Frame) -> io::Result<String> {
-        let name = frame_name(std::process::id(), self.serial);
-        self.serial += 1;
-        write_shared(&name, &frame.pixels)?;
-        self.pending.push_back(name.clone());
-        while self.pending.len() > 8 {
-            if let Some(old) = self.pending.pop_front() {
-                unlink_shared(&old);
-            }
-        }
-        Ok(name)
+    /// Writes the frame's pixels as a new shared-memory object and returns its name.
+    fn transmit_shared(&mut self, frame: &Frame) -> io::Result<Name> {
+        // The newest serial this can use is told to the restoration before the object exists, so
+        // a restore that comes in between still sweeps it.
+        self.restoration
+            .shared_written(self.segments.next_serial() + shared::EXISTING_NAMES);
+        Ok(self.segments.send(&frame.pixels)?.name)
     }
 
+    /// Present builds a frame's bytes, then sends them one of two ways. Through shared memory
+    /// when that medium is on (the pixels go in a new object and the terminal is sent its name,
+    /// written here and now), otherwise inline: the pixels are copied into a `Job` for the
+    /// encoder thread to compress, encode and write, so this call returns at once.
+    ///
+    /// Returns the bytes the frame takes on the wire: exact for shared memory, and for an inline
+    /// frame that of the newest frame the encoder has finished (0 before the first).
     pub fn present(
         &mut self,
         frame: &Frame,
@@ -134,100 +199,143 @@ impl Terminal {
         text: &[SafeText],
     ) -> io::Result<usize> {
         let previous = self.image;
-        self.image = if self.image == 100 { 101 } else { 100 };
-        let mut output = Vec::with_capacity(8192);
-        write!(output, "\x1b[?2026h")?;
-        for row in 1..=rows {
-            write!(output, "\x1b[{row};1H\x1b[2K")?;
-        }
-        write!(output, "\x1b[1;1H")?;
+        self.image = if previous == IMAGE_A {
+            IMAGE_B
+        } else {
+            IMAGE_A
+        };
+        let mut job = self.inline.blank();
+        frame_head(&mut job.head, rows)?;
         // z below INT32_MIN/2 draws the scene under cells with a background colour, so the
         // popup panel covers it while blank cells stay transparent.
-        let placement = format!(
+        write!(
+            job.placement,
             "a=T,f=24,s={},v={},i={},c={},r={},z=-1073741825,C=1,q=2",
             frame.width, frame.height, self.image, columns, rows
-        );
-        let shared = if self.shared_memory {
+        )
+        .map_err(io::Error::other)?;
+        frame_tail(&mut job.tail, previous, labels, panels, text, columns, rows)?;
+        let now = Instant::now();
+        if self.medium.ready(now) {
             match self.transmit_shared(frame) {
-                Ok(name) => Some(name),
-                Err(_) => {
-                    self.shared_memory = false;
-                    None
+                Ok(name) => {
+                    self.medium.succeeded();
+                    self.shared_memory = true;
+                    let mut output = std::mem::take(&mut job.head);
+                    write!(
+                        output,
+                        "\x1b_G{},t=s,S={};{}\x1b\\",
+                        job.placement,
+                        frame.pixels.len(),
+                        base64::engine::general_purpose::STANDARD.encode(name.as_str())
+                    )?;
+                    output.extend_from_slice(&job.tail);
+                    let size = output.len();
+                    // Not before the frame that was going inline has been written.
+                    self.inline.settle();
+                    self.sink.write_all(&output)?;
+                    self.shared_written.0 += size as u64;
+                    self.shared_written.1 += 1;
+                    job.head = output;
+                    self.inline.recycle(job);
+                    return Ok(size);
+                }
+                Err(error) => {
+                    // This frame goes inline, and the next try waits (see `Medium::failed`).
+                    self.medium.failed(&error, now);
                 }
             }
-        } else {
-            None
-        };
-        if let Some(name) = shared {
-            write!(
-                output,
-                "\x1b_G{placement},t=s,S={};{}\x1b\\",
-                frame.pixels.len(),
-                base64::engine::general_purpose::STANDARD.encode(name)
-            )?;
-        } else {
-            let mut compressor = ZlibEncoder::new(
-                Vec::with_capacity(frame.pixels.len() / 4),
-                Compression::fast(),
-            );
-            compressor.write_all(&frame.pixels)?;
-            let encoded = base64::engine::general_purpose::STANDARD.encode(compressor.finish()?);
-            output.reserve(encoded.len() + 1024);
-            let chunks = encoded.as_bytes().chunks(4096);
-            let count = chunks.len();
-            for (index, chunk) in chunks.enumerate() {
-                let more = usize::from(index + 1 < count);
-                if index == 0 {
-                    write!(output, "\x1b_G{placement},t=d,o=z,m={more};")?;
-                } else {
-                    write!(output, "\x1b_Gm={more},q=2;")?;
-                }
-                output.extend_from_slice(chunk);
-                output.extend_from_slice(b"\x1b\\");
-            }
         }
-        write!(output, "\x1b_Ga=d,d=I,i={previous},q=2\x1b\\")?;
-        for label in labels {
-            draw_label(&mut output, label, columns)?;
-        }
-        for panel in panels {
-            draw_popup(&mut output, panel)?;
-        }
-        for (index, line) in text.iter().enumerate() {
-            write!(
-                output,
-                "\x1b[{};1H\x1b[2K\x1b[38;2;180;199;218m{}\x1b[0m",
-                rows as usize + index + 1,
-                line.cut(columns as usize)
-            )?;
-        }
-        output.extend_from_slice(b"\x1b[?2026l");
-        let size = output.len();
-        let mut out = io::stdout().lock();
-        out.write_all(&output)?;
-        out.flush()?;
-        Ok(size)
+        self.shared_memory = false;
+        job.pixels.extend_from_slice(&frame.pixels);
+        self.inline.submit(job)?;
+        Ok(self.inline.last_wire())
+    }
+
+    /// Bytes and frames written so far, by either medium.
+    pub fn written(&self) -> (u64, u64) {
+        let (bytes, frames) = self.inline.written();
+        (
+            bytes + self.shared_written.0,
+            frames + self.shared_written.1,
+        )
+    }
+
+    /// Waits for the frame being written inline, and drops the one waiting.
+    pub fn settle(&self) {
+        self.inline.settle();
     }
 
     pub fn clear(&mut self) -> io::Result<()> {
-        let mut out = io::stdout().lock();
-        write!(out, "\x1b_Ga=d,d=A,q=2\x1b\\\x1b[2J\x1b[H")?;
-        out.flush()
+        self.inline.settle();
+        self.sink.write_all(b"\x1b_Ga=d,d=A,q=2\x1b\\\x1b[2J\x1b[H")
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
         if self.active {
-            let _ = restore_screen(&mut io::stdout(), self.keyboard);
+            self.inline.shutdown();
+            // Only the path that claims the restoration restores: a panic hook or a signal that
+            // got there first has already done it, and this finds nothing left.
+            self.restoration.restore();
             let _ = terminal::disable_raw_mode();
-            let _ = io::stdout().flush();
-            for name in self.pending.drain(..) {
-                unlink_shared(&name);
-            }
+            // No flush of standard output: every frame is flushed as it is written, the restore
+            // writes with write(2), and an encoder thread stuck in a write holds its lock.
+            self.segments.release();
             self.active = false;
         }
     }
+}
+
+/// The bytes `restore_screen` writes, made ahead of time for the panic hook and the signal
+/// handlers, which may neither allocate nor format.
+fn restore_bytes(keyboard: bool) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    // Writing to a Vec cannot fail.
+    let _ = restore_screen(&mut bytes, keyboard);
+    bytes
+}
+
+/// What comes before the image: starts the synchronized update, clears every row and homes the
+/// cursor. The rows are cleared on each frame so that text that was drawn over the last one does
+/// not outlive it.
+fn frame_head(output: &mut Vec<u8>, rows: u16) -> io::Result<()> {
+    write!(output, "\x1b[?2026h")?;
+    for row in 1..=rows {
+        write!(output, "\x1b[{row};1H\x1b[2K")?;
+    }
+    write!(output, "\x1b[1;1H")
+}
+
+/// What comes after the image: the previous image's deletion, the labels, the popups, the status
+/// rows and the end of the synchronized update.
+fn frame_tail(
+    output: &mut Vec<u8>,
+    previous: u32,
+    labels: &[Label],
+    panels: &[Popup],
+    text: &[SafeText],
+    columns: u16,
+    rows: u16,
+) -> io::Result<()> {
+    write!(output, "\x1b_Ga=d,d=I,i={previous},q=2\x1b\\")?;
+    for label in labels {
+        draw_label(output, label, columns)?;
+    }
+    for panel in panels {
+        draw_popup(output, panel)?;
+    }
+    for (index, line) in text.iter().enumerate() {
+        write!(
+            output,
+            "\x1b[{};1H\x1b[2K\x1b[38;2;180;199;218m{}\x1b[0m",
+            rows as usize + index + 1,
+            line.cut(columns as usize)
+        )?;
+    }
+    output.extend_from_slice(b"\x1b[?2026l");
+    Ok(())
 }
 
 /// The keyboard flags pushed when the terminal answers the Kitty keyboard query. Shift+Space is
@@ -246,6 +354,9 @@ const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
 ///
 /// Every step is tried whatever became of the ones before it, so that one failed write cannot
 /// leave the cursor hidden or the terminal on the alternate screen; the first error is returned.
+///
+/// `Restoration` writes the result of this function (made beforehand by `restore_bytes`) when a
+/// panic or a signal ends the run, and when `Terminal` is dropped.
 fn restore_screen(out: &mut impl Write, keyboard: bool) -> io::Result<()> {
     let mut first = Ok(());
     let mut note = |step: io::Result<()>| {
@@ -266,81 +377,6 @@ fn restore_screen(out: &mut impl Write, keyboard: bool) -> io::Result<()> {
     first
 }
 
-/// macOS limits a shared-memory name, leading slash included, to `PSHMNAMLEN` bytes; longer
-/// names fail in `shm_open` with ENAMETOOLONG.
-const SHARED_NAME_LIMIT: usize = 31;
-
-/// Name of the shared-memory object for one frame. The serial wraps at twelve digits so the
-/// name stays within `SHARED_NAME_LIMIT` for any pid (`/isotop-` + 10 + `-` + 12 = 31 bytes);
-/// only a handful of frames are alive at once, so a wrapped serial never collides.
-fn frame_name(pid: u32, serial: u64) -> String {
-    format!("/isotop-{pid}-{}", serial % 1_000_000_000_000)
-}
-
-/// Writes pixels into a new POSIX shared-memory object of exactly their size.
-fn write_shared(name: &str, data: &[u8]) -> io::Result<()> {
-    let path = CString::new(name).map_err(io::Error::other)?;
-    // SAFETY: path is NUL-terminated; O_EXCL guarantees a fresh object private to this user.
-    let fd = unsafe {
-        libc::shm_open(
-            path.as_ptr(),
-            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: fd is the descriptor just returned by shm_open and is owned here.
-    let mut file = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
-    let written = fill_shared(&mut file, data);
-    if written.is_err() {
-        unlink_shared(name);
-    }
-    written
-}
-
-/// Linux tmpfs accepts write(), which copies a whole frame in one call instead of faulting in a
-/// fresh mapping page by page.
-#[cfg(target_os = "linux")]
-fn fill_shared(file: &mut std::fs::File, data: &[u8]) -> io::Result<()> {
-    file.write_all(data)
-}
-
-/// Other systems only allow shared memory to be sized and mapped.
-#[cfg(not(target_os = "linux"))]
-fn fill_shared(file: &mut std::fs::File, data: &[u8]) -> io::Result<()> {
-    file.set_len(data.len() as u64)?;
-    // SAFETY: the object was sized to data.len() bytes just above and is mapped shared for
-    // reading and writing (some systems refuse a write-only mapping); the mapping is released
-    // before returning and never escapes this block.
-    unsafe {
-        let address = libc::mmap(
-            std::ptr::null_mut(),
-            data.len(),
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            std::os::fd::AsRawFd::as_raw_fd(file),
-            0,
-        );
-        if address == libc::MAP_FAILED {
-            return Err(io::Error::last_os_error());
-        }
-        std::ptr::copy_nonoverlapping(data.as_ptr(), address.cast(), data.len());
-        libc::munmap(address, data.len());
-    }
-    Ok(())
-}
-
-/// Removes a shared-memory object. The terminal unlinks each frame itself after reading it, so
-/// a second unlink finds nothing (ENOENT); that and every other failure is ignored.
-fn unlink_shared(name: &str) {
-    if let Ok(path) = CString::new(name) {
-        // SAFETY: path is NUL-terminated and outlives the call; the result is deliberately unused.
-        unsafe { libc::shm_unlink(path.as_ptr()) };
-    }
-}
-
 struct Support {
     /// The terminal answered the Kitty keyboard protocol query.
     keyboard: bool,
@@ -354,16 +390,18 @@ struct Support {
 /// order, so its arrival means any capability reply has already come; tmux and plain terminals
 /// fail fast instead of timing out.
 fn probe() -> io::Result<Support> {
-    let name = format!("/isotop-{}-probe", std::process::id());
-    debug_assert!(name.len() <= SHARED_NAME_LIMIT);
-    let shared = write_shared(&name, &[0, 0, 0]).is_ok();
+    let name = Name::probe(std::process::id());
+    let shared = shared::create(&name, &[0, 0, 0]).is_ok();
     let mut out = io::stdout().lock();
-    write!(out, "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\")?;
+    write!(
+        out,
+        "\x1b_Gi={PROBE_INLINE},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\"
+    )?;
     if shared {
         write!(
             out,
-            "\x1b_Gi=32,s=1,v=1,a=q,t=s,f=24,S=3;{}\x1b\\",
-            base64::engine::general_purpose::STANDARD.encode(&name)
+            "\x1b_Gi={PROBE_SHARED},s=1,v=1,a=q,t=s,f=24,S=3;{}\x1b\\",
+            base64::engine::general_purpose::STANDARD.encode(name.as_str())
         )?;
     }
     write!(out, "\x1b[?u\x1b[?1016$p\x1b[c")?;
@@ -388,12 +426,12 @@ fn probe() -> io::Result<Support> {
         response.extend_from_slice(&bytes[..count as usize]);
     }
     let text = String::from_utf8_lossy(&response);
-    unlink_shared(&name);
+    shared::unlink(&name);
     Ok(Support {
         keyboard: keyboard_reply(&text),
-        graphics: text.contains("i=31;OK"),
+        graphics: text.contains(&format!("i={PROBE_INLINE};OK")),
         pixels: text.contains("\x1b[?1016;1$y") || text.contains("\x1b[?1016;2$y"),
-        shared_memory: text.contains("i=32;OK"),
+        shared_memory: text.contains(&format!("i={PROBE_SHARED};OK")),
     })
 }
 
@@ -729,76 +767,5 @@ mod tests {
             "but the screen is left: {text:?}"
         );
         assert!(text.contains("\x1b[?25h"), "and the cursor shown");
-    }
-
-    #[test]
-    fn frame_names_fit_the_macos_shared_memory_limit() {
-        for (pid, serial) in [(0, 0), (99_999, 1 << 20), (u32::MAX, u64::MAX)] {
-            let name = frame_name(pid, serial);
-            assert!(name.len() <= SHARED_NAME_LIMIT, "{name} is too long");
-            assert!(name.starts_with("/isotop-"));
-        }
-        assert_eq!(frame_name(7, 3), "/isotop-7-3");
-        assert_eq!(
-            frame_name(u32::MAX, 999_999_999_999).len(),
-            SHARED_NAME_LIMIT,
-            "the longest name should sit exactly at the limit"
-        );
-    }
-
-    /// Reads a shared-memory object back through shm_open and mmap, as a terminal does.
-    fn read_shared(name: &str, length: usize) -> Option<Vec<u8>> {
-        let path = CString::new(name).unwrap();
-        // SAFETY: path is NUL-terminated; the descriptor is closed below.
-        let fd = unsafe { libc::shm_open(path.as_ptr(), libc::O_RDONLY, 0) };
-        if fd < 0 {
-            return None;
-        }
-        // SAFETY: the object holds at least length bytes (the caller wrote that many); the
-        // mapping is copied out and released before the descriptor is closed.
-        let bytes = unsafe {
-            let address = libc::mmap(
-                std::ptr::null_mut(),
-                length,
-                libc::PROT_READ,
-                libc::MAP_SHARED,
-                fd,
-                0,
-            );
-            assert_ne!(address, libc::MAP_FAILED);
-            let bytes = std::slice::from_raw_parts(address.cast::<u8>(), length).to_vec();
-            libc::munmap(address, length);
-            bytes
-        };
-        // SAFETY: fd was opened above and is not used again.
-        unsafe { libc::close(fd) };
-        Some(bytes)
-    }
-
-    #[test]
-    fn shared_memory_frames_round_trip_and_are_cleaned_up() {
-        let name = format!("/isotop-test-{}", std::process::id());
-        let pixels: Vec<u8> = (0..300_u32).map(|i| (i * 7) as u8).collect();
-        write_shared(&name, &pixels).unwrap();
-        assert_eq!(read_shared(&name, pixels.len()).unwrap(), pixels);
-        #[cfg(target_os = "linux")]
-        {
-            let file = std::path::Path::new("/dev/shm").join(&name[1..]);
-            assert_eq!(std::fs::read(&file).unwrap(), pixels);
-            unlink_shared(&name);
-            assert!(!file.exists());
-        }
-        #[cfg(not(target_os = "linux"))]
-        unlink_shared(&name);
-        assert!(read_shared(&name, 1).is_none());
-    }
-
-    #[test]
-    fn unlinking_a_frame_the_terminal_already_removed_is_harmless() {
-        let name = format!("/isotop-test-twice-{}", std::process::id());
-        write_shared(&name, &[1, 2, 3]).unwrap();
-        unlink_shared(&name);
-        unlink_shared(&name);
-        unlink_shared("/isotop-test-never-created");
     }
 }

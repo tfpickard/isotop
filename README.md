@@ -112,7 +112,11 @@ rasterizers draw it with matching output:
 
 Frames reach the terminal through POSIX shared memory when the terminal can read
 it (Ghostty and Kitty can, locally): no compression, no base64, almost no pty
-traffic. Over SSH, or with `--direct`, frames are zlib-compressed inline instead.
+traffic. Over SSH, or with `--direct`, frames are zlib-compressed inline instead, on a
+worker thread so the frame loop does not wait for the compression. If shared memory
+fails once (a full `/dev/shm`, say), that frame goes inline and shared memory is tried
+again after 1 s, then 2 s and so on up to 60 s. A panic or a SIGINT, SIGTERM or SIGHUP
+gives the terminal back (main screen, cursor, mouse, keyboard mode) before the process ends.
 The image sits below cells with a background colour, so popups and labels are
 ordinary terminal text drawn over the scene.
 
@@ -1412,7 +1416,8 @@ python3 scripts/code_report.py --check
 
 The smoke test emulates a graphics-capable terminal through a pseudo-terminal,
 reads frames both inline and through shared memory, and exercises interactive
-controls and restoration. Visual quality, flicker, and display latency should
+controls and restoration, including after a forced panic and after SIGINT, SIGTERM
+and SIGHUP. Visual quality, flicker, and display latency should
 also be checked in Ghostty.
 
 The Rust toolchain is pinned in `rust-toolchain.toml` (and `rust-version` in
