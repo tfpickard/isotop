@@ -491,7 +491,9 @@ impl ViewModule for Die {
             &self.last.head
         };
         let colour = match readings.map(|found| found.mode) {
-            Some(Mode::Relative) | None => "ironbow = relative heat, model only (not degrees)",
+            Some(Mode::Relative) | None => {
+                "ironbow = relative heat modelled from load (not degrees)"
+            }
             Some(Mode::Celsius) => "ironbow = heat: sensor where one reads, model between",
         };
         format!(
@@ -1061,6 +1063,10 @@ mod tests {
             "{legend}"
         );
         assert!(legend.contains("relative heat, no degrees"), "{legend}");
+        assert!(
+            legend.contains("ironbow = relative heat modelled from load (not degrees)"),
+            "{legend}"
+        );
         assert!(legend.contains("hatched = no sensor"), "{legend}");
         assert!(
             !legend.contains("package n/a ") || !legend.contains(" C"),

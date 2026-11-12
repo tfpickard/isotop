@@ -80,7 +80,7 @@ pub fn draw(pen: &mut Pen, tags: &mut Vec<Tag>, input: &Input) {
                 tags,
                 206.0,
                 9.8,
-                "relative heat: the model, not degrees".to_owned(),
+                "relative heat modelled from load: not degrees".to_owned(),
             );
         }
     }
