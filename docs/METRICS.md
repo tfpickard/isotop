@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 166 | 108,860 | 2,434 | 6,635 |
+| Rust | 166 | 108,861 | 2,434 | 6,635 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,089 | 841 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 91 | 0 | 14,997 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **484** | **172,190** | **18,797** | **15,002** |
+| **Total** | **484** | **172,191** | **18,797** | **15,002** |
 
 ## Rust by module
 
@@ -187,9 +187,9 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/app/feed.rs` | 48 | 131 |
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
-| `src/allocations.rs` | 0 | 292 |
+| `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **64,646** | **44,243** |
+| **Total** | **64,646** | **44,244** |
 
 ## Largest files
 

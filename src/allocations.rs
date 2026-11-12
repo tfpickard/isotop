@@ -278,6 +278,7 @@ mod tests {
         ("plumbing", 723, 90970),
         ("armorial", 151, 237106),
         ("lights", 266, 52336),
+        ("die", 150, 43500),
     ];
 
     #[test]
