@@ -107,10 +107,18 @@ rasterizers draw it with matching output:
 
 - **GPU** (default): wgpu on Vulkan (NVIDIA, AMD, Intel) or Metal (Apple GPUs).
   `--gpu-power high` (default) prefers a discrete GPU, `low` an integrated one,
-  which keeps a laptop's discrete GPU asleep. Software adapters are refused.
+  which keeps a laptop's discrete GPU asleep. Software adapters are refused in a
+  live session, whatever `ISOTOP_ALLOW_SOFTWARE_GPU` says (see Development).
   In a live session the GPU draws one frame while the next is recorded, so what
-  you see is one frame behind the scene; the hidden `--no-gpu-pipeline` finishes
-  each frame first, and a headless run (`--output`, `--benchmark`) always does.
+  you see is one frame behind the scene. The labels and popups are placed from the
+  scene as it stands when the frame is shown, so isotop finishes a frame first,
+  and shows it at once, whenever the camera or the view has moved since the frame
+  before; a body that moves by itself, and the free turn of the globe (under a
+  pixel a frame), still lead their pixels by one frame of their own motion, and the
+  hover is looked up around the pointer as it was when the frame was sent, so a
+  pointer that moved more than 80 px since sees no hover for one frame. The
+  hidden `--no-gpu-pipeline` finishes every frame first, and a headless run
+  (`--output`, `--benchmark`) always does.
 - **CPU**: a software rasterizer with a depth buffer. `--renderer cpu` forces it;
   `--renderer auto` falls back to it when no GPU is available or a GPU error
   occurs, and the status strip says which rasterizer drew the frame.
@@ -1459,7 +1467,9 @@ also be checked in Ghostty.
 
 CPU/GPU parity can be checked without a GPU through lavapipe, Mesa's software Vulkan driver. Install
 `mesa-vulkan-drivers` (and `libvulkan1`), then set `ISOTOP_ALLOW_SOFTWARE_GPU=1`: `--renderer gpu` then
-uses the software adapter and accepts nothing else. Without the variable software adapters stay refused.
+uses the software adapter and accepts nothing else. Without the variable software adapters stay refused,
+and a live session refuses them with it too (it falls back to the CPU rasterizer): only `--output` and
+`--benchmark` runs and the tests take the opt-in.
 
 ```sh
 export ISOTOP_ALLOW_SOFTWARE_GPU=1

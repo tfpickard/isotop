@@ -136,7 +136,7 @@ fn start(options: &Options, view: View, available: Vec<bool>) -> Result<Startup,
     app.playlist = playlist;
     // A headless run has no pointer to read picks around, so the GPU brings every pick back.
     app.set_renderer(
-        Renderer::choose(options.renderer, options.gpu_power)?
+        Renderer::choose(options.renderer, options.gpu_power, options.headless())?
             .reading_every_pick(options.headless()),
     );
     Ok(Startup {

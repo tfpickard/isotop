@@ -124,6 +124,16 @@ impl CameraController {
 }
 
 impl App {
+    /// Whether the view and the camera that drew the frame now being given to the rasterizer are
+    /// those that drew the one before: then the overlay, placed from the camera as it stands,
+    /// agrees with the pixels of a frame that comes back a frame late. Notes this frame's.
+    pub(super) fn anchors_at_rest(&mut self) -> bool {
+        let drawn = Some((self.view, self.camera.current.clone()));
+        let at_rest = self.anchored == drawn;
+        self.anchored = drawn;
+        at_rest
+    }
+
     /// Lets a held globe turn with time again from where it stands, and stands it upright.
     /// Does nothing unless the earth was held, or in a view with no sphere to turn, where a
     /// tour must leave the hold for the next visit to the globe.
@@ -327,5 +337,28 @@ mod tests {
         app.key(KeyCode::Char('g'), KeyModifiers::NONE, 10.0);
         app.key(KeyCode::Char('['), KeyModifiers::NONE, 10.0);
         assert_eq!(app.render_time(), 1.0);
+    }
+
+    #[test]
+    fn the_overlay_anchors_are_at_rest_only_while_the_camera_and_the_view_are_unchanged() {
+        let mut app = App::new(view("orbit"), model::demo(1.0, 16), all_available());
+        assert!(!app.anchors_at_rest(), "the first frame has none before it");
+        assert!(app.anchors_at_rest());
+        assert!(app.anchors_at_rest());
+        app.camera.current.zoom *= 1.01;
+        assert!(!app.anchors_at_rest(), "the camera moved");
+        assert!(app.anchors_at_rest(), "and came to rest");
+        app.camera.current.globe_held = !app.camera.current.globe_held;
+        assert!(
+            !app.anchors_at_rest(),
+            "a hold changes where a globe is drawn"
+        );
+        assert!(app.anchors_at_rest());
+        app.switch(view("flow"));
+        assert!(
+            !app.anchors_at_rest(),
+            "another view's overlay is not this frame's"
+        );
+        assert!(app.anchors_at_rest());
     }
 }

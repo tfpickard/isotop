@@ -14,7 +14,7 @@ text). Own file because every change to how something is rasterized must keep tw
 | Display list, picking | `frame.rs` | `Item`, `Frame`, `Thing`, `Target`, `Card`, `Buffers` (recycled through `Frame::release`), `THING`, `NONE`, `thing_pick`, `target_near`, `pick_near` |
 | CPU rasterizer | `raster.rs`, `raster/triangle.rs`, `raster/shapes.rs` | `Frame::rasterize` (bands of rows, a thread each), `Band`, the primitives; `gpu.rs` mirrors it |
 | CPU rasterizer, old and new | `raster/reference.rs`, `raster/differential.rs` | the reference and the differential test that holds the rasterizer to it, and a measurement |
-| GPU draw calls and readback | `../gpu.rs`, `../gpu/batch.rs`, `../gpu/readback.rs` | `Planner` keeps painter's order exactly (see below), `Picks`, `Flight`; `Renderer::overlap` runs the GPU a frame behind |
+| GPU draw calls and readback | `../gpu.rs`, `../gpu/batch.rs`, `../gpu/readback.rs` | `Planner` keeps painter's order exactly (see below), `Picks`, `Flight`; `Renderer::overlap` runs the GPU a frame behind while the camera and the view are at rest (pixels and picks are one recording; overlay text is placed from the newest state) |
 | World-space emitters | `draw.rs` | `Frame::project`, `facet`, `quad`, `line`, `hairline`, `sphere`, `glow`, `beam`; `cover`, `similar`, `glows` |
 | What a view reads and writes | `stage.rs` | `Stage`, `RenderInput`, `FrameClock`, `MAX_DT`, `TourTarget`, `Title` |
 | Frame-wide state | `scene.rs`, `scene/tests.rs` | `Scene` (no per-view field), `fit`, `draw_links`, the exit flashes |
