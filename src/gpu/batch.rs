@@ -70,6 +70,25 @@ const REORDER_FROM: usize = 16;
 /// impostor's quad is its own bound. Two pixels is the widest of these, with room to spare.
 const MARGIN: f32 = 2.0;
 
+/// How many pixels past its radius the vertex shader puts the corners of an impostor's quad:
+/// `glow_vertex` and `splat_vertex` use `center + CORNERS[index] * (radius + 1.0)` and
+/// `ball_vertex` `(radius + SELECTION_RING_WIDTH + 1.0)`, in `shaders.wgsl`. `bounds` must cover
+/// that quad, so it is written from this constant, and `the_quads_are_the_ones_the_shader_draws`
+/// holds the constant to the shader source.
+const QUAD_PAD: f32 = 1.0;
+
+/// Half the side of the quad the GPU draws for an impostor of `radius` whose shader reaches
+/// `radius + pad`. A radius that is not positive is not drawn by the CPU rasterizer to any
+/// further than one pixel from the centre, but the GPU draws the quad as the shader gives it: a
+/// reach below zero mirrors the corners, so the quad is the same size either way, and a fragment
+/// is kept whatever sign the distance over the radius has. The bound takes the magnitude of the
+/// radius and pads it, which holds the quad for every sign (`|r + pad| <= |r| + pad`) and the
+/// CPU's pixels as well, and is the radius plus the pad, as it always was, for a positive one.
+/// A radius that is NaN or infinite gives a bound that is not finite: the item is unbounded.
+fn quad_reach(radius: f32, pad: f32) -> f32 {
+    radius.abs() + pad
+}
+
 /// A run of items of one kind the GPU draws in one call: `order[start..end]` of the plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Run {
@@ -124,11 +143,13 @@ pub(super) fn bounds(item: &Item) -> Option<[f32; 4]> {
         Item::Sphere { center, radius, .. } => around(
             center[0],
             center[1],
-            radius + SELECTION_RING_WIDTH + 1.0 + MARGIN,
+            quad_reach(radius, SELECTION_RING_WIDTH + QUAD_PAD) + MARGIN,
         ),
         Item::Glow { center, radius, .. }
         | Item::Puff { center, radius, .. }
-        | Item::Pick { center, radius, .. } => around(center[0], center[1], radius + 1.0 + MARGIN),
+        | Item::Pick { center, radius, .. } => {
+            around(center[0], center[1], quad_reach(radius, QUAD_PAD) + MARGIN)
+        }
         Item::Glyph { origin, scale, .. } => {
             let scale = scale as f32;
             [
@@ -347,6 +368,16 @@ mod tests {
         let mut random = Rng::new(seed);
         let at = |random: &mut Rng| [random.unit() * width, random.unit() * height];
         let color = |random: &mut Rng| [0, 1, 2].map(|_| (random.unit() * 255.0) as u8);
+        // One radius in five is negative, from just under zero to a few pixels, which no view
+        // records but the GPU would still draw as the shader's quad.
+        let signed = |random: &mut Rng, widest: f32| {
+            let radius = 2.0 + random.unit() * widest;
+            if random.below(5) == 0 {
+                -radius * random.unit() * 1.5
+            } else {
+                radius
+            }
+        };
         (0..count)
             .map(|_| {
                 let [x, y] = at(&mut random);
@@ -389,7 +420,7 @@ mod tests {
                     5 => Item::Star([x.floor(), y.floor()], color(&mut random)),
                     6 => Item::Sphere {
                         center: [x, y, depth],
-                        radius: 2.0 + random.unit() * 6.0,
+                        radius: signed(&mut random, 6.0),
                         depth: 1.0,
                         color: color(&mut random),
                         pick,
@@ -398,7 +429,7 @@ mod tests {
                     7..=8 => {
                         let item = Item::Glow {
                             center: [x, y],
-                            radius: 2.0 + random.unit() * 7.0,
+                            radius: signed(&mut random, 7.0),
                             color: color(&mut random),
                             strength: random.unit(),
                         };
@@ -429,7 +460,7 @@ mod tests {
                     },
                     _ => Item::Pick {
                         center: [x, y],
-                        radius: 2.0 + random.unit() * 6.0,
+                        radius: signed(&mut random, 6.0),
                         depth,
                         pick,
                     },
@@ -477,13 +508,126 @@ mod tests {
         }
     }
 
-    /// Whether two items can change a pixel in common, by their pixel bounds and nothing coarser
-    /// than that. An unbounded item overlaps everything.
+    /// The rectangle the GPU draws an item in, written from the vertex shaders and not from
+    /// `bounds`: the quad of an impostor is its centre and `radius + pad` on every side, in
+    /// whichever direction that reaches, and the others are `bounds` less its margin.
+    fn drawn_rectangle(item: &Item) -> Option<[f32; 4]> {
+        let quad = |center: [f32; 2], radius: f32, pad: f32| {
+            let reach = (radius + pad).abs();
+            [
+                center[0] - reach,
+                center[1] - reach,
+                center[0] + reach,
+                center[1] + reach,
+            ]
+        };
+        match *item {
+            Item::Glow { center, radius, .. }
+            | Item::Puff { center, radius, .. }
+            | Item::Pick { center, radius, .. } => Some(quad(center, radius, 1.0)),
+            Item::Sphere { center, radius, .. } => Some(quad(
+                [center[0], center[1]],
+                radius,
+                SELECTION_RING_WIDTH + 1.0,
+            )),
+            _ => bounds(item),
+        }
+    }
+
+    /// Whether two items can change a pixel in common, by the rectangles the GPU draws them in
+    /// and nothing coarser than that. An unbounded item overlaps everything.
     fn overlap(a: &Item, b: &Item) -> bool {
-        match (bounds(a), bounds(b)) {
-            (Some(a), Some(b)) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3],
+        match (bounds(a), bounds(b), drawn_rectangle(a), drawn_rectangle(b)) {
+            (Some(_), Some(_), Some(a), Some(b)) => {
+                a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3]
+            }
             _ => true,
         }
+    }
+
+    #[test]
+    fn the_bound_of_an_item_holds_the_quad_the_gpu_draws_for_it() {
+        for seed in 0..40 {
+            for item in random_items(seed, 200, 96.0, 64.0) {
+                let (Some(bound), Some(quad)) = (bounds(&item), drawn_rectangle(&item)) else {
+                    continue;
+                };
+                assert!(
+                    bound[0] <= quad[0]
+                        && bound[1] <= quad[1]
+                        && bound[2] >= quad[2]
+                        && bound[3] >= quad[3],
+                    "{item:?}: bound {bound:?} does not hold quad {quad:?}"
+                );
+            }
+        }
+        for radius in [-30.0, -10.0, -3.5, -0.5, 0.0, 4.0] {
+            let glow = Item::Glow {
+                center: [50.0, 50.0],
+                radius,
+                color: [1; 3],
+                strength: 1.0,
+            };
+            let [x0, y0, x1, y1] = bounds(&glow).expect("a finite radius is bounded");
+            assert!(x0 < x1 && y0 < y1, "radius {radius} gave an inverted bound");
+        }
+        for radius in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let pick = Item::Pick {
+                center: [5.0, 5.0],
+                radius,
+                depth: 1.0,
+                pick: 0,
+            };
+            assert!(bounds(&pick).is_none(), "radius {radius} cannot be bounded");
+        }
+    }
+
+    #[test]
+    fn the_quads_are_the_ones_the_shader_draws() {
+        let source = include_str!("../shaders.wgsl");
+        for expression in [
+            format!("glow.center + CORNERS[index] * (glow.radius + {QUAD_PAD:?})"),
+            format!("splat.center + CORNERS[index] * (splat.radius + {QUAD_PAD:?})"),
+            format!("ball.radius + SELECTION_RING_WIDTH + {QUAD_PAD:?}"),
+        ] {
+            assert!(
+                source.contains(&expression),
+                "shaders.wgsl no longer has `{expression}`, which `bounds` is written from"
+            );
+        }
+    }
+
+    #[test]
+    fn a_glow_of_negative_radius_stays_behind_the_beam_it_covers() {
+        // Pairs of beams and glows far from the place (enough calls for the planner to reorder),
+        // then a glow, a beam and a glow of radius -10 at (60, 60): the GPU draws the glow's quad
+        // (nine pixels either side), so it must not join the earlier glow call and be drawn
+        // before the beam.
+        let mut items: Vec<Item> = (0..30)
+            .flat_map(|index| {
+                [
+                    beam(20.0 + index as f32 * 20.0, 300.0),
+                    glow(20.0 + index as f32 * 20.0, 300.0),
+                ]
+            })
+            .collect();
+        // A glow there makes the beam a call of its own, after the glows so far.
+        items.push(glow(60.0, 60.0));
+        items.push(beam(60.0, 60.0));
+        items.push(Item::Glow {
+            center: [60.0, 60.0],
+            radius: -10.0,
+            color: [9; 3],
+            strength: 0.5,
+        });
+        let mut planner = Planner::default();
+        planner.plan(&items, 640, 400, Order::Commuting);
+        let position = |index: u32| planner.order.iter().position(|&i| i == index).unwrap();
+        let (covered, negative) = (items.len() as u32 - 2, items.len() as u32 - 1);
+        assert!(
+            position(covered) < position(negative),
+            "the glow of radius -10 was drawn before the beam it covers"
+        );
     }
 
     #[test]
