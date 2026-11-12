@@ -52,9 +52,12 @@ OUTPUT = REPO / "docs" / "media" / "renders"
 #     turns its 4D camera a full turn every 120 s, so 120 is the canonical orientation;
 #   * strata and necropolis replay their window from before time 0, so they are full at any
 #     time (necropolis replays ten minutes of deaths);
-#   * the necropolis still sits at demo day 15.97, a real full moon (its moon is computed
-#     from the demo wall clock, DEMO_EPOCH + time), at a time where the demo's memory-pressure
-#     wave sin(0.13 t) is at its trough, so the fog is at its base density.
+#   * the necropolis still sits at demo day 15.67, a full moon high in the south-east over the
+#     demo's home (Amsterdam): the moon is computed from the demo wall clock, DEMO_EPOCH + time,
+#     by `lunar::Moon`, and only drawn while it is above the horizon, so the times are chosen
+#     where it is up (at DEMO_EPOCH itself it is a new moon below the horizon). The time is also
+#     one at which the demo's memory-pressure wave sin(0.13 t) is at its trough, so the fog is
+#     at its base density;
 # ---------------------------------------------------------------------------------------------
 STILLS = {
     "city": 60,
@@ -70,7 +73,7 @@ STILLS = {
     "coop": 60,
     "ptolemy": 300,
     "tesseract": 120,
-    "necropolis": 1383062,
+    "necropolis": 1353579,
     "cortex": 60,
     "horizon": 60,
     "murmuration": 60,
@@ -103,15 +106,16 @@ FILMSTRIPS = {
     "ptolemy": [(15, None), (30, None), (45, None), (60, None)],
     # One minute of worldlines is replayed from time 0, so the worldlines lengthen until 60 s.
     "tesseract": [(10, None), (25, None), (40, None), (60, None)],
-    # The graves are always ten minutes of deaths; what advances is the moon, computed from
-    # the demo's wall clock: a thin crescent (the demo epoch is 1.2 days before new moon), then
-    # first quarter, full and last quarter, each at a time where the memory-pressure wave is at
-    # its trough (so the fog does not change between panels).
+    # The graves are always ten minutes of deaths; what advances is the moon, computed from the
+    # demo's wall clock and home (Amsterdam, 52.4 N): a waxing crescent low in the south-south-west, a
+    # first quarter on the meridian (it never climbs above 13 degrees there in October), a full
+    # moon high in the south-east and a last quarter rising in the east. Each is at a time where
+    # the memory-pressure wave is at its trough, so the fog does not change between panels.
     "necropolis": [
-        (0, "t = 0 d, thin crescent"),
-        (742371, "t = 8.6 d, first quarter"),
-        (1383062, "t = 16.0 d, full moon"),
-        (2018098, "t = 23.4 d, last quarter"),
+        (298778, "t = 3.5 d, waxing crescent"),
+        (740389, "t = 8.6 d, first quarter"),
+        (1353579, "t = 15.7 d, full moon"),
+        (1980738, "t = 22.9 d, last quarter"),
     ],
 }
 

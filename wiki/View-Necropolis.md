@@ -3,7 +3,7 @@
 A moonlit cemetery of exited processes. Each death becomes a headstone in the row of its UTC minute, the newest row in front and the older ones receding into fog. A stone's height is the process's lifetime CPU time and its width the most memory it ever held; its tint is its kind; its epitaph (on hover or click) says how it died. Zombies stand in open pits in front, waiting to be reaped; a service
 whose processes are all gone gets a mausoleum; a ghost rises over a grave when a new process takes the buried pid; the fog thickens with memory pressure; and the moon is the real moon, its phase computed from the date. It is the view about what survives a process's death, and how little.
 
-![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and a waning moon](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/necropolis.webp)
+![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and a full moon high in the sky strip](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/necropolis.webp)
 
 ![The README image of the same view](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/necropolis.webp)
 
@@ -140,7 +140,7 @@ the rest are headstones: `dig` fixes everything the grave shows (names, cause, s
 ## Reading the picture
 
 What I see in the demo render: a grey-violet plot seen from above at an isometric angle, about ten rows of headstones in lilac, sandstone and slate-green, in varied shapes (rounded, gothic arch, slab, small crosses) receding to the back where they disappear into pale violet fog; a pillared grey mausoleum at the left end of a middle row; a small field of tiny stones at the right (the unmarked markers); five pink figures in a line in front, standing in pits (the demo's
-zombies); two bare oaks against a starry sky; and no moon: the demo's clock (`DEMO_EPOCH`, 04:12 UTC on 2026-10-10) is 11.6 hours before a new moon and Amsterdam's horizon, so the legend says `moon: new moon 0% lit, below the horizon`. At `--time 650800` it is a waxing moon about 41 % lit, low in the south, lit on the right, behind the oak at the top of the frame.
+zombies); two bare oaks against a starry sky; and, at the upper left, a full moon with a soft glow, drawn at `--time 1353579` (a full moon 39 degrees up in the south-east over Amsterdam, 15.7 days into the demo). At the demo's own clock (`DEMO_EPOCH`, 04:12 UTC on 2026-10-10, 11.6 hours before a new moon) the moon is below Amsterdam's horizon and not drawn: the legend says `moon: new moon 0% lit, below the horizon`. At `--time 650800` it is a waxing moon about 41 % lit, low in the south, lit on the right, behind the oak at the top of the frame.
 
 * **Measured:** the cause (a wait status or an OOM counter), lifetime CPU and peak memory (taskstats or last sample), the kind and cgroup of the process as last seen, the minute of death, the count of deaths per minute, the number of zombies, memory pressure.
 * **Derived:** the row and position (grouped by family), the choice of mass graves, the mausoleum (a unit with three or more graves and no survivors), the OOM attribution (a heuristic: a SIGKILL in a cgroup whose counter rose within one sample claims its largest victim), the ghost.

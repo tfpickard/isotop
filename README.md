@@ -671,7 +671,7 @@ Keys while the tesseract is shown: `,` and `.` turn a quarter turn back and forw
 
 ### Necropolis
 
-![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and the waning moon](docs/media/necropolis.webp)
+![Necropolis: rows of headstones by minute of death fading into fog, zombies in open pits at the front, a mausoleum and a full moon high in the sky strip](docs/media/necropolis.webp)
 
 How it works, and the science and history behind it: [docs/theory/necropolis.md](docs/theory/necropolis.md).
 

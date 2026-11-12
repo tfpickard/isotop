@@ -131,10 +131,11 @@ Demo render at `--time 120`.
 
 ![Necropolis](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/necropolis.webp)
 
-Demo render at `--time 1383062`.
+Demo render at `--time 1353579`.
 
-The Necropolis still is at demo day 16.0, a real full moon: its moon is computed from the demo wall
-clock, so `--time` changes the phase. It is also at the trough of the demo's memory-pressure wave, which sets the
+The Necropolis still is at demo day 15.7, a full moon high in the south-east over the demo's home
+(Amsterdam): its moon is computed from the demo wall clock and home, so `--time` changes both the phase and where
+it stands, and it is only drawn while it is above the horizon. It is also at the trough of the demo's memory-pressure wave, which sets the
 fog density, so the fog is at its base level.
 
 ### [Cortex](View-Cortex)
@@ -212,8 +213,9 @@ already full at every time here: this is a sliding window, not a build-up.
 
 ![Strata filmstrip](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/filmstrip-strata.webp)
 
-**[Necropolis](View-Necropolis)** across a lunation, at 0, 8.6, 16.0 and 23.4 days (thin crescent, first quarter,
-full, last quarter), all at zero fog pressure. It replays 600 s from before time 0, so there is no build-up to show.
+**[Necropolis](View-Necropolis)** across a lunation, at 3.5, 8.6, 15.7 and 22.9 days (waxing crescent low in the
+south-south-west, first quarter on the meridian, full moon high in the south-east, last quarter rising in the east),
+all at zero fog pressure. It replays 600 s from before time 0, so there is no build-up to show.
 
 ![Necropolis filmstrip](https://raw.githubusercontent.com/tfpickard/isotop/main/docs/media/renders/filmstrip-necropolis.webp)
 
