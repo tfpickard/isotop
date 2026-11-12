@@ -10,6 +10,7 @@ mod cli;
 mod coop;
 mod cores;
 mod cortex;
+mod die;
 mod geo;
 mod geometry;
 mod globe;

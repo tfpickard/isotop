@@ -37,6 +37,8 @@ pub use memory::{MEMORY_DETAIL, oom_scores, rollup};
 pub use nvml::Nvml as Gpu;
 pub use pipes::PipeScan;
 pub use thermal::ThermalScan;
+#[cfg(test)]
+pub use thermal::fixture_topologies;
 pub use threads::Threads;
 pub use wait::WaitScan;
 

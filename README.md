@@ -1,6 +1,6 @@
 # isotop
 
-A living picture of your machine inside the terminal, in twenty-six views: a process
+A living picture of your machine inside the terminal, in twenty-seven views: a process
 city, an orbital observatory, a rippling pond, a spacetime weather map, a race
 track of CPU cores, petri dishes of cgroups, a ridgeline landscape of CPU
 history, a globe of network connections, a coral reef, the system log (the systemd
@@ -13,7 +13,8 @@ process tree as a tree, the journal spelled letter by letter by the planchette o
 talking board, an anthill whose ants carry the bytes of read and write calls between
 nests and files, a boiler room whose pipes, tubes and hoses are the channels between
 processes, a roll of arms whose cadency describes the process tree, and a night
-coast of lighthouses identified by their flashes. Written in
+coast of lighthouses identified by their flashes, and an infrared floorplan of
+the CPU die. Written in
 Rust for Linux and for macOS on Apple Silicon, with real process data and pixel
 graphics through the Kitty graphics protocol. Ghostty is the primary target.
 
@@ -29,6 +30,7 @@ https://github.com/user-attachments/assets/05663db3-6c64-48bc-8696-45f166ce325c
 | ![Horizon](docs/media/horizon.webp)<br>**16 Horizon** | ![Murmuration](docs/media/murmuration.webp)<br>**17 Murmuration** | ![Arbor](docs/media/arbor.webp)<br>**18 Arbor** |
 | ![Hr](docs/media/hr.webp)<br>**19 Hr** | ![Hive](docs/media/hive.webp)<br>**20 Hive** | ![Switchboard](docs/media/switchboard.webp)<br>**21 Switchboard** |
 | ![Ouija](docs/media/ouija.webp)<br>**22 Ouija** | ![Anthill](docs/media/anthill.webp)<br>**23 Anthill** | ![Plumbing](docs/media/plumbing.webp)<br>**24 Plumbing** |
+| ![Armorial](docs/media/armorial.webp)<br>**25 Armorial** | ![Lights](docs/media/lights.webp)<br>**26 Lights** | ![Die](docs/media/die.webp)<br>**27 Die** |
 
 The numbers are the views' places in the Tab order (the registry's, which
 `isotop --list-views` prints); the keys 1 to 9 and 0 jump to the first ten.
@@ -48,7 +50,7 @@ sources are in [`wiki/`](wiki/) and are published to the wiki on every merge to 
 cargo build --release
 ./target/release/isotop --demo
 ./target/release/isotop
-./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), ouija, anthill, plumbing, armorial, lights
+./target/release/isotop --view orbit      # also: city, ripple, flow, cores, cells, strata, globe, reef, coop, matrix, ptolemy, tesseract, necropolis, cortex, horizon, murmuration, arbor, hr, hive, switchboard (Linux), ouija, anthill, plumbing, armorial, lights, die
 ./target/release/isotop --list-views      # the views this platform supports, one per line
 ./target/release/isotop --views reef,city # Tab cycles only these, starting on reef
 ./target/release/isotop --view hr --hr-diagram # hr starts on its Hertzsprung-Russell diagram; `m` flies between it and the sky
@@ -203,7 +205,7 @@ cache is stale.
 | OOM score | macOS has no OOM killer; jetsam ranks processes by priority band instead, and only root may list the bands (`memorystatus_control`). Run with `sudo` and `oom score` reads the negated band, so a lower band ranks as killed sooner and `oom_score_adj` is unknown; without root, or if the call fails, it is missing and each process's ranking is unreadable, never zero. A view that ranks by it says so |
 | Memory detail | There is no `smaps_rollup`, so a process's memory is never split into private, shared, anonymous, file and swap parts: `memory detail` is always missing and every process's rollup is unreadable. The footprint stands in for memory everywhere else |
 | Kernel counters | There is no interrupt table, no softirq count, no IRQ affinity and no readable count of OOM kills (it lives in the private IOReport framework), so `Snapshot::interrupts`, `softirqs` and `oom_kills` are never filled and the platform reports "interrupts", "softirqs", "irq affinity" and "oom kills" as missing. Murmuration reads the OOM kills for its falcon: with none, the falcon comes from memory pressure only (the level stands in, as above) and its legend says "no oom kills: falcon from memory pressure only". No view draws the others yet |
-| CPU temperature, throttle counts and package power | macOS gives an unprivileged process none of them (the sensors are behind the SMC or the private HID event system, and `powermetrics` needs root), so `Snapshot::thermal` carries the CPU topology and nothing else: the platform reports "temperature", "throttle counts" and "package power" as missing while a view demands them, `package_watts` is unreadable and never 0 W, and no sensor is invented. The topology is one package, a core to each CPU (an Intel Mac's pairs of logical CPUs share one, to verify on one) and a cluster to each core kind the IORegistry names, with no cache groups and no clock limits. No view draws it yet |
+| CPU temperature, throttle counts and package power | macOS gives an unprivileged process none of them (the sensors are behind the SMC or the private HID event system, and `powermetrics` needs root), so `Snapshot::thermal` carries the CPU topology and nothing else: the platform reports "temperature", "throttle counts" and "package power" as missing while a view demands them, `package_watts` is unreadable and never 0 W, and no sensor is invented. The topology is one package, a core to each CPU (an Intel Mac's pairs of logical CPUs share one, to verify on one) and a cluster to each core kind the IORegistry names, with no cache groups and no clock limits. The die is never skipped: it builds a floorplan of a P cluster and an E cluster from the core kinds, puts each process on a block of its P or E cluster by its performance share (there is no last CPU), draws the field in relative heat under a bar that says so, and its legend names "temperature", "throttle counts" and "package power" as missing |
 | Interrupt table (switchboard) | The switchboard is unavailable: macOS exposes no unprivileged per-IRQ or per-CPU interrupt counters (`powermetrics` needs root, and IOReport is private). Tab, Shift+Tab and the number keys pass over it, the `v` picker and `--list-views` do not list it, `--verbose` prints `skipping view switchboard: not supported on this platform`, and there is no "not supported" screen. The module still compiles there |
 | Major page faults | Not a gap, but not the same count: macOS has no per-process major fault counter, so the pages the process paged in (`pti_pageins` from `PROC_PIDTASKINFO`) stand in for it. That count includes pages brought in ahead of any fault, so it can run higher than Linux's `majflt` |
 | The systemd journal | Matrix follows the unified log instead; see below |
@@ -248,8 +250,8 @@ The scene is real 3D geometry seen through an orthographic camera: isometric by
 default, free to rotate and tilt between a low angle and top-down. The view registry
 (`REGISTRY` in `src/views.rs`, which `isotop --list-views` prints) is the source of
 truth for the list of views, their Tab order and their digits: Tab cycles
-the twenty-six views in that order (twenty-five on macOS), the number keys 1 to 9 jump straight to the first nine
-and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive, (on Linux) the switchboard, ouija, anthill, plumbing, armorial and lights are reached with Tab, Shift+Tab,
+the twenty-seven views in that order (twenty-six on macOS), the number keys 1 to 9 jump straight to the first nine
+and 0 to the matrix. The coop, ptolemy, the tesseract, the necropolis, the cortex, the horizon, murmuration, arbor, hr, hive, (on Linux) the switchboard, ouija, anthill, plumbing, armorial, lights and die are reached with Tab, Shift+Tab,
 the `v` picker or `--view`.
 Orbit and flow lay the systems out the same way, but each keeps its own galaxy:
 orbit turns its systems about their barycenter and flow holds its wells still, so
@@ -1131,6 +1133,34 @@ Every process is a lighthouse whose characteristic identifies it in time.
 
 **What cannot be measured.** Missing I/O pressure uses clear weather and nominal range, and the legend says so. Headlands use process groups where cgroups are absent. Births and exits are sampled changes; processes which live entirely between samples are not announced. The candela and elevation are derived analogies, not physical measurements. On macOS there is no I/O PSI, cgroup or state D: lights use groups and clear weather, with no occulting class from uninterruptible sleep. Watch a full period to identify a light; a still image cannot show its group. Lights has no local keys. Theory and history: [View Lights](https://github.com/tfpickard/isotop/wiki/View-Lights).
 
+### Die
+
+![Die: a schematic hybrid CPU floorplan in ironbow false colour, one core glowing yellow and outlined in cyan as it throttles, the sensor panel beside it](docs/media/die.webp)
+
+The CPU die from above as an infrared camera would show it: a heat field on a schematic floorplan, pulled to what the temperature sensors read, with a point for every process over the core it last ran on. The field between sensors is a model, not a measurement.
+
+| Visual element | Measured source | Transform |
+| --- | --- | --- |
+| Heat field colour | The sensors where they read (`Thermal::sensors`: hwmon `coretemp` per core and package, `k10temp` per CCD, package-only fallbacks); between them the model | The value through the `palette::ironbow` ramp from 30 degrees C to TjMax + 5 (`Sensor::critical`, 100 degrees when none reports it). With no temperature sensor the scale is the model's own relative units, 0 to 75, heat modelled from load and not degrees: the bar is labelled `REL` and `NO SENSOR`, every core is hatched, and no number is read as degrees |
+| Heat source of a core | `Cpu::busy` and `Cpu::mhz` of the core's logical CPUs | `P = min(1, sum of busy) * (mhz / fmax)^3`, fmax being `cpuinfo_max_freq` or else the highest clock the core has run at; without a clock `P = busy`; none without a load reading. A P-core weighs 1 and an E-core 0.34, and the gain is calibrated so that a P-core at full proxy settles 40 K above ambient. Where RAPL is readable the source is scaled by (watts - 2.2) over the model's own watts (10.5 W a P-core and 3.6 W an E-core at proxy 1), relaxed with a 2 s time constant, within 0.2 to 5 |
+| Ambient | The coolest sensor reading of the last 60 s of samples | 5 K under it; 0 in relative mode |
+| Pull of a sensor | A sensor's reading | An offset that relaxes with a 0.25 s time constant to the reading minus the model at the sensor's hot spot, added over the region the sensor speaks for: a core's block, a CCD's whole box (one reading for its eight cores, not one per core), or the whole die for a package sensor that no finer sensor accompanies; each with a Gaussian skirt of 4 cells, and nothing is shown below ambient |
+| Cross, hatch and blank blocks | Whether a sensor speaks for a core, and whether its CPUs report load | A cross marks a core's own sensor. Hatching marks a core no sensor speaks for: its colour is the model's. A core with no sensor and no load reading is dark grey and hatched: never drawn as cold |
+| Core blocks and boxes | Topology: package, `core_id`, `core_cpus_list`, cache `shared_cpu_list`, core kinds | A function of the topology alone, one package, one block per physical core (SMT siblings share it): Intel hybrid (P-cores over an L3 ring, E-core clusters under), Intel tiled (the low-power E-cores in a tile of their own), AMD (an I/O die and a box per L3 group, its cores above and below the L3), a core grid round a cache for anything else, and a P cluster and an E cluster by core kind where no cache is named (macOS) |
+| Process point | `Process::core` (Linux), else `performance_share` (macOS), and `Process::cpu` | A sphere of radius 0.1 + 0.2 sqrt(cpu / 100) world units on the block of the CPU it last ran on (without one, on a block of its P cluster if its share is at least 0.5, else its E cluster), at an offset from a generator seeded by its identity, so it stays put while it stays on that core; its kind's colour, brighter the busier it is |
+| Throttle flash | `core_throttle_count` and `package_throttle_count` | A cyan outline blinking at 3 Hz for 1.4 s when a count rises between two background passes (`Thermal::pass`). The first reading, a count that falls and a counter that is not there mark nothing. The legend counts the increments seen, `throttles: P2 x1`, not the count since boot |
+| Colour bar | The scale | Ticks every 15 degrees and a TjMax line; `hot` and `cold` in relative mode |
+| Readout rows | Sensors and package power | Package degrees, RAPL watts, then a row per core and per cluster or CCD: `81 C`, the hottest sensor among its cores (`(some model)` after it where a core has none), `model only, no sensor` where none has one and the colour is the model's, `53% model` in relative mode, never a number of degrees that no sensor gave; `RAPL n/a (root only)` where it cannot be read |
+| Sparklines | Package temperature and RAPL watts, one point per sample for the last 60 s | Package on the colour scale; power from 0 to 1.1 times its highest, at least 10 W; a gap where a sample had no reading and a dashed line where there is none |
+
+**Decorative:** the substrate and its capacitors, the die's slab, the L3 slices, L2, iGPU, system agent and I/O die and the iGPU's grid of units (none has a source: the floorplan is schematic, not to scale, and says so in its caption), the panel's frame, the blink's rhythm and the cross's size.
+
+**The model.** The field is `dT/dt = kappa laplacian(T) + gain P - (T - ambient) / tau` on a grid of 192 by 96 cells with `kappa` 90 cells squared a second and `tau` 2 s, stepped explicitly on the 5-point stencil with zero-flux edges. The step is H = 0.2 / kappa, 2.2 ms, through `simulation::FixedStep`: the Courant number is 0.2, below the two-dimensional limit of 1/4 (a compile-time check), a frame is cut to 0.25 s (at most 113 steps), and 10 and 60 frames a second give the same state bit for bit. A cold start, a view shown again after more than 3 s away and a change between degrees and relative heat settle the field first for 3 tau, 6 s, under the current load; while paused or rewound the field holds still. The constants are the model's, not silicon's: lateral spreading is about 90 times slower than silicon's, so that a core's glow can be seen. The sensors' pull is an offset added to what is shown, not a heat source written into the field: at `kappa` 90 a Gaussian of 4 cells round a sensor loses heat to diffusion at about 50 a second, against a pull of 4 a second, so the field itself would reach only a fraction of the reading. The explicit scheme costs about 18,000 cell updates a step, 45 steps a frame at 10 frames a second; the heat is drawn as one field of 192 by 96 nodes, never a pair of triangles per cell, and at `--processes 1000` the points are 1000 small spheres.
+
+**What cannot be measured.** The temperature of any place without a sensor: what lies between sensors, the junctions inside a core, the iGPU and the uncore, and, on AMD, the absolute accuracy of `Tctl`, which can carry an offset. Power-limit throttling is not thermal throttling and no counter counts it. A process point is where the process last ran, a sample's `stat` field, not where its heat was made. The die shows one package; a machine with several says which in the caption and the legend. A flash is a counter's increment, not a duration. A CCD sensor is placed on cores by the cache groups, which the kernel does not call CCDs: with as many L3 groups as sensors each group is a CCD, with twice as many each pair is, and any other count places none (the legend says so).
+
+**Platforms.** On Linux with hwmon it is the full view in degrees. Without a temperature sensor (a VM, CI) the field runs in relative units and the legend says ` | no temperature: field is model only`; throttle counts exist on Intel only (` | no throttle counts: no throttle flashes`); RAPL is readable only by root on most kernels, and isotop never escalates privilege (`RAPL n/a (root only)`, ` | no package power: RAPL n/a (root only), heat source unscaled`, and the source is not scaled). Without a cpu clock the source is busy alone and the legend says so. macOS gives the topology and nothing else (see the table above): the view is available in relative heat and is never a "not supported" screen. The die has no local keys; hover or click a core block for what is measured of it and what is the model's. Theory and history: [Planned Die](https://github.com/tfpickard/isotop/wiki/Planned-Die).
+
 ### Matrix
 
 ![Matrix: journal lines decoding out of digital rain](docs/media/matrix.webp)
@@ -1400,7 +1430,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-104,543 lines of Rust (61,382 production, 43,161 test) in 160 files, 1,438 tests, 26 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+108,889 lines of Rust (64,646 production, 44,243 test) in 166 files, 1,483 tests, 27 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development
