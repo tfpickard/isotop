@@ -82,7 +82,8 @@ pub(crate) struct Options {
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10000))]
     pub(crate) benchmark: Option<u32>,
     /// Frames `--benchmark` draws first and leaves out of the timing, so buffers, caches and the
-    /// GPU pipelines have settled
+    /// GPU pipelines have settled; with `--output` too, the PNG is the last frame drawn, that
+    /// many frames after `--time` (0 draws the frame the benchmark always did)
     #[arg(long, default_value_t = 10, requires = "benchmark", value_parser = clap::value_parser!(u32).range(0..=10000))]
     pub(crate) benchmark_warmup: u32,
     /// Bypass the terminal graphics capability query

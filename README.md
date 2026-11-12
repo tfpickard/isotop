@@ -1432,7 +1432,10 @@ Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--benchmark` first draws `--benchmark-warmup` frames (10 by default, 0
 for none) that it does not time, so the first frame's buffer growth, the GPU
 pipeline compile and cold caches are left out; the report says how many it left
-out, and the timed frames carry on from them at `--fps`. `--duration 5` runs an interactive session for five seconds and
+out, and the timed frames carry on from them at `--fps`. With `--output` as well, the PNG is
+the last frame drawn, `--benchmark-warmup` plus `--benchmark` minus one frames after `--time` (at
+`--fps`), not the frame at `--time`; `--benchmark-warmup 0` leaves the warm-up out of that
+too. `--duration 5` runs an interactive session for five seconds and
 reports presented frame throughput after restoring the terminal.
 
 The scene admits at most 1024 processes by default (`--limit` changes this).
