@@ -1388,7 +1388,10 @@ replays a minute of samples at `--sample-ms` (before `--benchmark` too), and dem
 replays ten minutes of samples, from before time 0, so `--time 12` shows ten rows of graves. Demo cortex plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so its raster is full, and demo horizon replays eight seconds of samples, so a kill that happened just before `--time` is seen as a plunge (`--time 20.5` is half a second after one). Demo arbor plays the eight seconds before `--time` as a live run would have drawn them (a frame every 0.05 s, none of them rasterized), so its blossoms, falling leaves and sway are settled. Demo hive plays the ten seconds before `--time` the same way (a frame every 0.05 s, none of them rasterized), so its bees are spread over the combs and its brood is measured against the sample before. Demo ouija feeds the journal for the eight seconds before `--time`, a frame every 0.05 s (matrix does the same), so `--time 12` lands in the middle of a line. Demo anthill plays the ten seconds before `--time` as a live run would have drawn them (a frame every 0.05 s), so its trails are laid and its ants are on their way. Demo plumbing plays the twelve seconds before `--time` as a live run would have drawn them (a frame every 0.1 s, none of them rasterized), so the water has travelled and a pipe whose reader let go at the tenth second is already spraying at `--time 12`. Live headless output takes two samples to measure CPU, so live strata
 shows only its newest slice.
 Benchmarks measure scene recording and rasterization, excluding terminal
-transport. `--duration 5` runs an interactive session for five seconds and
+transport. `--benchmark` first draws `--benchmark-warmup` frames (10 by default, 0
+for none) that it does not time, so the first frame's buffer growth, the GPU
+pipeline compile and cold caches are left out; the report says how many it left
+out, and the timed frames carry on from them at `--fps`. `--duration 5` runs an interactive session for five seconds and
 reports presented frame throughput after restoring the terminal.
 
 The scene admits at most 1024 processes by default (`--limit` changes this).

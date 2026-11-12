@@ -498,3 +498,44 @@ fn cut_labels_survive_terminal_text_cleaning_unchanged() {
         assert!(shown.width() <= LABEL_NAME_CELLS);
     }
 }
+
+#[test]
+fn the_processes_a_scene_keeps_between_frames_are_exactly_the_sample_with_eased_figures() {
+    let mut scene = Scene::new();
+    let mut reshaped = demo(2.0, 25);
+    for (index, process) in reshaped.processes.iter_mut().enumerate() {
+        // Strings shorter and longer than the ones they replace, in the slots they were kept in.
+        process.name = "x".repeat(index % 3 + 1);
+        process.command = "y".repeat(100 - index);
+        process.group.clear();
+    }
+    let samples = [
+        demo(1.0, 40),
+        reshaped,
+        demo(3.0, 60),
+        demo(4.0, 8),
+        demo(5.0, 40),
+    ];
+    for (step, snapshot) in samples.iter().enumerate() {
+        render(&mut scene, snapshot, view("city"), 10.0 + step as f32);
+        let kept = &scene.scratch.visual;
+        assert_eq!(kept.len(), snapshot.processes.len(), "step {step}");
+        for (held, sampled) in kept.iter().zip(&snapshot.processes) {
+            let (cpu, memory) = scene.resources[&sampled.id];
+            let mut expected = sampled.clone();
+            expected.cpu = cpu;
+            expected.memory = memory as u64;
+            assert_eq!(
+                format!("{held:?}"),
+                format!("{expected:?}"),
+                "step {step}: pid {} holds what an earlier sample put there",
+                sampled.id.pid
+            );
+        }
+        assert_eq!(
+            scene.scratch.alive.len(),
+            snapshot.processes.len(),
+            "step {step}"
+        );
+    }
+}

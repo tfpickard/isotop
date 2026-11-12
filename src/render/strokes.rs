@@ -216,25 +216,27 @@ pub(crate) fn tube_faces(points: &[Point], radii: &[f32], sides: usize, caps: bo
     if rings.len() < 2 {
         return Vec::new();
     }
-    let section: Vec<Vec<Point>> = rings
+    // The corners of every cross-section, `sides` to a ring, one ring after the other.
+    let section: Vec<Point> = rings
         .iter()
         .zip(points.iter().zip(radii))
-        .map(|(ring, (&center, &radius))| {
-            (0..sides)
-                .map(|k| {
-                    let angle = TAU * k as f32 / sides as f32;
-                    let offset = add(
-                        scaled(ring.across, angle.cos()),
-                        scaled(ring.up, angle.sin()),
-                    );
-                    add(center, scaled(offset, radius))
-                })
-                .collect()
+        .flat_map(|(ring, (&center, &radius))| {
+            (0..sides).map(move |k| {
+                let angle = TAU * k as f32 / sides as f32;
+                let offset = add(
+                    scaled(ring.across, angle.cos()),
+                    scaled(ring.up, angle.sin()),
+                );
+                add(center, scaled(offset, radius))
+            })
         })
         .collect();
     let mut faces = Vec::with_capacity(sides * (rings.len() - 1) + 2 * sides);
     for segment in 0..rings.len() - 1 {
-        let (near, far) = (&section[segment], &section[segment + 1]);
+        let (near, far) = (
+            &section[segment * sides..][..sides],
+            &section[(segment + 1) * sides..][..sides],
+        );
         for k in 0..sides {
             let next = (k + 1) % sides;
             let corners = [near[k], near[next], far[next], far[k]];
@@ -273,7 +275,12 @@ pub(crate) fn tube_faces(points: &[Point], radii: &[f32], sides: usize, caps: bo
             for k in 0..sides {
                 let next = (k + 1) % sides;
                 faces.push(Face {
-                    corners: [center, center, section[end][next], section[end][k]],
+                    corners: [
+                        center,
+                        center,
+                        section[end * sides + next],
+                        section[end * sides + k],
+                    ],
                     normal,
                     segment,
                 });

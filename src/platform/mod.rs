@@ -815,7 +815,7 @@ pub struct DeletedFile {
 }
 
 /// The regular files one process holds open.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Files {
     /// Distinct regular files: several descriptors on one file count once.
     pub open: u32,
@@ -824,6 +824,29 @@ pub struct Files {
     /// Whether the table was larger than what was examined: `open` is then an estimate and
     /// `deleted` a lower bound.
     pub partial: bool,
+}
+
+impl Clone for Files {
+    fn clone(&self) -> Self {
+        Files {
+            open: self.open,
+            deleted: self.deleted.clone(),
+            partial: self.partial,
+        }
+    }
+
+    /// Keeps the allocation of the list of deleted files, so refreshing a process each frame
+    /// from the same sample allocates nothing.
+    fn clone_from(&mut self, source: &Self) {
+        let Files {
+            open,
+            deleted,
+            partial,
+        } = source;
+        self.open = *open;
+        self.deleted.clone_from(deleted);
+        self.partial = *partial;
+    }
 }
 
 impl Files {

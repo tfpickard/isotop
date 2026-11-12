@@ -81,6 +81,10 @@ pub(crate) struct Options {
     /// Render this many frames headlessly and report renderer performance
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10000))]
     pub(crate) benchmark: Option<u32>,
+    /// Frames `--benchmark` draws first and leaves out of the timing, so buffers, caches and the
+    /// GPU pipelines have settled
+    #[arg(long, default_value_t = 10, requires = "benchmark", value_parser = clap::value_parser!(u32).range(0..=10000))]
+    pub(crate) benchmark_warmup: u32,
     /// Bypass the terminal graphics capability query
     #[arg(long)]
     pub(crate) force_graphics: bool,
@@ -403,6 +407,21 @@ mod tests {
             assert_eq!(result, Preflight::Start(view("orbit")), "{headless:?}");
             assert_eq!((out.as_str(), err.as_str()), ("", ""));
         }
+    }
+
+    #[test]
+    fn the_benchmark_warm_up_defaults_to_ten_frames_and_needs_a_benchmark() {
+        let parse = |arguments: &[&str]| {
+            Options::try_parse_from(std::iter::once("isotop").chain(arguments.iter().copied()))
+        };
+        let benchmark = parse(&["--benchmark", "5"]).expect("a benchmark parses");
+        assert_eq!(benchmark.benchmark_warmup, 10);
+        let none = parse(&["--benchmark", "5", "--benchmark-warmup", "0"]).expect("0 is allowed");
+        assert_eq!(none.benchmark_warmup, 0);
+        assert!(
+            parse(&["--benchmark-warmup", "3"]).is_err(),
+            "a warm-up with nothing to time is a mistake"
+        );
     }
 
     #[test]

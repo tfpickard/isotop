@@ -4633,6 +4633,33 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     #[test]
+    fn cloning_a_process_over_another_leaves_nothing_of_the_one_it_replaced() {
+        let rich = demo_with(
+            12.0,
+            64,
+            DemoOptions {
+                oom_and_memory_detail: true,
+                threads: true,
+                io_detail: true,
+                ..DemoOptions::NONE
+            },
+        );
+        let plain = demo(3.0, 64);
+        let mut slots = plain.processes.clone();
+        for (slot, source) in slots.iter_mut().zip(&rich.processes) {
+            slot.clone_from(source);
+        }
+        assert_eq!(format!("{slots:?}"), format!("{:?}", rich.processes));
+        // And back again, to processes that measured nothing and have other strings.
+        for (slot, source) in slots.iter_mut().zip(&plain.processes) {
+            slot.clone_from(source);
+        }
+        assert_eq!(format!("{slots:?}"), format!("{:?}", plain.processes));
+        let copy = plain.processes[5].clone();
+        assert_eq!(format!("{copy:?}"), format!("{:?}", plain.processes[5]));
+    }
+
+    #[test]
     fn resource_scale_is_monotonic_and_bounded_for_multicore_cpu() {
         let values: Vec<_> = [0.0, 1.0, 100.0, 1600.0, 100000.0]
             .map(|v| bounded(v, 60.0))

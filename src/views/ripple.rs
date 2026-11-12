@@ -52,6 +52,24 @@ pub struct Ripple {
     wave: Option<Wave>,
     clusters: HashMap<String, Cluster>,
     pebbles: HashMap<Identity, (String, usize)>,
+    /// The grids of a frame, kept so drawing allocates none of them again.
+    scratch: Scratch,
+}
+
+/// What a frame builds over the wave grid, recycled from one frame to the next: each is cleared
+/// and refilled, so it never holds anything a fresh one would not.
+#[derive(Default)]
+struct Scratch {
+    /// The surface height of every node.
+    heights: Vec<f32>,
+    /// The lit colour of every node.
+    shades: Vec<[f32; 3]>,
+    /// The nearest process of every node (`territories`).
+    owners: Vec<u32>,
+    /// The processes by descending radius, which claim the shared cells first.
+    order: Vec<usize>,
+    /// The nodes the flood has still to spread from.
+    queue: VecDeque<usize>,
 }
 
 /// A cluster of two or more drawn pebbles: its anchor (the drawn pebble of the lowest slot), the
@@ -205,12 +223,21 @@ impl Ripple {
 
 /// Assigns every grid node to its nearest body by a multi-source breadth-first flood, larger
 /// bodies claiming shared cells first. Returns body indices into the process list, or NONE.
-fn territories(grid: &Grid, located: &[[f32; 2]], radii: &[f32]) -> Vec<u32> {
-    let mut owners = vec![NONE; grid.len()];
-    let mut order: Vec<usize> = (0..located.len()).collect();
-    order.sort_by(|&a, &b| radii[b].total_cmp(&radii[a]));
-    let mut queue = VecDeque::new();
-    for slot in order {
+fn territories(grid: &Grid, located: &[[f32; 2]], radii: &[f32], scratch: &mut Scratch) {
+    let Scratch {
+        owners,
+        order,
+        queue,
+        ..
+    } = scratch;
+    owners.clear();
+    owners.resize(grid.len(), NONE);
+    order.clear();
+    order.extend(0..located.len());
+    // Ties keep the process order, as a stable sort would, without its buffer.
+    order.sort_unstable_by(|&a, &b| radii[b].total_cmp(&radii[a]).then(a.cmp(&b)));
+    queue.clear();
+    for &slot in order.iter() {
         let [x, y] = grid.locate(located[slot]);
         let (x, y) = (x.round() as usize, y.round() as usize);
         if x < grid.columns && y < grid.rows && owners[y * grid.columns + x] == NONE {
@@ -233,7 +260,6 @@ fn territories(grid: &Grid, located: &[[f32; 2]], radii: &[f32]) -> Vec<u32> {
             }
         }
     }
-    owners
 }
 
 /// Names each system for the overlay, the tour and the popup of its anchor: the tour visits the
@@ -319,7 +345,14 @@ impl ViewModule for Ripple {
                 wave.drive(at, loudness * (omega * now + phase).sin() * dt);
             }
         });
-        let owners = territories(&grid, &located, &radii);
+        let mut scratch = std::mem::take(&mut self.scratch);
+        territories(&grid, &located, &radii, &mut scratch);
+        let Scratch {
+            heights,
+            shades,
+            owners,
+            ..
+        } = &mut scratch;
         let swell = 0.01 + 0.12 * stir;
         let surface = |x: f32, y: f32, height: f32| {
             height * 0.09
@@ -330,12 +363,11 @@ impl ViewModule for Ripple {
                     / 2.2
         };
         let (columns, rows) = (grid.columns, grid.rows);
-        let heights: Vec<f32> = (0..grid.len())
-            .map(|i| {
-                let [x, y] = grid.world((i % columns) as f32, (i / columns) as f32);
-                surface(x, y, wave.height[i])
-            })
-            .collect();
+        heights.clear();
+        heights.extend((0..grid.len()).map(|i| {
+            let [x, y] = grid.world((i % columns) as f32, (i / columns) as f32);
+            surface(x, y, wave.height[i])
+        }));
         let viewer = camera.viewer();
         // Light from the side of the view: calm water stays dark and only slopes catch glints.
         let light = normalize([viewer[1] * 0.75, -viewer[0] * 0.75, 0.65]);
@@ -347,34 +379,33 @@ impl ViewModule for Ripple {
         // Lit per node from the height field's gradient and averaged over each facet, so the two
         // triangles of a cell shade alike. Highlights blend towards moonlight by at most
         // RIPPLE_SHINE and never add up to white.
-        let shades: Vec<[f32; 3]> = (0..grid.len())
-            .map(|i| {
-                let (x, y) = (i % columns, i / columns);
-                let gradient = |a: usize, b: usize, cells: usize| {
-                    (heights[b] - heights[a]) / (cells.max(1) as f32 * grid.cell)
-                };
-                let (x0, x1) = (x.saturating_sub(1), (x + 1).min(columns - 1));
-                let (y0, y1) = (y.saturating_sub(1), (y + 1).min(rows - 1));
-                let normal = normalize([
-                    -gradient(y * columns + x0, y * columns + x1, x1 - x0),
-                    -gradient(y0 * columns + x, y1 * columns + x, y1 - y0),
-                    1.0,
-                ]);
-                let diffuse = dot(normal, light).max(0.0);
-                let glint = dot(normal, half).max(0.0).powi(48);
-                let crest = (heights[i] * 1.8).clamp(-0.5, 1.0);
-                let foam = (wave.velocity[i].abs() * 0.05).min(1.0);
-                let tint = processes
-                    .get(owners[i] as usize)
-                    .map_or(RIPPLE_DEEP, |p| kind_color(p).map(f32::from));
-                let shine = (glint * 0.75 + foam * 0.25).min(RIPPLE_SHINE);
-                [0, 1, 2].map(|k| {
-                    let water = (RIPPLE_DEEP[k] * 0.92 + tint[k] * 0.08) * (0.55 + 0.5 * diffuse)
-                        + RIPPLE_CREST[k] * crest;
-                    water + (RIPPLE_MOON[k] - water) * shine
-                })
+        shades.clear();
+        shades.extend((0..grid.len()).map(|i| {
+            let (x, y) = (i % columns, i / columns);
+            let gradient = |a: usize, b: usize, cells: usize| {
+                (heights[b] - heights[a]) / (cells.max(1) as f32 * grid.cell)
+            };
+            let (x0, x1) = (x.saturating_sub(1), (x + 1).min(columns - 1));
+            let (y0, y1) = (y.saturating_sub(1), (y + 1).min(rows - 1));
+            let normal = normalize([
+                -gradient(y * columns + x0, y * columns + x1, x1 - x0),
+                -gradient(y0 * columns + x, y1 * columns + x, y1 - y0),
+                1.0,
+            ]);
+            let diffuse = dot(normal, light).max(0.0);
+            let glint = dot(normal, half).max(0.0).powi(48);
+            let crest = (heights[i] * 1.8).clamp(-0.5, 1.0);
+            let foam = (wave.velocity[i].abs() * 0.05).min(1.0);
+            let tint = processes
+                .get(owners[i] as usize)
+                .map_or(RIPPLE_DEEP, |p| kind_color(p).map(f32::from));
+            let shine = (glint * 0.75 + foam * 0.25).min(RIPPLE_SHINE);
+            [0, 1, 2].map(|k| {
+                let water = (RIPPLE_DEEP[k] * 0.92 + tint[k] * 0.08) * (0.55 + 0.5 * diffuse)
+                    + RIPPLE_CREST[k] * crest;
+                water + (RIPPLE_MOON[k] - water) * shine
             })
-            .collect();
+        }));
         let corner = |node: usize| {
             let [x, y] = grid.world((node % columns) as f32, (node / columns) as f32);
             [x, y, heights[node]]
@@ -410,6 +441,7 @@ impl ViewModule for Ripple {
             );
         }
         self.wave = Some(wave);
+        self.scratch = scratch;
         announce(stage, processes, &systems);
         processes.len()
     }
