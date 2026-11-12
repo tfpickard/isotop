@@ -30,6 +30,7 @@ pub const TAU: f32 = 2.0;
 pub const STEP: f32 = 0.2 / KAPPA;
 /// The largest `KAPPA * STEP` the explicit 5-point scheme tolerates in two dimensions.
 pub const COURANT_LIMIT: f32 = 0.25;
+const _: () = assert!(KAPPA * STEP <= COURANT_LIMIT, "the step must stay under the 2D limit");
 /// The time constant of a sensor's pull on the field, in seconds.
 pub const NUDGE_TIME: f32 = 0.25;
 /// The longest frame, in seconds, that is stepped: a longer gap counts as this much.
@@ -46,7 +47,7 @@ pub const SKIRT: f32 = 4.0;
 /// The seconds the calibration runs a reference core for: it is within 1 % of settled by then.
 const CALIBRATION_TIME: f32 = 5.0 * TAU;
 
-const CELLS: usize = COLUMNS * ROWS;
+pub const CELLS: usize = COLUMNS * ROWS;
 
 /// The grid and the temperatures on it. Cell `(i, j)` is `field[j * COLUMNS + i]`.
 #[derive(Clone, Debug, PartialEq)]
@@ -96,6 +97,7 @@ impl Heat {
     }
 
     /// The value at `cell`.
+    #[cfg(test)]
     pub fn at(&self, cell: u32) -> f32 {
         self.field[cell as usize]
     }
@@ -179,13 +181,22 @@ pub fn alpha() -> f32 {
 }
 
 /// `field` with every nudge's offset added over its footprint: what the die shows. The offsets
-/// are in `nudges` order.
-pub fn compose(field: &[f32], nudges: &[Nudge], offsets: &[f32], shown: &mut Vec<f32>) {
+/// are in `nudges` order. Nothing a nudge touches is shown below `floor` (the ambient): a sensor
+/// that reads cooler than the model puts the model's hot spot down, not the rest of the block
+/// under the temperature of the room.
+pub fn compose(
+    field: &[f32],
+    nudges: &[Nudge],
+    offsets: &[f32],
+    floor: f32,
+    shown: &mut Vec<f32>,
+) {
     shown.clear();
     shown.extend_from_slice(field);
     for (nudge, &offset) in nudges.iter().zip(offsets) {
         for &(cell, weight) in &nudge.footprint {
-            shown[cell as usize] += weight * offset;
+            let cell = &mut shown[cell as usize];
+            *cell = (*cell + weight * offset).max(floor.min(*cell));
         }
     }
 }
@@ -479,7 +490,7 @@ mod tests {
             nudge.relax(&heat.field, &mut offset, alpha);
         }
         let mut shown = Vec::new();
-        compose(&heat.field, std::slice::from_ref(&nudge), &[offset], &mut shown);
+        compose(&heat.field, std::slice::from_ref(&nudge), &[offset], 0.0, &mut shown);
         (heat, nudge, offset, shown)
     }
 

@@ -135,12 +135,13 @@ fn height(rect: Rect) -> f32 {
 }
 
 /// `count` equal rectangles in rows of `columns` over `region`, row by row, `GAP` apart and from
-/// its edge.
+/// its edge. A row with fewer cells is as wide as a full one: the cells of a part-filled row are
+/// the size of the rest.
 fn tile(region: Rect, count: usize, columns: usize) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
     }
-    let columns = columns.clamp(1, count);
+    let columns = columns.max(1);
     let rows = count.div_ceil(columns);
     let cell = [
         (width(region) - GAP * (columns as f32 + 1.0)) / columns as f32,
@@ -449,7 +450,7 @@ fn hybrid_plan(builder: &mut Builder, split: &Cores, tiled: bool) {
     let p_rows = split.performance.len().div_ceil(ROW_OF_CORES).clamp(1, 3);
     let p_height = [34.0, 44.0, 52.0][p_rows - 1];
     let p_region = [COMPUTE[0], COMPUTE[1], COMPUTE[2], COMPUTE[1] + p_height];
-    for (cell, core) in tile(p_region, split.performance.len(), ROW_OF_CORES)
+    for (cell, core) in tile(p_region, split.performance.len(), ROW_OF_CORES.min(split.performance.len()))
         .into_iter()
         .zip(&split.performance)
     {
@@ -467,7 +468,7 @@ fn hybrid_plan(builder: &mut Builder, split: &Cores, tiled: bool) {
     }
     let region = [COMPUTE[0], ring[3] + GAP, COMPUTE[2], COMPUTE[3]];
     let clusters = split.efficiency.len();
-    for (index, (cell, members)) in tile(region, clusters, ROW_OF_CLUSTERS)
+    for (index, (cell, members)) in tile(region, clusters, ROW_OF_CLUSTERS.min(clusters))
         .into_iter()
         .zip(&split.efficiency)
         .enumerate()
@@ -509,7 +510,7 @@ fn clustered(builder: &mut Builder, split: &Cores) {
         ("P cluster", p_region, &split.performance, Role::Performance),
         ("E cluster", e_region, &efficiency, Role::Efficiency),
     ] {
-        let members: Vec<usize> = tile(region, cores.len(), ROW_OF_CORES.min(6))
+        let members: Vec<usize> = tile(region, cores.len(), ROW_OF_CORES.min(6).min(cores.len()))
             .into_iter()
             .zip(cores)
             .map(|(cell, core)| builder.core(cell, core, role))

@@ -414,11 +414,10 @@ impl Watch {
     /// block, add points to the series and no throttle increments. A throttle count that rises
     /// between passes marks its core (or package); one that falls, or has no earlier reading, is
     /// only taken as the new baseline.
-    pub fn ingest(&mut self, snapshot: &Snapshot, time: f32, plan: &Floorplan) -> bool {
+    pub fn ingest(&mut self, snapshot: &Snapshot, time: f32, package: Option<u32>) -> bool {
         let Some(thermal) = &snapshot.thermal else {
             return false;
         };
-        let package = plan.package;
         let point = Point {
             elapsed: snapshot.elapsed,
             celsius: package
@@ -818,35 +817,35 @@ pub(crate) mod tests {
         };
         let mut watch = Watch::default();
         // The first reading is a baseline, whatever the count: 90 throttles before we looked.
-        assert!(watch.ingest(&counted(90, 7, 1, 1.0), 1.0, &plan));
+        assert!(watch.ingest(&counted(90, 7, 1, 1.0), 1.0, plan.package));
         assert!(watch.cores.is_empty() && watch.packages.is_empty());
         // The same pass again (a sample between passes) and an older sample take nothing in.
-        assert!(!watch.ingest(&counted(95, 7, 1, 1.0), 1.1, &plan));
-        assert!(watch.ingest(&counted(90, 7, 1, 2.0), 2.0, &plan), "a new sample, the same pass");
+        assert!(!watch.ingest(&counted(95, 7, 1, 1.0), 1.1, plan.package));
+        assert!(watch.ingest(&counted(90, 7, 1, 2.0), 2.0, plan.package), "a new sample, the same pass");
         assert!(watch.cores.is_empty());
         // A rise between passes marks the core once, at the time it was seen.
-        assert!(watch.ingest(&counted(91, 7, 2, 3.0), 3.0, &plan));
+        assert!(watch.ingest(&counted(91, 7, 2, 3.0), 3.0, plan.package));
         assert_eq!(
             watch.cores.get(&(0, 0)),
             Some(&Throttled { since: 3.0, seen: 1 })
         );
         assert!(watch.packages.is_empty(), "the package's count did not move");
         // A sample of the same pass does not mark it twice.
-        watch.ingest(&counted(91, 7, 2, 4.0), 4.0, &plan);
+        watch.ingest(&counted(91, 7, 2, 4.0), 4.0, plan.package);
         assert_eq!(watch.cores.get(&(0, 0)).map(|marked| marked.seen), Some(1));
         // A count that falls is a new baseline (a reboot, a hot-plugged core), never a flash.
-        watch.ingest(&counted(3, 7, 3, 5.0), 5.0, &plan);
+        watch.ingest(&counted(3, 7, 3, 5.0), 5.0, plan.package);
         assert_eq!(watch.cores.get(&(0, 0)).map(|marked| marked.since), Some(3.0));
         // Rising from the new baseline marks it again, by the difference, and the package too.
-        watch.ingest(&counted(5, 8, 4, 6.0), 6.0, &plan);
+        watch.ingest(&counted(5, 8, 4, 6.0), 6.0, plan.package);
         assert_eq!(watch.cores.get(&(0, 0)), Some(&Throttled { since: 6.0, seen: 3 }));
         assert_eq!(watch.packages.get(&0), Some(&Throttled { since: 6.0, seen: 1 }));
         // No counter at all (None is no entry) marks nothing, and no thermal block is no sample.
         let mut bare = sample(topology.clone(), Vec::new(), Vec::new(), 7.0, 5);
         bare.thermal.as_mut().expect("thermal").core_throttles.clear();
-        watch.ingest(&bare, 7.0, &plan);
+        watch.ingest(&bare, 7.0, plan.package);
         assert_eq!(watch.cores.get(&(0, 0)).map(|marked| marked.seen), Some(3));
-        assert!(!watch.ingest(&Snapshot::default(), 8.0, &plan));
+        assert!(!watch.ingest(&Snapshot::default(), 8.0, plan.package));
     }
 
     #[test]
