@@ -169,7 +169,8 @@ const _: () = {
     assert!(offset_of!(FieldVertex, slot) == 20);
 };
 
-/// The environment variable that lets `Gpu::new` take a software adapter (and only one).
+/// The environment variable that lets `Gpu::new` take a software adapter (and only one); a live
+/// session (`Gpu::hardware`) ignores it.
 const SOFTWARE_OPT_IN: &str = "ISOTOP_ALLOW_SOFTWARE_GPU";
 
 /// Whether the opt-in is on: exactly `1`. Anything else, or unset, leaves the choice unchanged.
@@ -392,13 +393,25 @@ impl Gpu {
     /// Opens the preferred hardware adapter. Software adapters are refused: the CPU rasterizer
     /// is faster than an emulated GPU. `ISOTOP_ALLOW_SOFTWARE_GPU=1` is the one exception, for a
     /// parity run on a machine with no GPU (CI's lavapipe): it asks wgpu for its fallback adapter
-    /// only and accepts nothing but a CPU-type one, so it cannot silently measure hardware.
+    /// only and accepts nothing but a CPU-type one, so it cannot silently measure hardware. It is
+    /// for headless runs and tests; a live session opens its adapter with `hardware`.
     pub fn new(power: wgpu::PowerPreference) -> Result<Self, String> {
+        let software = software_opt_in(std::env::var(SOFTWARE_OPT_IN).ok().as_deref());
+        Self::open(power, software)
+    }
+
+    /// Opens the preferred hardware adapter whatever `ISOTOP_ALLOW_SOFTWARE_GPU` says: an
+    /// interactive run never takes a software adapter, which would be slower than the CPU
+    /// rasterizer.
+    pub fn hardware(power: wgpu::PowerPreference) -> Result<Self, String> {
+        Self::open(power, false)
+    }
+
+    fn open(power: wgpu::PowerPreference, software: bool) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
-        let software = software_opt_in(std::env::var(SOFTWARE_OPT_IN).ok().as_deref());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: power,
             force_fallback_adapter: software,

@@ -3,8 +3,20 @@
 //! A frame is rasterized in one of two ways. `rasterize` returns when the pixels are there, which
 //! is what a headless run (`--output`, `--benchmark`) and the tests use. `overlap` is for the
 //! interactive loop: the GPU draws one frame while the caller records the next, so the frame it
-//! hands back is the one before, whole (pixels, picks, labels and the rest of what was recorded
-//! with it), and what the user sees is one frame behind what the scene has just recorded.
+//! hands back is the one before, and what the user sees is one frame behind what the scene has
+//! just recorded.
+//!
+//! What a frame brings back is its pixels, its picks (`Frame::picks`, `identities`, `things`) and
+//! the selected process's pixel position (`Frame::anchor`); those agree with each other. The text
+//! the app writes over it (`App::overlay`) is placed from the app's state as it stands when the
+//! frame is presented, which is one frame newer. That is exact only while nothing the text
+//! anchors to has moved between the two, so `overlap` pipelines a frame only when its caller says
+//! the anchors are at rest (the camera and the view are the ones that drew the frame before) and
+//! finishes it at once otherwise; a body that moves under its own power, or the free turn of the
+//! globe, still leads its pixels by one frame of its own motion (under a pixel for the globe, a
+//! fraction of a terminal cell for a body). A hover is looked up in the window of picks read
+//! around the pointer as it was when the frame was submitted, so a pointer that has moved more
+//! than 80 px since finds nothing for one frame.
 
 use crate::cli::{Power, RendererChoice};
 use crate::gpu::{Flight, Gpu, Picks, Stats};
@@ -46,8 +58,14 @@ impl Renderer {
     }
 
     /// The rasterizer `choice` asks for. `Auto` falls back to the CPU when no GPU can be opened,
-    /// saying why in `kind`; `Gpu` fails instead.
-    pub(crate) fn choose(choice: RendererChoice, power: Power) -> Result<Self, String> {
+    /// saying why in `kind`; `Gpu` fails instead. A `headless` run (`--output`, `--benchmark`)
+    /// may take a software adapter when `ISOTOP_ALLOW_SOFTWARE_GPU=1` says so; a live session
+    /// never does, since an emulated GPU is slower than the CPU rasterizer.
+    pub(crate) fn choose(
+        choice: RendererChoice,
+        power: Power,
+        headless: bool,
+    ) -> Result<Self, String> {
         if choice == RendererChoice::Cpu {
             return Ok(Self::cpu());
         }
@@ -55,7 +73,12 @@ impl Renderer {
             Power::Low => wgpu::PowerPreference::LowPower,
             Power::High => wgpu::PowerPreference::HighPerformance,
         };
-        match Gpu::new(preference) {
+        let opened = if headless {
+            Gpu::new(preference)
+        } else {
+            Gpu::hardware(preference)
+        };
+        match opened {
             Ok(gpu) => {
                 let kind = format!("gpu {}", gpu.name);
                 Ok(Self::with(Some(gpu), kind))
@@ -119,11 +142,21 @@ impl Renderer {
     }
 
     /// Gives `frame` to the GPU and returns the frame it was given before, finished: with the CPU,
-    /// or with the GPU not allowed to run behind, this frame itself, at once. None for the first
-    /// frame the GPU is given, which has nothing before it. The frame handed back is whole, so
-    /// its picks and its overlay data agree with its pixels; the next call hands back this one.
-    pub(crate) fn overlap(&mut self, mut frame: Frame, pointer: Option<[f32; 2]>) -> Option<Frame> {
-        if self.gpu.is_none() || !self.pipelined {
+    /// with the GPU not allowed to run behind, or with `anchors_at_rest` false, this frame itself,
+    /// at once (a frame still in flight is dropped for it, unshown). None for the first frame the
+    /// GPU is given, which has nothing before it. The frame handed back has its pixels, picks and
+    /// `anchor` from one recording; the next call hands back this one.
+    ///
+    /// `anchors_at_rest` says that what the caller places text by (the camera, the view) is what
+    /// drew the frame given before this one, so text placed from the caller's state now lands on
+    /// the pixels of that frame. The caller finishes frames at once while it is not.
+    pub(crate) fn overlap(
+        &mut self,
+        mut frame: Frame,
+        pointer: Option<[f32; 2]>,
+        anchors_at_rest: bool,
+    ) -> Option<Frame> {
+        if self.gpu.is_none() || !self.pipelined || !anchors_at_rest {
             let earlier = self.flush();
             self.rasterize(&mut frame, pointer);
             // A frame flushed here is older than this one, and is dropped for it.

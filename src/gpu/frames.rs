@@ -233,7 +233,7 @@ fn two_frames_fly_at_once_and_a_third_waits_for_one_to_land() {
 
 /// A renderer on the GPU that runs a frame behind.
 fn pipelined_renderer() -> Renderer {
-    let mut renderer = Renderer::choose(RendererChoice::Gpu, Power::Low)
+    let mut renderer = Renderer::choose(RendererChoice::Gpu, Power::Low, true)
         .expect("a GPU (hardware, or lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1)");
     assert!(renderer.set_pipelined(true).is_none());
     renderer
@@ -241,7 +241,7 @@ fn pipelined_renderer() -> Renderer {
 
 /// What a frame that is drawn at once looks like, to hold a pipelined one to.
 fn at_once(frame: &mut Frame) -> (Vec<u8>, Vec<u32>) {
-    let mut renderer = Renderer::choose(RendererChoice::Gpu, Power::Low).expect("a GPU");
+    let mut renderer = Renderer::choose(RendererChoice::Gpu, Power::Low, true).expect("a GPU");
     renderer = renderer.reading_every_pick(true);
     renderer.rasterize(frame, None);
     (frame.pixels.clone(), frame.picks.clone())
@@ -262,7 +262,7 @@ fn a_pipelined_frame_comes_back_whole_while_the_next_is_recorded() {
         .collect();
     let mut returned = Vec::new();
     for name in names {
-        let ready = renderer.overlap(recorded(name, 240), None);
+        let ready = renderer.overlap(recorded(name, 240), None, true);
         returned.push(ready);
     }
     // The first frame has nothing before it; each call after hands back the call before.
@@ -289,27 +289,39 @@ fn a_pipelined_frame_comes_back_whole_while_the_next_is_recorded() {
 #[ignore = "needs a GPU; run with --ignored on one, or on lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1"]
 fn leaving_the_pipeline_finishes_the_frame_in_flight_and_then_draws_at_once() {
     let mut renderer = pipelined_renderer();
-    assert!(renderer.overlap(recorded("city", 240), None).is_none());
+    assert!(
+        renderer
+            .overlap(recorded("city", 240), None, true)
+            .is_none()
+    );
     let flushed = renderer.set_pipelined(false).expect("the frame in flight");
     assert!(!flushed.pixels.is_empty());
     // Not pipelined, a frame is drawn at once and comes straight back.
     let frame = renderer
-        .overlap(recorded("orbit", 240), None)
+        .overlap(recorded("orbit", 240), None, true)
         .expect("it comes straight back");
     assert!(!frame.pixels.is_empty());
     assert!(renderer.flush().is_none());
     // Back in the pipeline, with nothing in flight, the first frame again has nothing before it.
     assert!(renderer.set_pipelined(true).is_none());
-    assert!(renderer.overlap(recorded("city", 240), None).is_none());
+    assert!(
+        renderer
+            .overlap(recorded("city", 240), None, true)
+            .is_none()
+    );
 }
 
 #[test]
 #[ignore = "needs a GPU; run with --ignored on one, or on lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1"]
 fn a_pipeline_that_meets_a_new_size_returns_each_frame_at_its_own() {
     let mut renderer = pipelined_renderer();
-    assert!(renderer.overlap(recorded("city", 320), None).is_none());
+    assert!(
+        renderer
+            .overlap(recorded("city", 320), None, true)
+            .is_none()
+    );
     let first = renderer
-        .overlap(recorded("city", 200), None)
+        .overlap(recorded("city", 200), None, true)
         .expect("the first comes back");
     assert_eq!(first.width, 320);
     assert_eq!(first.pixels.len(), 320 * 180 * 3);
@@ -318,13 +330,43 @@ fn a_pipeline_that_meets_a_new_size_returns_each_frame_at_its_own() {
     assert_eq!(second.pixels.len(), 200 * 112 * 3);
 }
 
+#[test]
+#[ignore = "needs a GPU; run with --ignored on one, or on lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1"]
+fn a_frame_whose_anchors_moved_is_drawn_at_once_and_the_one_in_flight_is_dropped() {
+    let mut renderer = pipelined_renderer().reading_every_pick(true);
+    let expected = at_once(&mut recorded("orbit", 240));
+    assert!(
+        renderer
+            .overlap(recorded("city", 240), None, true)
+            .is_none()
+    );
+    // The camera moved: this frame comes straight back, finished, and the frame before it, which
+    // the overlay would not land on, is never shown.
+    let frame = renderer
+        .overlap(recorded("orbit", 240), None, false)
+        .expect("it comes straight back");
+    assert!(frame.pixels == expected.0 && frame.picks == expected.1);
+    assert!(renderer.flush().is_none(), "nothing is left in flight");
+    // At rest again, the pipeline starts over: the first frame has nothing before it.
+    assert!(
+        renderer
+            .overlap(recorded("city", 240), None, true)
+            .is_none()
+    );
+    assert!(
+        renderer
+            .overlap(recorded("orbit", 240), None, true)
+            .is_some()
+    );
+}
+
 /// Nothing here needs a GPU: a CPU renderer has no frame to run behind.
 #[test]
 fn a_cpu_renderer_hands_every_frame_straight_back() {
     let mut renderer = Renderer::cpu();
     assert!(renderer.set_pipelined(true).is_none());
     let frame = renderer
-        .overlap(recorded("city", 160), None)
+        .overlap(recorded("city", 160), None, true)
         .expect("a frame comes back at once");
     assert_eq!(frame.pixels.len(), 160 * 90 * 3);
     assert!(renderer.flush().is_none());

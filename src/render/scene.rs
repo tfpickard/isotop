@@ -671,8 +671,6 @@ impl Scene {
     }
 }
 
-/// The processes a frame draws, in PID order: the focused subtree, or every process, cut to
-/// `limit` with the selection kept.
 /// What `Scene::render` fills every frame and keeps for the next.
 #[derive(Default)]
 struct Scratch {
@@ -682,6 +680,8 @@ struct Scratch {
     visual: Vec<Process>,
 }
 
+/// The processes a frame draws, in PID order: the focused subtree, or every process, cut to
+/// `limit` with the selection kept.
 fn admitted<'a>(
     visual: &'a [Process],
     snapshot: &Snapshot,

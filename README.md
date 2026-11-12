@@ -107,10 +107,18 @@ rasterizers draw it with matching output:
 
 - **GPU** (default): wgpu on Vulkan (NVIDIA, AMD, Intel) or Metal (Apple GPUs).
   `--gpu-power high` (default) prefers a discrete GPU, `low` an integrated one,
-  which keeps a laptop's discrete GPU asleep. Software adapters are refused.
+  which keeps a laptop's discrete GPU asleep. Software adapters are refused in a
+  live session, whatever `ISOTOP_ALLOW_SOFTWARE_GPU` says (see Development).
   In a live session the GPU draws one frame while the next is recorded, so what
-  you see is one frame behind the scene; the hidden `--no-gpu-pipeline` finishes
-  each frame first, and a headless run (`--output`, `--benchmark`) always does.
+  you see is one frame behind the scene. The labels and popups are placed from the
+  scene as it stands when the frame is shown, so isotop finishes a frame first,
+  and shows it at once, whenever the camera or the view has moved since the frame
+  before; a body that moves by itself, and the free turn of the globe (under a
+  pixel a frame), still lead their pixels by one frame of their own motion, and the
+  hover is looked up around the pointer as it was when the frame was sent, so a
+  pointer that moved more than 80 px since sees no hover for one frame. The
+  hidden `--no-gpu-pipeline` finishes every frame first, and a headless run
+  (`--output`, `--benchmark`) always does.
 - **CPU**: a software rasterizer with a depth buffer. `--renderer cpu` forces it;
   `--renderer auto` falls back to it when no GPU is available or a GPU error
   occurs, and the status strip says which rasterizer drew the frame.
@@ -1424,7 +1432,10 @@ Benchmarks measure scene recording and rasterization, excluding terminal
 transport. `--benchmark` first draws `--benchmark-warmup` frames (10 by default, 0
 for none) that it does not time, so the first frame's buffer growth, the GPU
 pipeline compile and cold caches are left out; the report says how many it left
-out, and the timed frames carry on from them at `--fps`. `--duration 5` runs an interactive session for five seconds and
+out, and the timed frames carry on from them at `--fps`. With `--output` as well, the PNG is
+the last frame drawn, `--benchmark-warmup` plus `--benchmark` minus one frames after `--time` (at
+`--fps`), not the frame at `--time`; `--benchmark-warmup 0` leaves the warm-up out of that
+too. `--duration 5` runs an interactive session for five seconds and
 reports presented frame throughput after restoring the terminal.
 
 The scene admits at most 1024 processes by default (`--limit` changes this).
@@ -1433,7 +1444,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-113,043 lines of Rust (67,610 production, 45,433 test) in 175 files, 1,526 tests, 27 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+113,247 lines of Rust (67,683 production, 45,564 test) in 175 files, 1,531 tests, 27 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development
@@ -1459,7 +1470,9 @@ also be checked in Ghostty.
 
 CPU/GPU parity can be checked without a GPU through lavapipe, Mesa's software Vulkan driver. Install
 `mesa-vulkan-drivers` (and `libvulkan1`), then set `ISOTOP_ALLOW_SOFTWARE_GPU=1`: `--renderer gpu` then
-uses the software adapter and accepts nothing else. Without the variable software adapters stay refused.
+uses the software adapter and accepts nothing else. Without the variable software adapters stay refused,
+and a live session refuses them with it too (it falls back to the CPU rasterizer): only `--output` and
+`--benchmark` runs and the tests take the opt-in.
 
 ```sh
 export ISOTOP_ALLOW_SOFTWARE_GPU=1

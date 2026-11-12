@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use crate::model::{Demand, Identity, Snapshot};
 use crate::picker::{self, Picker};
-use crate::render::{Frame, RenderInput, Scene, Thing};
+use crate::render::{Camera, Frame, RenderInput, Scene, Thing};
 use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
 
@@ -69,6 +69,8 @@ pub(crate) struct App {
     /// The shown view took a `q` and deferred the quit (`ViewKey::Quit`): the app ends when the
     /// view reports it is done (`Stage::quit`), or when the view lets a second `q` through.
     pub(crate) quitting: bool,
+    /// The view and the camera that drew the frame last given to `rasterize_ahead`.
+    anchored: Option<(View, Camera)>,
 }
 
 impl App {
@@ -107,6 +109,7 @@ impl App {
             playlist: picker::playlist(&[], &available),
             picker: None,
             quitting: false,
+            anchored: None,
             available,
         };
         app.switch(view);
@@ -175,11 +178,13 @@ impl App {
     }
 
     /// Hands a frame `draw` recorded to the rasterizer and takes back the frame that is ready to
-    /// present: this one when the CPU draws or the GPU is not allowed to run behind, else the one
-    /// before it (None for the first), whole. See `Renderer::overlap`.
+    /// present: this one when the CPU draws, the GPU is not allowed to run behind or the camera
+    /// or the view moved since the frame before (so the overlay would not land on the pixels),
+    /// else the one before it (None for the first). See `Renderer::overlap`.
     pub(crate) fn rasterize_ahead(&mut self, frame: Frame) -> Option<Frame> {
+        let at_rest = self.anchors_at_rest();
         self.renderer
-            .overlap(frame, self.pointer.hover.map(|hover| hover.frame))
+            .overlap(frame, self.pointer.hover.map(|hover| hover.frame), at_rest)
     }
 
     /// Replaces the rasterizer, which starts as the CPU.
