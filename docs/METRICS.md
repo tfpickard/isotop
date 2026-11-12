@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 166 | 108,861 | 2,434 | 6,635 |
+| Rust | 170 | 110,860 | 2,492 | 6,743 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,089 | 841 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 91 | 0 | 14,997 | 5,224 |
+| Markdown | 91 | 0 | 15,009 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **484** | **172,191** | **18,797** | **15,002** |
+| **Total** | **488** | **174,190** | **18,867** | **15,110** |
 
 ## Rust by module
 
@@ -37,6 +37,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/lights.rs` | 928 | 388 |
 | `src/murmuration.rs` | 923 | 792 |
 | `src/die/floorplan.rs` | 904 | 0 |
+| `src/render/raster/differential.rs` | 886 | 0 |
 | `src/die/readings.rs` | 868 | 0 |
 | `src/plumbing/paint.rs` | 806 | 0 |
 | `src/horizon/disk.rs` | 796 | 274 |
@@ -51,11 +52,11 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/mod.rs` | 621 | 370 |
 | `src/platform/macos/ffi.rs` | 613 | 12 |
 | `src/coop/draw.rs` | 589 | 0 |
+| `src/render/field.rs` | 589 | 719 |
 | `src/reef.rs` | 588 | 147 |
 | `src/render/scene.rs` | 582 | 0 |
 | `src/platform/linux/events.rs` | 581 | 317 |
 | `src/coop/creatures.rs` | 576 | 0 |
-| `src/render/field.rs` | 575 | 719 |
 | `src/neurons.rs` | 569 | 333 |
 | `src/horizon.rs` | 565 | 630 |
 | `src/platform/mod.rs` | 550 | 106 |
@@ -71,9 +72,11 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/views/flow.rs` | 475 | 43 |
 | `src/terminal.rs` | 457 | 169 |
 | `src/model/pipework/demo.rs` | 453 | 174 |
+| `src/render/raster/reference.rs` | 452 | 0 |
 | `src/coop/sim.rs` | 448 | 252 |
 | `src/render/strokes.rs` | 447 | 317 |
 | `src/anthill/draw.rs` | 445 | 254 |
+| `src/render/raster.rs` | 437 | 96 |
 | `src/coop/layout.rs` | 416 | 298 |
 | `src/horizon/orbits.rs` | 401 | 400 |
 | `src/views/ripple.rs` | 396 | 286 |
@@ -87,11 +90,11 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/ouija/seance.rs` | 343 | 290 |
 | `src/plumbing/draw/pipes.rs` | 343 | 60 |
 | `src/matrix.rs` | 341 | 236 |
+| `src/render/raster/triangle.rs` | 331 | 20 |
 | `src/platform/linux/net.rs` | 320 | 278 |
 | `src/terminal/inline.rs` | 308 | 347 |
 | `src/journal.rs` | 298 | 171 |
 | `src/switchboard/figures.rs` | 298 | 0 |
-| `src/render/raster.rs` | 295 | 38 |
 | `src/render/frame.rs` | 294 | 302 |
 | `src/anthill/paint.rs` | 292 | 0 |
 | `src/blackbody.rs` | 292 | 146 |
@@ -173,6 +176,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/journal.rs` | 103 | 72 |
 | `src/platform/linux/threads.rs` | 101 | 100 |
 | `src/app/search.rs` | 99 | 111 |
+| `src/render/raster/shapes.rs` | 96 | 0 |
 | `src/platform/linux/memory.rs` | 86 | 121 |
 | `src/app/switcher.rs` | 84 | 382 |
 | `src/app/player.rs` | 75 | 96 |
@@ -189,7 +193,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/status.rs` | 15 | 51 |
 | `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **64,646** | **44,244** |
+| **Total** | **66,567** | **44,322** |
 
 ## Largest files
 
@@ -216,7 +220,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 |:--|--:|
 | `#[expect(clippy::too_many_lines` | 11 |
 | `#[expect(clippy::too_many_arguments` | 7 |
-| `unsafe` blocks | 144 |
+| `unsafe` blocks | 145 |
 | `unwrap_or(0` sites | 30 |
 | `unwrap_or(0.0` sites | 19 |
 | `known_unstable` harness entries | 0 |
@@ -227,7 +231,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,483 |
+| `#[test]` functions | 1,492 |
 | Views in the registry | 27 |
 | Views with a README mapping table | 27 of 27 |
 | Direct crate dependencies | 10 |
