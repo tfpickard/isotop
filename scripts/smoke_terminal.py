@@ -582,6 +582,10 @@ def exercise_ending(binary, demo, ending):
         restore_start = output.find(PIXEL_MOUSE_OFF)
         assert restore_start >= 0, f"{where}: the restore was never written"
         assert output.count(PIXEL_MOUSE_OFF) == 1, f"{where}: restored more than once"
+        # The restore begins with a string terminator, which ends a graphics command that a frame
+        # cut off by the signal or the panic left open (and is ignored anywhere else).
+        restore_head = b"\x1b\\" + (KEYBOARD_POP if keyboard else b"") + b"\x1b[?2026l" + PIXEL_MOUSE_OFF
+        assert output.count(restore_head) == 1, f"{where}: the restore does not begin with a string terminator"
         assert output.rfind(DELETE_ALL_IMAGES) > output.rfind(FRAME_COMMAND), f"{where}: images were left"
         assert output.rfind(FRAME_COMMAND) < restore_start, f"{where}: a frame was written after the restore"
         assert not (termios.tcgetattr(slave)[3] & termios.ICANON) == 0, f"{where}: raw mode was not restored"

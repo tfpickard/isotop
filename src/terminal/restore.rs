@@ -18,8 +18,20 @@
 //! No frame may reach the terminal after the restore, or it would draw over the main screen.
 //! Every write of a frame goes through `Restoration::frame`, which counts the write before it
 //! checks that the terminal is still armed; the restore leaves armed first and then waits up to
-//! `WRITER_WAIT` for the writes already counted, so a write that began before the restore has
-//! ended before it, and a write that begins after is refused.
+//! `WRITER_WAIT` for the writes already counted, and a write that begins after is refused.
+//!
+//! What that guarantees is narrower than "a frame write never overlaps the restore". A restore
+//! can still land inside a frame write in two cases: the wait timed out (a terminal that stopped
+//! reading), and the restoring thread is itself the one writing (a signal or a panic that
+//! arrives while it is inside `frame`; it cannot wait for itself, so it does not, see
+//! `Restoration::others_writing`). The frame is then cut off, and the terminal may be inside a
+//! graphics command (an APC, `ESC _G...`, which ends only at `ESC \`) or a control sequence when
+//! the restore bytes arrive. Two things keep that harmless. The inline frames are written in
+//! pieces that each end after a complete graphics command (`inline::pieces`), so the frames a
+//! restore refuses end cleanly; and the restore bytes begin with a string terminator
+//! (`terminal::restore_screen`), which ends an APC a write left open and is ignored anywhere
+//! else, while the `ESC` that opens each of the other sequences already ends a control sequence
+//! that was cut off.
 //!
 //! The panic hook restores, then calls the hook it replaced (the default one prints the message,
 //! so on the main screen), but only for a panic on the thread that owns the terminal, or in a
@@ -45,6 +57,10 @@ const RESTORED: u8 = 3;
 /// millisecond a turn, so it needs no clock).
 pub const WRITER_WAIT: u32 = 200;
 
+/// How many threads at a time `Restoration::frame` can remember by identity; a writer beyond
+/// that is still counted, but a restore on its thread waits for it as for any other.
+const WRITER_SLOTS: usize = 8;
+
 /// How many times a write to a full, non-blocking terminal is retried, a millisecond apart.
 const WRITE_RETRIES: u32 = 200;
 
@@ -68,6 +84,9 @@ pub struct Restoration {
     state: AtomicU8,
     /// Frame writes under way.
     writers: AtomicUsize,
+    /// The threads (`pthread_self`) of the writes under way, 0 for a free slot, so that a
+    /// restore on one of those threads does not wait for the write it interrupted.
+    writer_threads: [AtomicUsize; WRITER_SLOTS],
     /// The Kitty keyboard flags were pushed, so the restore pops them.
     keyboard: AtomicBool,
     /// Some shared-memory object may have been written.
@@ -86,6 +105,7 @@ impl Restoration {
         Self {
             state: AtomicU8::new(IDLE),
             writers: AtomicUsize::new(0),
+            writer_threads: [const { AtomicUsize::new(0) }; WRITER_SLOTS],
             keyboard: AtomicBool::new(false),
             shared_used: AtomicBool::new(false),
             serial: AtomicU64::new(0),
@@ -140,12 +160,42 @@ impl Restoration {
     /// Runs `write` as one frame write, and returns None, without running it, once the terminal
     /// is no longer armed (a restore was claimed). The count is taken before the check, and the
     /// restore clears the flag before it looks at the count, so the two cannot both miss.
+    ///
+    /// The calling thread is remembered while the write runs: before the write is counted and
+    /// forgotten after it is uncounted, so a restore on this thread never sees a count it cannot
+    /// account for.
     pub fn frame<T>(&self, write: impl FnOnce() -> T) -> Option<T> {
+        let slot = self.remember_writer();
         self.writers.fetch_add(1, Ordering::SeqCst);
         let armed = self.state.load(Ordering::SeqCst) == ARMED;
         let result = armed.then(write);
         self.writers.fetch_sub(1, Ordering::SeqCst);
+        if let Some(slot) = slot {
+            self.writer_threads[slot].store(0, Ordering::SeqCst);
+        }
         result
+    }
+
+    /// Takes a free slot for the calling thread, or None when all are taken.
+    fn remember_writer(&self) -> Option<usize> {
+        let thread = current_thread();
+        self.writer_threads.iter().position(|slot| {
+            slot.compare_exchange(0, thread, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        })
+    }
+
+    /// Whether a frame write of some other thread is under way: the writes counted, less those
+    /// the calling thread is itself inside of (a signal handler or a panic hook that interrupted
+    /// its own write, which would otherwise wait for itself). Async-signal-safe: atomics only.
+    fn others_writing(&self) -> bool {
+        let thread = current_thread();
+        let own = self
+            .writer_threads
+            .iter()
+            .filter(|slot| slot.load(Ordering::SeqCst) == thread)
+            .count();
+        self.writers.load(Ordering::SeqCst) > own
     }
 
     /// Takes the right to restore: true for exactly one caller, and only while armed.
@@ -185,9 +235,10 @@ impl Restoration {
         // so the pointer is non-null, valid for the rest of the program (nothing frees it) and
         // never written again.
         let record = unsafe { &*record };
-        // Frames already being written finish first; the flag is down, so no new one starts.
+        // Frames other threads are writing finish first, for a limited time; the flag is down, so
+        // no new one starts. A write of this thread's own cannot finish, so it is not waited for.
         let mut waited = 0;
-        while self.writers.load(Ordering::SeqCst) > 0 && waited < WRITER_WAIT {
+        while self.others_writing() && waited < WRITER_WAIT {
             pause();
             waited += 1;
         }
@@ -355,10 +406,11 @@ mod tests {
     use crate::terminal::shared::{Name, create, unlink};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A pipe that stands in for the terminal: what is written lands in `read`.
     struct Pipe {
@@ -550,6 +602,101 @@ mod tests {
         assert_eq!(pipe.written(), b"PLAIN", "restored after the wait ran out");
         release.send(()).unwrap();
         writer.join().unwrap();
+    }
+
+    #[test]
+    fn a_restore_inside_its_own_frame_write_does_not_wait_for_itself() {
+        // What a signal handler does when the signal lands on the thread that is writing a frame:
+        // the only write under way is the one it interrupted, which can never finish.
+        let pipe = Pipe::new();
+        let restoration = armed(&pipe);
+        let begun = Instant::now();
+        let inside = restoration.frame(|| (restoration.restore(), begun.elapsed()));
+        let (restored, took) = inside.expect("the write was armed when it began");
+        assert!(restored);
+        assert!(
+            took < Duration::from_millis(u64::from(WRITER_WAIT) / 4),
+            "waited {took:?} for its own write"
+        );
+        assert_eq!(pipe.written(), b"PLAIN");
+        assert_eq!(restoration.writers.load(Ordering::SeqCst), 0);
+        assert!(
+            restoration
+                .writer_threads
+                .iter()
+                .all(|slot| slot.load(Ordering::SeqCst) == 0),
+            "every slot is free again"
+        );
+    }
+
+    #[test]
+    fn a_restore_inside_its_own_write_still_waits_for_another_threads_write() {
+        let pipe = Pipe::new();
+        let restoration = Arc::new(armed(&pipe));
+        let (started, started_receiver) = mpsc::channel();
+        let (release, release_receiver) = mpsc::channel::<()>();
+        let other = {
+            let restoration = Arc::clone(&restoration);
+            thread::spawn(move || {
+                restoration.frame(|| {
+                    started.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                })
+            })
+        };
+        started_receiver.recv().unwrap();
+        let begun = Instant::now();
+        let took = restoration
+            .frame(|| {
+                restoration.restore();
+                begun.elapsed()
+            })
+            .unwrap();
+        assert!(
+            took >= Duration::from_millis(u64::from(WRITER_WAIT) * 3 / 4),
+            "returned after {took:?}, without waiting for the other writer"
+        );
+        release.send(()).unwrap();
+        other.join().unwrap();
+    }
+
+    #[test]
+    fn writers_beyond_the_slots_are_counted_and_released() {
+        let pipe = Pipe::new();
+        let restoration = Arc::new(armed(&pipe));
+        let (started, started_receiver) = mpsc::channel();
+        let (release, release_receiver) = mpsc::sync_channel::<()>(WRITER_SLOTS + 2);
+        let release_receiver = Arc::new(Mutex::new(release_receiver));
+        let handles: Vec<_> = (0..WRITER_SLOTS + 2)
+            .map(|_| {
+                let restoration = Arc::clone(&restoration);
+                let started = started.clone();
+                let release_receiver = Arc::clone(&release_receiver);
+                thread::spawn(move || {
+                    restoration.frame(|| {
+                        started.send(()).unwrap();
+                        let _ = release_receiver.lock().unwrap().recv();
+                    })
+                })
+            })
+            .collect();
+        for _ in 0..WRITER_SLOTS + 2 {
+            started_receiver.recv().unwrap();
+        }
+        assert_eq!(restoration.writers.load(Ordering::SeqCst), WRITER_SLOTS + 2);
+        for _ in 0..WRITER_SLOTS + 2 {
+            release.send(()).unwrap();
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(restoration.writers.load(Ordering::SeqCst), 0);
+        assert!(
+            restoration
+                .writer_threads
+                .iter()
+                .all(|slot| slot.load(Ordering::SeqCst) == 0)
+        );
     }
 
     #[test]

@@ -288,6 +288,9 @@ impl Drop for Terminal {
     }
 }
 
+/// ST, the string terminator: the first thing a restore writes, see `restore_screen`.
+const STRING_TERMINATOR: &[u8] = b"\x1b\\";
+
 /// The bytes `restore_screen` writes, made ahead of time for the panic hook and the signal
 /// handlers, which may neither allocate nor format.
 fn restore_bytes(keyboard: bool) -> Vec<u8> {
@@ -348,9 +351,12 @@ const KEYBOARD_FLAGS: KeyboardEnhancementFlags =
         .union(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS)
         .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES);
 
-/// Writes everything that undoes `Terminal::enter` except raw mode. The keyboard flags go first:
-/// the main and the alternate screen keep separate stacks of them, and the push was made on the
-/// alternate screen.
+/// Writes everything that undoes `Terminal::enter` except raw mode. It begins with a string
+/// terminator (`ESC \`): a restore can land inside a graphics command that a cut-off frame write
+/// left open (`ESC _G...;base64`, which only `ESC \` ends, and a terminal that does not end it on
+/// the `ESC` of the next sequence would swallow all of what follows). Outside a command the
+/// terminator is ignored. Then the keyboard flags: the main and the alternate screen keep
+/// separate stacks of them, and the push was made on the alternate screen.
 ///
 /// Every step is tried whatever became of the ones before it, so that one failed write cannot
 /// leave the cursor hidden or the terminal on the alternate screen; the first error is returned.
@@ -364,6 +370,7 @@ fn restore_screen(out: &mut impl Write, keyboard: bool) -> io::Result<()> {
             first = step;
         }
     };
+    note(out.write_all(STRING_TERMINATOR));
     if keyboard {
         note(execute!(out, PopKeyboardEnhancementFlags));
     }
@@ -767,5 +774,258 @@ mod tests {
             "but the screen is left: {text:?}"
         );
         assert!(text.contains("\x1b[?25h"), "and the cursor shown");
+    }
+
+    /// What a strict terminal does with bytes, as far as these tests need: control sequences end
+    /// at their final byte, an ESC aborts one, and a graphics command (an APC) swallows
+    /// everything, an ESC that does not begin `ESC \` included, until `ESC \`. A real terminal
+    /// may end the command sooner; this is the worst case the restore must survive.
+    #[derive(Default)]
+    struct Parser {
+        state: Mode,
+        pending: Vec<u8>,
+        /// Every control sequence that ran, without its introducer: `?1049l`, `<1u`.
+        sequences: Vec<String>,
+        /// Every graphics command that ended, without its introducer.
+        commands: Vec<Vec<u8>>,
+    }
+
+    #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+    enum Mode {
+        #[default]
+        Ground,
+        Escape,
+        Sequence,
+        Command,
+        CommandEscape,
+    }
+
+    impl Parser {
+        fn feed(&mut self, bytes: &[u8]) {
+            for &byte in bytes {
+                self.state = match (self.state, byte) {
+                    (Mode::Ground | Mode::Escape, 0x1b) => Mode::Escape,
+                    (Mode::Ground, _) => Mode::Ground,
+                    (Mode::Escape, b'_') => {
+                        self.pending.clear();
+                        Mode::Command
+                    }
+                    (Mode::Escape, b'[') => {
+                        self.pending.clear();
+                        Mode::Sequence
+                    }
+                    (Mode::Escape, _) => Mode::Ground,
+                    (Mode::Sequence, 0x1b) => Mode::Escape,
+                    (Mode::Sequence, 0x40..=0x7e) => {
+                        self.pending.push(byte);
+                        self.sequences
+                            .push(String::from_utf8_lossy(&self.pending).into_owned());
+                        Mode::Ground
+                    }
+                    (Mode::Sequence, _) => {
+                        self.pending.push(byte);
+                        Mode::Sequence
+                    }
+                    (Mode::Command, 0x1b) => Mode::CommandEscape,
+                    (Mode::Command, _) => {
+                        self.pending.push(byte);
+                        Mode::Command
+                    }
+                    // An ESC after an ESC is the start of a terminator again.
+                    (Mode::CommandEscape, 0x1b) => Mode::CommandEscape,
+                    (Mode::CommandEscape, b'\\') => {
+                        self.commands.push(std::mem::take(&mut self.pending));
+                        Mode::Ground
+                    }
+                    (Mode::CommandEscape, _) => {
+                        self.pending.push(0x1b);
+                        self.pending.push(byte);
+                        Mode::Command
+                    }
+                };
+            }
+        }
+
+        fn ran(&self, sequence: &str) -> bool {
+            self.sequences.iter().any(|ran| ran == sequence)
+        }
+    }
+
+    /// Every sequence of `restore_screen` that a terminal has to act on.
+    const RESTORED: [&str; 4] = ["?2026l", "?1016l", "?1049l", "?25h"];
+
+    #[test]
+    fn the_restore_bytes_begin_with_a_string_terminator() {
+        for keyboard in [false, true] {
+            assert!(
+                restore_bytes(keyboard).starts_with(b"\x1b\\"),
+                "keyboard = {keyboard}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_restore_ends_a_graphics_command_a_cut_off_frame_left_open() {
+        let open = b"\x1b_Gm=1,q=2;QUFBQUFBQUFBQUFB".as_slice();
+        // The model is strict, so without the terminator the first sequences are swallowed, up
+        // to the `ESC \` of the restore's own graphics command: the keyboard pop and the end of
+        // the synchronized update would be lost, and the terminal left frozen in it.
+        let mut without = Parser::default();
+        without.feed(open);
+        without.feed(&restore_bytes(true)[STRING_TERMINATOR.len()..]);
+        assert!(!without.ran("<1u") && !without.ran("?2026l") && !without.ran("?1016l"));
+        // With it, the command ends and every sequence is parsed.
+        for keyboard in [false, true] {
+            let mut parser = Parser::default();
+            parser.feed(open);
+            assert_eq!(parser.state, Mode::Command);
+            parser.feed(&restore_bytes(keyboard));
+            assert_eq!(parser.state, Mode::Ground, "keyboard = {keyboard}");
+            assert_eq!(parser.commands.len(), 2, "the open command, then a=d");
+            for sequence in RESTORED {
+                assert!(
+                    parser.ran(sequence),
+                    "{sequence} ran, keyboard = {keyboard}"
+                );
+            }
+            assert_eq!(parser.ran("<1u"), keyboard);
+        }
+    }
+
+    #[test]
+    fn a_restore_lands_cleanly_wherever_a_write_was_cut() {
+        // Inside a control sequence, just after an ESC, inside a command and inside its ESC.
+        for cut in [
+            b"\x1b[38;2;18".as_slice(),
+            b"\x1b",
+            b"\x1b_Gm=1;QUJD",
+            b"\x1b_Gm=1;QUJD\x1b",
+            b"\x1b[?2026h\x1b[1;1H",
+            b"",
+        ] {
+            let mut parser = Parser::default();
+            parser.feed(cut);
+            parser.feed(&restore_bytes(true));
+            assert_eq!(parser.state, Mode::Ground, "after {cut:?}");
+            for sequence in RESTORED {
+                assert!(parser.ran(sequence), "{sequence} ran after {cut:?}");
+            }
+        }
+    }
+
+    /// How the sink of `Cut` ends the frame.
+    #[derive(Clone, Copy)]
+    enum Cutting {
+        /// The restore comes between two pieces, from another thread.
+        Between,
+        /// The restore comes inside a piece, from the thread that is writing it (a signal
+        /// handler on the encoder thread): half the piece is out, and the rest never is.
+        Inside,
+    }
+
+    /// A frame sink like `FrameSink`, on a restoration of its own, that restores at its
+    /// `after`-th write.
+    #[derive(Clone)]
+    struct Cut {
+        restoration: &'static Restoration,
+        written: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        writes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        after: usize,
+        cutting: Cutting,
+        /// What the terminal had been sent when the restore began.
+        before_restore: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl Write for Cut {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let number = self
+                .writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            let restore_here = number == self.after;
+            let inside = restore_here && matches!(self.cutting, Cutting::Inside);
+            self.restoration.frame(|| {
+                let end = if inside { bytes.len() / 2 } else { bytes.len() };
+                self.written
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..end]);
+                if inside {
+                    *self.before_restore.lock().unwrap() =
+                        Some(self.written.lock().unwrap().clone());
+                    assert!(self.restoration.restore());
+                }
+            });
+            if restore_here && !inside {
+                *self.before_restore.lock().unwrap() = Some(self.written.lock().unwrap().clone());
+                assert!(self.restoration.restore());
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_frame_cut_off_by_a_restore_leaves_a_terminal_that_is_restored() {
+        let mut state = 0x2545_f491_u32;
+        let mut pixels = vec![0_u8; 260_000];
+        for byte in &mut pixels {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *byte = (state >> 24) as u8;
+        }
+        for cutting in [Cutting::Between, Cutting::Inside] {
+            for after in 1..=5 {
+                let mut ends = [0; 2];
+                // SAFETY: ends has room for the two descriptors pipe writes.
+                assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+                let restoration: &'static Restoration = Box::leak(Box::new(Restoration::new()));
+                restoration.arm(ends[1], -1, None, restore_bytes(false), restore_bytes(true));
+                let sink = Cut {
+                    restoration,
+                    written: Default::default(),
+                    writes: Default::default(),
+                    after,
+                    cutting,
+                    before_restore: Default::default(),
+                };
+                let mut inline = Inline::without_thread(sink.clone());
+                let mut job = inline.blank();
+                job.head.extend_from_slice(b"\x1b[?2026h\x1b[1;1H");
+                job.placement = "a=T,f=24,s=2,v=2,i=100,c=10,r=5,q=2".to_owned();
+                job.pixels = pixels.clone();
+                job.tail
+                    .extend_from_slice(b"\x1b_Ga=d,d=I,i=101,q=2\x1b\\text\x1b[?2026l");
+                inline.submit(job).unwrap();
+                let mut restored = [0_u8; 256];
+                // SAFETY: the buffer is valid for writes of its length; the descriptor is open.
+                let count = unsafe { libc::read(ends[0], restored.as_mut_ptr().cast(), 256) };
+                // SAFETY: both descriptors were opened above and are not used again.
+                unsafe {
+                    libc::close(ends[0]);
+                    libc::close(ends[1]);
+                }
+                assert!(count > 0, "the restore wrote its bytes");
+                let sent = sink.written.lock().unwrap().clone();
+                let at_restore = sink.before_restore.lock().unwrap().clone().unwrap();
+                assert_eq!(sent, at_restore, "nothing was written after the restore");
+                let mut parser = Parser::default();
+                parser.feed(&sent);
+                if matches!(cutting, Cutting::Between) {
+                    assert_eq!(
+                        parser.state,
+                        Mode::Ground,
+                        "a restore between two pieces finds the terminal outside any command"
+                    );
+                }
+                parser.feed(&restored[..count as usize]);
+                assert_eq!(parser.state, Mode::Ground, "after {after} writes");
+                for sequence in RESTORED {
+                    assert!(parser.ran(sequence), "{sequence}: {after} writes");
+                }
+            }
+        }
     }
 }
