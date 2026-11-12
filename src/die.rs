@@ -2,3 +2,4 @@
 
 mod floorplan;
 mod heat;
+mod readings;

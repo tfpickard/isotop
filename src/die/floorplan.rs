@@ -69,6 +69,8 @@ pub struct Block {
     pub hot: [f32; 2],
     /// The group it is drawn in, if any.
     pub group: Option<usize>,
+    /// The highest clock of its CPUs the topology knows, in MHz.
+    pub max_mhz: Option<f32>,
 }
 
 /// What a group of core blocks is.
@@ -210,6 +212,7 @@ impl Builder {
                 rect[1] + height(rect) * hot[1],
             ],
             group: None,
+            max_mhz: None,
         });
         self.blocks.len() - 1
     }
@@ -303,6 +306,13 @@ impl Floorplan {
             .enumerate()
             .flat_map(|(index, block)| block.cpus.iter().map(move |&cpu| (cpu, index)))
             .collect();
+        for block in &mut plan.blocks {
+            block.max_mhz = block
+                .cpus
+                .iter()
+                .filter_map(|&cpu| topology.place(cpu).and_then(|place| place.max_mhz))
+                .reduce(f32::max);
+        }
         plan.caption = plan.caption();
         plan
     }
