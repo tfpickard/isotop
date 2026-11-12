@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 175 | 113,216 | 2,562 | 6,903 |
+| Rust | 175 | 113,219 | 2,564 | 6,903 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,091 | 843 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 91 | 0 | 15,033 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **493** | **176,548** | **18,963** | **15,270** |
+| **Total** | **493** | **176,551** | **18,965** | **15,270** |
 
 ## Rust by module
 
@@ -116,7 +116,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/io_detail.rs` | 250 | 321 |
 | `src/die/panel.rs` | 248 | 12 |
 | `src/plumbing/draw/tank.rs` | 247 | 28 |
-| `src/terminal/restore.rs` | 241 | 392 |
+| `src/terminal/restore.rs` | 241 | 395 |
 | `src/medium.rs` | 240 | 66 |
 | `src/ouija/props.rs` | 238 | 0 |
 | `src/headless.rs` | 237 | 589 |
@@ -198,7 +198,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/status.rs` | 15 | 51 |
 | `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **67,683** | **45,564** |
+| **Total** | **67,683** | **45,567** |
 
 ## Largest files
 

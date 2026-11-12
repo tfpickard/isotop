@@ -811,7 +811,12 @@ mod tests {
         assert_ne!(raw.c_lflag, before.c_lflag, "raw mode changed something");
         assert!(restoration.restore());
         let after = modes(slave).unwrap();
-        assert_eq!(after.c_lflag, before.c_lflag);
+        // The kernel raises PENDIN ("retype pending input") itself when a restore leaves raw
+        // mode, on macOS at least; it is state, not a mode the restore chose, so leave it out.
+        assert_eq!(
+            after.c_lflag & !libc::PENDIN,
+            before.c_lflag & !libc::PENDIN
+        );
         assert_eq!(after.c_iflag, before.c_iflag);
         assert_eq!(after.c_oflag, before.c_oflag);
         // SAFETY: both descriptors were opened above and are not used again.
