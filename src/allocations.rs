@@ -251,7 +251,51 @@ mod tests {
     /// The ratchet: the most heap allocations (and bytes) a steady-state frame of each view may
     /// request at 192 processes, 480 pixels wide. Lower a bound when a change brings a view
     /// down; never raise one without saying why in the PR.
-    const BOUNDS: &[(&str, u64, u64)] = &[];
+    const BOUNDS: &[(&str, u64, u64)] = &[
+        ("city", 10, 14045),
+        ("orbit", 263, 146783),
+        ("ripple", 118, 81628),
+        ("flow", 278, 1095519),
+        ("cores", 650, 50358),
+        ("cells", 2057, 140397),
+        ("strata", 342, 65482),
+        ("globe", 402, 65845),
+        ("reef", 828, 79764),
+        ("matrix", 10, 8002),
+        ("coop", 2729, 219858),
+        ("ptolemy", 30, 18970),
+        ("tesseract", 4208, 709868),
+        ("necropolis", 328, 222049),
+        ("cortex", 77, 58306),
+        ("horizon", 251, 194537),
+        ("murmuration", 22, 114508),
+        ("arbor", 85, 32663),
+        ("hr", 52, 37750),
+        ("hive", 541, 70932),
+        ("switchboard", 604, 46486),
+        ("ouija", 83, 17910),
+        ("anthill", 230, 164572),
+        ("plumbing", 723, 90970),
+        ("armorial", 151, 237106),
+        ("lights", 266, 52336),
+    ];
+
+    #[test]
+    fn a_frame_does_not_copy_the_processes_it_draws() {
+        // Copying every process costs four strings each, which at a thousand processes is four
+        // thousand allocations a frame; a view that only draws them asks for a handful.
+        for name in ["city", "matrix", "ptolemy"] {
+            let view = View::all()
+                .find(|view| view.name() == name)
+                .expect("a registered view");
+            let tally = steady_state(view, 1000);
+            assert!(
+                tally.requests < 100,
+                "{name} at 1000 processes asked for {} allocations a frame",
+                tally.requests
+            );
+        }
+    }
 
     #[test]
     fn the_counter_counts_what_a_block_allocates() {
