@@ -134,6 +134,27 @@ impl Default for Die {
     }
 }
 
+/// The unit (an index into `units`) that holds the hottest probe among the blocks a package
+/// sensor speaks for: where the field is pulled to the sensor's reading, so the one unit that
+/// package reading may be written beside. None where no block is covered by the package sensor
+/// alone. Ties go to the first unit.
+fn package_holder(units: &[(String, Vec<usize>)], found: &Readings, hot: &[f32]) -> Option<usize> {
+    let mut holder: Option<(usize, f32)> = None;
+    for (index, (_, blocks)) in units.iter().enumerate() {
+        let hottest = blocks
+            .iter()
+            .filter(|&&block| matches!(found.coverage[block], Coverage::Package(_)))
+            .map(|&block| hot[block])
+            .reduce(f32::max);
+        if let Some(value) = hottest
+            && holder.is_none_or(|(_, most)| value > most)
+        {
+            holder = Some((index, value));
+        }
+    }
+    holder.map(|(index, _)| index)
+}
+
 /// The key of a block's thing: its first CPU, which the topology fixes.
 fn block_key(cpus: &[u32]) -> u64 {
     u64::from(cpus[0])
@@ -302,44 +323,52 @@ impl Die {
             units.push((group.name.clone(), group.blocks.clone()));
         }
         units.sort_by_key(|(_, blocks)| blocks[0]);
+        let holder = package_holder(&units, found, hot);
         let room = panel::MOST_ROWS.saturating_sub(rows.len());
         let (shown, more) = if units.len() > room {
             (room.saturating_sub(1), units.len() - room + 1)
         } else {
             (units.len(), 0)
         };
-        for (name, blocks) in units.iter().take(shown) {
+        for (index, (name, blocks)) in units.iter().enumerate().take(shown) {
             let value = blocks
                 .iter()
                 .map(|&block| hot[block])
                 .fold(f32::MIN, f32::max);
-            // A number of degrees is only ever a sensor's: the hottest value among the cores
-            // that have one. Cores no sensor speaks for are the model's and carry no degrees.
-            let measured: Vec<f32> = blocks
+            // A number of degrees is only ever a sensor's reading, never the field's value at
+            // the hot spot: the hottest reading among the cores that a sensor of their own or
+            // of their complex speaks for, and the package sensor's for the unit that holds
+            // it. Every other core is the model's and carries no degrees.
+            let readings: Vec<f32> = blocks
                 .iter()
-                .filter(|&&block| found.coverage[block] != Coverage::Unknown)
-                .map(|&block| hot[block])
+                .filter_map(|&block| match found.coverage[block] {
+                    Coverage::Own(celsius) | Coverage::Ccd(_, celsius) => Some(celsius),
+                    Coverage::Package(celsius) => (holder == Some(index)).then_some(celsius),
+                    Coverage::Unknown => None,
+                })
                 .collect();
             let hurt = blocks
                 .iter()
                 .any(|&block| self.flashing(layout, block, time).is_some());
-            let value_text = match (found.mode, measured.is_empty()) {
+            let percent = (found.level(value) * 100.0).clamp(0.0, 100.0);
+            let package_only = blocks
+                .iter()
+                .any(|&block| matches!(found.coverage[block], Coverage::Package(_)));
+            let value_text = match (found.mode, readings.is_empty()) {
                 (Mode::Celsius, false) => format!(
                     "{:.0} C{}",
-                    measured.iter().copied().fold(f32::MIN, f32::max),
-                    if measured.len() == blocks.len() {
+                    readings.iter().copied().fold(f32::MIN, f32::max),
+                    if package_only {
+                        " (package sensor)"
+                    } else if readings.len() == blocks.len() {
                         ""
                     } else {
                         " (some model)"
                     }
                 ),
+                (Mode::Celsius, true) if package_only => format!("{percent:.0}% model"),
                 (Mode::Celsius, true) => "model only, no sensor".to_owned(),
-                (Mode::Relative, _) => {
-                    format!(
-                        "{:.0}% model",
-                        (found.level(value) * 100.0).clamp(0.0, 100.0)
-                    )
-                }
+                (Mode::Relative, _) => format!("{percent:.0}% model"),
             };
             rows.push(Row {
                 level: Some(found.level(value)),
@@ -1151,6 +1180,268 @@ mod tests {
             .collect();
         assert!(looks[..4].iter().all(|look| *look == Look::Measured));
         assert!(looks[4..].iter().all(|look| *look == Look::Model));
+    }
+
+    /// A sample over `topology` with `sensors`, the load uneven.
+    fn measured(
+        topology: &Topology,
+        sensors: Vec<crate::model::thermal::Sensor>,
+        elapsed: f64,
+    ) -> Snapshot {
+        use readings::tests::{cpu, sample};
+        let cpus = topology
+            .cpus
+            .iter()
+            .map(|place| {
+                // The first half of the CPUs is busy and the rest nearly idle, so that the
+                // model's split of one reading between the units is a wide one.
+                let busy = if place.cpu * 2 < topology.cpus.len() as u32 {
+                    0.9
+                } else {
+                    0.1
+                };
+                cpu(place.cpu, place.kind, Some(busy), Some(3000.0))
+            })
+            .collect();
+        sample(topology.clone(), sensors, cpus, elapsed, elapsed as u64)
+    }
+
+    /// Draws `snapshots` one a second and returns the panel's rows after the last, as text.
+    fn rows_after(snapshots: &[Snapshot]) -> (Scene, Vec<String>) {
+        let mut scene = Scene::new();
+        let mut time = 8.0;
+        for snapshot in snapshots {
+            time += 1.0;
+            draw(&mut scene, snapshot, time);
+        }
+        let rows = {
+            let die = die(&scene);
+            let layout = die.layout.as_ref().expect("layout");
+            let found = die.last.readings.as_ref().expect("readings");
+            die.rows(layout, found, &die.last.hot, time)
+                .into_iter()
+                .map(|row| row.text)
+                .collect()
+        };
+        (scene, rows)
+    }
+
+    /// Whether `text` writes a number of degrees: a number, then a `C` of its own.
+    fn has_degrees(text: &str) -> bool {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        words
+            .windows(2)
+            .any(|pair| pair[0].trim_start_matches('~').parse::<f32>().is_ok() && pair[1] == "C")
+    }
+
+    /// The rows of the units (everything after the package and the power).
+    fn unit_rows(rows: &[String]) -> &[String] {
+        &rows[2..]
+    }
+
+    #[test]
+    fn a_package_sensor_alone_gives_degrees_to_at_most_the_unit_that_holds_it() {
+        use super::floorplan::tests::{amd, hybrid};
+        use readings::tests::sensor;
+        let cases = [
+            (
+                "k10temp Tctl on two CCDs",
+                amd(2),
+                sensor("Tctl", SensorPlace::Package(0), Some(58.4)),
+            ),
+            (
+                "x86_pkg_temp on a hybrid part",
+                hybrid(4, 2, true),
+                sensor("x86_pkg_temp", SensorPlace::Package(0), Some(55.2)),
+            ),
+            (
+                "x86_pkg_temp on a part of one E-cluster",
+                hybrid(2, 1, true),
+                sensor("x86_pkg_temp", SensorPlace::Package(0), Some(49.9)),
+            ),
+        ];
+        for (name, topology, package) in cases {
+            let reading = package.celsius.expect("the sensor reads");
+            let snapshots: Vec<Snapshot> = (1..=4)
+                .map(|second| measured(&topology, vec![package.clone()], f64::from(second)))
+                .collect();
+            let (scene, rows) = rows_after(&snapshots);
+            let found = die(&scene).last.readings.as_ref().expect("readings");
+            assert_eq!(found.mode, Mode::Celsius, "{name}");
+            assert!(
+                found
+                    .coverage
+                    .iter()
+                    .all(|coverage| *coverage == Coverage::Package(reading)),
+                "{name}: the package sensor speaks for every block"
+            );
+            assert_eq!(rows[0], format!("package {reading:.0} C"), "{name}");
+            let units = unit_rows(&rows);
+            assert!(units.len() >= 2, "{name}: several units: {units:?}");
+            let with: Vec<&String> = units.iter().filter(|row| has_degrees(row)).collect();
+            assert!(
+                with.len() <= 1,
+                "{name}: degrees on at most one unit: {units:?}"
+            );
+            for row in &with {
+                assert!(
+                    row.contains(&format!(" {reading:.0} C")),
+                    "{name}: the one number is the sensor's own reading: {row}"
+                );
+            }
+            for row in units.iter().filter(|row| !has_degrees(row)) {
+                assert!(
+                    row.contains("% model"),
+                    "{name}: the others say they are the model's: {row}"
+                );
+            }
+            // No other place writes a number the sensor did not give: not the tags of the
+            // frame either, apart from the bar's own scale.
+            let texts: Vec<&str> = scene.tags.iter().map(|tag| tag.text.as_str()).collect();
+            for text in texts.iter().filter(|text| has_degrees(text)) {
+                assert!(
+                    text.contains(&format!("{reading:.0} C")),
+                    "{name}: {text:?} is a degrees figure the sensor did not give"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_ccd_sensor_gives_its_own_reading_to_its_own_complex_only() {
+        use super::floorplan::tests::amd;
+        use readings::tests::sensor;
+        let topology = amd(2);
+        let sensors = vec![
+            sensor("Tctl", SensorPlace::Package(0), Some(58.0)),
+            sensor("Tccd1", SensorPlace::Ccd(0), Some(61.4)),
+            sensor("Tccd3", SensorPlace::Ccd(1), Some(49.6)),
+        ];
+        let snapshots: Vec<Snapshot> = (1..=4)
+            .map(|second| measured(&topology, sensors.clone(), f64::from(second)))
+            .collect();
+        let (_, rows) = rows_after(&snapshots);
+        let units = unit_rows(&rows);
+        assert_eq!(units.len(), 2, "{units:?}");
+        assert!(units[0].ends_with(" 61 C"), "{units:?}");
+        assert!(units[1].ends_with(" 50 C"), "{units:?}");
+    }
+
+    #[test]
+    fn a_row_with_its_own_sensors_says_the_reading_as_the_card_does() {
+        use super::floorplan::tests::hybrid;
+        use readings::tests::sensor;
+        let topology = hybrid(2, 1, true);
+        let core = |label: &str, core_id: u32, celsius: f32| {
+            sensor(
+                label,
+                SensorPlace::Core {
+                    package: 0,
+                    core_id,
+                },
+                Some(celsius),
+            )
+        };
+        // P-cores have core ids 0 and 4, the E-cluster's cores 8 to 11.
+        let at = |first: f32| {
+            vec![
+                sensor("Package id 0", SensorPlace::Package(0), Some(first + 7.0)),
+                core("Core 0", 0, first),
+                core("Core 4", 4, first + 4.5),
+                core("Core 8", 8, first - 3.4),
+                core("Core 9", 9, first - 6.6),
+                core("Core 10", 10, first - 5.0),
+                core("Core 11", 11, first - 9.0),
+            ]
+        };
+        // Settled at one reading, then a jump that one frame cannot follow: the row is the
+        // sensor's reading, not the field that is still on its way there.
+        let mut snapshots: Vec<Snapshot> = (1..=3)
+            .map(|second| measured(&topology, at(50.2), f64::from(second)))
+            .collect();
+        snapshots.push(measured(&topology, at(66.4), 4.0));
+        let (scene, rows) = rows_after(&snapshots);
+        let die_ref = die(&scene);
+        let found = die_ref.last.readings.as_ref().expect("readings");
+        let layout = die_ref.layout.as_ref().expect("layout");
+        let snapshot = snapshots.last().expect("a sample");
+        let units = unit_rows(&rows);
+        assert_eq!(units.len(), 3, "two P-cores and one cluster: {units:?}");
+        for (index, block) in layout.plan.blocks.iter().enumerate() {
+            let Coverage::Own(celsius) = found.coverage[index] else {
+                panic!("{} has its own sensor", block.name);
+            };
+            let card = scene
+                .card(
+                    view("die"),
+                    Thing {
+                        kind: CORE,
+                        key: block_key(&block.cpus),
+                    },
+                    snapshot,
+                )
+                .expect("the card");
+            assert!(
+                card.lines
+                    .iter()
+                    .any(|line| line.starts_with(&format!("{celsius:.0} C, measured by its own"))),
+                "{}: {:?}",
+                block.name,
+                card.lines
+            );
+        }
+        assert_eq!(units[0], "P0 66 C");
+        assert_eq!(units[1], "P1 71 C", "70.9 rounds as the card's does");
+        assert_eq!(
+            units[2], "E-cluster 0 63 C",
+            "a cluster says its hottest sensor's reading: 66.4 - 3.4"
+        );
+    }
+
+    #[test]
+    fn the_package_series_and_head_hold_only_the_package_sensors_reading() {
+        use super::floorplan::tests::hybrid;
+        use readings::tests::sensor;
+        let topology = hybrid(2, 1, true);
+        let core = |core_id: u32, celsius: f32| {
+            sensor(
+                "Core",
+                SensorPlace::Core {
+                    package: 0,
+                    core_id,
+                },
+                Some(celsius),
+            )
+        };
+        // Core sensors alone: the hottest core is not the package, so the series has nothing.
+        let cores = vec![core(0, 61.0), core(4, 67.0), core(8, 52.0)];
+        let snapshots: Vec<Snapshot> = (1..=4)
+            .map(|second| measured(&topology, cores.clone(), f64::from(second)))
+            .collect();
+        let (scene, rows) = rows_after(&snapshots);
+        let package = &die(&scene).watch.series;
+        assert!(
+            package.points().count() == 4 && package.points().all(|point| point.celsius.is_none()),
+            "no point of the package series is a core's reading"
+        );
+        assert_eq!(rows[0], "package n/a");
+        let legend = scene.legend(view("die"), &snapshots[3]);
+        assert!(legend.starts_with(" sensors read, package n/a"), "{legend}");
+        // With the package sensor beside them the series is that sensor's, to the digit.
+        let mut with = cores;
+        with.push(sensor("Package id 0", SensorPlace::Package(0), Some(70.3)));
+        let snapshots: Vec<Snapshot> = (1..=4)
+            .map(|second| measured(&topology, with.clone(), f64::from(second)))
+            .collect();
+        let (scene, rows) = rows_after(&snapshots);
+        let package = &die(&scene).watch.series;
+        assert!(
+            package
+                .points()
+                .all(|point| point.celsius == Some(70.3) && point.coolest == Some(52.0)),
+            "the package series is the package sensor's reading"
+        );
+        assert_eq!(rows[0], "package 70 C");
     }
 
     #[test]
