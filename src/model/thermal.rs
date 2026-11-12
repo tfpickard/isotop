@@ -170,8 +170,9 @@ pub struct Cluster {
     pub cpus: Vec<u32>,
     /// The kind of its CPUs, Unknown when they differ.
     pub kind: CoreKind,
-    /// An efficiency cluster with no L3 while another cluster has one: the low-power E-cores of
-    /// a tiled part, which sit outside the compute tile's cache.
+    /// A cluster that is not a performance one (an efficiency cluster, or one whose kind the
+    /// hybrid sysfs does not name) with no L3 while another cluster has one: the low-power
+    /// E-cores of a tiled part, which sit outside the compute tile's cache.
     pub low_power: bool,
 }
 
@@ -247,7 +248,7 @@ impl Topology {
 
     /// The clusters, ordered by their lowest CPU: CPUs that share an L2 cache; where the kernel
     /// lists no L2, CPUs with the same cluster id in the same package and die; where there is
-    /// none either, the core.
+    /// none either, the core. `Cluster::low_power` marks the low-power E-cores of a tiled part.
     pub fn clusters(&self) -> Vec<Cluster> {
         let mut index: HashMap<ClusterKey, usize> = HashMap::new();
         let mut groups: Vec<Vec<&CpuPlace>> = Vec::new();
@@ -283,7 +284,7 @@ impl Topology {
                     cpus: group.iter().map(|place| place.cpu).collect(),
                     kind,
                     low_power: any_l3
-                        && kind == CoreKind::Efficiency
+                        && kind != CoreKind::Performance
                         && group.iter().all(|place| place.l3.is_none()),
                 }
             })
@@ -815,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn clusters_fall_back_to_cluster_ids_and_flag_only_low_power_efficiency_cores() {
+    fn clusters_fall_back_to_cluster_ids_and_flag_the_low_power_one() {
         // Two P cores with their own L2 and the L3, two E cores sharing an L2 and the L3, two
         // low-power E cores sharing an L2 and no L3.
         let mut cpus: Vec<CpuPlace> = (0..6).map(place).collect();
@@ -868,6 +869,41 @@ mod tests {
             [vec![0, 1], vec![2, 3], vec![4], vec![5]]
         );
         assert_eq!(clusters[0].kind, CoreKind::Performance);
+    }
+
+    #[test]
+    fn a_cluster_without_l3_is_low_power_unless_it_is_a_performance_cluster() {
+        // Four single-CPU clusters; the first two have an L3, and the others have none.
+        let build = |kinds: [CoreKind; 4]| {
+            let mut cpus: Vec<CpuPlace> = (0..4).map(place).collect();
+            for (index, place) in cpus.iter_mut().enumerate() {
+                place.kind = kinds[index];
+                place.l2 = Some(vec![place.cpu]);
+                place.l3 = (index < 2).then(|| vec![0, 1]);
+            }
+            Topology { cpus }.clusters()
+        };
+        let flags = |clusters: Vec<Cluster>| {
+            clusters
+                .iter()
+                .map(|cluster| cluster.low_power)
+                .collect::<Vec<_>>()
+        };
+        use CoreKind::{Efficiency, Performance, Unknown};
+        assert_eq!(
+            flags(build([Performance, Performance, Efficiency, Efficiency])),
+            [false, false, true, true]
+        );
+        // The kernel may not name the kind of the low-power cores.
+        assert_eq!(
+            flags(build([Performance, Efficiency, Unknown, Unknown])),
+            [false, false, true, true]
+        );
+        // A performance cluster is never low power, whatever its cache.
+        assert_eq!(
+            flags(build([Efficiency, Efficiency, Performance, Efficiency])),
+            [false, false, false, true]
+        );
     }
 
     #[test]

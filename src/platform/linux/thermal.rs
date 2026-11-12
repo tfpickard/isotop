@@ -1889,6 +1889,69 @@ mod tests {
     }
 
     #[test]
+    fn two_packages_keep_their_core_ids_sensors_and_throttle_counts_apart() {
+        // Synthetic, not a capture: two packages of two cores, each package with core ids 0 and
+        // 1, one thread to a core.
+        let tree = Tree::new();
+        tree.online("0-3");
+        for number in 0..4_u32 {
+            tree.cpu(&Cpu {
+                package: (number / 2) as i32,
+                ..cpu(number, (number % 2) as i32, &number.to_string())
+            });
+            let base = format!("devices/system/cpu/cpu{number}/thermal_throttle");
+            tree.file(
+                &format!("{base}/core_throttle_count"),
+                &format!("{}\n", 10 + number),
+            );
+            tree.file(
+                &format!("{base}/package_throttle_count"),
+                &format!("{}\n", number / 2 + 100),
+            );
+        }
+        coretemp(&tree, 1, 0, &[(0, "40000"), (1, "41000")]);
+        coretemp(&tree, 2, 1, &[(0, "50000"), (1, "51000")]);
+        let mut scan = tree.scan();
+        let topology = scan.topology().expect("topology");
+        assert_eq!(topology.packages(), [0, 1]);
+        let cores = topology.cores();
+        assert_eq!(cores.len(), 4, "core id 0 of each package is its own core");
+        let sensors = scan.temperatures(&topology.packages()).expect("sensors");
+        let (core_throttles, package_throttles) =
+            scan.throttle_counts(&topology).expect("counters");
+        let thermal = crate::model::Thermal {
+            topology: topology.into(),
+            sensors,
+            core_throttles,
+            package_throttles,
+            ..crate::model::Thermal::default()
+        };
+        let celsius: Vec<Option<f32>> = cores
+            .iter()
+            .map(|core| thermal.core_celsius(core))
+            .collect();
+        assert_eq!(celsius, [Some(40.0), Some(41.0), Some(50.0), Some(51.0)]);
+        let throttles: Vec<Option<u64>> = cores
+            .iter()
+            .map(|core| thermal.core_throttle(core))
+            .collect();
+        assert_eq!(throttles, [Some(10), Some(11), Some(12), Some(13)]);
+        assert_eq!(
+            thermal.package_throttles,
+            [
+                PackageThrottle {
+                    package: 0,
+                    count: 100
+                },
+                PackageThrottle {
+                    package: 1,
+                    count: 101
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn this_machines_sysfs_reads_without_failing_whatever_it_has() {
         // Sandboxes hide or lack some of these, so only what is shown is checked.
         let mut scan = ThermalScan::new();
