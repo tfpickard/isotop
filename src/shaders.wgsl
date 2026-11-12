@@ -56,7 +56,7 @@ fn sky_fragment(@builtin(position) position: vec4<f32>) -> Targets {
         base = SEA_BASE - y * SEA_SLOPE;
     }
     let density = profile(x, 0.0) * profile(y, 1.9);
-    let color = min(base + globals.haze.xyz * density, vec3<f32>(255.0));
+    let color = min(base + globals.haze.xyz * density + vec3<f32>(8.0), vec3<f32>(255.0));
     return Targets(vec4<f32>(floor(color) / 255.0, 1.0), NONE);
 }
 
