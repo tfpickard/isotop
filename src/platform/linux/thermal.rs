@@ -643,7 +643,6 @@ impl ThermalReader for ThermalScan {
 /// A view that draws a topology (the die's floorplan) tests against what the parse-from-root
 /// path gives, not against a hand-built value.
 #[cfg(test)]
-#[expect(dead_code, reason = "the die's floorplan test is the first reader")]
 pub fn fixture_topologies() -> Vec<(&'static str, Topology)> {
     tests::fixture_topologies()
 }
@@ -925,7 +924,6 @@ mod tests {
     }
 
     /// See `super::fixture_topologies`.
-    #[expect(dead_code, reason = "the die's floorplan test is the first reader")]
     pub(super) fn fixture_topologies() -> Vec<(&'static str, Topology)> {
         vec![
             (

@@ -940,6 +940,63 @@ pub(crate) mod tests {
         assert_sane(&plan);
     }
 
+    /// The topologies the Linux reader finds in its own fixture trees: the floorplans their
+    /// shapes call for.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_readers_fixture_trees_get_the_floorplans_their_shapes_call_for() {
+        let found = crate::platform::fixture_topologies();
+        let plan = |name: &str| {
+            let (_, topology) = found
+                .iter()
+                .find(|(found, _)| *found == name)
+                .expect("a fixture of that name");
+            let plan = Floorplan::of(topology);
+            assert_sane(&plan);
+            plan
+        };
+        // Two SMT P-cores (CPUs 0 to 3) and four E-cores in one cluster (CPUs 4 to 7).
+        let hybrid = plan("hybrid");
+        assert_eq!(hybrid.family, Family::IntelHybrid);
+        assert_eq!(
+            (
+                hybrid.count(Role::Performance),
+                hybrid.count(Role::Efficiency)
+            ),
+            (2, 4)
+        );
+        assert_eq!(hybrid.groups.len(), 1);
+        assert_eq!(
+            hybrid.block_of_cpu(0),
+            hybrid.block_of_cpu(1),
+            "SMT siblings share a block"
+        );
+        // Two CCDs of two SMT cores, whose siblings are four CPUs on, and sparse core ids.
+        let amd = plan("amd");
+        assert_eq!(amd.family, Family::Amd);
+        assert_eq!(amd.groups.len(), 2);
+        assert!(amd.groups.iter().all(|group| group.blocks.len() == 2));
+        assert_eq!(
+            amd.block_of_cpu(0),
+            amd.block_of_cpu(4),
+            "siblings are CPUs 0 and 4"
+        );
+        // Two P-cores, two E-cores on the compute tile and two low-power E-cores with no L3.
+        let tiled = plan("tiled");
+        assert_eq!(tiled.family, Family::IntelTiled);
+        assert_eq!(
+            (
+                tiled.count(Role::Performance),
+                tiled.count(Role::Efficiency),
+                tiled.count(Role::LowPower)
+            ),
+            (2, 2, 2)
+        );
+        // This virtual machine's own capture, whatever it has: every online CPU has a block.
+        let machine = plan("vm");
+        assert!((0..4).all(|cpu| machine.block_of_cpu(cpu).is_some()));
+    }
+
     #[test]
     fn the_floorplan_is_a_function_of_the_topology_alone() {
         let once = Floorplan::of(&hybrid(6, 2, true));

@@ -216,11 +216,23 @@ pub fn outlines(pen: &mut Pen, plan: &Floorplan, coverage: &[Coverage], chosen: 
             let (width, height) = (part.rect[2] - part.rect[0], part.rect[3] - part.rect[1]);
             for step in 1..8 {
                 let x = part.rect[0] + width * step as f32 / 8.0;
-                pen.segment([x, part.rect[1] + 2.0], [x, part.rect[3] - 2.0], STROKES, 1.0, GRID);
+                pen.segment(
+                    [x, part.rect[1] + 2.0],
+                    [x, part.rect[3] - 2.0],
+                    STROKES,
+                    1.0,
+                    GRID,
+                );
             }
             for step in 1..4 {
                 let y = part.rect[1] + height * step as f32 / 4.0;
-                pen.segment([part.rect[0] + 2.0, y], [part.rect[2] - 2.0, y], STROKES, 1.0, GRID);
+                pen.segment(
+                    [part.rect[0] + 2.0, y],
+                    [part.rect[2] - 2.0, y],
+                    STROKES,
+                    1.0,
+                    GRID,
+                );
             }
         }
     }
