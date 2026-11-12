@@ -224,7 +224,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           ISOTOP_ALLOW_SOFTWARE_GPU: "1"
-        run: cargo test --release gpu::frames:: -- --ignored --test-threads=1
+        run: "cargo test --release gpu::frames:: -- --ignored --test-threads=1"
       - name: Self-test the PNG comparison script
         run: python3 scripts/compare_png.py --self-test
 
