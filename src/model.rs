@@ -826,7 +826,25 @@ impl Reads {
 /// and a NaN key sorts after every number, so the choice is the same in every sample that has
 /// the same keys.
 pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
-    let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
+    select_top(processes.iter(), n, key)
+}
+
+/// `top_n` over processes a caller already holds by reference, which it need not copy to ask.
+pub fn top_n_of<'a>(
+    processes: &[&'a Process],
+    n: usize,
+    key: impl Fn(&Process) -> f64,
+) -> Vec<&'a Process> {
+    select_top(processes.iter().copied(), n, key)
+}
+
+/// The choice `top_n` and `top_n_of` make.
+fn select_top<'a>(
+    processes: impl Iterator<Item = &'a Process>,
+    n: usize,
+    key: impl Fn(&Process) -> f64,
+) -> Vec<&'a Process> {
+    let mut keyed: Vec<(f64, &Process)> = processes.map(|p| (key(p), p)).collect();
     let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
         (true, true) => a.1.id.cmp(&b.1.id),
         (true, false) => std::cmp::Ordering::Greater,
