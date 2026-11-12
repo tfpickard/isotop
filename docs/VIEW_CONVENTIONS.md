@@ -221,7 +221,7 @@ Orbit, flow and strata exceed even the line-dominant limit. They are known parit
 
   Report the results as `| Run | ms/frame | fps | visible | target |`. Add GPU rows where a GPU is available.
 - Known CPU costs:
-  - A triangle scans its whole bounding box, so split long thin geometry. [S3 (#24)](https://github.com/tfpickard/isotop/issues/24) does this.
+  - A triangle whose bounding box is under 32 px wide scans all of it, and a wider, thin one only the columns of each row that can be inside, at a cost per row, so split long thin geometry into short pieces. [S3 (#24)](https://github.com/tfpickard/isotop/issues/24) does this.
   - Glow cost grows with the square of the radius, so cap glow radii and counts.
   - The sky is painted per pixel.
 - Building blocks report the cost of their background pass, in milliseconds, on a live machine.
