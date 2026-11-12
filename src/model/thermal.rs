@@ -83,6 +83,13 @@ pub enum SensorPlace {
     Core { package: u32, core_id: u32 },
     /// One AMD core complex die. The number is the sensor's rank among the machine's `Tccd`
     /// sensors from 0, whatever indices the driver uses; `Topology::ccds` says which CPUs it is.
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(
+            dead_code,
+            reason = "only the Linux reader finds a CCD sensor; macOS reads no sensor at all"
+        )
+    )]
     Ccd(u32),
     /// A whole package (the die, as far as one sensor goes).
     Package(u32),
