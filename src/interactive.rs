@@ -51,7 +51,43 @@ struct Live<'a> {
     /// Bytes the last frame took on the wire.
     wire: usize,
     frames: u64,
-    total_wire: u64,
+    /// A failure to make on purpose after the third frame (`ISOTOP_FORCE_PANIC`), once.
+    forced: Option<Forced>,
+}
+
+/// Which panic `ISOTOP_FORCE_PANIC` asks for. A hidden switch for the smoke test, which checks
+/// that the terminal is restored after each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Forced {
+    /// A panic on the main thread, which owns the terminal.
+    Main,
+    /// A panic on a thread of its own, which the app must survive.
+    Thread,
+}
+
+/// The frame after which a forced panic happens.
+const FORCED_AFTER: u64 = 3;
+
+impl Forced {
+    fn from_env() -> Option<Self> {
+        match std::env::var("ISOTOP_FORCE_PANIC").ok()?.as_str() {
+            "main" => Some(Self::Main),
+            "thread" => Some(Self::Thread),
+            _ => None,
+        }
+    }
+
+    fn happen(self) {
+        match self {
+            Self::Main => panic!("forced panic on the main thread (ISOTOP_FORCE_PANIC=main)"),
+            Self::Thread => {
+                // The result is the handle of a thread that has only a panic to run.
+                let _ = std::thread::Builder::new()
+                    .name("isotop-forced-panic".to_owned())
+                    .spawn(|| panic!("forced panic on a thread (ISOTOP_FORCE_PANIC=thread)"));
+            }
+        }
+    }
 }
 
 /// Runs the interactive loop until the user quits or `--duration` passes. With `--duration` it
@@ -64,14 +100,18 @@ pub(crate) fn run(
 ) -> Outcome<()> {
     let mut live = Live::enter(options, app, collector, journal)?;
     live.run()?;
-    let (frames, total_wire, origin) = (live.frames, live.total_wire, live.origin);
+    // The frame being written inline is finished before the totals are read.
+    live.terminal.settle();
+    let (frames, origin) = (live.frames, live.origin);
+    let (total_wire, written) = live.terminal.written();
     drop(live);
     if options.duration.is_some() {
         let seconds = origin.elapsed().as_secs_f64();
         eprintln!(
-            "isotop: {frames} frames in {seconds:.2}s | {:.1} presented fps | {:.2} MiB/s inline graphics (display latency not measured)",
+            "isotop: {frames} frames in {seconds:.2}s | {:.1} presented fps | {:.2} MiB/s inline graphics (display latency not measured) | {:.1} written fps",
             frames as f64 / seconds,
-            total_wire as f64 / 1048576.0 / seconds
+            total_wire as f64 / 1048576.0 / seconds,
+            written as f64 / seconds
         );
     }
     Ok(())
@@ -106,7 +146,7 @@ impl<'a> Live<'a> {
             fed: 0.0,
             wire: 0,
             frames: 0,
-            total_wire: 0,
+            forced: Forced::from_env(),
         })
     }
 
@@ -223,7 +263,11 @@ impl<'a> Live<'a> {
             &text,
         )?;
         self.frames += 1;
-        self.total_wire += self.wire as u64;
+        if self.frames == FORCED_AFTER
+            && let Some(forced) = self.forced
+        {
+            forced.happen();
+        }
         Ok(Shown { panels, pixels })
     }
 

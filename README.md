@@ -112,7 +112,11 @@ rasterizers draw it with matching output:
 
 Frames reach the terminal through POSIX shared memory when the terminal can read
 it (Ghostty and Kitty can, locally): no compression, no base64, almost no pty
-traffic. Over SSH, or with `--direct`, frames are zlib-compressed inline instead.
+traffic. Over SSH, or with `--direct`, frames are zlib-compressed inline instead, on a
+worker thread so the frame loop does not wait for the compression. If shared memory
+fails once (a full `/dev/shm`, say), that frame goes inline and shared memory is tried
+again after 1 s, then 2 s and so on up to 60 s. A panic or a SIGINT, SIGTERM or SIGHUP
+gives the terminal back (main screen, cursor, mouse, keyboard mode) before the process ends.
 The image sits below cells with a background colour, so popups and labels are
 ordinary terminal text drawn over the scene.
 
@@ -1392,7 +1396,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-98,841 lines of Rust (59,065 production, 39,776 test) in 153 files, 1,341 tests, 26 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+100,451 lines of Rust (59,864 production, 40,587 test) in 156 files, 1,373 tests, 26 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development
@@ -1412,7 +1416,8 @@ python3 scripts/code_report.py --check
 
 The smoke test emulates a graphics-capable terminal through a pseudo-terminal,
 reads frames both inline and through shared memory, and exercises interactive
-controls and restoration. Visual quality, flicker, and display latency should
+controls and restoration, including after a forced panic and after SIGINT, SIGTERM
+and SIGHUP. Visual quality, flicker, and display latency should
 also be checked in Ghostty.
 
 CPU/GPU parity can be checked without a GPU through lavapipe, Mesa's software Vulkan driver. Install
