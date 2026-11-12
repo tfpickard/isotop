@@ -313,15 +313,27 @@ impl Die {
                 .iter()
                 .map(|&block| hot[block])
                 .fold(f32::MIN, f32::max);
-            let measured = blocks
+            // A number of degrees is only ever a sensor's: the hottest value among the cores
+            // that have one. Cores no sensor speaks for are the model's and carry no degrees.
+            let measured: Vec<f32> = blocks
                 .iter()
-                .all(|&block| found.coverage[block] != Coverage::Unknown);
+                .filter(|&&block| found.coverage[block] != Coverage::Unknown)
+                .map(|&block| hot[block])
+                .collect();
             let hurt = blocks
                 .iter()
                 .any(|&block| self.flashing(layout, block, time).is_some());
-            let value_text = match (found.mode, measured) {
-                (Mode::Celsius, true) => format!("{value:.0} C"),
-                (Mode::Celsius, false) => format!("~{value:.0} C model"),
+            let value_text = match (found.mode, measured.is_empty()) {
+                (Mode::Celsius, false) => format!(
+                    "{:.0} C{}",
+                    measured.iter().copied().fold(f32::MIN, f32::max),
+                    if measured.len() == blocks.len() {
+                        ""
+                    } else {
+                        " (some model)"
+                    }
+                ),
+                (Mode::Celsius, true) => "model only, no sensor".to_owned(),
                 (Mode::Relative, _) => {
                     format!(
                         "{:.0}% model",
@@ -537,7 +549,10 @@ impl ViewModule for Die {
                 "{celsius:.0} C, the package sensor: one reading for the whole die, the split is the model's"
             ),
             Coverage::Unknown => match found.mode {
-                Mode::Celsius => format!("no sensor reads this core: ~{hot:.0} C is the model's"),
+                Mode::Celsius => format!(
+                    "no sensor reads this core: its colour is the model's ({:.0}% of the scale), not a temperature",
+                    (found.level(hot) * 100.0).clamp(0.0, 100.0)
+                ),
                 Mode::Relative => format!(
                     "no sensor: {:.0}% of the scale is the model's relative heat, not degrees",
                     (found.level(hot) * 100.0).clamp(0.0, 100.0)
@@ -1084,6 +1099,58 @@ mod tests {
         assert_ne!(frame.pixels, with.pixels);
         // The bar is the model's own: its scale is 0 to 75 units, not 30 degrees and up.
         assert_eq!(found.scale(), (0.0, readings::RELATIVE_SPAN));
+    }
+
+    #[test]
+    fn cores_no_sensor_speaks_for_carry_no_degrees_beside_cores_that_have_one() {
+        // The demo with sensors for the P-cores only (core ids 0 to 12), and the package's.
+        let mut snapshot = demo(12.0);
+        snapshot
+            .thermal
+            .as_mut()
+            .expect("thermal")
+            .sensors
+            .retain(|sensor| match sensor.place {
+                SensorPlace::Core { core_id, .. } => core_id <= 12,
+                _ => true,
+            });
+        let mut scene = Scene::new();
+        for second in 9..=12 {
+            snapshot.elapsed = f64::from(second);
+            draw(&mut scene, &snapshot, second as f32);
+        }
+        let found = die(&scene).last.readings.as_ref().expect("readings");
+        assert_eq!(found.mode, Mode::Celsius, "the P-cores' sensors read");
+        let rows: Vec<&str> = scene
+            .tags
+            .iter()
+            .map(|tag| tag.text.as_str())
+            .filter(|text| text.starts_with('P') || text.starts_with("E-cluster"))
+            .collect();
+        let p0 = rows
+            .iter()
+            .find(|text| text.starts_with("P0 "))
+            .expect("P0's row");
+        assert!(p0.ends_with(" C"), "a sensor's degrees: {p0}");
+        let cluster = rows
+            .iter()
+            .find(|text| text.starts_with("E-cluster 0 "))
+            .expect("the cluster's row");
+        assert_eq!(*cluster, "E-cluster 0 model only, no sensor");
+        // The same on the card of one of its cores, and hatched on the die.
+        let card = scene
+            .card(view("die"), Thing { kind: CORE, key: 8 }, &snapshot)
+            .expect("E0's card");
+        let text = card.lines.join("\n");
+        assert!(text.contains("not a temperature"), "{text}");
+        let looks: Vec<Look> = found
+            .coverage
+            .iter()
+            .zip(&found.proxies)
+            .map(|(&coverage, &proxy)| Look::of(coverage, proxy))
+            .collect();
+        assert!(looks[..4].iter().all(|look| *look == Look::Measured));
+        assert!(looks[4..].iter().all(|look| *look == Look::Model));
     }
 
     #[test]
