@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 156 | 100,424 | 2,217 | 6,129 |
+| Rust | 159 | 103,707 | 2,294 | 6,354 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,088 | 841 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 91 | 0 | 14,938 | 5,216 |
-| Plain Text | 11 | 0 | 335 | 0 |
-| **Total** | **473** | **163,753** | **18,368** | **14,488** |
+| Markdown | 91 | 0 | 14,958 | 5,216 |
+| Plain Text | 12 | 0 | 487 | 0 |
+| **Total** | **477** | **167,036** | **18,617** | **14,713** |
 
 ## Rust by module
 
@@ -23,12 +23,12 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 
 | File | Production | Test |
 |:--|--:|--:|
-| `src/model.rs` | 3,402 | 4,454 |
+| `src/model.rs` | 3,422 | 4,591 |
 | `src/necropolis.rs` | 2,027 | 705 |
 | `src/hr.rs` | 1,725 | 1,158 |
 | `src/arbor.rs` | 1,669 | 1,198 |
 | `src/hive.rs` | 1,539 | 1,066 |
-| `src/platform/macos/mod.rs` | 1,313 | 690 |
+| `src/platform/macos/mod.rs` | 1,351 | 690 |
 | `src/armorial.rs` | 1,309 | 461 |
 | `src/cortex.rs` | 1,220 | 541 |
 | `src/tesseract.rs` | 1,054 | 561 |
@@ -39,13 +39,13 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/plumbing/paint.rs` | 806 | 0 |
 | `src/horizon/disk.rs` | 796 | 274 |
 | `src/keys.rs` | 752 | 228 |
+| `src/platform/macos/logic.rs` | 696 | 982 |
 | `src/switchboard.rs` | 695 | 352 |
 | `src/switchboard/lines.rs` | 694 | 621 |
 | `src/views/systems.rs` | 680 | 416 |
 | `src/views.rs` | 662 | 740 |
-| `src/platform/macos/logic.rs` | 658 | 926 |
 | `src/simulation.rs` | 651 | 762 |
-| `src/platform/linux/mod.rs` | 614 | 370 |
+| `src/platform/linux/mod.rs` | 619 | 370 |
 | `src/platform/macos/ffi.rs` | 613 | 12 |
 | `src/coop/draw.rs` | 589 | 0 |
 | `src/reef.rs` | 588 | 147 |
@@ -56,9 +56,10 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/horizon.rs` | 565 | 630 |
 | `src/render/scene.rs` | 559 | 0 |
 | `src/anthill/flows.rs` | 544 | 459 |
+| `src/platform/mod.rs` | 531 | 106 |
 | `src/plumbing/tests.rs` | 529 | 0 |
 | `src/cells.rs` | 523 | 540 |
-| `src/platform/mod.rs` | 519 | 106 |
+| `src/platform/linux/thermal.rs` | 507 | 1,220 |
 | `src/cores.rs` | 500 | 318 |
 | `src/coop/roles.rs` | 497 | 263 |
 | `src/model/kernel.rs` | 492 | 486 |
@@ -79,6 +80,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/views/ripple.rs` | 374 | 286 |
 | `src/anthill/colony.rs` | 368 | 192 |
 | `src/app/overlay.rs` | 354 | 411 |
+| `src/model/thermal.rs` | 354 | 471 |
 | `src/ouija/seance.rs` | 343 | 290 |
 | `src/plumbing/draw/pipes.rs` | 343 | 60 |
 | `src/matrix.rs` | 341 | 236 |
@@ -118,6 +120,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/headless.rs` | 211 | 444 |
 | `src/strata.rs` | 210 | 128 |
 | `src/anthill.rs` | 204 | 561 |
+| `src/model/thermal/demo.rs` | 201 | 224 |
 | `src/anthill/words.rs` | 198 | 164 |
 | `src/render.rs` | 198 | 0 |
 | `src/picker.rs` | 195 | 44 |
@@ -179,7 +182,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **59,864** | **40,587** |
+| **Total** | **61,039** | **42,695** |
 
 ## Largest files
 
@@ -187,16 +190,16 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 
 | File | Lines | > 1,200 |
 |:--|--:|:--|
-| `src/model.rs` | 9,263 | over limit |
+| `src/model.rs` | 9,463 | over limit |
 | `src/hr.rs` | 3,365 | over limit |
 | `src/arbor.rs` | 3,231 | over limit |
 | `src/necropolis.rs` | 3,074 | over limit |
 | `src/hive.rs` | 3,040 | over limit |
-| `src/platform/macos/mod.rs` | 2,467 | over limit |
+| `src/platform/macos/mod.rs` | 2,519 | over limit |
+| `src/platform/macos/logic.rs` | 2,045 | over limit |
 | `src/murmuration.rs` | 1,974 | over limit |
+| `src/platform/linux/thermal.rs` | 1,973 | over limit |
 | `src/cortex.rs` | 1,966 | over limit |
-| `src/platform/macos/logic.rs` | 1,931 | over limit |
-| `src/tesseract.rs` | 1,850 | over limit |
 
 ## Debt counters
 
@@ -217,7 +220,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,373 |
+| `#[test]` functions | 1,427 |
 | Views in the registry | 26 |
 | Views with a README mapping table | 26 of 26 |
 | Direct crate dependencies | 10 |

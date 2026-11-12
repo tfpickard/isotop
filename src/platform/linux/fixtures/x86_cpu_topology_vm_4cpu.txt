@@ -1,0 +1,152 @@
+# Real capture of a Firecracker virtual machine: four vCPUs of an
+# Intel(R) Xeon(R) Processor @ 2.10GHz, Linux 6.18, taken from /sys with one `== path`
+# header per file (the path is relative to /sys) and the file's text after it.
+# The machine has no hwmon, no thermal_throttle, no powercap, no cpufreq under the CPUs and
+# no cpu_core or cpu_atom, so none of those is in the capture. Every vCPU is a core of its
+# own with its own cluster id and L2, and one L3 spans all four.
+== devices/system/cpu/online
+0-3
+== devices/system/cpu/cpu0/topology/physical_package_id
+0
+== devices/system/cpu/cpu0/topology/die_id
+0
+== devices/system/cpu/cpu0/topology/core_id
+0
+== devices/system/cpu/cpu0/topology/cluster_id
+0
+== devices/system/cpu/cpu0/topology/core_cpus_list
+0
+== devices/system/cpu/cpu0/topology/thread_siblings_list
+0
+== devices/system/cpu/cpu0/cache/index0/level
+1
+== devices/system/cpu/cpu0/cache/index0/type
+Data
+== devices/system/cpu/cpu0/cache/index0/shared_cpu_list
+0
+== devices/system/cpu/cpu0/cache/index1/level
+1
+== devices/system/cpu/cpu0/cache/index1/type
+Instruction
+== devices/system/cpu/cpu0/cache/index1/shared_cpu_list
+0
+== devices/system/cpu/cpu0/cache/index2/level
+2
+== devices/system/cpu/cpu0/cache/index2/type
+Unified
+== devices/system/cpu/cpu0/cache/index2/shared_cpu_list
+0
+== devices/system/cpu/cpu0/cache/index3/level
+3
+== devices/system/cpu/cpu0/cache/index3/type
+Unified
+== devices/system/cpu/cpu0/cache/index3/shared_cpu_list
+0-3
+== devices/system/cpu/cpu1/topology/physical_package_id
+0
+== devices/system/cpu/cpu1/topology/die_id
+0
+== devices/system/cpu/cpu1/topology/core_id
+1
+== devices/system/cpu/cpu1/topology/cluster_id
+1
+== devices/system/cpu/cpu1/topology/core_cpus_list
+1
+== devices/system/cpu/cpu1/topology/thread_siblings_list
+1
+== devices/system/cpu/cpu1/cache/index0/level
+1
+== devices/system/cpu/cpu1/cache/index0/type
+Data
+== devices/system/cpu/cpu1/cache/index0/shared_cpu_list
+1
+== devices/system/cpu/cpu1/cache/index1/level
+1
+== devices/system/cpu/cpu1/cache/index1/type
+Instruction
+== devices/system/cpu/cpu1/cache/index1/shared_cpu_list
+1
+== devices/system/cpu/cpu1/cache/index2/level
+2
+== devices/system/cpu/cpu1/cache/index2/type
+Unified
+== devices/system/cpu/cpu1/cache/index2/shared_cpu_list
+1
+== devices/system/cpu/cpu1/cache/index3/level
+3
+== devices/system/cpu/cpu1/cache/index3/type
+Unified
+== devices/system/cpu/cpu1/cache/index3/shared_cpu_list
+0-3
+== devices/system/cpu/cpu2/topology/physical_package_id
+0
+== devices/system/cpu/cpu2/topology/die_id
+0
+== devices/system/cpu/cpu2/topology/core_id
+2
+== devices/system/cpu/cpu2/topology/cluster_id
+2
+== devices/system/cpu/cpu2/topology/core_cpus_list
+2
+== devices/system/cpu/cpu2/topology/thread_siblings_list
+2
+== devices/system/cpu/cpu2/cache/index0/level
+1
+== devices/system/cpu/cpu2/cache/index0/type
+Data
+== devices/system/cpu/cpu2/cache/index0/shared_cpu_list
+2
+== devices/system/cpu/cpu2/cache/index1/level
+1
+== devices/system/cpu/cpu2/cache/index1/type
+Instruction
+== devices/system/cpu/cpu2/cache/index1/shared_cpu_list
+2
+== devices/system/cpu/cpu2/cache/index2/level
+2
+== devices/system/cpu/cpu2/cache/index2/type
+Unified
+== devices/system/cpu/cpu2/cache/index2/shared_cpu_list
+2
+== devices/system/cpu/cpu2/cache/index3/level
+3
+== devices/system/cpu/cpu2/cache/index3/type
+Unified
+== devices/system/cpu/cpu2/cache/index3/shared_cpu_list
+0-3
+== devices/system/cpu/cpu3/topology/physical_package_id
+0
+== devices/system/cpu/cpu3/topology/die_id
+0
+== devices/system/cpu/cpu3/topology/core_id
+3
+== devices/system/cpu/cpu3/topology/cluster_id
+3
+== devices/system/cpu/cpu3/topology/core_cpus_list
+3
+== devices/system/cpu/cpu3/topology/thread_siblings_list
+3
+== devices/system/cpu/cpu3/cache/index0/level
+1
+== devices/system/cpu/cpu3/cache/index0/type
+Data
+== devices/system/cpu/cpu3/cache/index0/shared_cpu_list
+3
+== devices/system/cpu/cpu3/cache/index1/level
+1
+== devices/system/cpu/cpu3/cache/index1/type
+Instruction
+== devices/system/cpu/cpu3/cache/index1/shared_cpu_list
+3
+== devices/system/cpu/cpu3/cache/index2/level
+2
+== devices/system/cpu/cpu3/cache/index2/type
+Unified
+== devices/system/cpu/cpu3/cache/index2/shared_cpu_list
+3
+== devices/system/cpu/cpu3/cache/index3/level
+3
+== devices/system/cpu/cpu3/cache/index3/type
+Unified
+== devices/system/cpu/cpu3/cache/index3/shared_cpu_list
+0-3

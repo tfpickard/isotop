@@ -22,6 +22,9 @@ use std::process::Child;
 use std::time::Instant;
 
 use crate::io_detail::{Budget, DescriptorReader, Held, Reading};
+use crate::model::thermal::{
+    CoreThrottle, PackagePower, PackageThrottle, Sensor, ThermalReader, Topology,
+};
 use crate::model::{
     CoreKind, Cpu, GpuMemory, Identity, Interrupt, IoBytes, Kind, Measured, Oom, Process, Rollup,
     Softirq, Unit,
@@ -1587,6 +1590,55 @@ pub fn irq_affinity(_id: &str) -> Option<Vec<u32>> {
 /// `Sampler::missing` names "oom kills".
 pub fn oom_kills() -> Option<u64> {
     None
+}
+
+/// The thermal reader. macOS gives an unprivileged process the topology it already measures
+/// (`logic::topology`: the logical and physical CPU counts and the IORegistry's core kinds) and
+/// nothing else: the temperature sensors are behind the SMC or the private HID event system,
+/// there are no throttle counters, and package power needs `powermetrics`, which needs root. So
+/// the other three are None, and the collector reports `Source::Temperature`,
+/// `Source::ThrottleCounts` and `Source::PackagePower` missing while a view demands them; they
+/// are not in the always-on `Sampler::missing`.
+#[derive(Default)]
+pub struct ThermalScan;
+
+impl ThermalScan {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ThermalReader for ThermalScan {
+    fn topology(&mut self) -> Option<Topology> {
+        let count = |name: &CStr| {
+            sysctl::<c_int>(name)
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|&count| count > 0)
+        };
+        let logical = count(c"hw.logicalcpu")?;
+        Some(logic::topology(
+            logical,
+            count(c"hw.physicalcpu"),
+            &core_kinds(),
+        ))
+    }
+
+    fn temperatures(&mut self, _packages: &[u32]) -> Option<Vec<Sensor>> {
+        None
+    }
+
+    fn throttle_counts(
+        &mut self,
+        _topology: &Topology,
+    ) -> Option<(Vec<CoreThrottle>, Vec<PackageThrottle>)> {
+        None
+    }
+
+    fn package_power(&mut self) -> Option<Vec<PackagePower>> {
+        None
+    }
+
+    fn forget_power(&mut self) {}
 }
 
 /// GPU memory per process. Apple GPUs share memory with the CPU and report no per-process

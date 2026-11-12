@@ -16,7 +16,8 @@ allowed to read `/proc`, `/sys` or libproc, and where nearly all `unsafe` lives.
 | Netlink byte offsets | `linux/events.rs`, `linux/net.rs` | `mod field` holds the uapi offsets |
 | macOS FFI declarations | `macos/ffi.rs` | every extern and `#[repr(C)]` struct libc lacks, with size assertions |
 | macOS pure decisions | `macos/logic.rs` | no FFI; also built into Linux tests |
-| Kernel counter fixtures | `linux/fixtures/` | consumed only by `linux/counters.rs` through `include_str!` |
+| Thermal sources | `linux/thermal.rs`, `macos/logic.rs`, `../model/thermal.rs` | `ThermalScan` (Linux: sysfs under a root, so tests use trees; macOS: topology only), `logic::topology`, and the shared `ThermalPass` that reads the four sources |
+| Fixtures | `linux/fixtures/` | consumed only by the file that names them through `include_str!`: `counters.rs` for the kernel counters, `thermal.rs` for `x86_cpu_topology_vm_4cpu.txt` (a `== path` tree) |
 
 ## CONVENTIONS
 - `macos/logic.rs` and `macos/journal.rs` are compiled into Linux test builds (`macos_logic`, `macos_journal`
@@ -29,11 +30,12 @@ allowed to read `/proc`, `/sys` or libproc, and where nearly all `unsafe` lives.
   Each file ends in a `#[cfg(test)] mod tests`.
 - Fixtures are named `<arch>_<what>[_<condition>].txt` (`x86_interrupts_cpu2_offline.txt`); real captures say so in the header.
 - Unreadable Linux data is `None` or listed in `Sampler::missing`; `pressure` is the one exception (returns 0, reports the gap).
+- The thermal reader (`linux/thermal.rs`) reads only the files it names, under a sysfs root a test can replace. Only the hwmon chips `coretemp` and `k10temp` (and, where neither reads, `cpu_thermal`, `soc_thermal` and `x86_pkg_temp` zones) have their sensors opened: every other chip's `name` is read and nothing else, because reading an `nvme`, `drivetemp` or `amdgpu` sensor can wake the device (`only_cpu_sensor_chips_are_read` checks it with the test-only read log). A sensor is matched to a core by its label (`Core N` is the topology's `core_id` N, never a CPU number and never the input's file number). RAPL `energy_uj` is root-only on most kernels: an unreadable domain is skipped, and none readable makes `Source::PackagePower` missing and `package_watts` Unreadable; isotop never raises its privileges. Tests build trees under `std::env::temp_dir()`; the one real capture is `x86_cpu_topology_vm_4cpu.txt` and the others are synthetic and their builders say so.
 - `FileScan::sample`: a pid the scan did not reach is absent from the map; `None` means the table could not be read.
 - Adding a `Source` end to end:
   1. Variant with doc comment in `Source`, appended to `Source::ALL`, arm in `Source::name` (no wildcard).
   2. Move the sentinel in `source_all_lists_every_source_in_declaration_order` to the new last variant: it asserts
-     `Source::<last> as usize + 1 == Source::ALL.len()`, and today that variant is `Source::WaitChannel`.
+     `Source::<last> as usize + 1 == Source::ALL.len()`, and today that variant is `Source::PackagePower`.
   3. Document the function in the `//!` contract; implement it in `linux/` and `macos/` under the same name.
   4. Read it in `model.rs` through `Reads::read` or `Demand::read_if` so it lands in `Snapshot.sources` or `missing`.
   5. Declare `sources: Sources::of(&[Source::X])` on the drawing view's row in `views.rs`.
