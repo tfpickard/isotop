@@ -8,7 +8,7 @@
 
 use std::f32::consts::FRAC_1_SQRT_2;
 
-use super::floorplan::{COLUMNS, Floorplan, ROWS, Rect, Role};
+use super::floorplan::{COLUMNS, Floorplan, Part, ROWS, Rect, Role};
 use super::readings::Coverage;
 use crate::palette::{ironbow, mix, tint};
 use crate::render::strokes::Width;
@@ -24,6 +24,7 @@ const POINTS: f32 = 0.45;
 
 const LINE: Color = [150, 158, 190];
 const LINE_DIM: Color = [92, 98, 126];
+const GRID: Color = [44, 48, 70];
 const SENSOR: Color = [232, 240, 255];
 const FLASH: Color = [110, 240, 255];
 const CHOSEN: Color = [255, 255, 255];
@@ -210,6 +211,18 @@ pub fn field(pen: &mut Pen, field: &Field) {
 pub fn outlines(pen: &mut Pen, plan: &Floorplan, coverage: &[Coverage], chosen: Option<usize>) {
     for part in &plan.context {
         pen.outline(part.rect, STROKES, 1.2, LINE_DIM);
+        if part.part == Part::Gpu {
+            // The array of execution units, faint.
+            let (width, height) = (part.rect[2] - part.rect[0], part.rect[3] - part.rect[1]);
+            for step in 1..8 {
+                let x = part.rect[0] + width * step as f32 / 8.0;
+                pen.segment([x, part.rect[1] + 2.0], [x, part.rect[3] - 2.0], STROKES, 1.0, GRID);
+            }
+            for step in 1..4 {
+                let y = part.rect[1] + height * step as f32 / 4.0;
+                pen.segment([part.rect[0] + 2.0, y], [part.rect[2] - 2.0, y], STROKES, 1.0, GRID);
+            }
+        }
     }
     for group in &plan.groups {
         pen.outline(group.rect, STROKES, 1.4, LINE);

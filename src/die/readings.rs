@@ -122,13 +122,6 @@ pub struct Readings {
     pub watts: Measured<f32>,
 }
 
-/// The block of `plan` that a core sensor (`package`, `core_id`) reads.
-fn block_of_core(plan: &Floorplan, package: u32, core_id: u32) -> Option<usize> {
-    plan.blocks.iter().position(|block| {
-        block.package.is_none_or(|found| found == package) && block.core_id == Some(core_id)
-    })
-}
-
 impl Readings {
     /// Reads `snapshot` for `plan`. `running_max` keeps, per block, the highest clock seen, which
     /// stands in for `cpuinfo_max_freq` where the topology has none.
@@ -137,28 +130,27 @@ impl Readings {
         let mut coverage = vec![Coverage::Unknown; plan.blocks.len()];
         let mut unmapped_ccds = 0;
         if let Some(thermal) = thermal {
+            // A core's own sensor is matched by package and core id, never by CPU number.
+            for (index, block) in plan.blocks.iter().enumerate() {
+                if let Some(celsius) = thermal.core_celsius(&block.core()) {
+                    coverage[index] = Coverage::Own(celsius);
+                }
+            }
             for sensor in &thermal.sensors {
-                let Some(celsius) = sensor.celsius else {
+                let (Some(celsius), SensorPlace::Ccd(number)) = (sensor.celsius, sensor.place)
+                else {
                     continue;
                 };
-                match sensor.place {
-                    SensorPlace::Core { package, core_id } => {
-                        if let Some(block) = block_of_core(plan, package, core_id) {
-                            coverage[block] = Coverage::Own(celsius);
-                        }
-                    }
-                    SensorPlace::Ccd(number) => match thermal.ccd_cpus(number) {
-                        Some(cpus) => {
-                            for (index, block) in plan.blocks.iter().enumerate() {
-                                let inside = block.cpus.iter().all(|cpu| cpus.contains(cpu));
-                                if inside && coverage[index] == Coverage::Unknown {
-                                    coverage[index] = Coverage::Ccd(number, celsius);
-                                }
+                match thermal.ccd_cpus(number) {
+                    Some(cpus) => {
+                        for (index, block) in plan.blocks.iter().enumerate() {
+                            let inside = block.cpus.iter().all(|cpu| cpus.contains(cpu));
+                            if inside && coverage[index] == Coverage::Unknown {
+                                coverage[index] = Coverage::Ccd(number, celsius);
                             }
                         }
-                        None => unmapped_ccds += 1,
-                    },
-                    SensorPlace::Package(_) => {}
+                    }
+                    None => unmapped_ccds += 1,
                 }
             }
         }
@@ -819,7 +811,7 @@ pub(crate) mod tests {
         // No load reading is no proxy, not 0.
         assert_eq!(proxy(&make(None, Some(4800.0)), &mut seen), None);
         // No clock reading: busy alone, and the reading says so.
-        let readings = Readings::of(&plan, &make(Some(0.3), None), &mut vec![0.0]);
+        let readings = Readings::of(&plan, &make(Some(0.3), None), &mut [0.0]);
         assert_eq!(readings.proxies[0], Some(0.6));
         assert_eq!(readings.without_clock, 1);
         // With no maximum in the topology the block's own running maximum stands in.
@@ -1012,7 +1004,7 @@ pub(crate) mod tests {
         assert_eq!(topology.cpus.len(), 4);
         let plan = Floorplan::of(&topology);
         assert_eq!(plan.blocks.len(), 4, "each CPU is a core of its own");
-        let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; 4]);
+        let readings = Readings::of(&plan, &snapshot, &mut [0.0; 4]);
         assert_eq!(readings.mode, Mode::Relative);
         assert!(
             readings.proxies.iter().all(|proxy| *proxy == Some(0.3)),

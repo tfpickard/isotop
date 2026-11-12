@@ -10,14 +10,6 @@
 //! no power reading yet has `PackagePower::watts` None, and a source the machine cannot read is
 //! in `Snapshot::missing` while it is demanded.
 
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the die view (#56) is the first reader of most of this"
-    )
-)]
-
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;

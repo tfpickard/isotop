@@ -572,23 +572,16 @@ impl ViewModule for Die {
             Some(proxy) => format!("heat source: busy x (clock / fmax)^3 = {proxy:.2}"),
             None => "no heat source: no load reading".to_owned(),
         });
+        let core = block.core();
         let count = snapshot.thermal.as_ref().and_then(|thermal| {
-            thermal.core_throttles.iter().find(|throttle| {
-                Some(throttle.core_id) == block.core_id
-                    && block.package.is_none_or(|found| found == throttle.package)
-            })
+            thermal
+                .core_throttle(&core)
+                .zip(core.package.zip(core.core_id))
         });
         lines.push(match count {
-            Some(throttle) => {
-                let seen = self
-                    .watch
-                    .cores
-                    .get(&(throttle.package, throttle.core_id))
-                    .map_or(0, |marked| marked.seen);
-                format!(
-                    "throttled {} times since boot, {seen} seen while watching",
-                    throttle.count
-                )
+            Some((count, key)) => {
+                let seen = self.watch.cores.get(&key).map_or(0, |marked| marked.seen);
+                format!("throttled {count} times since boot, {seen} seen while watching")
             }
             None => "throttle count n/a".to_owned(),
         });
@@ -723,8 +716,8 @@ impl Die {
         ));
         stage.bounds.extend([
             plane(-8.0, -8.0, 0.0),
-            plane(270.0, -8.0, 0.0),
-            plane(270.0, ROWS as f32 + 12.0, 0.0),
+            plane(260.0, -8.0, 0.0),
+            plane(260.0, ROWS as f32 + 12.0, 0.0),
             plane(-8.0, ROWS as f32 + 12.0, 0.0),
         ]);
         self.points(layout, stage, processes)

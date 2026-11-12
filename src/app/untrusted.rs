@@ -1,7 +1,8 @@
 //! Test only: text a hostile machine could supply, through every view and the whole overlay.
 //!
 //! Every string the model holds from the system (names, command lines, cgroup and unit names,
-//! thread names, the paths of open files, interrupt and device names, the exit records' command
+//! thread names, the paths of open files, interrupt and device names, the labels of the
+//! temperature sensors, the exit records' command
 //! names, the lines of the journal, the place names of the GeoIP lookups and the parents isotop
 //! cannot read) is replaced
 //! by `HOSTILE`, which carries a window title, a screen clear, a C1 control, a bidirectional
@@ -94,6 +95,11 @@ fn poisoned(mut snapshot: Snapshot, number: u64) -> Snapshot {
     }
     if let Measured::Known(rows) = &mut snapshot.softirqs {
         rows.iter_mut().for_each(|(name, _)| *name = hostile(name));
+    }
+    if let Some(thermal) = &mut snapshot.thermal {
+        for sensor in &mut thermal.sensors {
+            sensor.label = hostile(&sensor.label);
+        }
     }
     for event in &mut snapshot.life {
         if let LifeKind::Exit {

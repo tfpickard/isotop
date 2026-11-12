@@ -12,7 +12,7 @@ use crate::palette::{ironbow, mix};
 use crate::render::{Color, SCALE, Side, Tag};
 
 /// The panel's rectangle on the plan.
-pub const AREA: Rect = [204.0, 0.0, 268.0, 96.0];
+pub const AREA: Rect = [204.0, 0.0, 256.0, 96.0];
 const BAR: Rect = [206.0, 14.0, 210.5, 70.0];
 const SWATCH_X: f32 = 221.0;
 const TEXT_X: f32 = 224.5;
@@ -20,8 +20,8 @@ const FIRST_ROW: f32 = 14.0;
 const ROW_PITCH: f32 = 6.0;
 /// The most rows the panel holds: the package, the power, and the groups of cores.
 pub const MOST_ROWS: usize = 10;
-const PACKAGE_BOX: Rect = [221.0, 76.0, 264.0, 86.0];
-const POWER_BOX: Rect = [221.0, 89.0, 264.0, 96.0];
+const PACKAGE_BOX: Rect = [221.0, 76.0, 252.0, 86.0];
+const POWER_BOX: Rect = [221.0, 89.0, 252.0, 95.0];
 const BAR_STEPS: usize = 28;
 
 const BACKDROP: Color = [12, 10, 22];
@@ -75,7 +75,7 @@ pub fn draw(pen: &mut Pen, tags: &mut Vec<Tag>, input: &Input) {
         Mode::Celsius => tag(tags, 206.0, 6.0, "SENSORS".to_owned()),
         Mode::Relative => {
             // Written into the frame as well, so that a render says it too.
-            caption(pen, "NO SENSOR", plane(236.0, 6.0, -0.3), 3.4, TEXT);
+            caption(pen, "NO SENSOR", plane(230.0, 6.0, -0.3), 3.4, TEXT);
             tag(
                 tags,
                 206.0,

@@ -17,6 +17,7 @@ Orbit, Flow, Ripple and City modules plus the shared `systems.rs`, declared priv
 | Orbit, Flow | `orbit.rs`, `flow.rs` | `Orbits`, `Wells` (each owns its own `Galaxy`) |
 | Ripple | `ripple.rs` | `Ripple`, `Cluster`, `territories` |
 | City | `city.rs` | `City`, `Plot`, `district_origin` |
+| Die (a module view that lives in `src/`, with `src/die/` beside it) | `../die.rs` | `Die`, its row is the last of `REGISTRY`: `sources: model::thermal::SOURCES`, `DemoOptions::thermal`, `links: DrawnByView`, and a `Phase::Replay` then `Phase::Play` warm-up |
 
 ## CONVENTIONS
 - Modules here are declared `mod city; mod flow; mod orbit; mod ripple; pub(crate) mod systems;` in `views.rs`, not `main.rs`.

@@ -73,6 +73,19 @@ pub struct Block {
     pub max_mhz: Option<f32>,
 }
 
+impl Block {
+    /// The physical core this block stands for, for the lookups `Thermal` offers by core.
+    pub fn core(&self) -> Core {
+        Core {
+            cpus: self.cpus.clone(),
+            package: self.package,
+            die: None,
+            core_id: self.core_id,
+            kind: self.kind,
+        }
+    }
+}
+
 /// What a group of core blocks is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupKind {
@@ -586,16 +599,7 @@ fn generic_plan(builder: &mut Builder, cores: &[Core]) {
     } else {
         [region[0], region[3] - strip_height, region[2], region[3]]
     };
-    let above = [
-        region[0],
-        region[1],
-        region[2],
-        if rows > 1 {
-            cache[1] - 1.0
-        } else {
-            cache[1] - 1.0
-        },
-    ];
+    let above = [region[0], region[1], region[2], cache[1] - 1.0];
     let below = [region[0], cache[3] + 1.0, region[2], region[3]];
     for (region, slice) in [(above, &cores[..top]), (below, &cores[top..])] {
         for (cell, core) in tile(region, slice.len(), columns).into_iter().zip(slice) {
@@ -611,7 +615,6 @@ pub(crate) mod tests {
     use crate::model::thermal::CpuPlace;
 
     /// A CPU with the given place, for the topologies below.
-    #[expect(clippy::too_many_arguments, reason = "one literal of a test fixture")]
     pub(crate) fn cpu(
         cpu: u32,
         core_id: u32,
@@ -847,7 +850,7 @@ pub(crate) mod tests {
             "the low-power cores are not in the compute tile's cluster"
         );
         assert!(
-            rects_overlap(low[0].rect, compute.rect) == false,
+            !rects_overlap(low[0].rect, compute.rect),
             "and sit in a tile of their own"
         );
         assert!(plan.caption.starts_with("Intel tiled 4P + 4E + 2LP"));
