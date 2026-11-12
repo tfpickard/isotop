@@ -15,7 +15,7 @@ Orbit, Flow, Ripple and City modules plus the shared `systems.rs`, declared priv
 | Test fixtures for modules | `../views.rs` | `pub mod testing` (`Scene::with_rows` tables) |
 | Nested Keplerian systems | `systems.rs` | `layout`, `Galaxy`, `Tree`, `hubs`; shared by Orbit and Flow |
 | Orbit, Flow | `orbit.rs`, `flow.rs` | `Orbits`, `Wells` (each owns its own `Galaxy`) |
-| Ripple | `ripple.rs` | `Ripple`, `Cluster`, `territories` |
+| Ripple | `ripple.rs` | `Ripple`, `Cluster`, `territories`, `Scratch` (the grids a frame builds, kept between frames) |
 | City | `city.rs` | `City`, `Plot`, `district_origin` |
 
 ## CONVENTIONS

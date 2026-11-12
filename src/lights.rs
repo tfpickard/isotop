@@ -3,7 +3,7 @@
 //! Towers keep their seats, while a pure waveform drives the lantern, lens and reflection.
 
 use crate::layout::Seats;
-use crate::model::{Identity, Kind, Process, Snapshot, top_n};
+use crate::model::{Identity, Kind, Process, Snapshot, top_n_of};
 use crate::palette::{mix, tint};
 use crate::platform::Source;
 use crate::render::field::{Field, Placement, Relief};
@@ -831,8 +831,7 @@ impl ViewModule for Lights {
         };
         let time = f64::from(stage.time);
         let budget = CAP.min(stage.limit) - self.fading(stage).count();
-        let candidates: Vec<Process> = processes.iter().map(|p| (*p).clone()).collect();
-        let mut admitted: HashSet<Identity> = top_n(&candidates, budget, |p| p.memory as f64)
+        let mut admitted: HashSet<Identity> = top_n_of(processes, budget, |p| p.memory as f64)
             .into_iter()
             .map(|p| p.id)
             .collect();
@@ -843,7 +842,7 @@ impl ViewModule for Lights {
             && !admitted.contains(&id)
             && processes.iter().any(|p| p.id == id)
         {
-            admitted = top_n(&candidates, budget - 1, |p| p.memory as f64)
+            admitted = top_n_of(processes, budget - 1, |p| p.memory as f64)
                 .into_iter()
                 .map(|p| p.id)
                 .chain([id])

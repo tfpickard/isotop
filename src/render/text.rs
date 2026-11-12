@@ -62,7 +62,8 @@ impl Frame {
                 add(scaled(right, across * height), scaled(up, rise * height)),
             )
         };
-        for run in hershey::font(face).lay_out(text, align) {
+        let mut run = std::mem::take(&mut self.strokes.run);
+        hershey::font(face).lay_out_with(text, align, &mut run, |run| {
             for pair in run.windows(2) {
                 let (a, b) = (place(pair[0]), place(pair[1]));
                 if weight > 0.0 {
@@ -84,7 +85,8 @@ impl Frame {
                     self.line(camera, a, b, color);
                 }
             }
-        }
+        });
+        self.strokes.run = run;
     }
 }
 

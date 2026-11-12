@@ -15,6 +15,7 @@ mod lines;
 mod scenery;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::model::{CoreKind, Process, Snapshot};
 use crate::palette::{mix, tint};
@@ -76,7 +77,8 @@ struct Hung {
     start: Spot,
     end: Spot,
     air: bool,
-    points: Vec<Spot>,
+    /// Shared with the frame that draws it, so a cord that has not moved costs no copy.
+    points: Arc<[Spot]>,
 }
 
 #[derive(Default)]
@@ -164,13 +166,13 @@ impl Switchboard {
 
     /// The hung cord for jack `key`, from `start` to `end`, long enough to sag as much as its
     /// slack allows without hanging below the end.
-    fn hang(&mut self, key: u64, start: Spot, end: Spot, air: bool) -> Vec<Spot> {
+    fn hang(&mut self, key: u64, start: Spot, end: Spot, air: bool) -> Arc<[Spot]> {
         if let Some(hung) = self.hung.get(&key)
             && hung.start == start
             && hung.end == end
             && hung.air == air
         {
-            return hung.points.clone();
+            return Arc::clone(&hung.points);
         }
         let chord = cord::polyline_length(&[start, end]);
         let mut slack = cord::slack(key) - 1.0 + if air { 0.04 } else { 0.0 };
@@ -184,13 +186,14 @@ impl Switchboard {
             slack *= 0.6;
             points = cord::catenary(start, end, chord * (1.0 + slack), 24);
         }
+        let points: Arc<[Spot]> = points.into();
         self.hung.insert(
             key,
             Hung {
                 start,
                 end,
                 air,
-                points: points.clone(),
+                points: Arc::clone(&points),
             },
         );
         points
@@ -205,7 +208,8 @@ impl Switchboard {
         let time = f64::from(self.now);
         let fps = self.fps;
         let capacity = plan.columns * plan.rows;
-        let jacks = self.lines.jacks.clone();
+        // Out of the board while it is drawn on, which borrows the board mutably.
+        let jacks = std::mem::take(&mut self.lines.jacks);
         let step = plan.column_step();
         for place in 0..capacity {
             let (x, y) = plan.jack(place);
@@ -274,6 +278,7 @@ impl Switchboard {
                 self.draw_cord(pen, plan, jack, chosen == Some(jack.key), outline);
             }
         }
+        self.lines.jacks = jacks;
     }
 
     fn draw_cord(&mut self, pen: &mut Pen, plan: &Plan, jack: &Line, chosen: bool, outline: bool) {
@@ -315,11 +320,11 @@ impl Switchboard {
             key: jack.key,
         });
         let width = cord::width(jack.drawn_rate()) * CORD_WEIGHT;
-        let behind: Vec<Spot> = points.iter().map(|p| [p[0], p[1] - 0.5, p[2]]).collect();
         // The dark edge that sets a cord off from those it crosses costs a second ribbon, so only
         // a board of at most 64 cords has it: all cords together stay within 128 x 24 x 2
         // triangles.
         if outline {
+            let behind: Vec<Spot> = points.iter().map(|p| [p[0], p[1] - 0.5, p[2]]).collect();
             pen.stroke(&behind, width + 1.4, tint(color, 0.35), pick);
         }
         pen.stroke(&points, width, color, pick);
@@ -619,7 +624,8 @@ impl ViewModule for Switchboard {
     fn draw(&mut self, stage: &mut Stage, _processes: &[&Process], snapshot: &Snapshot) -> usize {
         self.advance(stage, snapshot);
         let plan = self.plan();
-        let reading = self.lines.reading.clone();
+        // Out of the board for the frame, which is drawn from it and restored below.
+        let reading = self.lines.reading.take();
         let dark = reading
             .as_ref()
             .is_none_or(|reading| reading.table != Table::Known);
@@ -643,6 +649,7 @@ impl ViewModule for Switchboard {
             || " reading the interrupt table".to_owned(),
             |r| self.describe(r),
         );
+        self.lines.reading = reading;
         0
     }
 

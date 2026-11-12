@@ -252,7 +252,7 @@ class Job:
 
         def frame(index):
             isotop(["--view", view, "--width", LOOP_WIDTH, "--time", start, "--fps", fps,
-                    "--benchmark", index + 1, "--output", folder / f"f_{index:03d}.png"])
+                    "--benchmark", index + 1, "--benchmark-warmup", 0, "--output", folder / f"f_{index:03d}.png"])
 
         with concurrent.futures.ThreadPoolExecutor(self.jobs) as pool:
             list(pool.map(frame, range(count)))

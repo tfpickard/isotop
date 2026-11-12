@@ -39,14 +39,7 @@ pub enum Kind {
     Container,
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "policy, started and io_detail are read by views that come after P5 and B8"
-    )
-)]
+#[derive(Debug)]
 pub struct Process {
     pub id: Identity,
     pub parent: u32,
@@ -212,6 +205,90 @@ pub struct SyscallIo {
     pub writes: f32,
 }
 
+impl Clone for Process {
+    fn clone(&self) -> Self {
+        let mut copy = Process::default();
+        copy.clone_from(self);
+        copy
+    }
+
+    /// Copies `source` into this process, reusing the capacity of its strings and lists: a
+    /// scene that keeps a process per sample and refreshes it each frame allocates nothing in
+    /// steady state. Every field is named, with no `..`, so a new one cannot be forgotten.
+    fn clone_from(&mut self, source: &Self) {
+        let Process {
+            id,
+            parent,
+            name,
+            command,
+            group,
+            kind,
+            state,
+            cpu,
+            memory,
+            io_rate,
+            read_rate,
+            write_rate,
+            written,
+            priority,
+            nice,
+            threads,
+            gpu_memory,
+            core,
+            cpu_time,
+            cgroup,
+            performance_share,
+            waiting,
+            files,
+            locks_held,
+            blocked_on,
+            system_share,
+            policy,
+            syscall_io,
+            major_faults,
+            started,
+            oom,
+            memory_detail,
+            thread_list,
+            io_detail,
+        } = source;
+        self.id = *id;
+        self.parent = *parent;
+        self.name.clone_from(name);
+        self.command.clone_from(command);
+        self.group.clone_from(group);
+        self.kind = *kind;
+        self.state = *state;
+        self.cpu = *cpu;
+        self.memory = *memory;
+        self.io_rate = *io_rate;
+        self.read_rate = *read_rate;
+        self.write_rate = *write_rate;
+        self.written = *written;
+        self.priority = *priority;
+        self.nice = *nice;
+        self.threads = *threads;
+        self.gpu_memory = *gpu_memory;
+        self.core = *core;
+        self.cpu_time = *cpu_time;
+        self.cgroup.clone_from(cgroup);
+        self.performance_share = *performance_share;
+        self.waiting = *waiting;
+        self.files.clone_from(files);
+        self.locks_held.clone_from(locks_held);
+        self.blocked_on.clone_from(blocked_on);
+        self.system_share = *system_share;
+        self.policy = *policy;
+        self.syscall_io = *syscall_io;
+        self.major_faults = *major_faults;
+        self.started = *started;
+        self.oom.clone_from(oom);
+        self.memory_detail.clone_from(memory_detail);
+        self.thread_list.clone_from(thread_list);
+        self.io_detail.clone_from(io_detail);
+    }
+}
+
 impl Default for Process {
     /// A harmless placeholder: pid 0 (never a real process), a sleeping system process, and
     /// nothing measured yet.
@@ -322,7 +399,7 @@ pub enum Blocker {
 }
 
 /// A measurement taken on the background thread, which may not have reached a process yet.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub enum Measured<T> {
     /// Not measured yet: before the first background pass, a process born since the last one,
     /// or one a budget-limited scan has not reached.
@@ -331,6 +408,24 @@ pub enum Measured<T> {
     /// Could not be read, normally for lack of permission.
     Unreadable,
     Known(T),
+}
+
+impl<T: Clone> Clone for Measured<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Measured::Pending => Measured::Pending,
+            Measured::Unreadable => Measured::Unreadable,
+            Measured::Known(value) => Measured::Known(value.clone()),
+        }
+    }
+
+    /// A known reading over a known reading is copied in place, keeping its allocations.
+    fn clone_from(&mut self, source: &Self) {
+        match (&mut *self, source) {
+            (Measured::Known(held), Measured::Known(value)) => held.clone_from(value),
+            _ => *self = source.clone(),
+        }
+    }
 }
 
 impl<T> Measured<T> {
@@ -731,7 +826,25 @@ impl Reads {
 /// and a NaN key sorts after every number, so the choice is the same in every sample that has
 /// the same keys.
 pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
-    let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
+    select_top(processes.iter(), n, key)
+}
+
+/// `top_n` over processes a caller already holds by reference, which it need not copy to ask.
+pub fn top_n_of<'a>(
+    processes: &[&'a Process],
+    n: usize,
+    key: impl Fn(&Process) -> f64,
+) -> Vec<&'a Process> {
+    select_top(processes.iter().copied(), n, key)
+}
+
+/// The choice `top_n` and `top_n_of` make.
+fn select_top<'a>(
+    processes: impl Iterator<Item = &'a Process>,
+    n: usize,
+    key: impl Fn(&Process) -> f64,
+) -> Vec<&'a Process> {
+    let mut keyed: Vec<(f64, &Process)> = processes.map(|p| (key(p), p)).collect();
     let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
         (true, true) => a.1.id.cmp(&b.1.id),
         (true, false) => std::cmp::Ordering::Greater,
@@ -4536,6 +4649,33 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn cloning_a_process_over_another_leaves_nothing_of_the_one_it_replaced() {
+        let rich = demo_with(
+            12.0,
+            64,
+            DemoOptions {
+                oom_and_memory_detail: true,
+                threads: true,
+                io_detail: true,
+                ..DemoOptions::NONE
+            },
+        );
+        let plain = demo(3.0, 64);
+        let mut slots = plain.processes.clone();
+        for (slot, source) in slots.iter_mut().zip(&rich.processes) {
+            slot.clone_from(source);
+        }
+        assert_eq!(format!("{slots:?}"), format!("{:?}", rich.processes));
+        // And back again, to processes that measured nothing and have other strings.
+        for (slot, source) in slots.iter_mut().zip(&plain.processes) {
+            slot.clone_from(source);
+        }
+        assert_eq!(format!("{slots:?}"), format!("{:?}", plain.processes));
+        let copy = plain.processes[5].clone();
+        assert_eq!(format!("{copy:?}"), format!("{:?}", plain.processes[5]));
+    }
 
     #[test]
     fn resource_scale_is_monotonic_and_bounded_for_multicore_cpu() {

@@ -56,6 +56,8 @@ pub(crate) fn run(
 /// Seconds a benchmark spent, in all and in each of the two halves of drawing a frame.
 #[derive(Debug, Default, PartialEq)]
 struct Timing {
+    /// Frames drawn before the timing started, which none of the seconds below include.
+    warmup: u32,
     /// The whole loop.
     total: f64,
     /// Recording the display list (`App::draw`): everything that moves a view's state.
@@ -65,12 +67,14 @@ struct Timing {
 }
 
 impl Timing {
-    /// The benchmark's line: frames, size, visible processes, milliseconds per frame split into
-    /// recording and rasterizing, and the frame rate those add up to.
+    /// The benchmark's line: frames timed and warm-up frames left out, size, visible processes,
+    /// milliseconds per frame split into recording and rasterizing, and the frame rate those add
+    /// up to.
     fn report(&self, frames: u32, size: (u32, u32), visible: usize, renderer: &str) -> String {
         let frames = f64::from(frames);
         format!(
-            "{frames} frames | {}x{} | {visible} visible | {:.2} ms/frame (record {:.2} + raster {:.2}) | {:.1} renderer fps on {renderer} (excludes terminal transport)",
+            "{frames} frames ({} warm-up excluded) | {}x{} | {visible} visible | {:.2} ms/frame (record {:.2} + raster {:.2}) | {:.1} renderer fps on {renderer} (excludes terminal transport)",
+            self.warmup,
             size.0,
             size.1,
             self.total * 1000.0 / frames,
@@ -81,13 +85,23 @@ impl Timing {
     }
 }
 
-/// Draws `count` frames after `frame`, a second of animation apart at `--fps`, timing the
-/// recording and the rasterizing of each separately, and returns the last.
+/// Draws `--benchmark-warmup` frames and then `count` more after `frame`, one frame of animation
+/// apart at `--fps`, timing the recording and the rasterizing of each of the last separately,
+/// and returns the last. The warm-up frames draw exactly as the timed ones do (the first of
+/// every buffer, cache and GPU pipeline is built there) and the animation runs on through them,
+/// so a timed frame is the one `--benchmark` would draw at that time with no warm-up.
 fn benchmark(app: &mut App, options: &Options, mut frame: Frame, count: u32) -> (Frame, Timing) {
     let (height, limit) = (options.headless_height(), options.limit as usize);
-    let mut timing = Timing::default();
-    let start = Instant::now();
-    for i in 0..count {
+    let warmup = options.benchmark_warmup;
+    let mut timing = Timing {
+        warmup,
+        ..Timing::default()
+    };
+    let mut start = Instant::now();
+    for i in 0..warmup + count {
+        if i == warmup {
+            start = Instant::now();
+        }
         app.animation = options.time as f32 + i as f32 / options.fps as f32;
         app.scene.spare = frame.release();
         let recording = Instant::now();
@@ -95,8 +109,10 @@ fn benchmark(app: &mut App, options: &Options, mut frame: Frame, count: u32) -> 
         let rasterizing = Instant::now();
         app.rasterize(&mut frame);
         std::hint::black_box(&frame.pixels);
-        timing.record += (rasterizing - recording).as_secs_f64();
-        timing.raster += rasterizing.elapsed().as_secs_f64();
+        if i >= warmup {
+            timing.record += (rasterizing - recording).as_secs_f64();
+            timing.raster += rasterizing.elapsed().as_secs_f64();
+        }
     }
     timing.total = start.elapsed().as_secs_f64();
     (frame, timing)
@@ -256,13 +272,14 @@ mod tests {
     #[test]
     fn the_benchmark_line_reports_record_and_raster_times_apart() {
         let timing = Timing {
+            warmup: 10,
             total: 1.2,
             record: 0.3,
             raster: 0.9,
         };
         assert_eq!(
             timing.report(120, (1920, 1080), 192, "cpu"),
-            "120 frames | 1920x1080 | 192 visible | 10.00 ms/frame (record 2.50 + raster 7.50) | 100.0 renderer fps on cpu (excludes terminal transport)"
+            "120 frames (10 warm-up excluded) | 1920x1080 | 192 visible | 10.00 ms/frame (record 2.50 + raster 7.50) | 100.0 renderer fps on cpu (excludes terminal transport)"
         );
     }
 
@@ -731,5 +748,152 @@ mod tests {
         let changed = changed.expect_err("a changed buffer fails");
         assert!(changed.contains("orbit: picks changed"), "{changed}");
         assert!(!changed.contains("city:"), "{changed}");
+    }
+
+    /// Everything a rasterized frame holds that the next frame must not inherit.
+    type Contents = (Vec<u8>, Vec<u32>, Vec<u32>, Vec<crate::model::Identity>);
+
+    fn contents(frame: &Frame) -> Contents {
+        (
+            frame.pixels.clone(),
+            frame.picks.clone(),
+            frame.depth().iter().map(|depth| depth.to_bits()).collect(),
+            frame.identities.clone(),
+        )
+    }
+
+    /// Two apps over the same demo, which draw alike frame by frame, and the options they draw
+    /// with: one hands each frame's buffers on, the other starts every frame from new ones.
+    fn twins(view: View) -> (App, App, Options) {
+        let options = Options::parse_from([
+            "isotop",
+            "--demo",
+            "--time",
+            "12",
+            "--renderer",
+            "cpu",
+            "--width",
+            "240",
+            "--benchmark",
+            "1",
+        ]);
+        let make = || {
+            let mut app = App::new(
+                view,
+                demo_snapshot(
+                    view.info(),
+                    options.time - options.sample_seconds(),
+                    options.time,
+                    options.processes as usize,
+                ),
+                all_available(),
+            );
+            warm_up(&mut app, &options, None);
+            app
+        };
+        (make(), make(), options)
+    }
+
+    /// Draws frame `index` of the benchmark loop on `app`, from `spare` buffers.
+    fn draw_into(
+        app: &mut App,
+        options: &Options,
+        spare: crate::render::Buffers,
+        index: u32,
+    ) -> Frame {
+        app.animation = options.time as f32 + index as f32 / options.fps as f32;
+        app.scene.spare = spare;
+        let mut frame = app.draw(
+            options.width,
+            options.headless_height(),
+            options.limit as usize,
+        );
+        app.rasterize(&mut frame);
+        frame
+    }
+
+    #[test]
+    fn a_frame_drawn_into_recycled_buffers_is_byte_identical_to_one_drawn_into_new_ones() {
+        for view in View::all() {
+            let (mut recycling, mut fresh, options) = twins(view);
+            let mut kept = draw_into(&mut recycling, &options, Default::default(), 0);
+            let mut new = draw_into(&mut fresh, &options, Default::default(), 0);
+            assert_eq!(contents(&kept), contents(&new), "{}: frame 0", view.name());
+            for index in 1..5 {
+                kept = draw_into(&mut recycling, &options, kept.release(), index);
+                let _ = new.release();
+                new = draw_into(&mut fresh, &options, Default::default(), index);
+                assert_eq!(
+                    contents(&kept),
+                    contents(&new),
+                    "{}: frame {index} drew differently into the buffers of the one before",
+                    view.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn buffers_that_drew_one_view_leave_nothing_in_the_next_view_s_frames() {
+        // Every view in turn, a few frames each, so each one inherits the buffers of a different
+        // view of another size of display list, field set and population.
+        let views: Vec<View> = View::all().collect();
+        let (mut recycling, mut fresh, options) = twins(views[0]);
+        let mut kept = draw_into(&mut recycling, &options, Default::default(), 0);
+        let mut new = draw_into(&mut fresh, &options, Default::default(), 0);
+        let mut index = 1;
+        for &view in views.iter().chain(&views) {
+            recycling.switch(view);
+            fresh.switch(view);
+            for _ in 0..2 {
+                kept = draw_into(&mut recycling, &options, kept.release(), index);
+                let _ = new.release();
+                new = draw_into(&mut fresh, &options, Default::default(), index);
+                assert_eq!(
+                    contents(&kept),
+                    contents(&new),
+                    "{} drew differently into the buffers another view left",
+                    view.name()
+                );
+                index += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn a_benchmark_leaves_its_warm_up_frames_out_of_the_timing() {
+        let options = options(&[
+            "--demo",
+            "--time",
+            "12",
+            "--processes",
+            "16",
+            "--width",
+            "160",
+            "--renderer",
+            "cpu",
+            "--benchmark",
+            "3",
+            "--benchmark-warmup",
+            "4",
+        ]);
+        assert_eq!(options.benchmark_warmup, 4);
+        let view = View::at(0);
+        let snapshot = demo_snapshot(view.info(), 11.0, 12.0, 16);
+        let mut app = App::new(view, snapshot, all_available());
+        warm_up(&mut app, &options, None);
+        let first = app.render(160, options.headless_height(), options.limit as usize);
+        let (_, timing) = benchmark(&mut app, &options, first, 3);
+        assert_eq!(timing.warmup, 4);
+        assert!(
+            timing
+                .report(3, (160, 90), 16, "cpu")
+                .starts_with("3 frames (4 warm-up excluded)"),
+        );
+        assert_eq!(
+            app.animation,
+            12.0 + 6.0 / options.fps as f32,
+            "the animation runs on through the warm-up: the last of 4 + 3 frames is the seventh"
+        );
     }
 }

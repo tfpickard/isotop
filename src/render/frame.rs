@@ -2,7 +2,7 @@ use crate::model::Identity;
 use crate::simulation::hash;
 
 use super::camera::Camera;
-use super::{Color, NONE, Point, field, shared};
+use super::{Color, NONE, Point, field, shared, strokes};
 
 /// The pick-buffer bit that marks an index into `Frame::things` rather than `Frame::identities`.
 /// Process indices stay below it, and a thing index below `THING - 1`, so neither meets `NONE`.
@@ -172,6 +172,10 @@ pub struct Buffers {
     pixels: Vec<u8>,
     depth: Vec<f32>,
     picks: Vec<u32>,
+    identities: Vec<Identity>,
+    things: Vec<Thing>,
+    /// The lists tubes are built in (`strokes::Scratch`).
+    strokes: strokes::Scratch,
     /// The fields the last frame drew, kept with their shaded colours so a field that has not
     /// changed is not shaded again.
     fields: Vec<field::ShadedField>,
@@ -188,6 +192,8 @@ pub struct Frame {
     pub identities: Vec<Identity>,
     /// The things this frame's thing picks index, in `thing_pick` order.
     pub things: Vec<Thing>,
+    /// The lists tubes are built in, kept through `Buffers`.
+    pub(super) strokes: strokes::Scratch,
     /// The fields this frame draws, in the order `Frame::field` recorded them: what an
     /// `Item::Field` indexes.
     pub fields: Vec<field::ShadedField>,
@@ -204,9 +210,14 @@ impl Frame {
             pixels,
             depth,
             picks,
+            mut identities,
+            mut things,
+            strokes,
             fields,
         } = buffers;
         items.clear();
+        identities.clear();
+        things.clear();
         let mut frame = Self {
             width,
             height,
@@ -215,8 +226,9 @@ impl Frame {
             pixels,
             depth,
             picks,
-            identities: Vec::new(),
-            things: Vec::new(),
+            identities,
+            things,
+            strokes,
             fields: Vec::new(),
             earlier_fields: fields,
             anchor: None,
@@ -244,6 +256,9 @@ impl Frame {
             pixels: self.pixels,
             depth: self.depth,
             picks: self.picks,
+            identities: self.identities,
+            things: self.things,
+            strokes: self.strokes,
             fields: self.fields,
         }
     }

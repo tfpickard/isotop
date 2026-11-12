@@ -43,29 +43,29 @@ pub(crate) struct Dash {
 }
 
 impl Dash {
-    /// The arc-length intervals inside `from..to` that the pattern draws.
-    fn spans(self, from: f32, to: f32) -> Vec<(f32, f32)> {
+    /// Hands `draw` the arc-length intervals inside `from..to` that the pattern draws, in order.
+    fn each_span(self, from: f32, to: f32, mut draw: impl FnMut(f32, f32)) {
         let period = self.on + self.off;
         if self.on.is_nan() || self.on <= 0.0 {
-            return Vec::new();
+            return;
         }
         if self.off.is_nan()
             || self.off <= 0.0
             || !period.is_finite()
             || (to - from) / period > MOST_DASHES
         {
-            return vec![(from, to)];
+            draw(from, to);
+            return;
         }
-        let mut spans = Vec::new();
         let mut cycle = ((from + self.phase) / period).floor();
         loop {
             let start = cycle * period - self.phase;
             if start >= to {
-                return spans;
+                return;
             }
             let (low, high) = (start.max(from), (start + self.on).min(to));
             if high > low {
-                spans.push((low, high));
+                draw(low, high);
             }
             cycle += 1.0;
         }
@@ -143,47 +143,60 @@ fn rotate_between(vector: Point, from: Point, to: Point) -> Point {
 /// segment, and each later one is the previous turned by the smallest rotation between the
 /// tangents. An interior tangent is the average of its two segments' directions; a segment of no
 /// length takes its neighbour's direction.
+#[cfg(test)]
 pub(crate) fn ring_frames(points: &[Point]) -> Vec<Ring> {
+    let mut scratch = Scratch::default();
+    ring_frames_into(points, &mut scratch);
+    scratch.rings
+}
+
+/// `ring_frames` into `scratch.rings`, reusing the capacity of its lists.
+fn ring_frames_into(points: &[Point], scratch: &mut Scratch) {
+    let Scratch {
+        rings,
+        directions,
+        unit,
+        tangents,
+        ..
+    } = scratch;
+    rings.clear();
     if points.len() < 2 {
-        return Vec::new();
+        return;
     }
-    let mut directions: Vec<Option<Point>> = points
-        .windows(2)
-        .map(|pair| {
-            let step = sub(pair[1], pair[0]);
-            let size = length(step);
-            (size > 1e-9).then(|| scaled(step, 1.0 / size))
-        })
-        .collect();
+    directions.clear();
+    directions.extend(points.windows(2).map(|pair| {
+        let step = sub(pair[1], pair[0]);
+        let size = length(step);
+        (size > 1e-9).then(|| scaled(step, 1.0 / size))
+    }));
     let first = directions.iter().flatten().next().copied();
     let mut last = first.unwrap_or([0.0, 0.0, 1.0]);
-    for direction in &mut directions {
+    for direction in directions.iter_mut() {
         last = *direction.get_or_insert(last);
     }
-    let directions: Vec<Point> = directions.into_iter().flatten().collect();
-    let tangents: Vec<Point> = (0..points.len())
-        .map(|i| {
-            if i == 0 {
-                directions[0]
-            } else if i == points.len() - 1 {
-                directions[i - 1]
+    unit.clear();
+    unit.extend(directions.iter().flatten());
+    tangents.clear();
+    tangents.extend((0..points.len()).map(|i| {
+        if i == 0 {
+            unit[0]
+        } else if i == points.len() - 1 {
+            unit[i - 1]
+        } else {
+            let sum = add(unit[i - 1], unit[i]);
+            if length(sum) > 1e-6 {
+                normalize(sum)
             } else {
-                let sum = add(directions[i - 1], directions[i]);
-                if length(sum) > 1e-6 {
-                    normalize(sum)
-                } else {
-                    directions[i - 1]
-                }
+                unit[i - 1]
             }
-        })
-        .collect();
+        }
+    }));
     let reference = if tangents[0][2].abs() < 0.9 {
         [0.0, 0.0, 1.0]
     } else {
         [1.0, 0.0, 0.0]
     };
     let mut across = normalize(cross(reference, tangents[0]));
-    let mut rings = Vec::with_capacity(points.len());
     for (i, &tangent) in tangents.iter().enumerate() {
         if i > 0 {
             across = rotate_between(across, tangents[i - 1], tangent);
@@ -195,7 +208,33 @@ pub(crate) fn ring_frames(points: &[Point]) -> Vec<Ring> {
             up: cross(tangent, across),
         });
     }
-    rings
+}
+
+/// The lists a tube is built in, kept from one tube to the next (and from one frame to the next,
+/// in `Buffers`) so that drawing tubes allocates nothing in steady state. Each is cleared before
+/// it is filled, so none holds anything a fresh one would not.
+#[derive(Default)]
+pub(crate) struct Scratch {
+    /// The frame of every point (`ring_frames_into`).
+    rings: Vec<Ring>,
+    /// The direction of each segment, before the ones of no length take a neighbour's.
+    directions: Vec<Option<Point>>,
+    /// The same directions, all known.
+    unit: Vec<Point>,
+    /// The unit tangent at every point.
+    tangents: Vec<Point>,
+    /// The corners of every cross-section, `sides` to a ring.
+    section: Vec<Point>,
+    /// The faces of the tube.
+    faces: Vec<Face>,
+    /// The projected points of the tube.
+    screen: Vec<Point>,
+    /// Whether each segment is too thin to draw as a prism, or out of reach (None).
+    thin: Vec<Option<bool>>,
+    /// The polyline of one glyph stroke being drawn (`Frame::stroke_text`).
+    pub(super) run: Vec<[f32; 2]>,
+    /// The points of a ribbon gathered by `Frame::ribbon_of`.
+    path: Vec<Point>,
 }
 
 /// One flat face of a tube in world space: a quad (a cap's fan triangle repeats its centre) with
@@ -209,32 +248,53 @@ pub(crate) struct Face {
 
 /// The faces of a prism of `sides` sides around `points`, with `radii` at each point, and the
 /// two end caps if `caps`. Faces of no area are left out.
+#[cfg(test)]
 pub(crate) fn tube_faces(points: &[Point], radii: &[f32], sides: usize, caps: bool) -> Vec<Face> {
+    let mut scratch = Scratch::default();
+    tube_faces_into(points, radii, sides, caps, &mut scratch);
+    scratch.faces
+}
+
+/// `tube_faces` into `scratch.faces`, reusing the capacity of its lists.
+fn tube_faces_into(
+    points: &[Point],
+    radii: &[f32],
+    sides: usize,
+    caps: bool,
+    scratch: &mut Scratch,
+) {
     let sides = sides.max(3);
     let count = points.len().min(radii.len());
-    let rings = ring_frames(&points[..count]);
+    ring_frames_into(&points[..count], scratch);
+    let Scratch {
+        rings,
+        section,
+        faces,
+        ..
+    } = scratch;
+    faces.clear();
     if rings.len() < 2 {
-        return Vec::new();
+        return;
     }
-    let section: Vec<Vec<Point>> = rings
-        .iter()
-        .zip(points.iter().zip(radii))
-        .map(|(ring, (&center, &radius))| {
-            (0..sides)
-                .map(|k| {
-                    let angle = TAU * k as f32 / sides as f32;
-                    let offset = add(
-                        scaled(ring.across, angle.cos()),
-                        scaled(ring.up, angle.sin()),
-                    );
-                    add(center, scaled(offset, radius))
-                })
-                .collect()
-        })
-        .collect();
-    let mut faces = Vec::with_capacity(sides * (rings.len() - 1) + 2 * sides);
+    // The corners of every cross-section, `sides` to a ring, one ring after the other.
+    section.clear();
+    section.reserve(rings.len() * sides);
+    for (ring, (&center, &radius)) in rings.iter().zip(points.iter().zip(radii)) {
+        section.extend((0..sides).map(|k| {
+            let angle = TAU * k as f32 / sides as f32;
+            let offset = add(
+                scaled(ring.across, angle.cos()),
+                scaled(ring.up, angle.sin()),
+            );
+            add(center, scaled(offset, radius))
+        }));
+    }
+    faces.reserve(sides * (rings.len() - 1) + 2 * sides);
     for segment in 0..rings.len() - 1 {
-        let (near, far) = (&section[segment], &section[segment + 1]);
+        let (near, far) = (
+            &section[segment * sides..][..sides],
+            &section[(segment + 1) * sides..][..sides],
+        );
         for k in 0..sides {
             let next = (k + 1) % sides;
             let corners = [near[k], near[next], far[next], far[k]];
@@ -273,14 +333,18 @@ pub(crate) fn tube_faces(points: &[Point], radii: &[f32], sides: usize, caps: bo
             for k in 0..sides {
                 let next = (k + 1) % sides;
                 faces.push(Face {
-                    corners: [center, center, section[end][next], section[end][k]],
+                    corners: [
+                        center,
+                        center,
+                        section[end * sides + next],
+                        section[end * sides + k],
+                    ],
                     normal,
                     segment,
                 });
             }
         }
     }
-    faces
 }
 
 impl Frame {
@@ -314,11 +378,7 @@ impl Frame {
             if size < 1e-9 || (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) > REACH {
                 continue;
             }
-            let spans = match dash {
-                None => vec![(start, end)],
-                Some(dash) => dash.spans(start, end),
-            };
-            for (from, to) in spans {
+            let mut piece = |from: f32, to: f32| {
                 let p = lerp(a, b, (from - start) / size);
                 let q = lerp(a, b, (to - start) / size);
                 if pixels < THINNEST_RIBBON {
@@ -326,8 +386,29 @@ impl Frame {
                 } else {
                     self.band(p, q, pixels * 0.5, color, pick);
                 }
+            };
+            match dash {
+                None => piece(start, end),
+                Some(dash) => dash.each_span(start, end, piece),
             }
         }
+    }
+
+    /// `ribbon` along the points `path` yields, which are gathered in a list the frame keeps.
+    pub(crate) fn ribbon_of(
+        &mut self,
+        camera: &Camera,
+        path: impl Iterator<Item = Point>,
+        width: Width,
+        color: Color,
+        pick: u32,
+        dash: Option<Dash>,
+    ) {
+        let mut points = std::mem::take(&mut self.strokes.path);
+        points.clear();
+        points.extend(path);
+        self.ribbon(camera, &points, width, color, pick, dash);
+        self.strokes.path = points;
     }
 
     /// The rectangle `half` to each side of the screen segment `p` to `q`.
@@ -425,30 +506,39 @@ impl Frame {
             return;
         }
         let scale = camera.zoom * SCALE;
-        let screen: Vec<Point> = points[..count]
-            .iter()
-            .map(|&point| self.project(camera, point))
-            .collect();
-        let thin: Vec<Option<bool>> = (0..count - 1)
-            .map(|i| {
-                let (a, b) = (screen[i], screen[i + 1]);
-                let reachable = (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) <= REACH;
-                reachable.then(|| radii[i].max(radii[i + 1]) * scale < THINNEST_TUBE)
-            })
-            .collect();
+        // Taken out of the frame while the tube is built, which also draws into the frame.
+        let mut scratch = std::mem::take(&mut self.strokes);
+        let mut screen = std::mem::take(&mut scratch.screen);
+        let mut thin = std::mem::take(&mut scratch.thin);
+        screen.clear();
+        screen.extend(
+            points[..count]
+                .iter()
+                .map(|&point| self.project(camera, point)),
+        );
+        thin.clear();
+        thin.extend((0..count - 1).map(|i| {
+            let (a, b) = (screen[i], screen[i + 1]);
+            let reachable = (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) <= REACH;
+            reachable.then(|| radii[i].max(radii[i + 1]) * scale < THINNEST_TUBE)
+        }));
         for (i, kind) in thin.iter().enumerate() {
             if *kind == Some(true) {
                 self.items.push(Item::Line(screen[i], screen[i + 1], color));
             }
         }
         let viewer = camera.viewer();
-        for face in tube_faces(&points[..count], &radii[..count], sides, caps) {
+        tube_faces_into(&points[..count], &radii[..count], sides, caps, &mut scratch);
+        for face in &scratch.faces {
             if thin[face.segment] != Some(false) || (caps && dot(face.normal, viewer) <= 0.0) {
                 continue;
             }
             let corners = face.corners.map(|corner| self.project(camera, corner));
             self.patch(corners, lit(color, face.normal), pick);
         }
+        scratch.screen = screen;
+        scratch.thin = thin;
+        self.strokes = scratch;
     }
 }
 

@@ -11,14 +11,14 @@ text). Own file because every change to how something is rasterized must keep tw
 |---|---|---|
 | Module root and re-exports | `../render.rs` | `Color`, `Point`, `Links`; re-exports keep `crate::render::{Frame, Camera, Item, Scene, ...}` working |
 | Projection, pan, zoom, tilt | `camera.rs` | `Camera`, `SCALE`, `ISOMETRIC`, `LOWEST_PITCH`, `ORIGIN_Y` |
-| Display list, picking | `frame.rs` | `Item`, `Frame`, `Thing`, `Target`, `Card`, `Buffers`, `THING`, `NONE`, `thing_pick`, `target_near`, `pick_near` |
+| Display list, picking | `frame.rs` | `Item`, `Frame`, `Thing`, `Target`, `Card`, `Buffers` (recycled through `Frame::release`), `THING`, `NONE`, `thing_pick`, `target_near`, `pick_near` |
 | CPU rasterizer | `raster.rs` | `Frame::rasterize` and its primitives; `gpu.rs` mirrors it |
 | World-space emitters | `draw.rs` | `Frame::project`, `facet`, `quad`, `line`, `hairline`, `sphere`, `glow`, `beam`; `cover`, `similar`, `glows` |
 | What a view reads and writes | `stage.rs` | `Stage`, `RenderInput`, `FrameClock`, `MAX_DT`, `TourTarget`, `Title` |
 | Frame-wide state | `scene.rs`, `scene/tests.rs` | `Scene` (no per-view field), `fit`, `draw_links`, the exit flashes |
 | Constant both backends need | `shared.rs` | `shared!` macro, `CONSTANTS`, `prelude` writes them into the WGSL source |
 | World light direction | `shared.rs` | `LIGHT` (Rust only, see below) |
-| Wide lines | `strokes.rs` | `Frame::ribbon`, `Frame::tube`, `Width`, `Dash`, `ring_frames`, `tube_faces` |
+| Wide lines | `strokes.rs` | `Frame::ribbon`, `Frame::ribbon_of`, `Frame::tube`, `Width`, `Dash`, `ring_frames`, `tube_faces`, `Scratch` |
 | Grid of colours in world space | `field.rs` | `Field`, `Placement`, `Relief`, `Shading`, `Frame::field`, `Item::Field` |
 | Shaded-field caching | `field.rs` | `ShadedField`, recycled through `Buffers` by `(key, revision)` |
 | GPU field storage | `field.rs` | `StorageLayout` plans what the storage buffer rewrites |
@@ -35,6 +35,7 @@ text). Own file because every change to how something is rasterized must keep tw
   per channel, the owner of the nearest node as the pick. Change `field.rs` and `shaders.wgsl` together.
 - Grid simulations draw through `Frame::field`, not one triangle pair per cell.
 - The GPU field pass samples one storage buffer by hand (no hardware sampler).
+- A frame allocates nothing in steady state that it can keep: `Buffers` carries the display list, pixels, depth, picks, identities, things, field shading and the `strokes::Scratch` lists from one frame to the next, and `Frame::new` clears every one, so a recycled frame is byte-identical to a fresh one (`a_frame_drawn_into_recycled_buffers_is_byte_identical_to_one_drawn_into_new_ones`). New per-frame lists go in `Buffers` or on the view, cleared and refilled; `allocations.rs` holds each view to its bound.
 - `Scene` holds frame-wide state only; a new field needs a doc comment saying why and a line in
   `scene_has_no_view_specific_fields`.
 

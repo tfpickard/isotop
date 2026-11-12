@@ -864,9 +864,9 @@ impl Comb {
 
     /// Brings the field to `looks`, dimmed as `slot` says and owned by the process at `owner` in
     /// the frame's identities, bumping its revision only for what changed.
-    fn update(&mut self, lattice: &Lattice, looks: Vec<u8>, owner: u32, slot: usize) {
+    fn update(&mut self, lattice: &Lattice, looks: Option<Vec<u8>>, owner: u32, slot: usize) {
         let mut changed = false;
-        if looks != self.looks {
+        if let Some(looks) = looks.filter(|looks| *looks != self.looks) {
             let palette = &lattice.tables;
             for (color, texel) in self.field.colors.iter_mut().zip(&lattice.texels) {
                 *color = if texel.cell == NO_CELL {
@@ -1598,11 +1598,9 @@ impl Hive {
             }
             let comb = self.combs.entry(id).or_insert_with(|| Comb::new(id));
             let counts = Counts::of(&frame.measure, self.unit);
-            let looks = if comb.counts == Some(counts) {
-                comb.looks.clone()
-            } else {
-                lattice.arrange(&counts, hash_identity(id, SALT))
-            };
+            // The same counts arrange the same looks, so nothing is made or compared for them.
+            let looks = (comb.counts != Some(counts))
+                .then(|| lattice.arrange(&counts, hash_identity(id, SALT)));
             comb.counts = Some(counts);
             comb.update(lattice, looks, frame.index, frame.slot);
             self.swarms
