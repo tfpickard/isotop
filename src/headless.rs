@@ -64,6 +64,10 @@ struct Timing {
     record: f64,
     /// Turning it into pixels (`App::rasterize`), on the CPU or the GPU.
     raster: f64,
+    /// Draw calls the GPU made over the timed frames, and the calls it would have made drawn
+    /// exactly as recorded; both 0 on the CPU.
+    draw_calls: u64,
+    recorded_draw_calls: u64,
 }
 
 impl Timing {
@@ -72,8 +76,17 @@ impl Timing {
     /// up to.
     fn report(&self, frames: u32, size: (u32, u32), visible: usize, renderer: &str) -> String {
         let frames = f64::from(frames);
+        let draws = if self.draw_calls == 0 {
+            String::new()
+        } else {
+            format!(
+                " | {:.1} draw calls/frame ({:.1} drawn as recorded)",
+                self.draw_calls as f64 / frames,
+                self.recorded_draw_calls as f64 / frames,
+            )
+        };
         format!(
-            "{frames} frames ({} warm-up excluded) | {}x{} | {visible} visible | {:.2} ms/frame (record {:.2} + raster {:.2}) | {:.1} renderer fps on {renderer} (excludes terminal transport)",
+            "{frames} frames ({} warm-up excluded) | {}x{} | {visible} visible | {:.2} ms/frame (record {:.2} + raster {:.2}){draws} | {:.1} renderer fps on {renderer} (excludes terminal transport)",
             self.warmup,
             size.0,
             size.1,
@@ -112,6 +125,10 @@ fn benchmark(app: &mut App, options: &Options, mut frame: Frame, count: u32) -> 
         if i >= warmup {
             timing.record += (rasterizing - recording).as_secs_f64();
             timing.raster += rasterizing.elapsed().as_secs_f64();
+            if let Some(stats) = app.renderer.draw_stats() {
+                timing.draw_calls += stats.draw_calls as u64;
+                timing.recorded_draw_calls += stats.recorded_draw_calls as u64;
+            }
         }
     }
     timing.total = start.elapsed().as_secs_f64();
@@ -276,10 +293,20 @@ mod tests {
             total: 1.2,
             record: 0.3,
             raster: 0.9,
+            ..Timing::default()
         };
         assert_eq!(
             timing.report(120, (1920, 1080), 192, "cpu"),
             "120 frames (10 warm-up excluded) | 1920x1080 | 192 visible | 10.00 ms/frame (record 2.50 + raster 7.50) | 100.0 renderer fps on cpu (excludes terminal transport)"
+        );
+        let on_gpu = Timing {
+            draw_calls: 600,
+            recorded_draw_calls: 24_000,
+            ..timing
+        };
+        assert_eq!(
+            on_gpu.report(120, (1920, 1080), 192, "gpu"),
+            "120 frames (10 warm-up excluded) | 1920x1080 | 192 visible | 10.00 ms/frame (record 2.50 + raster 7.50) | 5.0 draw calls/frame (200.0 drawn as recorded) | 100.0 renderer fps on gpu (excludes terminal transport)"
         );
     }
 

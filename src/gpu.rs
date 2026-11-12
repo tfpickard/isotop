@@ -1,16 +1,34 @@
 //! Hardware rasterizer for the display list through wgpu: Vulkan on Linux (NVIDIA, AMD, Intel),
 //! Metal on Apple GPUs, DX12 on Windows. It renders colour, picking and depth like the CPU
 //! rasterizer and reads colour and picking back for the terminal and mouse hit-testing.
+//!
+//! A frame goes through `Gpu::submit`, which stages the display list (`staging`, in the draw
+//! calls `batch` plans: painter's order kept exactly, items that commute joining one call) and
+//! starts the readback (`readback`), and `Gpu::collect`, which waits for the frame and fills its
+//! pixels and picks. `Gpu::render` is both at once; `Renderer::pipelined` collects a frame after
+//! it has submitted the next.
+
+mod batch;
+#[cfg(test)]
+mod frames;
+mod pipelines;
+mod readback;
+mod staging;
 
 use std::mem::{offset_of, size_of};
-use std::ops::Range;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
 
 use crate::render::field::StorageLayout;
-use crate::render::shared::{self, LINE_DEPTH_BIAS, NONE};
-use crate::render::{Backdrop, Color, Frame, Item};
+use crate::render::shared::{self, NONE};
+use crate::render::{Backdrop, Frame};
+
+pub(crate) use batch::Order;
+use batch::Pass;
+pub(crate) use readback::{Flight, Picks};
+use readback::{Layout, Slots};
+use staging::Staging;
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const PICK: wgpu::TextureFormat = wgpu::TextureFormat::R32Uint;
@@ -170,19 +188,7 @@ fn shader_source() -> String {
     format!("{}{}", shared::prelude(), include_str!("shaders.wgsl"))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Pass {
-    Triangles,
-    Lines,
-    Beams,
-    Stars,
-    Balls,
-    Glows,
-    Glyphs,
-    Splats,
-    Fields,
-}
-
+/// The textures a frame is drawn into, which are made again only when the frame's size changes.
 struct Targets {
     width: u32,
     height: u32,
@@ -191,21 +197,49 @@ struct Targets {
     color_view: wgpu::TextureView,
     pick_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
-    readback: wgpu::Buffer,
-    /// Bytes per colour row in the readback buffer, padded to wgpu's copy alignment.
-    row: u32,
 }
 
-/// Picking is read back only in a window around the pointer: hover and clicks never look further.
-const PICK_WINDOW: u32 = 160;
-const PICK_ROW: u32 = (PICK_WINDOW * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-    * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+impl Targets {
+    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let texture = |label, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let readable = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        let color = texture("color", COLOR, readable);
+        let pick = texture("pick", PICK, readable);
+        let depth = texture("depth", DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        Self {
+            width,
+            height,
+            color_view: color.create_view(&Default::default()),
+            pick_view: pick.create_view(&Default::default()),
+            depth_view: depth.create_view(&Default::default()),
+            color,
+            pick,
+        }
+    }
+}
 
 /// A vertex or instance buffer reused across frames and grown when a frame needs more room.
 #[derive(Default)]
 struct Stream {
     buffer: Option<wgpu::Buffer>,
     capacity: u64,
+    /// How many buffers this stream has made, one for each time it outgrew the last.
+    created: u64,
 }
 
 impl Stream {
@@ -220,6 +254,7 @@ impl Stream {
         }
         if self.capacity < data.len() as u64 {
             self.capacity = (data.len() as u64).next_power_of_two().max(4096);
+            self.created += 1;
             self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stream"),
                 size: self.capacity,
@@ -230,6 +265,43 @@ impl Stream {
         let buffer = self.buffer.clone()?;
         queue.write_buffer(&buffer, 0, data);
         Some(buffer)
+    }
+}
+
+/// The six buffers a frame's items are uploaded to.
+#[derive(Default)]
+struct Streams {
+    vertices: Stream,
+    balls: Stream,
+    glows: Stream,
+    glyphs: Stream,
+    splats: Stream,
+    fields: Stream,
+}
+
+/// The buffers a frame was uploaded to, for the draw calls to bind.
+struct Uploaded {
+    vertices: Option<wgpu::Buffer>,
+    balls: Option<wgpu::Buffer>,
+    glows: Option<wgpu::Buffer>,
+    glyphs: Option<wgpu::Buffer>,
+    splats: Option<wgpu::Buffer>,
+    fields: Option<wgpu::Buffer>,
+}
+
+impl Uploaded {
+    /// The buffer `pass` draws from, and which of the six it is.
+    fn of(&self, pass: Pass) -> (usize, Option<&wgpu::Buffer>) {
+        match pass {
+            Pass::Balls => (1, self.balls.as_ref()),
+            Pass::Glows => (2, self.glows.as_ref()),
+            Pass::Glyphs => (3, self.glyphs.as_ref()),
+            Pass::Splats => (4, self.splats.as_ref()),
+            Pass::Fields => (5, self.fields.as_ref()),
+            Pass::Triangles | Pass::Lines | Pass::Beams | Pass::Stars => {
+                (0, self.vertices.as_ref())
+            }
+        }
     }
 }
 
@@ -283,6 +355,18 @@ impl FieldStorage {
     }
 }
 
+/// What the last frame submitted cost in draw calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Stats {
+    /// Items in the display list.
+    pub(crate) items: usize,
+    /// Draw calls the frame was made in, the sky's among them.
+    pub(crate) draw_calls: usize,
+    /// Draw calls it would have taken drawn exactly as recorded, with only adjacent items of one
+    /// kind sharing one.
+    pub(crate) recorded_draw_calls: usize,
+}
+
 pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -291,13 +375,17 @@ pub struct Gpu {
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     fields: FieldStorage,
-    sky: wgpu::RenderPipeline,
-    twilight: wgpu::RenderPipeline,
-    pipelines: [(Pass, wgpu::RenderPipeline); 9],
+    /// How many times the field storage buffer was made again.
+    fields_grown: u64,
+    pipelines: pipelines::Pipelines,
     targets: Option<Targets>,
-    streams: [Stream; 6],
+    streams: Streams,
+    staging: Staging,
+    slots: Slots,
     scratch: Vec<u8>,
     failure: Arc<Mutex<Option<String>>>,
+    order: Order,
+    stats: Stats,
 }
 
 impl Gpu {
@@ -305,7 +393,6 @@ impl Gpu {
     /// is faster than an emulated GPU. `ISOTOP_ALLOW_SOFTWARE_GPU=1` is the one exception, for a
     /// parity run on a machine with no GPU (CI's lavapipe): it asks wgpu for its fallback adapter
     /// only and accepts nothing but a CPU-type one, so it cannot silently measure hardware.
-    #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
     pub fn new(power: wgpu::PowerPreference) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -343,224 +430,16 @@ impl Gpu {
             label: Some("isotop shaders"),
             source: wgpu::ShaderSource::Wgsl(shader_source().into()),
         });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("globals"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let layout = pipelines::bind_layout(&device);
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
-            size: std::mem::size_of::<Globals>() as u64,
+            size: size_of::<Globals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let fields = FieldStorage::new(&device, FIELD_STORAGE_WORDS);
         let bind_group = bind_group(&device, &layout, &globals, &fields.buffer);
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("isotop"),
-            bind_group_layouts: &[Some(&layout)],
-            ..Default::default()
-        });
-        let vertex = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Unorm8x4, 3 => Uint32],
-        };
-        let ball = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Ball>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32, 2 => Float32, 3 => Unorm8x4, 4 => Uint32, 5 => Uint32],
-        };
-        let glow = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Glow>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Unorm8x4],
-        };
-        let glyph = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Glyph>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Unorm8x4, 3 => Uint32x4],
-        };
-        let splat = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Splat>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Uint32],
-        };
-        let field = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<FieldVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32x2, 3 => Uint32],
-        };
-        let make = |entry: (&str, &str),
-                    buffers: &[Option<wgpu::VertexBufferLayout>],
-                    topology: wgpu::PrimitiveTopology,
-                    style: Style| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(entry.0),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some(entry.0),
-                    compilation_options: Default::default(),
-                    buffers,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry.1),
-                    compilation_options: Default::default(),
-                    targets: &[
-                        Some(wgpu::ColorTargetState {
-                            format: COLOR,
-                            blend: style.blend.then_some(wgpu::BlendState::ALPHA_BLENDING),
-                            write_mask: if style.pick_only {
-                                wgpu::ColorWrites::empty()
-                            } else {
-                                wgpu::ColorWrites::ALL
-                            },
-                        }),
-                        Some(wgpu::ColorTargetState {
-                            format: PICK,
-                            blend: None,
-                            write_mask: if style.solid || style.pick_only {
-                                wgpu::ColorWrites::ALL
-                            } else {
-                                wgpu::ColorWrites::empty()
-                            },
-                        }),
-                    ],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH,
-                    depth_write_enabled: Some(style.solid),
-                    depth_compare: Some(if style.solid || style.pick_only {
-                        wgpu::CompareFunction::GreaterEqual
-                    } else {
-                        wgpu::CompareFunction::Always
-                    }),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: Default::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let solid = Style {
-            solid: true,
-            blend: false,
-            pick_only: false,
-        };
-        let backdrop = Style {
-            solid: false,
-            blend: false,
-            pick_only: false,
-        };
-        let translucent = Style {
-            solid: false,
-            blend: true,
-            pick_only: false,
-        };
-        let pick_only = Style {
-            solid: false,
-            blend: false,
-            pick_only: true,
-        };
-        use wgpu::PrimitiveTopology::{LineList, PointList, TriangleList};
-        let geometry = ("geometry_vertex", "geometry_fragment");
-        let pipelines = [
-            (
-                Pass::Triangles,
-                make(geometry, &[Some(vertex.clone())], TriangleList, solid),
-            ),
-            (
-                Pass::Lines,
-                make(geometry, &[Some(vertex.clone())], LineList, solid),
-            ),
-            (
-                Pass::Beams,
-                make(geometry, &[Some(vertex.clone())], LineList, translucent),
-            ),
-            (
-                Pass::Stars,
-                make(geometry, &[Some(vertex)], PointList, backdrop),
-            ),
-            (
-                Pass::Balls,
-                make(
-                    ("ball_vertex", "ball_fragment"),
-                    &[Some(ball)],
-                    TriangleList,
-                    solid,
-                ),
-            ),
-            (
-                Pass::Glows,
-                make(
-                    ("glow_vertex", "glow_fragment"),
-                    &[Some(glow)],
-                    TriangleList,
-                    translucent,
-                ),
-            ),
-            (
-                Pass::Glyphs,
-                make(
-                    ("glyph_vertex", "glyph_fragment"),
-                    &[Some(glyph)],
-                    TriangleList,
-                    backdrop,
-                ),
-            ),
-            (
-                Pass::Splats,
-                make(
-                    ("splat_vertex", "splat_fragment"),
-                    &[Some(splat)],
-                    TriangleList,
-                    pick_only,
-                ),
-            ),
-            (
-                Pass::Fields,
-                make(
-                    ("field_vertex", "field_fragment"),
-                    &[Some(field)],
-                    TriangleList,
-                    solid,
-                ),
-            ),
-        ];
-        let sky = make(("sky_vertex", "sky_fragment"), &[], TriangleList, backdrop);
-        let twilight = make(
-            ("sky_vertex", "twilight_fragment"),
-            &[],
-            TriangleList,
-            backdrop,
-        );
+        let pipelines = pipelines::Pipelines::new(&device, &shader, &layout);
         if let Some(error) = failure.lock().ok().and_then(|mut slot| slot.take()) {
             return Err(error);
         }
@@ -572,14 +451,49 @@ impl Gpu {
             bind_layout: layout,
             bind_group,
             fields,
-            sky,
-            twilight,
+            fields_grown: 0,
             pipelines,
             targets: None,
-            streams: Default::default(),
+            streams: Streams::default(),
+            staging: Staging::default(),
+            slots: Slots::default(),
             scratch: Vec::new(),
             failure,
+            order: Order::Commuting,
+            stats: Stats::default(),
         })
+    }
+
+    /// How the draw calls of a frame are laid out: `Commuting` unless a test or a measurement
+    /// asks for the recorded order, which draws the same frame in more calls.
+    #[cfg(test)]
+    pub(crate) fn set_order(&mut self, order: Order) {
+        self.order = order;
+    }
+
+    /// The draw calls of the last frame submitted.
+    pub(crate) fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    /// How many GPU buffers have been made since the start: vertex and instance streams, readback
+    /// buffers and the fields' storage. It stops growing once the frames have stopped growing.
+    #[cfg(test)]
+    pub(crate) fn buffers_created(&self) -> u64 {
+        let streams = &self.streams;
+        [
+            &streams.vertices,
+            &streams.balls,
+            &streams.glows,
+            &streams.glyphs,
+            &streams.splats,
+            &streams.fields,
+        ]
+        .iter()
+        .map(|stream| stream.created)
+        .sum::<u64>()
+            + self.slots.created
+            + self.fields_grown
     }
 
     /// Writes the frame's fields into the storage buffer where they differ from what it holds,
@@ -601,6 +515,7 @@ impl Gpu {
                 layout,
                 ..FieldStorage::new(&self.device, words)
             };
+            self.fields_grown += 1;
             self.bind_group = bind_group(
                 &self.device,
                 &self.bind_layout,
@@ -631,346 +546,148 @@ impl Gpu {
         Ok(plan)
     }
 
-    fn targets(&mut self, width: u32, height: u32) -> &Targets {
-        if self
-            .targets
-            .as_ref()
-            .is_none_or(|t| t.width != width || t.height != height)
-        {
-            let texture = |label, format, usage| {
-                self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some(label),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage,
-                    view_formats: &[],
-                })
-            };
-            let readable = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
-            let color = texture("color", COLOR, readable);
-            let pick = texture("pick", PICK, readable);
-            let depth = texture("depth", DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT);
-            let row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("readback"),
-                size: row as u64 * height as u64 + PICK_ROW as u64 * PICK_WINDOW as u64,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            self.targets = Some(Targets {
-                width,
-                height,
-                color_view: color.create_view(&Default::default()),
-                pick_view: pick.create_view(&Default::default()),
-                depth_view: depth.create_view(&Default::default()),
-                color,
-                pick,
-                readback,
-                row,
-            });
-        }
-        self.targets.as_ref().expect("targets were just created")
-    }
-
-    /// Rasterizes the frame's display list into its pixels, and its picking buffer around `pointer`.
-    #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
-    pub fn render(&mut self, frame: &mut Frame, pointer: Option<[f32; 2]>) -> Result<(), String> {
-        let (width, height) = (frame.width, frame.height);
-        let mut vertices = Vec::with_capacity(frame.items.len() * 2);
-        let mut balls = Vec::new();
-        let mut glows = Vec::new();
-        let mut glyphs = Vec::new();
-        let mut splats = Vec::new();
-        let mut field_vertices = Vec::new();
-        let plan = self.store_fields(frame)?;
-        let mut batches: Vec<(Pass, Range<u32>)> = Vec::new();
-        let mut depth = [f32::INFINITY, f32::NEG_INFINITY];
-        let mut track = |d: f32| {
-            depth[0] = depth[0].min(d);
-            depth[1] = depth[1].max(d);
-        };
-        let rgba = |color: Color, alpha: u8| [color[0], color[1], color[2], alpha];
-        for item in &frame.items {
-            let (pass, start) = match *item {
-                Item::Sphere { .. } => (Pass::Balls, balls.len()),
-                Item::Glow { .. } | Item::Puff { .. } => (Pass::Glows, glows.len()),
-                Item::Glyph { .. } => (Pass::Glyphs, glyphs.len()),
-                Item::Triangle(..) => (Pass::Triangles, vertices.len()),
-                Item::Line(..) => (Pass::Lines, vertices.len()),
-                Item::Beam(..) => (Pass::Beams, vertices.len()),
-                Item::Star(..) => (Pass::Stars, vertices.len()),
-                Item::Pick { .. } => (Pass::Splats, splats.len()),
-                Item::Field { .. } => (Pass::Fields, field_vertices.len()),
-            };
-            match *item {
-                Item::Triangle(points, color, pick) => {
-                    for p in points {
-                        track(p[2]);
-                        vertices.push(Vertex {
-                            position: [p[0], p[1]],
-                            depth: p[2],
-                            color: rgba(color, 255),
-                            pick,
-                        });
-                    }
-                }
-                Item::Line(a, b, color) => {
-                    for p in [a, b] {
-                        track(p[2] + LINE_DEPTH_BIAS);
-                        vertices.push(Vertex {
-                            position: [p[0], p[1]],
-                            depth: p[2] + LINE_DEPTH_BIAS,
-                            color: rgba(color, 255),
-                            pick: NONE,
-                        });
-                    }
-                }
-                Item::Beam(a, b, color, weight) => {
-                    for p in [a, b] {
-                        vertices.push(Vertex {
-                            position: p,
-                            depth: 0.0,
-                            color: rgba(color, (weight.clamp(0.0, 1.0) * 255.0) as u8),
-                            pick: NONE,
-                        });
-                    }
-                }
-                Item::Star(p, color) => vertices.push(Vertex {
-                    position: [p[0] + 0.5, p[1] + 0.5],
-                    depth: 0.0,
-                    color: rgba(color, 255),
-                    pick: NONE,
-                }),
-                Item::Sphere {
-                    center,
-                    radius,
-                    depth: world,
-                    color,
-                    pick,
-                    selected,
-                } => {
-                    track(center[2] - world);
-                    track(center[2] + world);
-                    balls.push(Ball {
-                        center,
-                        radius,
-                        world,
-                        color: rgba(color, 255),
-                        pick,
-                        selected: selected as u32,
-                    });
-                }
-                // The blend unit rounds, which is what a `Puff` does on the CPU; a `Glow` truncates.
-                Item::Glow {
-                    center,
-                    radius,
-                    color,
-                    strength,
-                }
-                | Item::Puff {
-                    center,
-                    radius,
-                    color,
-                    strength,
-                } => glows.push(Glow {
-                    center,
-                    radius,
-                    strength,
-                    color: rgba(color, 255),
-                }),
-                Item::Glyph {
-                    origin,
-                    scale,
-                    bits,
-                    color,
-                } => glyphs.push(Glyph {
-                    origin,
-                    scale: scale as f32,
-                    color: rgba(color, 255),
-                    bits: [0, 32, 64, 96].map(|shift| (bits >> shift) as u32),
-                }),
-                Item::Pick {
-                    center,
-                    radius,
-                    depth,
-                    pick,
-                } => {
-                    track(depth);
-                    splats.push(Splat {
-                        center,
-                        radius,
-                        depth,
-                        pick,
-                    });
-                }
-                Item::Field { points, uv, field } => {
-                    for (p, uv) in points.into_iter().zip(uv) {
-                        track(p[2]);
-                        field_vertices.push(FieldVertex {
-                            position: [p[0], p[1]],
-                            depth: p[2],
-                            uv,
-                            slot: plan.offsets[field as usize],
-                        });
-                    }
-                }
-            }
-            let end = match pass {
-                Pass::Balls => balls.len(),
-                Pass::Glows => glows.len(),
-                Pass::Glyphs => glyphs.len(),
-                Pass::Splats => splats.len(),
-                Pass::Fields => field_vertices.len(),
-                _ => vertices.len(),
-            };
-            match batches.last_mut() {
-                Some((last, range)) if *last == pass && range.end == start as u32 => {
-                    range.end = end as u32
-                }
-                _ => batches.push((pass, start as u32..end as u32)),
-            }
-        }
-        if depth[0] > depth[1] {
-            depth = [0.0, 1.0];
-        }
+    /// Writes the globals and the staged items to the GPU, growing a buffer that is too small.
+    fn upload(&mut self, frame: &Frame) -> Uploaded {
+        let depth = self.staging.depth;
         let sky = frame.sky;
         let globals = Globals {
-            size: [width as f32, height as f32],
+            size: [frame.width as f32, frame.height as f32],
             depth: [depth[0], 1.0 / (depth[1] - depth[0]).max(1e-3)],
             haze: [sky.haze[0], sky.haze[1], sky.haze[2], sky.time],
             sky: [sky.backdrop as u32 as f32, 0.0, 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
-        let [
-            vertex_stream,
-            ball_stream,
-            glow_stream,
-            glyph_stream,
-            splat_stream,
-            field_stream,
-        ] = &mut self.streams;
-        let vertex_buffer =
-            vertex_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&vertices));
-        let ball_buffer =
-            ball_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&balls));
-        let glow_buffer =
-            glow_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&glows));
-        let glyph_buffer =
-            glyph_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&glyphs));
-        let splat_buffer =
-            splat_stream.upload(&self.device, &self.queue, bytemuck::cast_slice(&splats));
-        let field_buffer = field_stream.upload(
-            &self.device,
-            &self.queue,
-            bytemuck::cast_slice(&field_vertices),
-        );
-        self.targets(width, height);
+        let (device, queue) = (&self.device, &self.queue);
+        let (streams, staging) = (&mut self.streams, &self.staging);
+        Uploaded {
+            vertices: streams.vertices.upload(
+                device,
+                queue,
+                bytemuck::cast_slice(&staging.vertices),
+            ),
+            balls: streams
+                .balls
+                .upload(device, queue, bytemuck::cast_slice(&staging.balls)),
+            glows: streams
+                .glows
+                .upload(device, queue, bytemuck::cast_slice(&staging.glows)),
+            glyphs: streams
+                .glyphs
+                .upload(device, queue, bytemuck::cast_slice(&staging.glyphs)),
+            splats: streams
+                .splats
+                .upload(device, queue, bytemuck::cast_slice(&staging.splats)),
+            fields: streams.fields.upload(
+                device,
+                queue,
+                bytemuck::cast_slice(&staging.field_vertices),
+            ),
+        }
+    }
+
+    /// Records the frame's one render pass: the sky, then each draw call in order.
+    fn draw(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &Targets,
+        uploaded: &Uploaded,
+        backdrop: Backdrop,
+    ) {
+        let attachment = |view, clear| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(clear),
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let none = wgpu::Color {
+            r: NONE as f64,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("frame"),
+            color_attachments: &[
+                attachment(&targets.color_view, wgpu::Color::BLACK),
+                attachment(&targets.pick_view, none),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &targets.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_pipeline(self.pipelines.sky(backdrop == Backdrop::Twilight));
+        pass.draw(0..3, 0..1);
+        // A buffer stays bound across pipelines, so it is bound again only when the draw calls
+        // move to another of the six.
+        let mut bound = None;
+        for draw in &self.staging.draws {
+            let (stream, buffer) = uploaded.of(draw.pass);
+            let Some(buffer) = buffer else { continue };
+            pass.set_pipeline(self.pipelines.of(draw.pass));
+            if bound != Some(stream) {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                bound = Some(stream);
+            }
+            match draw.pass {
+                Pass::Balls | Pass::Glows | Pass::Glyphs | Pass::Splats => {
+                    pass.draw(0..6, draw.range.clone());
+                }
+                _ => pass.draw(draw.range.clone(), 0..1),
+            }
+        }
+    }
+
+    /// Draws the frame's display list on the GPU and starts copying its colour, and its picks as
+    /// `picks` says, into a buffer; the `Flight` it returns is `collect`ed to fill the frame.
+    /// Fails if two frames are in flight already.
+    pub(crate) fn submit(&mut self, frame: &Frame, picks: Picks) -> Result<Flight, String> {
+        let (width, height) = (frame.width, frame.height);
+        let plan = self.store_fields(frame)?;
+        self.staging.stage(frame, &plan.offsets, self.order);
+        self.stats = Stats {
+            items: frame.items.len(),
+            draw_calls: self.staging.draws.len() + 1,
+            recorded_draw_calls: self.staging.planner.recorded_runs + 1,
+        };
+        let uploaded = self.upload(frame);
+        if self
+            .targets
+            .as_ref()
+            .is_none_or(|t| t.width != width || t.height != height)
+        {
+            self.targets = Some(Targets::new(&self.device, width, height));
+        }
+        let layout = Layout::new(width, height, picks);
+        let (buffer, busy) = self.slots.acquire(&self.device, layout.bytes)?;
         let targets = self.targets.as_ref().expect("targets exist");
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        {
-            let attachment = |view, clear| {
-                Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })
-            };
-            let none = wgpu::Color {
-                r: NONE as f64,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("frame"),
-                color_attachments: &[
-                    attachment(&targets.color_view, wgpu::Color::BLACK),
-                    attachment(&targets.pick_view, none),
-                ],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_pipeline(if frame.sky.backdrop == Backdrop::Twilight {
-                &self.twilight
-            } else {
-                &self.sky
-            });
-            pass.draw(0..3, 0..1);
-            for (kind, range) in batches {
-                let pipeline = &self
-                    .pipelines
-                    .iter()
-                    .find(|(pass, _)| *pass == kind)
-                    .expect("every pass has a pipeline")
-                    .1;
-                pass.set_pipeline(pipeline);
-                match kind {
-                    Pass::Balls | Pass::Glows | Pass::Glyphs | Pass::Splats => {
-                        let buffer = match kind {
-                            Pass::Balls => &ball_buffer,
-                            Pass::Glows => &glow_buffer,
-                            Pass::Splats => &splat_buffer,
-                            _ => &glyph_buffer,
-                        };
-                        if let Some(buffer) = buffer {
-                            pass.set_vertex_buffer(0, buffer.slice(..));
-                            pass.draw(0..6, range);
-                        }
-                    }
-                    Pass::Fields => {
-                        if let Some(buffer) = &field_buffer {
-                            pass.set_vertex_buffer(0, buffer.slice(..));
-                            pass.draw(range, 0..1);
-                        }
-                    }
-                    _ => {
-                        if let Some(buffer) = &vertex_buffer {
-                            pass.set_vertex_buffer(0, buffer.slice(..));
-                            pass.draw(range, 0..1);
-                        }
-                    }
-                }
-            }
-        }
-        let window = pointer.map(|[x, y]| {
-            let size = [PICK_WINDOW.min(width), PICK_WINDOW.min(height)];
-            let corner = |at: f32, extent: u32, limit: u32| {
-                (at as i64 - extent as i64 / 2).clamp(0, (limit - extent) as i64) as u32
-            };
-            (
-                [corner(x, size[0], width), corner(y, size[1], height)],
-                size,
-            )
-        });
-        let mut copies = vec![(&targets.color, [0, 0], [width, height], 0, targets.row)];
-        if let Some((origin, size)) = window {
-            let offset = targets.row as u64 * height as u64;
-            copies.push((&targets.pick, origin, size, offset, PICK_ROW));
+        self.draw(&mut encoder, targets, &uploaded, frame.sky.backdrop);
+        let mut copies = vec![(&targets.color, [0, 0], [width, height], 0, layout.row)];
+        if layout.pick_size[1] > 0 {
+            copies.push((
+                &targets.pick,
+                layout.pick_origin,
+                layout.pick_size,
+                layout.pick_offset,
+                layout.pick_row,
+            ));
         }
         for (texture, origin, size, offset, row) in copies {
             encoder.copy_texture_to_buffer(
@@ -985,7 +702,7 @@ impl Gpu {
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::TexelCopyBufferInfo {
-                    buffer: &targets.readback,
+                    buffer: &buffer,
                     layout: wgpu::TexelCopyBufferLayout {
                         offset,
                         bytes_per_row: Some(row),
@@ -999,108 +716,31 @@ impl Gpu {
                 },
             );
         }
-        self.queue.submit(Some(encoder.finish()));
-        let slice = targets.readback.slice(..);
-        let (sender, receiver) = mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
-        });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|error| format!("GPU poll: {error}"))?;
-        receiver
-            .recv()
-            .map_err(|error| format!("GPU readback: {error}"))?
-            .map_err(|error| format!("GPU readback: {error}"))?;
-        {
-            let mapped = slice
-                .get_mapped_range()
-                .map_err(|error| format!("GPU readback: {error}"))?;
-            // Mapped readback memory can be uncached (Intel); one bulk copy into cached memory is
-            // hundreds of times faster than reading it piecemeal during the conversion below.
-            copy_mapped(&mapped, &mut self.scratch);
-            drop(mapped);
-            let data = &self.scratch;
-            let row = targets.row as usize;
-            let (w, h) = (width as usize, height as usize);
-            frame.pixels.resize(w * h * 3, 0);
-            frame.picks.clear();
-            frame.picks.resize(w * h, NONE);
-            for y in 0..h {
-                let colors = &data[y * row..y * row + w * 4];
-                for (pixel, rgba) in frame.pixels[y * w * 3..(y + 1) * w * 3]
-                    .as_chunks_mut::<3>()
-                    .0
-                    .iter_mut()
-                    .zip(colors.as_chunks::<4>().0)
-                {
-                    pixel.copy_from_slice(&rgba[..3]);
-                }
-            }
-            if let Some((origin, size)) = window {
-                let base = row * h;
-                for wy in 0..size[1] as usize {
-                    let source = &data[base + wy * PICK_ROW as usize..][..size[0] as usize * 4];
-                    let start = (origin[1] as usize + wy) * w + origin[0] as usize;
-                    for (pick, bytes) in frame.picks[start..start + size[0] as usize]
-                        .iter_mut()
-                        .zip(source.as_chunks::<4>().0)
-                    {
-                        *pick = u32::from_le_bytes(*bytes);
-                    }
-                }
-            }
-        }
-        targets.readback.unmap();
-        if let Some(error) = self.failure.lock().ok().and_then(|mut slot| slot.take()) {
-            return Err(error);
-        }
-        Ok(())
+        let submission = self.queue.submit(Some(encoder.finish()));
+        let flight = Flight::new(self.device.clone(), buffer, busy, submission, layout);
+        self.failed()?;
+        Ok(flight)
     }
-}
 
-#[derive(Clone, Copy)]
-struct Style {
-    /// Depth-tested, depth-writing and pickable; otherwise drawn over the scene without depth.
-    solid: bool,
-    blend: bool,
-    /// Depth-tested like solid geometry, but writes only picks: no colour and no depth.
-    pick_only: bool,
-}
-
-/// Copies GPU readback memory into `out`. Mapped readback memory may be write-combined (Intel
-/// integrated GPUs), where ordinary loads are uncached and slow; SSE4.1 streaming loads read it at
-/// close to normal memory speed.
-fn copy_mapped(source: &[u8], out: &mut Vec<u8>) {
-    out.clear();
-    out.reserve(source.len());
-    #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("sse4.1")
-        && (source.as_ptr() as usize).is_multiple_of(16)
-    {
-        let whole = source.len() / 16 * 16;
-        // SAFETY: SSE4.1 is available, the source is 16-byte aligned and every load stays within
-        // `whole` bytes of it; the destination has capacity for `source.len()` bytes and its length
-        // is set only after those bytes are written.
-        unsafe {
-            stream_copy(source.as_ptr(), out.as_mut_ptr(), whole);
-            out.set_len(whole);
-        }
-        out.extend_from_slice(&source[whole..]);
-        return;
+    /// Waits for `flight`'s frame, which `submit` drew from `frame` or from one like it, and fills
+    /// `frame`'s pixels and picks from it.
+    pub(crate) fn collect(&mut self, flight: Flight, frame: &mut Frame) -> Result<(), String> {
+        flight.finish(frame, &mut self.scratch)?;
+        self.failed()
     }
-    out.extend_from_slice(source);
-}
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "sse4.1")]
-unsafe fn stream_copy(source: *const u8, target: *mut u8, length: usize) {
-    use std::arch::x86_64::{__m128i, _mm_storeu_si128, _mm_stream_load_si128};
-    for offset in (0..length).step_by(16) {
-        // SAFETY: the caller guarantees alignment, SSE4.1 support and in-bounds offsets.
-        unsafe {
-            let chunk = _mm_stream_load_si128(source.add(offset) as *const __m128i);
-            _mm_storeu_si128(target.add(offset) as *mut __m128i, chunk);
+    /// Rasterizes the frame's display list into its pixels and the picks `picks` asks for, and
+    /// returns when they are there.
+    pub(crate) fn render(&mut self, frame: &mut Frame, picks: Picks) -> Result<(), String> {
+        let flight = self.submit(frame, picks)?;
+        self.collect(flight, frame)
+    }
+
+    /// The first error the device reported on its own since the last call, if any.
+    fn failed(&self) -> Result<(), String> {
+        match self.failure.lock().ok().and_then(|mut slot| slot.take()) {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 }
@@ -1121,11 +761,12 @@ mod tests {
         assert!(!accepts(DiscreteGpu, true) && !accepts(IntegratedGpu, true));
     }
 
+    use super::readback::PICK_WINDOW;
     use super::*;
     use crate::medium::Grid;
     use crate::model::Identity;
     use crate::render::{
-        Backdrop, Buffers, Camera, Field, Placement, Relief, Shading, Sky, Target, Thing,
+        Backdrop, Buffers, Camera, Field, Item, Placement, Relief, Shading, Sky, Target, Thing,
     };
 
     /// A frame small enough for the GPU to read back every pick: a process's triangle over the
@@ -1237,7 +878,8 @@ mod tests {
             let mut cpu = clump(count, spread, radius, true);
             cpu.rasterize();
             let mut hardware = clump(count, spread, radius, true);
-            gpu.render(&mut hardware, None).expect("the GPU renders");
+            gpu.render(&mut hardware, Picks::Nowhere)
+                .expect("the GPU renders");
             let (share, largest) = disagreement(&cpu, &hardware);
             assert!(
                 share == 0.0 && largest <= 1,
@@ -1254,7 +896,7 @@ mod tests {
         let mut expected = picks_frame();
         expected.rasterize();
         let mut frame = picks_frame();
-        gpu.render(&mut frame, Some([60.0, 40.0]))
+        gpu.render(&mut frame, Picks::Around([60.0, 40.0]))
             .expect("the GPU renders");
         let target = |frame: &Frame, x: usize, y: usize| frame.target(frame.picks[y * 120 + x]);
         let grave = |key| Some(Target::Thing(Thing { kind: "grave", key }));
@@ -1448,7 +1090,7 @@ mod tests {
             let mut cpu = field_frame(scene, &field);
             cpu.rasterize();
             let mut hardware = field_frame(scene, &field);
-            gpu.render(&mut hardware, Some(pointer))
+            gpu.render(&mut hardware, Picks::Around(pointer))
                 .expect("the GPU renders");
             let line = compared(name, &cpu, &hardware);
             let (differing, inside) = differing_picks(&cpu, &hardware, pointer);
@@ -1467,7 +1109,7 @@ mod tests {
         let mut cpu = field_frame(0, &field);
         cpu.rasterize();
         let mut hardware = field_frame(0, &field);
-        gpu.render(&mut hardware, Some(pointer))
+        gpu.render(&mut hardware, Picks::Around(pointer))
             .expect("the GPU renders");
         println!(
             "field rewritten: {}",
@@ -1495,7 +1137,7 @@ mod tests {
         let mut cpu = draw(Relief::Flat);
         cpu.rasterize();
         let mut hardware = draw(Relief::Flat);
-        gpu.render(&mut hardware, Some(pointer))
+        gpu.render(&mut hardware, Picks::Around(pointer))
             .expect("the GPU renders");
         println!("two fields: {}", compared("two", &cpu, &hardware));
         // A field too big for the storage buffer it was first given grows the buffer, which
@@ -1505,13 +1147,13 @@ mod tests {
         let mut cpu = field_frame(1, &big);
         cpu.rasterize();
         let mut hardware = field_frame(1, &big);
-        gpu.render(&mut hardware, Some(pointer))
+        gpu.render(&mut hardware, Picks::Around(pointer))
             .expect("the GPU renders");
         println!("grown storage: {}", compared("grown", &cpu, &hardware));
         let mut cpu = field_frame(0, &field);
         cpu.rasterize();
         let mut hardware = field_frame(0, &field);
-        gpu.render(&mut hardware, Some(pointer))
+        gpu.render(&mut hardware, Picks::Around(pointer))
             .expect("the GPU renders");
         println!("after growth: {}", compared("after", &cpu, &hardware));
         // Without owners every pixel picks nothing, and without shading the colours are the
@@ -1522,7 +1164,7 @@ mod tests {
         let mut cpu = field_frame(0, &plain);
         cpu.rasterize();
         let mut hardware = field_frame(0, &plain);
-        gpu.render(&mut hardware, Some(pointer))
+        gpu.render(&mut hardware, Picks::Around(pointer))
             .expect("the GPU renders");
         println!("no owners: {}", compared("plain", &cpu, &hardware));
         assert!(cpu.picks.iter().all(|&pick| pick == NONE));
