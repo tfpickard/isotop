@@ -12,7 +12,8 @@ text). Own file because every change to how something is rasterized must keep tw
 | Module root and re-exports | `../render.rs` | `Color`, `Point`, `Links`; re-exports keep `crate::render::{Frame, Camera, Item, Scene, ...}` working |
 | Projection, pan, zoom, tilt | `camera.rs` | `Camera`, `SCALE`, `ISOMETRIC`, `LOWEST_PITCH`, `ORIGIN_Y` |
 | Display list, picking | `frame.rs` | `Item`, `Frame`, `Thing`, `Target`, `Card`, `Buffers` (recycled through `Frame::release`), `THING`, `NONE`, `thing_pick`, `target_near`, `pick_near` |
-| CPU rasterizer | `raster.rs` | `Frame::rasterize` and its primitives; `gpu.rs` mirrors it |
+| CPU rasterizer | `raster.rs`, `raster/triangle.rs`, `raster/shapes.rs` | `Frame::rasterize` (bands of rows, a thread each), `Band`, the primitives; `gpu.rs` mirrors it |
+| CPU rasterizer, old and new | `raster/reference.rs`, `raster/differential.rs` | the reference and the differential test that holds the rasterizer to it, and a measurement |
 | World-space emitters | `draw.rs` | `Frame::project`, `facet`, `quad`, `line`, `hairline`, `sphere`, `glow`, `beam`; `cover`, `similar`, `glows` |
 | What a view reads and writes | `stage.rs` | `Stage`, `RenderInput`, `FrameClock`, `MAX_DT`, `TourTarget`, `Title` |
 | Frame-wide state | `scene.rs`, `scene/tests.rs` | `Scene` (no per-view field), `fit`, `draw_links`, the exit flashes |
@@ -22,7 +23,7 @@ text). Own file because every change to how something is rasterized must keep tw
 | Grid of colours in world space | `field.rs` | `Field`, `Placement`, `Relief`, `Shading`, `Frame::field`, `Item::Field` |
 | Shaded-field caching | `field.rs` | `ShadedField`, recycled through `Buffers` by `(key, revision)` |
 | GPU field storage | `field.rs` | `StorageLayout` plans what the storage buffer rewrites |
-| CPU field spans | `field.rs` | `Frame::field_triangle` |
+| CPU field spans | `field.rs` | `Band::field_triangle` |
 | Text drawn into the scene | `text.rs` | `Frame::stroke_text` (Hershey glyphs from `../hershey.rs`), `Align`; no new `Item` |
 
 ## CONVENTIONS
@@ -45,9 +46,15 @@ text). Own file because every change to how something is rasterized must keep tw
 - Don't move `LIGHT` into `shared!`.
 - Don't emit a stroke piece longer than 32 px an edge.
 - Don't change `raster.rs` without `gpu.rs` and `shaders.wgsl` (see root Invariants for the parity check).
+- The CPU rasterizer's output is bit-exact, and the golden hashes are not enough to say so: `cargo test rasterizer_matches_the_one_it_replaced`
+  draws random frames the golden test never does through it and through `raster/reference.rs`. Change an arithmetic operation of a
+  primitive and it fails; to speed one up, keep every operation and rearrange how they are scheduled. A primitive clips to its band's
+  rows with the same expressions that `Item::rows` uses, and a new `Item` needs a case there.
 - Don't stack `Item::Glow` for density; use `Item::Puff`, which rounds the same on both backends.
 
 ## COMMANDS
 - `cargo test render::`
+- `cargo test --release the_rasterizer_is_faster -- --ignored --nocapture` (see `raster/differential.rs` for its variables) times the CPU
+  rasterizer against the reference on real views.
 - `./target/release/isotop --demo --view <name> --renderer cpu --width 960 --time 12 --output /tmp/cpu.png`, the same with
   `--renderer gpu`, then `python3 scripts/compare_png.py /tmp/cpu.png /tmp/gpu.png`.
