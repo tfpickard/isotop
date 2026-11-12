@@ -38,10 +38,6 @@ pub use nvml::Nvml as Gpu;
 pub use pipes::PipeScan;
 pub use thermal::ThermalScan;
 #[cfg(test)]
-#[expect(
-    unused_imports,
-    reason = "the die's floorplan test is the first reader"
-)]
 pub use thermal::fixture_topologies;
 pub use threads::Threads;
 pub use wait::WaitScan;
