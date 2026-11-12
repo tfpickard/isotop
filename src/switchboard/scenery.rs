@@ -264,11 +264,10 @@ impl Pen<'_> {
 
     /// A stroke `width` design pixels wide (at least `floor` screen pixels) along `points`.
     pub fn stroke(&mut self, points: &[Spot], width: f32, color: Color, pick: u32) {
-        let world: Vec<Point> = points.iter().map(|&[x, d, z]| point(x, d, z)).collect();
         let pixels = (width * self.pixel()).max(1.2);
-        self.frame.ribbon(
+        self.frame.ribbon_of(
             self.camera,
-            &world,
+            points.iter().map(|&[x, d, z]| point(x, d, z)),
             Width::Pixels(pixels),
             color,
             pick,

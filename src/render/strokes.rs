@@ -233,6 +233,8 @@ pub(crate) struct Scratch {
     thin: Vec<Option<bool>>,
     /// The polyline of one glyph stroke being drawn (`Frame::stroke_text`).
     pub(super) run: Vec<[f32; 2]>,
+    /// The points of a ribbon gathered by `Frame::ribbon_of`.
+    path: Vec<Point>,
 }
 
 /// One flat face of a tube in world space: a quad (a cap's fan triangle repeats its centre) with
@@ -390,6 +392,23 @@ impl Frame {
                 Some(dash) => dash.each_span(start, end, piece),
             }
         }
+    }
+
+    /// `ribbon` along the points `path` yields, which are gathered in a list the frame keeps.
+    pub(crate) fn ribbon_of(
+        &mut self,
+        camera: &Camera,
+        path: impl Iterator<Item = Point>,
+        width: Width,
+        color: Color,
+        pick: u32,
+        dash: Option<Dash>,
+    ) {
+        let mut points = std::mem::take(&mut self.strokes.path);
+        points.clear();
+        points.extend(path);
+        self.ribbon(camera, &points, width, color, pick, dash);
+        self.strokes.path = points;
     }
 
     /// The rectangle `half` to each side of the screen segment `p` to `q`.
