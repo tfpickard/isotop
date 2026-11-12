@@ -128,6 +128,8 @@ impl<'a> Live<'a> {
         let terminal = Terminal::enter(options.force_graphics, options.direct)?;
         app.scene.intro = true;
         app.keyboard = terminal.keyboard;
+        // The GPU draws a frame while the next is recorded, which a headless run never does.
+        let _ = app.renderer.set_pipelined(!options.no_gpu_pipeline);
         let layout = Layout::measure(options.width, app.panel_shown())?;
         let now = Instant::now();
         Ok(Self {
@@ -160,13 +162,18 @@ impl<'a> Live<'a> {
             self.last_frame = Instant::now();
             self.sample(elapsed)?;
             self.follow_journal();
-            let (mut frame, render_ms) = self.render(elapsed, frame_start);
+            // The first frame the GPU is given has nothing before it to present.
+            let Some((mut frame, render_ms)) = self.render(elapsed, frame_start) else {
+                continue;
+            };
             let shown = self.present(&mut frame, render_ms)?;
             quit = self.input(frame_start + frame_interval, &frame, &shown)?;
             quit |= self.finish(frame);
             // A view that deferred the quit has played its farewell in the frame just drawn.
             quit |= self.app.farewell_over();
         }
+        // The frame the GPU still holds is finished before the terminal is given back.
+        let _ = self.app.renderer.flush();
         Ok(())
     }
 
@@ -221,16 +228,19 @@ impl<'a> Live<'a> {
         }
     }
 
-    /// Moves the camera and the tour on, and draws the frame. Also returns how long the turn has
-    /// taken so far, in milliseconds.
-    fn render(&mut self, elapsed: f32, frame_start: Instant) -> (Frame, f32) {
+    /// Moves the camera and the tour on, records the frame and gives it to the rasterizer, and
+    /// returns the frame to present: this one, or with the GPU running a frame behind the one
+    /// before it, which the GPU drew while this one was recorded. Also returns how long the turn
+    /// has taken so far, in milliseconds.
+    fn render(&mut self, elapsed: f32, frame_start: Instant) -> Option<(Frame, f32)> {
         self.app.steer(elapsed, self.tour_after);
-        let frame = self.app.render(
+        let frame = self.app.draw(
             self.layout.width,
             self.layout.height,
             self.options.limit as usize,
         );
-        (frame, frame_start.elapsed().as_secs_f32() * 1000.0)
+        let frame = self.app.rasterize_ahead(frame)?;
+        Some((frame, frame_start.elapsed().as_secs_f32() * 1000.0))
     }
 
     /// Puts the text over the frame and sends it to the terminal.
@@ -315,6 +325,10 @@ impl<'a> Live<'a> {
 
     /// Measures the terminal again and clears it, after a resize or when the panel came or went.
     fn resize(&mut self) -> Outcome<()> {
+        // A frame still in flight has the old size, and is not shown.
+        if let Some(frame) = self.app.renderer.flush() {
+            self.app.scene.spare = frame.release();
+        }
         self.layout = Layout::measure(self.options.width, self.app.panel_shown())?;
         self.terminal.clear()?;
         Ok(())
