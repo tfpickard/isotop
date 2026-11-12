@@ -1415,6 +1415,21 @@ reads frames both inline and through shared memory, and exercises interactive
 controls and restoration. Visual quality, flicker, and display latency should
 also be checked in Ghostty.
 
+CPU/GPU parity can be checked without a GPU through lavapipe, Mesa's software Vulkan driver. Install
+`mesa-vulkan-drivers` (and `libvulkan1`), then set `ISOTOP_ALLOW_SOFTWARE_GPU=1`: `--renderer gpu` then
+uses the software adapter and accepts nothing else. Without the variable software adapters stay refused.
+
+```sh
+export ISOTOP_ALLOW_SOFTWARE_GPU=1
+./target/release/isotop --demo --view orbit --time 12 --width 960 --renderer cpu --output cpu.png
+./target/release/isotop --demo --view orbit --time 12 --width 960 --renderer gpu --output gpu.png
+python3 scripts/compare_png.py cpu.png gpu.png
+cargo test -- --ignored        # the GPU tests, on lavapipe too
+```
+
+CI runs this for every view and fails on a miss; the limits and the views known to miss are in
+`docs/VIEW_CONVENTIONS.md`.
+
 The Rust toolchain is pinned in `rust-toolchain.toml` (and `rust-version` in
 `Cargo.toml`). To bump it, change both in one pull request and fix any new lints.
 

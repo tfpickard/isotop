@@ -158,6 +158,65 @@ jobs:
             parity/*.png
           if-no-files-found: ignore
 
+      # Linux has no GPU, so the GPU backend runs on lavapipe (Mesa's software Vulkan driver).
+      # Gpu::new takes a software adapter only with ISOTOP_ALLOW_SOFTWARE_GPU=1, and then only a
+      # software one; without it the adapter choice is unchanged.
+      - name: Install lavapipe
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+
+      # Every view, CPU against GPU (lavapipe), with the tolerance in docs/VIEW_CONVENTIONS.md.
+      # Blocking: any miss, and any failed render, fails the job, except the views in
+      # known_debt, whose misses are measured and reported but do not fail it. Nothing is
+      # loosened; those four are tracked in #174 and leave the list when they pass.
+      - name: CPU/GPU parity for every view (lavapipe, blocking)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          ISOTOP_ALLOW_SOFTWARE_GPU: "1"
+        run: |
+          known_debt=" orbit flow strata hr "
+          line_dominant=" city ripple cores cells globe "
+          mkdir parity
+          : > parity.txt
+          status=0
+          for view in $(./target/release/isotop --list-views); do
+            rendered=1
+            for renderer in cpu gpu; do
+              ./target/release/isotop --demo --view "$view" --renderer "$renderer" \
+                --width 960 --time 12 --output "parity/$view-$renderer.png" || rendered=0
+            done
+            if [ "$rendered" = 0 ]; then
+              echo "$view: RENDER FAILED" | tee -a parity.txt
+              status=1
+              continue
+            fi
+            limits=()
+            if [[ "$line_dominant" == *" $view "* ]]; then
+              limits=(--max-mean 0.5 --max-share 1.0)
+            fi
+            if line=$(python3 scripts/compare_png.py "${limits[@]}" \
+                "parity/$view-cpu.png" "parity/$view-gpu.png"); then
+              echo "$view: $line" | tee -a parity.txt
+            elif [[ "$known_debt" == *" $view "* ]]; then
+              echo "$view: $line (known parity debt, #174)" | tee -a parity.txt
+            else
+              echo "$view: $line" | tee -a parity.txt
+              status=1
+            fi
+          done
+          exit $status
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && runner.os == 'Linux'
+        with:
+          name: parity-linux
+          path: |
+            parity.txt
+            parity/*.png
+          if-no-files-found: ignore
+
       - name: Self-test the PNG comparison script
         run: python3 scripts/compare_png.py --self-test
 

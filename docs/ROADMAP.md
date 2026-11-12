@@ -296,7 +296,7 @@ Hand P1 ([#17](https://github.com/tfpickard/isotop/issues/17)), B3 ([#30](https:
 
 ### Verification without a GPU
 
-Agents such as Codex usually have no hardware GPU, and `Gpu::new` refuses software adapters. Such agents attach the CPU PNG and take the GPU PNG and comparison from the macOS CI artifact `parity-macOS` that S1 ([#22](https://github.com/tfpickard/isotop/issues/22)) adds.
+Agents such as Codex usually have no hardware GPU, and `Gpu::new` refuses software adapters unless `ISOTOP_ALLOW_SOFTWARE_GPU=1` is set. Such agents install `mesa-vulkan-drivers` and run the parity render with that variable (lavapipe), or attach the CPU PNG and take the GPU PNG and comparison from the CI artifacts `parity-linux` (lavapipe, blocking since A25, [#84](https://github.com/tfpickard/isotop/issues/84)) or `parity-macOS` (Metal) that S1 ([#22](https://github.com/tfpickard/isotop/issues/22)) adds.
 
 ## Views in priority order
 

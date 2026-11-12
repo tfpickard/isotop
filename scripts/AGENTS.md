@@ -25,6 +25,7 @@ limits that must not drift, and one script writes to GitHub.
   but link syntax in inline code is scanned. It does not check maths, code facts or spelling.
 - `render_wiki_media.py` needs a release build, ImageMagick (`convert`, `montage`) and ffmpeg with libwebp. A loop
   frame k is the run with `--benchmark k+1`, never a series of `--time` values.
+- Linux CI runs `compare_png.py` over every view on lavapipe (`ISOTOP_ALLOW_SOFTWARE_GPU=1`, step "CPU/GPU parity for every view (lavapipe, blocking)") and fails on a miss; only the `known_debt` views in that step (tracked in #174) are reported without failing. Do not extend that list for a new view.
 - CI runs `code_report.py --self-test` and `compare_png.py --self-test`; keep those fixtures passing.
 
 ## ANTI-PATTERNS

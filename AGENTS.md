@@ -369,7 +369,7 @@ not shown still has its history when it opens.
   `shaders.wgsl` together. Shared constants live in `render::shared`; never write them in WGSL
   directly. To check, render the same view with `--renderer cpu` and
   `--renderer gpu` and compare the PNGs with `scripts/compare_png.py` against the tolerance in
-  `docs/VIEW_CONVENTIONS.md` (`CPU/GPU parity`). Stacked `Item::Glow` items drift apart (the CPU blend truncates where the GPU's rounds), so content whose look is the density of many splats draws `Item::Puff`, which rounds on both.
+  `docs/VIEW_CONVENTIONS.md` (`CPU/GPU parity`). Without a GPU, `ISOTOP_ALLOW_SOFTWARE_GPU=1` makes `Gpu::new` take lavapipe (and only a software adapter); Linux CI runs that comparison for every view and blocks on a miss (`known_debt` in the workflow excepted, #174). Stacked `Item::Glow` items drift apart (the CPU blend truncates where the GPU's rounds), so content whose look is the density of many splats draws `Item::Puff`, which rounds on both.
 - **Layouts are stable.** A process keeps its place when CPU, memory or the population changes.
   Systems and districts are only re-placed when their structure outgrows the reservation, and
   tests enforce this: the view harness checks every registered view (`harness.rs`). Don't

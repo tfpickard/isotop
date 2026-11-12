@@ -151,6 +151,20 @@ const _: () = {
     assert!(offset_of!(FieldVertex, slot) == 20);
 };
 
+/// The environment variable that lets `Gpu::new` take a software adapter (and only one).
+const SOFTWARE_OPT_IN: &str = "ISOTOP_ALLOW_SOFTWARE_GPU";
+
+/// Whether the opt-in is on: exactly `1`. Anything else, or unset, leaves the choice unchanged.
+fn software_opt_in(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+/// Whether an adapter of this type may be used: without the opt-in every type but a CPU one,
+/// with it a CPU one only.
+fn accepts(device_type: wgpu::DeviceType, software: bool) -> bool {
+    (device_type == wgpu::DeviceType::Cpu) == software
+}
+
 /// The shader source: the generated constants from `render::shared`, then `shaders.wgsl`.
 fn shader_source() -> String {
     format!("{}{}", shared::prelude(), include_str!("shaders.wgsl"))
@@ -288,21 +302,29 @@ pub struct Gpu {
 
 impl Gpu {
     /// Opens the preferred hardware adapter. Software adapters are refused: the CPU rasterizer
-    /// is faster than an emulated GPU.
+    /// is faster than an emulated GPU. `ISOTOP_ALLOW_SOFTWARE_GPU=1` is the one exception, for a
+    /// parity run on a machine with no GPU (CI's lavapipe): it asks wgpu for its fallback adapter
+    /// only and accepts nothing but a CPU-type one, so it cannot silently measure hardware.
     #[expect(clippy::too_many_lines, reason = "split in #87 (A28)")]
     pub fn new(power: wgpu::PowerPreference) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
+        let software = software_opt_in(std::env::var(SOFTWARE_OPT_IN).ok().as_deref());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: power,
+            force_fallback_adapter: software,
             ..Default::default()
         }))
         .map_err(|error| format!("no GPU adapter: {error}"))?;
         let info = adapter.get_info();
-        if info.device_type == wgpu::DeviceType::Cpu {
-            return Err(format!("{} is a software adapter", info.name));
+        if !accepts(info.device_type, software) {
+            return Err(if software {
+                format!("{} is not a software adapter", info.name)
+            } else {
+                format!("{} is a software adapter", info.name)
+            });
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("isotop"),
@@ -1085,6 +1107,20 @@ unsafe fn stream_copy(source: *const u8, target: *mut u8, length: usize) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_software_opt_in_is_exactly_one_and_flips_which_adapters_are_accepted() {
+        use super::{accepts, software_opt_in};
+        use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
+        assert!(software_opt_in(Some("1")));
+        for other in [None, Some(""), Some("0"), Some("true"), Some("yes")] {
+            assert!(!software_opt_in(other));
+        }
+        assert!(accepts(DiscreteGpu, false) && accepts(IntegratedGpu, false));
+        assert!(!accepts(Cpu, false));
+        assert!(accepts(Cpu, true));
+        assert!(!accepts(DiscreteGpu, true) && !accepts(IntegratedGpu, true));
+    }
+
     use super::*;
     use crate::medium::Grid;
     use crate::model::Identity;
@@ -1189,9 +1225,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs a hardware GPU; run with --ignored on one"]
+    #[ignore = "needs a GPU; run with --ignored on one, or on lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1"]
     fn stacked_puffs_match_the_gpu_to_a_level_however_densely_they_stack() {
-        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower).expect("a hardware GPU");
+        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower)
+            .expect("a GPU (hardware, or lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1)");
         for (count, spread, radius) in [
             (1800, [50.0, 35.0], 2.25),
             (8000, [80.0, 50.0], 2.25),
@@ -1210,9 +1247,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs a hardware GPU; run with --ignored on one"]
+    #[ignore = "needs a GPU; run with --ignored on one, or on lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1"]
     fn pick_splats_and_thing_picks_survive_the_gpu_readback() {
-        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower).expect("a hardware GPU");
+        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower)
+            .expect("a GPU (hardware, or lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1)");
         let mut expected = picks_frame();
         expected.rasterize();
         let mut frame = picks_frame();
@@ -1400,9 +1438,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs a hardware GPU; run with --ignored on one"]
+    #[ignore = "needs a GPU; run with --ignored on one, or on lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1"]
     fn field_draws_the_same_frame_on_cpu_and_gpu() {
-        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower).expect("a hardware GPU");
+        let mut gpu = Gpu::new(wgpu::PowerPreference::LowPower)
+            .expect("a GPU (hardware, or lavapipe with ISOTOP_ALLOW_SOFTWARE_GPU=1)");
         let pointer = [320.0, 190.0];
         let mut field = lumpy(11, 97, 65, 0.0);
         for (scene, name) in [(0, "flat"), (1, "relief"), (2, "corners")] {

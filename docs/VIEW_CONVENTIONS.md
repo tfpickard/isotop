@@ -203,7 +203,10 @@ Measured on an Apple GPU (Metal), `--demo --time 12 --width 960`:
 
 Orbit, flow and strata exceed even the line-dominant limit. They are known parity debt of the older views, not a tolerance to copy; fixing them belongs to the rasterizer, not to a view PR.
 
-- `Gpu::new` refuses software adapters, and CI has no hardware GPU on Linux. Without a GPU, take both PNGs from the `parity-macOS` CI artifact; its `parity.txt` has one line per view and say so in the PR.
+- `Gpu::new` refuses software adapters unless `ISOTOP_ALLOW_SOFTWARE_GPU=1` is set; then it takes only a software one (lavapipe), so a parity run cannot silently measure hardware. Linux CI sets it and runs the step "CPU/GPU parity for every view (lavapipe, blocking)": every view fails the job on a miss of the limits above, with the same line-dominant list. Without a GPU, run it locally the same way (README `## Development`) or take the PNGs from the `parity-linux` (lavapipe) or `parity-macOS` (Metal) CI artifact, whose `parity.txt` has one line per view, and say so in the PR.
+- Lavapipe was measured against the same limits, `--demo --time 12 --width 960` (mean, share %): city 0.122, 0.772; ripple 0.196, 0.967; cores 0.200, 0.307; cells 0.216, 0.231; globe 0.379, 0.499 (all line-dominant, pass); orbit 0.356, 1.305; flow 2.486, 9.564; strata 0.559, 0.646; hr 0.109, 0.323. Lavapipe is close to Metal: orbit, flow and strata exceed on both. No second tolerance exists for it, and a view PR never loosens either.
+- Known parity debt: orbit, flow, strata and hr miss on lavapipe. The CI step measures and reports them but does not fail on them (`known_debt` in the workflow, tracked in [#174](https://github.com/tfpickard/isotop/issues/174)); it fails the job for every other view and for any failed render. A view leaves the list when it passes.
+- `cargo test -- --ignored` runs the GPU tests (`stacked_puffs_match_the_gpu_to_a_level_however_densely_they_stack`, `pick_splats_and_thing_picks_survive_the_gpu_readback`, `field_draws_the_same_frame_on_cpu_and_gpu`) on a hardware GPU, or on lavapipe with `ISOTOP_ALLOW_SOFTWARE_GPU=1`. The first misses by 0.0039 % of pixels on lavapipe (#174).
 - Attach both PNGs and the script output to the PR.
 
 ## Performance budget
@@ -347,7 +350,7 @@ The brief tells implementers to wait for approval and to file issues. That does 
 - [ ] `cargo clippy --target aarch64-apple-darwin --all-targets -- -D warnings` is clean.
 - [ ] The issue's named tests pass, including layout stability and, for simulations, the 10-versus-60 fps test. No test was weakened or deleted.
 - [ ] The smoke test visits the view.
-- [ ] CPU and GPU PNGs of the same `--demo --time` frame are attached, with `compare_png.py` output within tolerance. The GPU PNG comes from a GPU machine or from the `parity-macOS` artifact.
+- [ ] CPU and GPU PNGs of the same `--demo --time` frame are attached, with `compare_png.py` output within tolerance. The GPU PNG comes from a GPU machine, from lavapipe (`ISOTOP_ALLOW_SOFTWARE_GPU=1`) or from the `parity-linux` or `parity-macOS` artifact.
 - [ ] A CPU render is placed next to the mockup.
 - [ ] A benchmark table is included for 192 processes (at least 10 fps on the CPU at 1080p) and for `--processes 1000` (at least 5 fps).
 - [ ] The README section opens with the mapping table, and everything visible is either in the table or marked decorative.
