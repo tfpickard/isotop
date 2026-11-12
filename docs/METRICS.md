@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 153 | 98,787 | 2,157 | 5,954 |
+| Rust | 156 | 100,396 | 2,217 | 6,126 |
 | SVG | 89 | 39,920 | 9 | 0 |
-| Python | 121 | 22,921 | 833 | 3,073 |
+| Python | 121 | 23,088 | 841 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 91 | 0 | 14,891 | 5,213 |
+| Markdown | 91 | 0 | 14,922 | 5,213 |
 | Plain Text | 11 | 0 | 335 | 0 |
-| **Total** | **470** | **161,949** | **18,253** | **14,291** |
+| **Total** | **473** | **163,725** | **18,352** | **14,482** |
 
 ## Rust by module
 
@@ -65,9 +65,9 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/globe.rs` | 483 | 500 |
 | `src/views/flow.rs` | 475 | 43 |
 | `src/render/scene/tests.rs` | 463 | 0 |
+| `src/terminal.rs` | 457 | 169 |
 | `src/model/pipework/demo.rs` | 453 | 174 |
 | `src/coop/sim.rs` | 448 | 252 |
-| `src/terminal.rs` | 448 | 231 |
 | `src/anthill/draw.rs` | 445 | 254 |
 | `src/coop/layout.rs` | 416 | 298 |
 | `src/horizon/orbits.rs` | 401 | 400 |
@@ -83,6 +83,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/plumbing/draw/pipes.rs` | 343 | 60 |
 | `src/matrix.rs` | 341 | 236 |
 | `src/platform/linux/net.rs` | 320 | 278 |
+| `src/terminal/inline.rs` | 308 | 347 |
 | `src/journal.rs` | 298 | 171 |
 | `src/switchboard/figures.rs` | 298 | 0 |
 | `src/render/raster.rs` | 295 | 38 |
@@ -93,6 +94,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/render/frame.rs` | 281 | 302 |
 | `src/model/exchange.rs` | 274 | 228 |
 | `src/anthill/ingest.rs` | 273 | 0 |
+| `src/interactive.rs` | 273 | 0 |
 | `src/plumbing/card.rs` | 271 | 137 |
 | `src/places.rs` | 270 | 0 |
 | `src/anthill/slab.rs` | 267 | 203 |
@@ -103,15 +105,16 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/io_detail.rs` | 250 | 321 |
 | `src/plumbing/draw/tank.rs` | 247 | 28 |
 | `src/hershey.rs` | 244 | 257 |
-| `src/interactive.rs` | 241 | 0 |
 | `src/medium.rs` | 240 | 66 |
 | `src/ouija/props.rs` | 238 | 0 |
 | `src/io_detail/attribute.rs` | 233 | 374 |
+| `src/terminal/shared.rs` | 232 | 225 |
 | `src/plumbing.rs` | 230 | 0 |
 | `src/geo.rs` | 229 | 134 |
 | `src/render/draw.rs` | 227 | 17 |
 | `src/ouija/scenery.rs` | 219 | 77 |
 | `src/plumbing/room.rs` | 218 | 197 |
+| `src/terminal/restore.rs` | 218 | 301 |
 | `src/headless.rs` | 211 | 444 |
 | `src/strata.rs` | 210 | 128 |
 | `src/anthill.rs` | 204 | 561 |
@@ -176,7 +179,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/platform/linux/fdinfo.rs` | 36 | 61 |
 | `src/status.rs` | 15 | 51 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **59,052** | **39,760** |
+| **Total** | **59,851** | **40,571** |
 
 ## Largest files
 
@@ -203,7 +206,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 |:--|--:|
 | `#[expect(clippy::too_many_lines` | 11 |
 | `#[expect(clippy::too_many_arguments` | 7 |
-| `unsafe` blocks | 120 |
+| `unsafe` blocks | 140 |
 | `unwrap_or(0` sites | 30 |
 | `unwrap_or(0.0` sites | 19 |
 | `known_unstable` harness entries | 0 |
@@ -214,7 +217,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,340 |
+| `#[test]` functions | 1,372 |
 | Views in the registry | 26 |
 | Views with a README mapping table | 26 of 26 |
 | Direct crate dependencies | 10 |
