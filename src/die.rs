@@ -488,11 +488,11 @@ impl ViewModule for Die {
         if let Some(layout) = &self.layout
             && layout.plan.packages > 1
         {
-            notes.push_str(&format!(
-                " | package {} of {} drawn",
-                layout.plan.package.unwrap_or(0),
-                layout.plan.packages
-            ));
+            let which = layout.plan.package.map_or_else(
+                || "one package".to_owned(),
+                |package| format!("package {package}"),
+            );
+            notes.push_str(&format!(" | {which} of {} drawn", layout.plan.packages));
         }
         if let Some(sources) = sources_note(snapshot) {
             notes.push_str(&sources);
@@ -536,7 +536,7 @@ impl ViewModule for Die {
             },
             cpus.join(" ")
         )];
-        let hot = self.last.hot.get(index).copied().unwrap_or(0.0);
+        let hot = self.last.hot.get(index).copied()?;
         lines.push(match found.coverage[index] {
             Coverage::Own(celsius) => match Self::sensor_label(snapshot, block) {
                 Some(label) => format!("{celsius:.0} C, measured by its own sensor ({label})"),

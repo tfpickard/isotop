@@ -235,7 +235,7 @@ fn proxy(block: &Block, cpus: &HashMap<u32, &Cpu>, seen: &mut f32) -> (Option<f3
     let mut clock: Option<f32> = None;
     for cpu in block.cpus.iter().filter_map(|cpu| cpus.get(cpu)) {
         if let Some(share) = cpu.busy {
-            busy = Some(busy.unwrap_or(0.0) + share);
+            busy = Some(busy.map_or(share, |sum| sum + share));
         }
         if let Some(mhz) = cpu.mhz {
             clock = Some(clock.map_or(mhz, |other: f32| other.max(mhz)));
