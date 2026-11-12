@@ -257,7 +257,12 @@ impl Builder {
             .collect();
         if let Some((part, label)) = cache {
             self.part(
-                [rect[0] + 2.0, rect[3] - reserve, rect[2] - 2.0, rect[3] - 2.0],
+                [
+                    rect[0] + 2.0,
+                    rect[3] - reserve,
+                    rect[2] - 2.0,
+                    rect[3] - 2.0,
+                ],
                 part,
                 label,
             );
@@ -332,10 +337,8 @@ impl Floorplan {
     }
 
     fn caption(&self) -> String {
-        let (performance, efficiency) = (
-            self.count(Role::Performance),
-            self.count(Role::Efficiency),
-        );
+        let (performance, efficiency) =
+            (self.count(Role::Performance), self.count(Role::Efficiency));
         let low_power = self.count(Role::LowPower);
         let mut caption = match self.family {
             _ if self.blocks.is_empty() => "no CPU topology".to_owned(),
@@ -386,9 +389,9 @@ impl Floorplan {
             .into_iter()
             .filter(|group| {
                 group.iter().any(|&cpu| {
-                    topology
-                        .place(cpu)
-                        .is_some_and(|place| place.package.is_none_or(|found| Some(found) == package))
+                    topology.place(cpu).is_some_and(|place| {
+                        place.package.is_none_or(|found| Some(found) == package)
+                    })
                 })
             })
             .collect();
@@ -450,9 +453,13 @@ fn hybrid_plan(builder: &mut Builder, split: &Cores, tiled: bool) {
     let p_rows = split.performance.len().div_ceil(ROW_OF_CORES).clamp(1, 3);
     let p_height = [34.0, 44.0, 52.0][p_rows - 1];
     let p_region = [COMPUTE[0], COMPUTE[1], COMPUTE[2], COMPUTE[1] + p_height];
-    for (cell, core) in tile(p_region, split.performance.len(), ROW_OF_CORES.min(split.performance.len()))
-        .into_iter()
-        .zip(&split.performance)
+    for (cell, core) in tile(
+        p_region,
+        split.performance.len(),
+        ROW_OF_CORES.min(split.performance.len()),
+    )
+    .into_iter()
+    .zip(&split.performance)
     {
         builder.core(cell, core, Role::Performance);
     }
@@ -538,7 +545,12 @@ fn amd_plan(builder: &mut Builder, cores: &[Core], groups: &[Vec<u32>]) {
         let top = members.len().div_ceil(2);
         let strip_height = 10.0;
         let middle = (rect[1] + rect[3]) / 2.0;
-        let cache = [rect[0] + 2.0, middle - strip_height / 2.0, rect[2] - 2.0, middle + strip_height / 2.0];
+        let cache = [
+            rect[0] + 2.0,
+            middle - strip_height / 2.0,
+            rect[2] - 2.0,
+            middle + strip_height / 2.0,
+        ];
         let above = [rect[0], rect[1] + 6.0, rect[2], cache[1] - 1.0];
         let below = [rect[0], cache[3] + 1.0, rect[2], rect[3] - 1.0];
         let mut placed = Vec::new();
@@ -565,11 +577,25 @@ fn generic_plan(builder: &mut Builder, cores: &[Core]) {
     let strip_height = 12.0;
     let middle = (region[1] + region[3]) / 2.0;
     let cache = if rows > 1 {
-        [region[0], middle - strip_height / 2.0, region[2], middle + strip_height / 2.0]
+        [
+            region[0],
+            middle - strip_height / 2.0,
+            region[2],
+            middle + strip_height / 2.0,
+        ]
     } else {
         [region[0], region[3] - strip_height, region[2], region[3]]
     };
-    let above = [region[0], region[1], region[2], if rows > 1 { cache[1] - 1.0 } else { cache[1] - 1.0 }];
+    let above = [
+        region[0],
+        region[1],
+        region[2],
+        if rows > 1 {
+            cache[1] - 1.0
+        } else {
+            cache[1] - 1.0
+        },
+    ];
     let below = [region[0], cache[3] + 1.0, region[2], region[3]];
     for (region, slice) in [(above, &cores[..top]), (below, &cores[top..])] {
         for (cell, core) in tile(region, slice.len(), columns).into_iter().zip(slice) {
@@ -618,7 +644,15 @@ pub(crate) mod tests {
         for core in 0..p {
             let pair = [2 * core, 2 * core + 1];
             for thread in pair {
-                cpus.push(cpu(thread, 4 * core, &pair, Some(&pair), l3, CoreKind::Performance, 0));
+                cpus.push(cpu(
+                    thread,
+                    4 * core,
+                    &pair,
+                    Some(&pair),
+                    l3,
+                    CoreKind::Performance,
+                    0,
+                ));
             }
         }
         for cluster in 0..e_clusters {
@@ -806,7 +840,10 @@ pub(crate) mod tests {
             .find(|group| group.kind == GroupKind::Efficiency)
             .expect("the compute tile's own cluster");
         assert!(
-            low[0].blocks.iter().all(|block| !compute.blocks.contains(block)),
+            low[0]
+                .blocks
+                .iter()
+                .all(|block| !compute.blocks.contains(block)),
             "the low-power cores are not in the compute tile's cluster"
         );
         assert!(
@@ -912,12 +949,22 @@ pub(crate) mod tests {
             place.package = Some(1);
             place.cpu += 100;
             place.siblings = place.siblings.iter().map(|cpu| cpu + 100).collect();
-            place.l2 = place.l2.take().map(|l2| l2.iter().map(|cpu| cpu + 100).collect());
-            place.l3 = place.l3.take().map(|l3| l3.iter().map(|cpu| cpu + 100).collect());
+            place.l2 = place
+                .l2
+                .take()
+                .map(|l2| l2.iter().map(|cpu| cpu + 100).collect());
+            place.l3 = place
+                .l3
+                .take()
+                .map(|l3| l3.iter().map(|cpu| cpu + 100).collect());
         }
         two.cpus.extend(second.cpus);
         let plan = Floorplan::of(&two);
-        assert_eq!(plan.blocks.len(), 8, "four P-cores and four E-cores of package 0");
+        assert_eq!(
+            plan.blocks.len(),
+            8,
+            "four P-cores and four E-cores of package 0"
+        );
         assert_eq!(plan.packages, 2);
         assert!(plan.caption.contains("one of 2 packages"));
     }

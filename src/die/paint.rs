@@ -8,7 +8,7 @@
 
 use std::f32::consts::FRAC_1_SQRT_2;
 
-use super::floorplan::{COLUMNS, Floorplan, Rect, ROWS, Role};
+use super::floorplan::{COLUMNS, Floorplan, ROWS, Rect, Role};
 use super::readings::Coverage;
 use crate::palette::{ironbow, mix, tint};
 use crate::render::strokes::Width;
@@ -77,8 +77,14 @@ impl Pen<'_> {
 
     /// A stroke `pixels` wide along `points`.
     pub fn stroke(&mut self, points: &[Point], pixels: f32, color: Color) {
-        self.frame
-            .ribbon(self.camera, points, Width::Pixels(pixels), color, NONE, None);
+        self.frame.ribbon(
+            self.camera,
+            points,
+            Width::Pixels(pixels),
+            color,
+            NONE,
+            None,
+        );
     }
 
     /// The outline of `rect`.
@@ -99,7 +105,11 @@ impl Pen<'_> {
 /// The package under the die: a substrate slightly larger than it, a few capacitors along its
 /// edges, and the die's slab, which stands a little above it. All of it is decoration.
 pub fn package(pen: &mut Pen) {
-    pen.flat([-6.0, -6.0, COLUMNS as f32 + 6.0, ROWS as f32 + 6.0], SUBSTRATE, BOARD);
+    pen.flat(
+        [-6.0, -6.0, COLUMNS as f32 + 6.0, ROWS as f32 + 6.0],
+        SUBSTRATE,
+        BOARD,
+    );
     for row in [-4.2_f32, ROWS as f32 + 1.7] {
         for column in 0..22 {
             let x = 6.0 + column as f32 * 8.6;
@@ -217,7 +227,12 @@ pub fn outlines(pen: &mut Pen, plan: &Floorplan, coverage: &[Coverage], chosen: 
             pen.segment([x, y - 1.0], [x, y + 1.0], STROKES * 1.2, 1.3, SENSOR);
         }
     }
-    pen.outline([0.0, 0.0, COLUMNS as f32, ROWS as f32], STROKES, 1.6, LINE_DIM);
+    pen.outline(
+        [0.0, 0.0, COLUMNS as f32, ROWS as f32],
+        STROKES,
+        1.6,
+        LINE_DIM,
+    );
     if let Some(block) = chosen.and_then(|index| plan.blocks.get(index)) {
         pen.outline(block.rect, STROKES * 1.6, 2.6, CHOSEN);
     }
@@ -255,10 +270,16 @@ mod tests {
         // The default camera turns the world a quarter: across = (x - y) / sqrt 2, along =
         // (x + y) / sqrt 2. A plan point to the right of another is to the right on screen, and
         // one further down the plan is nearer the viewer.
-        let (centre, right, down) = (plane(96.0, 48.0, 0.0), plane(106.0, 48.0, 0.0), plane(96.0, 58.0, 0.0));
+        let (centre, right, down) = (
+            plane(96.0, 48.0, 0.0),
+            plane(106.0, 48.0, 0.0),
+            plane(96.0, 58.0, 0.0),
+        );
         let across = |p: Point| (p[0] - p[1]) * FRAC_1_SQRT_2;
         let along = |p: Point| (p[0] + p[1]) * FRAC_1_SQRT_2;
-        assert!(across(right) - across(centre) > 1.9 && (along(right) - along(centre)).abs() < 1e-4);
+        assert!(
+            across(right) - across(centre) > 1.9 && (along(right) - along(centre)).abs() < 1e-4
+        );
         assert!(along(down) - along(centre) > 1.9 && (across(down) - across(centre)).abs() < 1e-4);
         assert_eq!(centre, [0.0, 0.0, 0.0]);
     }
@@ -268,7 +289,11 @@ mod tests {
         assert_eq!(Look::of(Coverage::Own(60.0), Some(0.5)), Look::Measured);
         assert_eq!(Look::of(Coverage::Ccd(0, 60.0), None), Look::Measured);
         assert_eq!(Look::of(Coverage::Package(60.0), Some(0.5)), Look::Measured);
-        assert_eq!(Look::of(Coverage::Unknown, Some(0.0)), Look::Model, "an idle core is modelled, not blank");
+        assert_eq!(
+            Look::of(Coverage::Unknown, Some(0.0)),
+            Look::Model,
+            "an idle core is modelled, not blank"
+        );
         assert_eq!(Look::of(Coverage::Unknown, None), Look::Blank);
     }
 
@@ -282,19 +307,49 @@ mod tests {
             .collect();
         let looks = [Look::Measured, Look::Model];
         let picks = [7, 9];
-        colour_field(&mut field, &shown, |value| (value - 30.0) / 75.0, &cell_block, &looks, &picks);
+        colour_field(
+            &mut field,
+            &shown,
+            |value| (value - 30.0) / 75.0,
+            &cell_block,
+            &looks,
+            &picks,
+        );
         let plain = ironbow(0.4);
         let at = |column: usize, row: usize| field.colors[row * COLUMNS + column];
         assert_eq!(at(10, 1), plain, "a measured block is plain ironbow");
-        assert_ne!(at(102, 0), plain, "a modelled block is hatched on every sixth diagonal");
+        assert_ne!(
+            at(102, 0),
+            plain,
+            "a modelled block is hatched on every sixth diagonal"
+        );
         assert_eq!(at(101, 0), plain, "and plain between");
         let owners = field.owners.as_ref().expect("owners");
         assert_eq!((owners[10], owners[100 + COLUMNS]), (7, 9));
         assert_eq!(field.revision, 1);
         // A blank block is dark whatever the field says, and a cell in no block picks nothing.
         let looks = [Look::Blank, Look::Blank];
-        colour_field(&mut field, &vec![200.0; COLUMNS * ROWS], |value| value, &cell_block, &looks, &[]);
-        assert!(field.colors.iter().all(|color| *color == BLANK || *color == BLANK_HATCH));
-        assert!(field.owners.as_ref().expect("owners").iter().all(|&pick| pick == NONE));
+        colour_field(
+            &mut field,
+            &vec![200.0; COLUMNS * ROWS],
+            |value| value,
+            &cell_block,
+            &looks,
+            &[],
+        );
+        assert!(
+            field
+                .colors
+                .iter()
+                .all(|color| *color == BLANK || *color == BLANK_HATCH)
+        );
+        assert!(
+            field
+                .owners
+                .as_ref()
+                .expect("owners")
+                .iter()
+                .all(|&pick| pick == NONE)
+        );
     }
 }

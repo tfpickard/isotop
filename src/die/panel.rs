@@ -28,7 +28,7 @@ const BACKDROP: Color = [12, 10, 22];
 const BORDER: Color = [70, 72, 100];
 const TEXT: Color = [214, 218, 236];
 const TICK: Color = [150, 156, 184];
-const TJ_MAX: Color = [110, 240, 255];
+const TJ_MAX: Color = [96, 224, 240];
 const WATTS: Color = [150, 200, 240];
 const MISSING: Color = [58, 58, 76];
 
@@ -76,7 +76,12 @@ pub fn draw(pen: &mut Pen, tags: &mut Vec<Tag>, input: &Input) {
         Mode::Relative => {
             // Written into the frame as well, so that a render says it too.
             caption(pen, "NO SENSOR", plane(236.0, 6.0, -0.3), 3.4, TEXT);
-            tag(tags, 206.0, 9.8, "relative heat: the model, not degrees".to_owned());
+            tag(
+                tags,
+                206.0,
+                9.8,
+                "relative heat: the model, not degrees".to_owned(),
+            );
         }
     }
     // The bar, hottest at the top.
@@ -101,7 +106,12 @@ pub fn draw(pen: &mut Pen, tags: &mut Vec<Tag>, input: &Input) {
             }
             let y = bar_y(input.tj_max, input.scale);
             pen.segment([BAR[0] - 1.5, y], [BAR[2] + 0.8, y], -0.25, 1.6, TJ_MAX);
-            tag(tags, BAR[2] + 0.5, y + 2.6, format!("TjMax {:.0}", input.tj_max));
+            tag(
+                tags,
+                BAR[2] + 0.5,
+                y + 2.6,
+                format!("TjMax {:.0}", input.tj_max),
+            );
         }
         Mode::Relative => {
             for (value, word) in [(input.scale.1, "hot"), (input.scale.0, "cold")] {
@@ -117,18 +127,39 @@ pub fn draw(pen: &mut Pen, tags: &mut Vec<Tag>, input: &Input) {
         Mode::Celsius => "C",
         Mode::Relative => "REL",
     };
-    caption(pen, unit, plane((BAR[0] + BAR[2]) / 2.0, BAR[3] + 4.0, -0.3), 3.4, TEXT);
+    caption(
+        pen,
+        unit,
+        plane((BAR[0] + BAR[2]) / 2.0, BAR[3] + 4.0, -0.3),
+        3.4,
+        TEXT,
+    );
     for (index, row) in input.rows.iter().take(MOST_ROWS).enumerate() {
         let y = FIRST_ROW + index as f32 * ROW_PITCH;
         let color = row.level.map_or(MISSING, ironbow);
         pen.flat([SWATCH_X, y - 1.2, SWATCH_X + 2.4, y + 1.2], -0.4, color);
-        pen.outline([SWATCH_X, y - 1.2, SWATCH_X + 2.4, y + 1.2], -0.35, 1.0, BORDER);
+        pen.outline(
+            [SWATCH_X, y - 1.2, SWATCH_X + 2.4, y + 1.2],
+            -0.35,
+            1.0,
+            BORDER,
+        );
         tag(tags, TEXT_X, y, row.text.clone());
     }
     sparkline(pen, PACKAGE_BOX, input.series, Which::Package, input);
-    tag(tags, PACKAGE_BOX[0], PACKAGE_BOX[1] - 2.2, input.package_title.clone());
+    tag(
+        tags,
+        PACKAGE_BOX[0],
+        PACKAGE_BOX[1] - 2.2,
+        input.package_title.clone(),
+    );
     sparkline(pen, POWER_BOX, input.series, Which::Power, input);
-    tag(tags, POWER_BOX[0], POWER_BOX[1] - 2.2, input.power_title.clone());
+    tag(
+        tags,
+        POWER_BOX[0],
+        POWER_BOX[1] - 2.2,
+        input.power_title.clone(),
+    );
 }
 
 /// `text` written into the frame, centred on `at`, `height` cells high: Hershey strokes as
@@ -140,8 +171,16 @@ fn caption(pen: &mut Pen, text: &str, at: [f32; 3], height: f32, color: Color) {
         Face::Triplex,
         text,
         at,
-        [std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2, 0.0],
-        [-std::f32::consts::FRAC_1_SQRT_2, -std::f32::consts::FRAC_1_SQRT_2, 0.0],
+        [
+            std::f32::consts::FRAC_1_SQRT_2,
+            -std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+        ],
+        [
+            -std::f32::consts::FRAC_1_SQRT_2,
+            -std::f32::consts::FRAC_1_SQRT_2,
+            0.0,
+        ],
         height * super::paint::CELL,
         color,
         weight,
@@ -195,8 +234,15 @@ fn sparkline(pen: &mut Pen, area: Rect, series: &Series, which: Which, input: &I
         plane(x, area[3] - 1.0 - (height - 2.0) * level, -0.3)
     };
     if which == Which::Package && input.mode == Mode::Celsius {
-        let y = area[3] - 1.0 - (height - 2.0) * ((input.tj_max - low) / (high - low)).clamp(0.0, 1.0);
-        pen.segment([area[0] + 1.0, y], [area[2] - 1.0, y], -0.32, 1.0, mix(TJ_MAX, [0, 0, 0], 0.5));
+        let y =
+            area[3] - 1.0 - (height - 2.0) * ((input.tj_max - low) / (high - low)).clamp(0.0, 1.0);
+        pen.segment(
+            [area[0] + 1.0, y],
+            [area[2] - 1.0, y],
+            -0.32,
+            1.0,
+            mix(TJ_MAX, [0, 0, 0], 0.5),
+        );
     }
     // The series holds one point per sample, so a sample with no reading breaks the line.
     let mut run: Vec<(f64, f32)> = Vec::new();
@@ -204,9 +250,17 @@ fn sparkline(pen: &mut Pen, area: Rect, series: &Series, which: Which, input: &I
         for pair in run.windows(2) {
             let color = match which {
                 Which::Power => WATTS,
-                Which::Package => mix(ironbow(((pair[1].1 - low) / (high - low)).clamp(0.0, 1.0)), [210, 212, 230], 0.3),
+                Which::Package => mix(
+                    ironbow(((pair[1].1 - low) / (high - low)).clamp(0.0, 1.0)),
+                    [210, 212, 230],
+                    0.3,
+                ),
             };
-            pen.stroke(&[place(pair[0].0, pair[0].1), place(pair[1].0, pair[1].1)], 1.8, color);
+            pen.stroke(
+                &[place(pair[0].0, pair[0].1), place(pair[1].0, pair[1].1)],
+                1.8,
+                color,
+            );
         }
         run.clear();
     };

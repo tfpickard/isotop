@@ -972,15 +972,25 @@ pub static REGISTRY: &[ViewInfo] = &[
             thermal: true,
             ..DemoOptions::NONE
         },
-        // The field is built from the samples as a live run takes them, a frame at a time: the
+        // A minute of samples as a live run would have recorded them (the panel's sparklines and
+        // the throttle counts they baseline), then four seconds of frames a step at a time: the
         // glow of the loaded cores is in the captured frame.
-        warmup: &[Warmup {
-            phase: Phase::Play {
-                seconds: 4,
-                step: 0.1,
+        warmup: &[
+            Warmup {
+                phase: Phase::Replay {
+                    seconds: 60,
+                    before_start: true,
+                },
+                when: When::DemoHeadless,
             },
-            when: When::DemoHeadless,
-        }],
+            Warmup {
+                phase: Phase::Play {
+                    seconds: 4,
+                    step: 0.1,
+                },
+                when: When::DemoHeadless,
+            },
+        ],
         ..ViewInfo::new("die", "DIE", Backdrop::Dusk, || {
             Box::new(die::Die::default())
         })

@@ -30,7 +30,10 @@ pub const TAU: f32 = 2.0;
 pub const STEP: f32 = 0.2 / KAPPA;
 /// The largest `KAPPA * STEP` the explicit 5-point scheme tolerates in two dimensions.
 pub const COURANT_LIMIT: f32 = 0.25;
-const _: () = assert!(KAPPA * STEP <= COURANT_LIMIT, "the step must stay under the 2D limit");
+const _: () = assert!(
+    KAPPA * STEP <= COURANT_LIMIT,
+    "the step must stay under the 2D limit"
+);
 /// The time constant of a sensor's pull on the field, in seconds.
 pub const NUDGE_TIME: f32 = 0.25;
 /// The longest frame, in seconds, that is stepped: a longer gap counts as this much.
@@ -122,7 +125,10 @@ pub fn diffuse(field: &[f32], next: &mut [f32], source: &[f32], scheme: Scheme) 
         let above = if row > 0 { base - COLUMNS } else { base };
         let below = if row + 1 < ROWS { base + COLUMNS } else { base };
         let line = &field[base..base + COLUMNS];
-        let (up, down) = (&field[above..above + COLUMNS], &field[below..below + COLUMNS]);
+        let (up, down) = (
+            &field[above..above + COLUMNS],
+            &field[below..below + COLUMNS],
+        );
         let (out, heat) = (
             &mut next[base..base + COLUMNS],
             &source[base..base + COLUMNS],
@@ -184,13 +190,7 @@ pub fn alpha() -> f32 {
 /// are in `nudges` order. Nothing a nudge touches is shown below `floor` (the ambient): a sensor
 /// that reads cooler than the model puts the model's hot spot down, not the rest of the block
 /// under the temperature of the room.
-pub fn compose(
-    field: &[f32],
-    nudges: &[Nudge],
-    offsets: &[f32],
-    floor: f32,
-    shown: &mut Vec<f32>,
-) {
+pub fn compose(field: &[f32], nudges: &[Nudge], offsets: &[f32], floor: f32, shown: &mut Vec<f32>) {
     shown.clear();
     shown.extend_from_slice(field);
     for (nudge, &offset) in nudges.iter().zip(offsets) {
@@ -292,10 +292,7 @@ pub fn gain(rect: Rect, hot: [f32; 2]) -> f32 {
         ((ROWS as f32 - height) / 2.0).floor(),
     ];
     let moved = [at[0], at[1], at[0] + width, at[1] + height];
-    let centre = [
-        moved[0] + (hot[0] - rect[0]),
-        moved[1] + (hot[1] - rect[1]),
-    ];
+    let centre = [moved[0] + (hot[0] - rect[0]), moved[1] + (hot[1] - rect[1])];
     let mut heat = Heat::new(0.0);
     for (cell, weight) in shape(moved, centre) {
         heat.source[cell as usize] = weight;
@@ -341,7 +338,11 @@ mod tests {
         (0..CELLS)
             .map(|cell| {
                 let (column, row) = (cell % COLUMNS, cell / COLUMNS);
-                if (column + row) % 2 == 0 { amplitude } else { -amplitude }
+                if (column + row) % 2 == 0 {
+                    amplitude
+                } else {
+                    -amplitude
+                }
             })
             .collect()
     }
@@ -350,7 +351,10 @@ mod tests {
     fn heat_steps_stay_stable_at_the_cfl_limit_for_any_frame_dt() {
         // The scheme's own number: below the 2D limit, with the margin the issue names.
         let courant = KAPPA * STEP;
-        assert!(courant <= COURANT_LIMIT, "{courant} against {COURANT_LIMIT}");
+        assert!(
+            courant <= COURANT_LIMIT,
+            "{courant} against {COURANT_LIMIT}"
+        );
         assert!((courant - 0.2).abs() < 1e-6);
         assert!(
             (MOST_FRAME / STEP).ceil() as usize <= MOST_STEPS,
@@ -368,7 +372,10 @@ mod tests {
                 clock.advance(time, || heat.diffuse(scheme));
                 time += frame;
                 let largest = heat.field.iter().fold(0.0_f32, |a, &v| a.max(v.abs()));
-                assert!(largest.is_finite(), "frame {frame}: the field stayed finite");
+                assert!(
+                    largest.is_finite(),
+                    "frame {frame}: the field stayed finite"
+                );
                 worst = worst.max(largest);
             }
             assert!(worst <= 50.0 + 1e-3, "frame {frame}: peak grew to {worst}");
@@ -414,7 +421,11 @@ mod tests {
         for _ in 0..(5.0 * TAU / STEP) as usize {
             sunk.diffuse(scheme);
         }
-        assert!((sunk.peak() - 20.0).abs() < 0.5, "settles at {}", sunk.peak());
+        assert!(
+            (sunk.peak() - 20.0).abs() < 0.5,
+            "settles at {}",
+            sunk.peak()
+        );
     }
 
     #[test]
@@ -467,7 +478,6 @@ mod tests {
         assert_eq!(run(), run());
     }
 
-
     /// A warm block under constant drive with a sensor that reads `target`, run for `seconds`
     /// with the offset relaxed every step; returns the model, the nudge, its offset and the
     /// composed field.
@@ -490,7 +500,13 @@ mod tests {
             nudge.relax(&heat.field, &mut offset, alpha);
         }
         let mut shown = Vec::new();
-        compose(&heat.field, std::slice::from_ref(&nudge), &[offset], 0.0, &mut shown);
+        compose(
+            &heat.field,
+            std::slice::from_ref(&nudge),
+            &[offset],
+            0.0,
+            &mut shown,
+        );
         (heat, nudge, offset, shown)
     }
 
@@ -536,7 +552,11 @@ mod tests {
         // Weights: 1 inside, falling beyond, nothing past the skirt.
         let weight = |x: f32, y: f32| {
             let cell = cell_at(x, y);
-            nudge.footprint.iter().find(|&&(found, _)| found == cell).map(|&(_, w)| w)
+            nudge
+                .footprint
+                .iter()
+                .find(|&&(found, _)| found == cell)
+                .map(|&(_, w)| w)
         };
         assert_eq!(weight(70.0, 30.0), Some(1.0));
         let near = weight(block[2] + 1.5, 30.0).expect("inside the skirt");
@@ -545,7 +565,10 @@ mod tests {
         // A footprint of two blocks is their union, and the package's is every cell.
         let two = footprint(&[block, [100.0, 20.0, 120.0, 50.0]]);
         assert_eq!(weight(110.0, 30.0), None);
-        assert!(two.iter().any(|&(cell, w)| cell == cell_at(110.0, 30.0) && w == 1.0));
+        assert!(
+            two.iter()
+                .any(|&(cell, w)| cell == cell_at(110.0, 30.0) && w == 1.0)
+        );
         assert_eq!(whole_die().len(), CELLS);
         // Without probes (a sensor whose region holds no core) the nudge does nothing.
         let idle = Nudge {
@@ -589,7 +612,11 @@ mod tests {
         assert_eq!(cells.len(), 16 * 30);
         let at = |x: f32, y: f32| {
             let cell = cell_at(x, y);
-            cells.iter().find(|&&(c, _)| c == cell).expect("in the block").1
+            cells
+                .iter()
+                .find(|&&(c, _)| c == cell)
+                .expect("in the block")
+                .1
         };
         assert!(at(17.0, 22.0) > 2.0 * at(11.0, 38.0));
         assert!(cells.iter().all(|&(cell, _)| (cell as usize) < CELLS));

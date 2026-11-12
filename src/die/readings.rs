@@ -565,7 +565,10 @@ impl Regions {
                 && group.is_some_and(|group| plan.groups[group].blocks.len() == blocks.len());
             let rects: Vec<_> = match group {
                 Some(group) if one_box => vec![plan.groups[group].rect],
-                _ => blocks.iter().map(|&block| plan.blocks[block].rect).collect(),
+                _ => blocks
+                    .iter()
+                    .map(|&block| plan.blocks[block].rect)
+                    .collect(),
             };
             self.nudges.push(Nudge {
                 footprint: heat::footprint(&rects),
@@ -656,8 +659,22 @@ pub(crate) mod tests {
         // Per-core sensors for the two P-cores, a package sensor beside them.
         let sensors = vec![
             sensor("Package id 0", SensorPlace::Package(0), Some(71.0)),
-            sensor("Core 0", SensorPlace::Core { package: 0, core_id: 0 }, Some(66.0)),
-            sensor("Core 4", SensorPlace::Core { package: 0, core_id: 4 }, Some(70.0)),
+            sensor(
+                "Core 0",
+                SensorPlace::Core {
+                    package: 0,
+                    core_id: 0,
+                },
+                Some(66.0),
+            ),
+            sensor(
+                "Core 4",
+                SensorPlace::Core {
+                    package: 0,
+                    core_id: 4,
+                },
+                Some(70.0),
+            ),
         ];
         let snapshot = sample(topology.clone(), sensors, cpus(0.5), 1.0, 1);
         let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
@@ -675,16 +692,30 @@ pub(crate) mod tests {
         let sensors = vec![sensor("x86_pkg_temp", SensorPlace::Package(0), Some(55.0))];
         let snapshot = sample(topology.clone(), sensors, cpus(0.5), 1.0, 1);
         let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
-        assert!(readings
-            .coverage
-            .iter()
-            .all(|found| *found == Coverage::Package(55.0)));
+        assert!(
+            readings
+                .coverage
+                .iter()
+                .all(|found| *found == Coverage::Package(55.0))
+        );
         // No sensor: relative, and nothing is covered; a sensor with no reading is no sensor.
-        let sensors = vec![sensor("Core 0", SensorPlace::Core { package: 0, core_id: 0 }, None)];
+        let sensors = vec![sensor(
+            "Core 0",
+            SensorPlace::Core {
+                package: 0,
+                core_id: 0,
+            },
+            None,
+        )];
         let snapshot = sample(topology, sensors, cpus(0.5), 1.0, 1);
         let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
         assert_eq!(readings.mode, Mode::Relative);
-        assert!(readings.coverage.iter().all(|found| *found == Coverage::Unknown));
+        assert!(
+            readings
+                .coverage
+                .iter()
+                .all(|found| *found == Coverage::Unknown)
+        );
         assert_eq!(readings.scale(), (0.0, RELATIVE_SPAN));
         assert!(!readings.tj_max_known && readings.tj_max == TJ_MAX_DEFAULT);
     }
@@ -722,7 +753,10 @@ pub(crate) mod tests {
             let rect = plan.groups[0].rect;
             ((rect[2] - rect[0]) * (rect[3] - rect[1])) as usize
         };
-        assert!(first.len() > box_cells, "the whole box and its skirt, not the cores alone");
+        assert!(
+            first.len() > box_cells,
+            "the whole box and its skirt, not the cores alone"
+        );
         assert_eq!(regions.nudges[0].probes.len(), 8);
         // The same sensors again rebuild nothing; a sensor that stops reading does.
         assert!(!regions.update(&plan, &snapshot, &readings));
@@ -733,15 +767,22 @@ pub(crate) mod tests {
         assert_eq!(regions.nudges.len(), 1);
         // A sensor the cache groups cannot place is counted, and covers nothing.
         let mut stray = snapshot;
-        stray.thermal.as_mut().expect("thermal").sensors.push(sensor(
-            "Tccd5",
-            SensorPlace::Ccd(2),
-            Some(70.0),
-        ));
+        stray
+            .thermal
+            .as_mut()
+            .expect("thermal")
+            .sensors
+            .push(sensor("Tccd5", SensorPlace::Ccd(2), Some(70.0)));
         let readings = Readings::of(&plan, &stray, &mut vec![0.0; plan.blocks.len()]);
-        assert_eq!(readings.unmapped_ccds, 3, "three CCD sensors against two L3 groups: none map");
+        assert_eq!(
+            readings.unmapped_ccds, 3,
+            "three CCD sensors against two L3 groups: none map"
+        );
         assert!(
-            readings.coverage.iter().all(|found| *found == Coverage::Package(58.0)),
+            readings
+                .coverage
+                .iter()
+                .all(|found| *found == Coverage::Package(58.0)),
             "with no CCD placed the package sensor speaks for the die"
         );
     }
@@ -768,7 +809,10 @@ pub(crate) mod tests {
         // The topology says 4800 MHz: half busy per thread, two threads, at half the clock.
         let mut seen = vec![0.0];
         let half = proxy(&make(Some(0.5), Some(2400.0)), &mut seen);
-        assert!((half.expect("measured") - 1.0 * 0.125).abs() < 1e-5, "{half:?}");
+        assert!(
+            (half.expect("measured") - 1.0 * 0.125).abs() < 1e-5,
+            "{half:?}"
+        );
         // Threads' shares add to at most 1.
         let both = proxy(&make(Some(0.9), Some(4800.0)), &mut seen);
         assert_eq!(both, Some(1.0));
@@ -794,7 +838,11 @@ pub(crate) mod tests {
         };
         let mut seen = vec![0.0];
         let first = Readings::of(&plan, &bare_sample(2000.0), &mut seen).proxies[0];
-        assert_eq!(first, Some(1.0), "the first clock seen is the highest so far");
+        assert_eq!(
+            first,
+            Some(1.0),
+            "the first clock seen is the highest so far"
+        );
         let slower = Readings::of(&plan, &bare_sample(1000.0), &mut seen).proxies[0];
         assert!((slower.expect("measured") - 0.125).abs() < 1e-5);
         assert_eq!(seen[0], 2000.0);
@@ -812,7 +860,10 @@ pub(crate) mod tests {
                 core_id: 0,
                 count: core,
             }];
-            thermal.package_throttles = vec![PackageThrottle { package: 0, count: package }];
+            thermal.package_throttles = vec![PackageThrottle {
+                package: 0,
+                count: package,
+            }];
             snapshot
         };
         let mut watch = Watch::default();
@@ -821,28 +872,56 @@ pub(crate) mod tests {
         assert!(watch.cores.is_empty() && watch.packages.is_empty());
         // The same pass again (a sample between passes) and an older sample take nothing in.
         assert!(!watch.ingest(&counted(95, 7, 1, 1.0), 1.1, plan.package));
-        assert!(watch.ingest(&counted(90, 7, 1, 2.0), 2.0, plan.package), "a new sample, the same pass");
+        assert!(
+            watch.ingest(&counted(90, 7, 1, 2.0), 2.0, plan.package),
+            "a new sample, the same pass"
+        );
         assert!(watch.cores.is_empty());
         // A rise between passes marks the core once, at the time it was seen.
         assert!(watch.ingest(&counted(91, 7, 2, 3.0), 3.0, plan.package));
         assert_eq!(
             watch.cores.get(&(0, 0)),
-            Some(&Throttled { since: 3.0, seen: 1 })
+            Some(&Throttled {
+                since: 3.0,
+                seen: 1
+            })
         );
-        assert!(watch.packages.is_empty(), "the package's count did not move");
+        assert!(
+            watch.packages.is_empty(),
+            "the package's count did not move"
+        );
         // A sample of the same pass does not mark it twice.
         watch.ingest(&counted(91, 7, 2, 4.0), 4.0, plan.package);
         assert_eq!(watch.cores.get(&(0, 0)).map(|marked| marked.seen), Some(1));
         // A count that falls is a new baseline (a reboot, a hot-plugged core), never a flash.
         watch.ingest(&counted(3, 7, 3, 5.0), 5.0, plan.package);
-        assert_eq!(watch.cores.get(&(0, 0)).map(|marked| marked.since), Some(3.0));
+        assert_eq!(
+            watch.cores.get(&(0, 0)).map(|marked| marked.since),
+            Some(3.0)
+        );
         // Rising from the new baseline marks it again, by the difference, and the package too.
         watch.ingest(&counted(5, 8, 4, 6.0), 6.0, plan.package);
-        assert_eq!(watch.cores.get(&(0, 0)), Some(&Throttled { since: 6.0, seen: 3 }));
-        assert_eq!(watch.packages.get(&0), Some(&Throttled { since: 6.0, seen: 1 }));
+        assert_eq!(
+            watch.cores.get(&(0, 0)),
+            Some(&Throttled {
+                since: 6.0,
+                seen: 3
+            })
+        );
+        assert_eq!(
+            watch.packages.get(&0),
+            Some(&Throttled {
+                since: 6.0,
+                seen: 1
+            })
+        );
         // No counter at all (None is no entry) marks nothing, and no thermal block is no sample.
         let mut bare = sample(topology.clone(), Vec::new(), Vec::new(), 7.0, 5);
-        bare.thermal.as_mut().expect("thermal").core_throttles.clear();
+        bare.thermal
+            .as_mut()
+            .expect("thermal")
+            .core_throttles
+            .clear();
         watch.ingest(&bare, 7.0, plan.package);
         assert_eq!(watch.cores.get(&(0, 0)).map(|marked| marked.seen), Some(3));
         assert!(!watch.ingest(&Snapshot::default(), 8.0, plan.package));
@@ -898,19 +977,35 @@ pub(crate) mod tests {
         let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
         assert_eq!(readings.mode, Mode::Celsius);
         assert!(readings.tj_max_known && readings.tj_max == 100.0);
-        assert!(readings.coverage.iter().all(|found| matches!(found, Coverage::Own(_))));
+        assert!(
+            readings
+                .coverage
+                .iter()
+                .all(|found| matches!(found, Coverage::Own(_)))
+        );
         assert!(readings.proxies.iter().all(Option::is_some));
         assert!(matches!(readings.watts, Measured::Known(_)));
         let mut regions = Regions::default();
         regions.update(&plan, &snapshot, &readings);
-        assert_eq!(regions.nudges.len(), plan.blocks.len(), "a nudge per core, none for the package");
-        assert!(regions.origins.iter().all(|origin| matches!(origin, Origin::Core(_))));
+        assert_eq!(
+            regions.nudges.len(),
+            plan.blocks.len(),
+            "a nudge per core, none for the package"
+        );
+        assert!(
+            regions
+                .origins
+                .iter()
+                .all(|origin| matches!(origin, Origin::Core(_)))
+        );
     }
 
     #[test]
     fn a_machine_without_topology_draws_the_cpu_list_as_cores_and_without_sensors_is_relative() {
         let snapshot = Snapshot {
-            cpus: (0..4).map(|id| cpu(id, CoreKind::Unknown, Some(0.3), None)).collect(),
+            cpus: (0..4)
+                .map(|id| cpu(id, CoreKind::Unknown, Some(0.3), None))
+                .collect(),
             ..Snapshot::default()
         };
         let topology = topology_of(&snapshot);
@@ -919,7 +1014,10 @@ pub(crate) mod tests {
         assert_eq!(plan.blocks.len(), 4, "each CPU is a core of its own");
         let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; 4]);
         assert_eq!(readings.mode, Mode::Relative);
-        assert!(readings.proxies.iter().all(|proxy| *proxy == Some(0.3)), "busy alone");
+        assert!(
+            readings.proxies.iter().all(|proxy| *proxy == Some(0.3)),
+            "busy alone"
+        );
         assert_eq!(readings.without_clock, 4);
         assert_eq!(readings.watts, Measured::Pending);
         // Nothing at all: no blocks, no panic.
