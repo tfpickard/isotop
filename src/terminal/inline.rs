@@ -18,6 +18,12 @@
 //! is reported by the next `submit`. A worker that panics clears its busy flag, stores an error
 //! and wakes the waiters (`Guard`), so every later `submit` fails with it and nothing waits for ever.
 //!
+//! A frame is written to the sink in pieces (`pieces`), each of which ends just after a graphics
+//! command's string terminator, never in the middle of one. The sink refuses the rest of a frame
+//! once the terminal was restored (`Restoration::frame`), so the terminal is left outside any
+//! command between two pieces; a restore that lands inside a piece is covered by the terminator
+//! the restore bytes begin with.
+//!
 //! If the thread cannot be started, the frame is encoded and written on the caller's thread.
 //! Either way the bytes of a frame are those the loop used to write itself (`legacy`, in the
 //! tests, is a copy of that code, and the two are compared).
@@ -33,9 +39,56 @@ use flate2::{Compression, write::ZlibEncoder};
 /// The base64 text of one graphics command: the protocol allows at most 4096 bytes in a chunk.
 const CHUNK: usize = 4096;
 
-/// A frame is written in pieces of this many bytes, each its own write to the sink, so a restore
-/// waits for one piece and not for a whole frame (see `Restoration::frame`).
+/// A frame is written in pieces of about this many bytes, each its own write to the sink, so a
+/// restore waits for one piece and not for a whole frame (see `Restoration::frame`). A piece is
+/// never cut where it falls: see `pieces`.
 const PIECE: usize = 64 * 1024;
+
+/// The string terminator that ends a graphics command (an APC, `ESC _G...`).
+const TERMINATOR: &[u8] = b"\x1b\\";
+
+/// Where the piece that starts at `start` ends: just after a string terminator, so that the
+/// terminal has finished every graphics command in the pieces before it and a frame that is
+/// refused after one of them (the restore came between two) leaves it outside any command. The
+/// end is the last terminator that fits in `PIECE` bytes (a chunk is at most 4,096 bytes of
+/// base64 and a terminator follows each, so one always does for what the encoder writes), else
+/// the first one after, else the end of the frame. The last piece is whatever follows the last
+/// terminator (the labels and the end of the synchronized update), and ends the frame.
+fn piece_end(wire: &[u8], start: usize) -> usize {
+    let limit = (start + PIECE).min(wire.len());
+    if limit == wire.len() {
+        return limit;
+    }
+    let found = |at: Option<usize>, from: usize| at.map(|at| from + at + TERMINATOR.len());
+    // The last terminator wholly inside the window.
+    let inside = wire[start..limit]
+        .windows(TERMINATOR.len())
+        .rposition(|window| window == TERMINATOR);
+    if let Some(end) = found(inside, start) {
+        return end;
+    }
+    // None: the first after it, which may begin at the window's last byte.
+    let from = limit - 1;
+    let after = wire[from..]
+        .windows(TERMINATOR.len())
+        .position(|window| window == TERMINATOR);
+    found(after, from).unwrap_or(wire.len())
+}
+
+/// The pieces a frame's `wire` bytes are written in, each ending where `piece_end` says. Pieces
+/// are never empty and together are the whole of `wire`.
+fn pieces(wire: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        if start >= wire.len() {
+            return None;
+        }
+        let end = piece_end(wire, start);
+        let piece = &wire[start..end];
+        start = end;
+        Some(piece)
+    })
+}
 
 /// How many finished jobs are kept to be reused.
 pub const SPARE_JOBS: usize = 3;
@@ -129,7 +182,7 @@ impl<S: Write> Worker<S> {
     /// Encodes and writes `job`; returns the bytes written.
     fn write(&mut self, job: &Job) -> io::Result<usize> {
         self.encode(job)?;
-        for piece in self.wire.chunks(PIECE) {
+        for piece in pieces(&self.wire) {
             self.sink.write_all(piece)?;
         }
         self.sink.flush()?;
@@ -540,6 +593,168 @@ mod tests {
         }
         assert_eq!(recorder.bytes(), expected);
         inline.shutdown();
+    }
+
+    /// Whether the terminal is inside a graphics command (an APC) after `bytes`.
+    fn inside_command(bytes: &[u8]) -> bool {
+        let mut inside = false;
+        for pair in bytes.windows(2) {
+            match (pair[0], pair[1], inside) {
+                (0x1b, b'_', false) => inside = true,
+                (0x1b, b'\\', true) => inside = false,
+                _ => {}
+            }
+        }
+        inside
+    }
+
+    /// The bytes of a frame made of `chunks` graphics chunks of the given payload lengths, laid
+    /// out as `Worker::encode` lays them out, without compressing anything.
+    fn laid_out(head: &str, chunk_lengths: &[usize], tail: &str) -> Vec<u8> {
+        let mut wire = head.as_bytes().to_vec();
+        for (index, length) in chunk_lengths.iter().enumerate() {
+            let more = usize::from(index + 1 < chunk_lengths.len());
+            if index == 0 {
+                write!(wire, "\x1b_Ga=T,f=24,t=d,o=z,m={more};").unwrap();
+            } else {
+                write!(wire, "\x1b_Gm={more},q=2;").unwrap();
+            }
+            wire.extend(std::iter::repeat_n(b'A', *length));
+            wire.extend_from_slice(b"\x1b\\");
+        }
+        wire.extend_from_slice(tail.as_bytes());
+        wire
+    }
+
+    /// What a frame cut into pieces must satisfy, whatever its size.
+    fn assert_clean_pieces(wire: &[u8], label: &str) {
+        let all: Vec<&[u8]> = pieces(wire).collect();
+        assert_eq!(all.concat(), wire, "{label}: the pieces are the frame");
+        assert_eq!(all.is_empty(), wire.is_empty(), "{label}");
+        let mut written = 0;
+        for (index, piece) in all.iter().enumerate() {
+            assert!(!piece.is_empty(), "{label}: piece {index} is empty");
+            written += piece.len();
+            if index + 1 < all.len() {
+                assert!(
+                    piece.ends_with(TERMINATOR),
+                    "{label}: piece {index} does not end on a terminator"
+                );
+                assert!(
+                    !inside_command(&wire[..written]),
+                    "{label}: the terminal is inside a command after piece {index}"
+                );
+                // At most the window, and a terminator more when one starts at its end.
+                assert!(
+                    piece.len() <= PIECE + TERMINATOR.len(),
+                    "{label}: piece {index} is too big"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pieces_end_on_a_chunk_boundary_whatever_the_size_of_the_frame() {
+        let mut stream = crate::simulation::XorShift32::new(2_024);
+        let mut random = |most: usize| (stream.unit() * (most + 1) as f32) as usize;
+        let mut split_by_a_plain_cut = 0;
+        for round in 0..2_000 {
+            let count = random(90);
+            let lengths: Vec<usize> = (0..count)
+                .map(|index| {
+                    // Mostly full chunks, as the encoder writes, and the last one short.
+                    if index + 1 == count {
+                        1 + random(4_095)
+                    } else {
+                        4_096
+                    }
+                })
+                .collect();
+            let mut head = "\x1b[?2026h".to_owned();
+            for row in 0..random(60) {
+                head += &format!("\x1b[{row};1H\x1b[2K");
+            }
+            let mut tail = "\x1b_Ga=d,d=I,i=101,q=2\x1b\\".to_owned();
+            for _ in 0..random(40) {
+                tail += "\x1b[3;4H\x1b[38;2;1;2;3mlabel\x1b[0m";
+            }
+            tail += "\x1b[?2026l";
+            let wire = laid_out(&head, &lengths, &tail);
+            assert_clean_pieces(&wire, &format!("round {round}, {count} chunks"));
+            // How often the cut this module used before (every 64 KiB, wherever it fell) would
+            // have left the terminal inside a command: the property is not vacuous.
+            let plain: usize = wire.chunks(PIECE).take(1).map(<[u8]>::len).sum();
+            if plain < wire.len() && inside_command(&wire[..plain]) {
+                split_by_a_plain_cut += 1;
+            }
+        }
+        assert!(
+            split_by_a_plain_cut > 500,
+            "only {split_by_a_plain_cut} of 2000 frames were split inside a command by a plain cut"
+        );
+    }
+
+    #[test]
+    fn pieces_handle_the_edges_of_the_window() {
+        // A terminator whose ESC is the last byte of the window and whose backslash is the next.
+        for offset in [PIECE - 3, PIECE - 2, PIECE - 1, PIECE] {
+            let mut wire = vec![b'x'; offset];
+            wire.extend_from_slice(TERMINATOR);
+            wire.extend(std::iter::repeat_n(b'y', PIECE / 2));
+            assert_clean_pieces(&wire, &format!("terminator at {offset}"));
+        }
+        // No terminator at all in the first window: the piece runs on to the first one after.
+        let mut wire = vec![b'x'; PIECE * 2 + 17];
+        wire.extend_from_slice(TERMINATOR);
+        wire.extend_from_slice(b"tail");
+        let all: Vec<&[u8]> = pieces(&wire).collect();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].ends_with(TERMINATOR));
+        // None anywhere: one piece, the whole frame.
+        let bare = vec![b'x'; PIECE * 3];
+        assert_eq!(pieces(&bare).count(), 1);
+        assert_eq!(pieces(&[]).count(), 0);
+        // Not a graphics terminator: an ESC before a backslash in text is the only pair that
+        // counts, and a lone one of either does not.
+        let mut lone = vec![b'\\'; PIECE + 10];
+        lone.extend_from_slice(b"\x1b");
+        assert_eq!(pieces(&lone).count(), 1);
+    }
+
+    #[test]
+    fn a_frame_the_worker_writes_reaches_the_sink_in_clean_pieces() {
+        // The real encoder, over frames of sizes that straddle one, two and many pieces.
+        #[derive(Clone, Default)]
+        struct Writes(Arc<Mutex<Vec<Vec<u8>>>>);
+        impl Write for Writes {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        for size in [0, 1, 1_000, 40_000, 49_000, 49_300, 150_000, 400_000] {
+            let writes = Writes::default();
+            let mut worker = Worker::new(writes.clone());
+            let sent = job("\x1b[?2026h\x1b[1;1H", &noise(size), "T\x1b[?2026l");
+            let expected = legacy(&sent.head, &sent.placement, &sent.pixels, &sent.tail);
+            worker.write(&sent).unwrap();
+            let written = writes.0.lock().unwrap().clone();
+            assert_eq!(written.concat(), expected, "size {size}");
+            let mut sofar = 0;
+            for (index, piece) in written.iter().enumerate() {
+                sofar += piece.len();
+                if index + 1 < written.len() {
+                    assert!(piece.ends_with(TERMINATOR), "size {size}, piece {index}");
+                    assert!(!inside_command(&expected[..sofar]), "size {size}");
+                }
+            }
+            if size >= 150_000 {
+                assert!(written.len() >= 2, "size {size} is written in pieces");
+            }
+        }
     }
 
     #[test]
