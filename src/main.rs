@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod allocations;
 mod anthill;
 mod app;
 mod arbor;
