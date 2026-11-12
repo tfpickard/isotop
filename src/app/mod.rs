@@ -174,6 +174,14 @@ impl App {
             .rasterize(frame, self.pointer.hover.map(|hover| hover.frame));
     }
 
+    /// Hands a frame `draw` recorded to the rasterizer and takes back the frame that is ready to
+    /// present: this one when the CPU draws or the GPU is not allowed to run behind, else the one
+    /// before it (None for the first), whole. See `Renderer::overlap`.
+    pub(crate) fn rasterize_ahead(&mut self, frame: Frame) -> Option<Frame> {
+        self.renderer
+            .overlap(frame, self.pointer.hover.map(|hover| hover.frame))
+    }
+
     /// Replaces the rasterizer, which starts as the CPU.
     pub(crate) fn set_renderer(&mut self, renderer: Renderer) {
         self.renderer = renderer;

@@ -97,6 +97,10 @@ pub(crate) struct Options {
     /// Which GPU to prefer on machines with more than one
     #[arg(long, value_enum, default_value_t = Power::High)]
     pub(crate) gpu_power: Power,
+    /// Finish each GPU frame before recording the next, which shows the frame just recorded and
+    /// not the one before it, and costs the time the GPU takes
+    #[arg(long, hide = true)]
+    pub(crate) no_gpu_pipeline: bool,
     /// Exit after this many seconds and report end-to-end presentation throughput
     #[arg(long)]
     pub(crate) duration: Option<f64>,

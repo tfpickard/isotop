@@ -217,6 +217,14 @@ jobs:
             parity/*.png
           if-no-files-found: ignore
 
+      # The GPU frame tests (draw calls that commute, full read back, buffer recycling, the
+      # pipelined renderer) on lavapipe: every view's frame, so a draw call moved past one it
+      # overlaps fails here and not only in a parity number.
+      - name: GPU frame tests (lavapipe)
+        if: runner.os == 'Linux'
+        env:
+          ISOTOP_ALLOW_SOFTWARE_GPU: "1"
+        run: cargo test --release gpu::frames:: -- --ignored --test-threads=1
       - name: Self-test the PNG comparison script
         run: python3 scripts/compare_png.py --self-test
 

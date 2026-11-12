@@ -108,6 +108,9 @@ rasterizers draw it with matching output:
 - **GPU** (default): wgpu on Vulkan (NVIDIA, AMD, Intel) or Metal (Apple GPUs).
   `--gpu-power high` (default) prefers a discrete GPU, `low` an integrated one,
   which keeps a laptop's discrete GPU asleep. Software adapters are refused.
+  In a live session the GPU draws one frame while the next is recorded, so what
+  you see is one frame behind the scene; the hidden `--no-gpu-pipeline` finishes
+  each frame first, and a headless run (`--output`, `--benchmark`) always does.
 - **CPU**: a software rasterizer with a depth buffer. `--renderer cpu` forces it;
   `--renderer auto` falls back to it when no GPU is available or a GPU error
   occurs, and the status strip says which rasterizer drew the frame.
@@ -1430,7 +1433,7 @@ Selection can bring a process beyond the cap into the scene.
 <!-- metrics:start -->
 ## By the numbers
 
-110,889 lines of Rust (66,567 production, 44,322 test) in 170 files, 1,492 tests, 27 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
+112,274 lines of Rust (67,532 production, 44,742 test) in 175 files, 1,512 tests, 27 views, 10 direct and 168 total crate dependencies. Generated; see [docs/METRICS.md](docs/METRICS.md) for the breakdown and the debt counters.
 <!-- metrics:end -->
 
 ## Development

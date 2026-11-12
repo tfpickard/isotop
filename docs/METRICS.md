@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 170 | 110,860 | 2,492 | 6,743 |
+| Rust | 175 | 112,245 | 2,517 | 6,856 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,089 | 841 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
-| Markdown | 91 | 0 | 15,009 | 5,224 |
+| Markdown | 91 | 0 | 15,020 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **488** | **174,190** | **18,867** | **15,110** |
+| **Total** | **493** | **175,575** | **18,903** | **15,223** |
 
 ## Rust by module
 
@@ -32,7 +32,6 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/armorial.rs` | 1,314 | 461 |
 | `src/cortex.rs` | 1,220 | 541 |
 | `src/tesseract.rs` | 1,054 | 561 |
-| `src/gpu.rs` | 1,020 | 393 |
 | `src/ptolemy.rs` | 983 | 421 |
 | `src/lights.rs` | 928 | 388 |
 | `src/murmuration.rs` | 923 | 792 |
@@ -49,6 +48,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/views.rs` | 691 | 740 |
 | `src/views/systems.rs` | 680 | 416 |
 | `src/simulation.rs` | 651 | 762 |
+| `src/gpu.rs` | 632 | 395 |
 | `src/platform/linux/mod.rs` | 621 | 370 |
 | `src/platform/macos/ffi.rs` | 613 | 12 |
 | `src/coop/draw.rs` | 589 | 0 |
@@ -95,14 +95,15 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/terminal/inline.rs` | 308 | 347 |
 | `src/journal.rs` | 298 | 171 |
 | `src/switchboard/figures.rs` | 298 | 0 |
+| `src/gpu/frames.rs` | 297 | 0 |
 | `src/render/frame.rs` | 294 | 302 |
 | `src/anthill/paint.rs` | 292 | 0 |
 | `src/blackbody.rs` | 292 | 146 |
 | `src/views/city.rs` | 285 | 86 |
 | `src/platform/macos/journal.rs` | 284 | 273 |
+| `src/interactive.rs` | 281 | 0 |
 | `src/model/exchange.rs` | 274 | 228 |
 | `src/anthill/ingest.rs` | 273 | 0 |
-| `src/interactive.rs` | 273 | 0 |
 | `src/plumbing/card.rs` | 271 | 137 |
 | `src/places.rs` | 270 | 0 |
 | `src/anthill/slab.rs` | 267 | 203 |
@@ -113,9 +114,13 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/ouija/paint.rs` | 251 | 0 |
 | `src/io_detail.rs` | 250 | 321 |
 | `src/die/panel.rs` | 248 | 12 |
+| `src/gpu/batch.rs` | 248 | 332 |
 | `src/plumbing/draw/tank.rs` | 247 | 28 |
 | `src/medium.rs` | 240 | 66 |
 | `src/ouija/props.rs` | 238 | 0 |
+| `src/headless.rs` | 237 | 589 |
+| `src/gpu/readback.rs` | 234 | 76 |
+| `src/gpu/pipelines.rs` | 233 | 0 |
 | `src/io_detail/attribute.rs` | 233 | 374 |
 | `src/terminal/shared.rs` | 232 | 225 |
 | `src/plumbing.rs` | 230 | 0 |
@@ -123,20 +128,20 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/die/paint.rs` | 228 | 84 |
 | `src/render/draw.rs` | 227 | 17 |
 | `src/die/heat.rs` | 223 | 262 |
-| `src/headless.rs` | 222 | 579 |
 | `src/ouija/scenery.rs` | 219 | 77 |
 | `src/plumbing/room.rs` | 218 | 197 |
 | `src/terminal/restore.rs` | 218 | 301 |
+| `src/gpu/staging.rs` | 213 | 0 |
 | `src/strata.rs` | 210 | 128 |
 | `src/anthill.rs` | 204 | 561 |
 | `src/model/thermal/demo.rs` | 201 | 224 |
 | `src/anthill/words.rs` | 198 | 164 |
 | `src/render.rs` | 198 | 0 |
+| `src/app/mod.rs` | 197 | 24 |
 | `src/picker.rs` | 195 | 44 |
-| `src/app/mod.rs` | 193 | 24 |
 | `src/plumbing/draw/scenery.rs` | 192 | 0 |
 | `src/anthill/terrain.rs` | 190 | 92 |
-| `src/cli.rs` | 183 | 227 |
+| `src/cli.rs` | 185 | 227 |
 | `src/plumbing/draw/tubes.rs` | 182 | 62 |
 | `src/app/tour.rs` | 177 | 668 |
 | `src/stellar.rs` | 172 | 222 |
@@ -150,7 +155,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/lunar.rs` | 160 | 114 |
 | `src/platform/linux/descriptors.rs` | 160 | 328 |
 | `src/app/input.rs` | 156 | 234 |
-| `src/main.rs` | 153 | 55 |
+| `src/main.rs` | 156 | 55 |
+| `src/app/renderer.rs` | 153 | 0 |
 | `src/render/stage.rs` | 153 | 95 |
 | `src/app/screen.rs` | 152 | 67 |
 | `src/plumbing/floor.rs` | 152 | 146 |
@@ -184,7 +190,6 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/anthill/scale.rs` | 74 | 58 |
 | `src/render/text.rs` | 68 | 334 |
 | `src/platform/linux/wait.rs` | 62 | 98 |
-| `src/app/renderer.rs` | 57 | 0 |
 | `src/model/pipework.rs` | 54 | 101 |
 | `src/switchboard/lamp.rs` | 54 | 80 |
 | `src/geometry.rs` | 50 | 15 |
@@ -193,7 +198,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/status.rs` | 15 | 51 |
 | `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **66,567** | **44,322** |
+| **Total** | **67,532** | **44,742** |
 
 ## Largest files
 
@@ -218,7 +223,7 @@ Regex counts over every `src/**/*.rs` file, comments and strings included. They 
 
 | Counter | Count |
 |:--|--:|
-| `#[expect(clippy::too_many_lines` | 11 |
+| `#[expect(clippy::too_many_lines` | 9 |
 | `#[expect(clippy::too_many_arguments` | 7 |
 | `unsafe` blocks | 145 |
 | `unwrap_or(0` sites | 30 |
@@ -231,7 +236,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,492 |
+| `#[test]` functions | 1,512 |
 | Views in the registry | 27 |
 | Views with a README mapping table | 27 of 27 |
 | Direct crate dependencies | 10 |
