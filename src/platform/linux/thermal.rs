@@ -637,6 +637,17 @@ impl ThermalReader for ThermalScan {
     }
 }
 
+/// Test only: the topologies the reader finds in the sysfs trees its own tests use, by name: a
+/// capture of a real virtual machine (`vm`), and the synthetic Intel hybrid part with SMT
+/// (`hybrid`), AMD part with two CCDs (`amd`) and tiled part with low-power E-cores (`tiled`).
+/// A view that draws a topology (the die's floorplan) tests against what the parse-from-root
+/// path gives, not against a hand-built value.
+#[cfg(test)]
+#[expect(dead_code, reason = "the die's floorplan test is the first reader")]
+pub fn fixture_topologies() -> Vec<(&'static str, Topology)> {
+    tests::fixture_topologies()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,6 +922,22 @@ mod tests {
 
     fn read(tree: &Tree) -> Topology {
         tree.scan().topology().expect("a topology")
+    }
+
+    /// See `super::fixture_topologies`.
+    #[expect(dead_code, reason = "the die's floorplan test is the first reader")]
+    pub(super) fn fixture_topologies() -> Vec<(&'static str, Topology)> {
+        vec![
+            (
+                "vm",
+                read(&Tree::from_capture(include_str!(
+                    "fixtures/x86_cpu_topology_vm_4cpu.txt"
+                ))),
+            ),
+            ("hybrid", read(&synthetic_hybrid())),
+            ("amd", read(&synthetic_amd())),
+            ("tiled", read(&synthetic_tiled())),
+        ]
     }
 
     fn cores_of(topology: &Topology) -> Vec<Vec<u32>> {
