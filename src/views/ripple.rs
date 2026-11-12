@@ -427,7 +427,7 @@ impl ViewModule for Ripple {
         }
         for (index, (process, &at)) in processes.iter().zip(&located).enumerate() {
             let radius = radii[index] * grows[index];
-            let z = grid.sample(&heights, at, mix) + radius * 0.35;
+            let z = grid.sample(heights, at, mix) + radius * 0.35;
             let position = [at[0], at[1], z];
             stage.positions.insert(process.id, position);
             glows(stage.frame, camera, process, position, radii[index]);
