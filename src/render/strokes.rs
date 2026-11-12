@@ -43,29 +43,29 @@ pub(crate) struct Dash {
 }
 
 impl Dash {
-    /// The arc-length intervals inside `from..to` that the pattern draws.
-    fn spans(self, from: f32, to: f32) -> Vec<(f32, f32)> {
+    /// Hands `draw` the arc-length intervals inside `from..to` that the pattern draws, in order.
+    fn each_span(self, from: f32, to: f32, mut draw: impl FnMut(f32, f32)) {
         let period = self.on + self.off;
         if self.on.is_nan() || self.on <= 0.0 {
-            return Vec::new();
+            return;
         }
         if self.off.is_nan()
             || self.off <= 0.0
             || !period.is_finite()
             || (to - from) / period > MOST_DASHES
         {
-            return vec![(from, to)];
+            draw(from, to);
+            return;
         }
-        let mut spans = Vec::new();
         let mut cycle = ((from + self.phase) / period).floor();
         loop {
             let start = cycle * period - self.phase;
             if start >= to {
-                return spans;
+                return;
             }
             let (low, high) = (start.max(from), (start + self.on).min(to));
             if high > low {
-                spans.push((low, high));
+                draw(low, high);
             }
             cycle += 1.0;
         }
@@ -314,11 +314,7 @@ impl Frame {
             if size < 1e-9 || (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) > REACH {
                 continue;
             }
-            let spans = match dash {
-                None => vec![(start, end)],
-                Some(dash) => dash.spans(start, end),
-            };
-            for (from, to) in spans {
+            let mut piece = |from: f32, to: f32| {
                 let p = lerp(a, b, (from - start) / size);
                 let q = lerp(a, b, (to - start) / size);
                 if pixels < THINNEST_RIBBON {
@@ -326,6 +322,10 @@ impl Frame {
                 } else {
                     self.band(p, q, pixels * 0.5, color, pick);
                 }
+            };
+            match dash {
+                None => piece(start, end),
+                Some(dash) => dash.each_span(start, end, piece),
             }
         }
     }

@@ -3,9 +3,18 @@
 //! raises one says why.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+
+/// Where allocations were requested: a call path, as text, to the requests and bytes it made.
+type Sites = HashMap<String, [u64; 2]>;
 
 thread_local! {
+    /// While a test looks for where allocations come from, the sites it has seen. Recording
+    /// allocates, so `RECORDING` keeps the allocator from recording its own requests.
+    static SITES: RefCell<Option<Sites>> = const { RefCell::new(None) };
+    /// Set while an allocation is being recorded.
+    static RECORDING: Cell<bool> = const { Cell::new(false) };
     /// Allocations and bytes requested by this thread so far. A thread's own counts, so tests
     /// that run side by side do not see each other's allocations. Const-initialized and without
     /// a destructor, so the allocator may touch it at any point of a thread's life.
@@ -23,6 +32,47 @@ fn count(bytes: usize) {
         let [requests, total] = tally.get();
         tally.set([requests + 1, total + bytes as u64]);
     });
+    if !RECORDING.get() && SITES.try_with(|sites| sites.borrow().is_some()) == Ok(true) {
+        record(bytes);
+    }
+}
+
+/// Notes the call path of the request in progress, unless it is the recording's own.
+fn record(bytes: usize) {
+    if RECORDING.replace(true) {
+        return;
+    }
+    let path = site();
+    let _ = SITES.try_with(|sites| {
+        if let Some(sites) = sites.borrow_mut().as_mut() {
+            let seen = sites.entry(path).or_default();
+            seen[0] += 1;
+            seen[1] += bytes as u64;
+        }
+    });
+    RECORDING.set(false);
+}
+
+/// The first two frames of this crate on the stack, innermost first, each with its file and line.
+fn site() -> String {
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let mut path = Vec::new();
+    let mut lines = trace.lines().peekable();
+    while let Some(line) = lines.next() {
+        let name = line
+            .trim_start()
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c == ':')
+            .trim();
+        let name = name.trim_start_matches('<');
+        if name.starts_with("isotop::") && !name.starts_with("isotop::allocations") {
+            let place = lines.peek().map_or("", |next| next.trim());
+            path.push(format!("{name} {}", place.trim_start_matches("at ")));
+            if path.len() == 2 {
+                break;
+            }
+        }
+    }
+    path.join("  <-  ")
 }
 
 // SAFETY: every method forwards to `System`, which upholds the `GlobalAlloc` contract, with the
@@ -69,6 +119,19 @@ pub(crate) struct Tally {
 fn now() -> Tally {
     let [requests, bytes] = TALLY.with(Cell::get);
     Tally { requests, bytes }
+}
+
+/// Runs `work` and returns where on the stack its allocations were requested, the most bytes
+/// first, with the number of requests and the bytes of each path.
+fn sites_of<R>(work: impl FnOnce() -> R) -> (R, Vec<(String, [u64; 2])>) {
+    SITES.with(|sites| *sites.borrow_mut() = Some(Sites::new()));
+    let result = work();
+    let sites = SITES
+        .with(|sites| sites.borrow_mut().take())
+        .unwrap_or_default();
+    let mut sites: Vec<_> = sites.into_iter().collect();
+    sites.sort_by_key(|(path, [_, bytes])| (std::cmp::Reverse(*bytes), path.clone()));
+    (result, sites)
 }
 
 /// Runs `work` and returns what it requested from the allocator on this thread.
@@ -211,6 +274,35 @@ mod tests {
         println!("view requests/frame bytes/frame ({processes} processes)");
         for (name, tally) in every_view(processes) {
             println!("{name} {} {}", tally.requests, tally.bytes);
+        }
+    }
+
+    /// Prints where the steady-state frames of the view named by `ALLOCATION_VIEW` allocate:
+    /// `ALLOCATION_VIEW=flow cargo test print_allocation_sites -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "prints a table; run on demand"]
+    fn print_allocation_sites() {
+        let name = std::env::var("ALLOCATION_VIEW").unwrap_or_else(|_| "city".to_owned());
+        let view = View::all()
+            .find(|view| view.name() == name)
+            .expect("ALLOCATION_VIEW names a view");
+        let (mut app, options) = warmed(view, PROCESSES);
+        let mut frame = app.render(
+            options.width,
+            options.headless_height(),
+            options.limit as usize,
+        );
+        for index in 0..SETTLE {
+            frame = step(&mut app, &options, frame, index);
+        }
+        let (_, sites) = sites_of(|| {
+            for index in 0..FRAMES {
+                frame = step(&mut app, &options, frame, SETTLE + index);
+            }
+        });
+        println!("requests bytes (over {FRAMES} frames) site");
+        for (path, [requests, bytes]) in sites.iter().take(25) {
+            println!("{requests} {bytes} {path}");
         }
     }
 

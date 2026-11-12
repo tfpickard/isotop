@@ -690,11 +690,14 @@ fn admitted<'a>(
     focus: Option<Identity>,
 ) -> Vec<&'a Process> {
     let allowed = focus.map(|root| descendants(snapshot, root));
-    let mut processes: Vec<&Process> = visual
-        .iter()
-        .filter(|p| allowed.as_ref().is_none_or(|set| set.contains(&p.id)))
-        .collect();
-    processes.sort_by_key(|p| p.id);
+    let mut processes: Vec<&Process> = Vec::with_capacity(visual.len());
+    processes.extend(
+        visual
+            .iter()
+            .filter(|p| allowed.as_ref().is_none_or(|set| set.contains(&p.id))),
+    );
+    // One process per identity, so the order is the same as a stable sort's, with no buffer.
+    processes.sort_unstable_by_key(|p| p.id);
     if processes.len() > limit {
         // A stable PID order keeps resource changes from continuously evicting buildings.
         if let Some(id) = selected
