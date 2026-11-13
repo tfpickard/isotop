@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 175 | 113,219 | 2,564 | 6,903 |
+| Rust | 175 | 113,249 | 2,564 | 6,904 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,091 | 843 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 91 | 0 | 15,033 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **493** | **176,551** | **18,965** | **15,270** |
+| **Total** | **493** | **176,581** | **18,965** | **15,271** |
 
 ## Rust by module
 
@@ -169,11 +169,11 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/plumbing/flow.rs` | 134 | 210 |
 | `src/coop/fixtures.rs` | 131 | 0 |
 | `src/platform/linux/pipes.rs` | 130 | 111 |
+| `src/app/camera.rs` | 126 | 191 |
 | `src/platform/linux/nvml.rs` | 119 | 0 |
 | `src/anthill/fixtures.rs` | 114 | 0 |
 | `src/app/fixtures.rs` | 114 | 0 |
 | `src/render/camera.rs` | 112 | 81 |
-| `src/app/camera.rs` | 110 | 177 |
 | `src/glyphs.rs` | 107 | 0 |
 | `src/platform/macos/events.rs` | 107 | 60 |
 | `src/plumbing/path.rs` | 106 | 64 |
@@ -198,7 +198,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/status.rs` | 15 | 51 |
 | `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **67,683** | **45,567** |
+| **Total** | **67,699** | **45,581** |
 
 ## Largest files
 

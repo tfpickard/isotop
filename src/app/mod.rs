@@ -19,11 +19,11 @@ use std::time::{Duration, Instant};
 
 use crate::model::{Demand, Identity, Snapshot};
 use crate::picker::{self, Picker};
-use crate::render::{Camera, Frame, RenderInput, Scene, Thing};
+use crate::render::{Frame, RenderInput, Scene, Thing};
 use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
 
-use camera::CameraController;
+use camera::{Anchored, CameraController};
 use feed::JournalFeed;
 pub(crate) use input::typed;
 use player::HistoryPlayer;
@@ -69,8 +69,9 @@ pub(crate) struct App {
     /// The shown view took a `q` and deferred the quit (`ViewKey::Quit`): the app ends when the
     /// view reports it is done (`Stage::quit`), or when the view lets a second `q` through.
     pub(crate) quitting: bool,
-    /// The view and the camera that drew the frame last given to `rasterize_ahead`.
-    anchored: Option<(View, Camera)>,
+    /// What the overlay is placed from and the frame last given to the rasterizer was drawn with:
+    /// the view, the camera, the selection, the selected thing and the focus.
+    anchored: Option<Anchored>,
 }
 
 impl App {

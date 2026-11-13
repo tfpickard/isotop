@@ -11,7 +11,7 @@
 //! the app writes over it (`App::overlay`) is placed from the app's state as it stands when the
 //! frame is presented, which is one frame newer. That is exact only while nothing the text
 //! anchors to has moved between the two, so `overlap` pipelines a frame only when its caller says
-//! the anchors are at rest (the camera and the view are the ones that drew the frame before) and
+//! the anchors are at rest (the camera, the view, the selection and the focus are the ones that drew the frame before) and
 //! finishes it at once otherwise; a body that moves under its own power, or the free turn of the
 //! globe, still leads its pixels by one frame of its own motion (under a pixel for the globe, a
 //! fraction of a terminal cell for a body). A hover is looked up in the window of picks read

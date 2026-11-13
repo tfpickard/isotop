@@ -1,8 +1,10 @@
 //! The camera the user moves and the scene is drawn from: easing towards a goal, refitting the
 //! view when it grows, and the globe's hold.
 
-use crate::render::{Camera, Point, Scene};
+use crate::model::Identity;
+use crate::render::{Camera, Point, Scene, Thing};
 use crate::simulation;
+use crate::views::View;
 
 use super::App;
 
@@ -123,12 +125,30 @@ impl CameraController {
     }
 }
 
+/// What a frame's overlay depends on besides the frame itself (`App::anchors_at_rest`).
+#[derive(Clone, PartialEq)]
+pub(super) struct Anchored {
+    view: View,
+    camera: Camera,
+    selected: Option<Identity>,
+    thing: Option<Thing>,
+    focus: Option<Identity>,
+}
+
 impl App {
-    /// Whether the view and the camera that drew the frame now being given to the rasterizer are
-    /// those that drew the one before: then the overlay, placed from the camera as it stands,
-    /// agrees with the pixels of a frame that comes back a frame late. Notes this frame's.
+    /// Whether the view, the camera and the selection that drew the frame now being given to the
+    /// rasterizer are those that drew the one before: then the overlay, placed from the camera
+    /// and the selection as they stand, agrees with the pixels of a frame that comes back a frame
+    /// late (the inspector of a process just selected is built from the new selection but
+    /// placed at the anchor the frame recorded, which was the old one's). Notes this frame's.
     pub(super) fn anchors_at_rest(&mut self) -> bool {
-        let drawn = Some((self.view, self.camera.current.clone()));
+        let drawn = Some(Anchored {
+            view: self.view,
+            camera: self.camera.current.clone(),
+            selected: self.selected,
+            thing: self.thing,
+            focus: self.focus,
+        });
         let at_rest = self.anchored == drawn;
         self.anchored = drawn;
         at_rest
@@ -340,7 +360,8 @@ mod tests {
     }
 
     #[test]
-    fn the_overlay_anchors_are_at_rest_only_while_the_camera_and_the_view_are_unchanged() {
+    fn the_overlay_anchors_are_at_rest_only_while_the_camera_the_view_and_the_selection_are_unchanged()
+     {
         let mut app = App::new(view("orbit"), model::demo(1.0, 16), all_available());
         assert!(!app.anchors_at_rest(), "the first frame has none before it");
         assert!(app.anchors_at_rest());
@@ -359,6 +380,19 @@ mod tests {
             !app.anchors_at_rest(),
             "another view's overlay is not this frame's"
         );
+        assert!(app.anchors_at_rest());
+        let process = app.snapshot().processes[0].id;
+        app.selected = Some(process);
+        assert!(
+            !app.anchors_at_rest(),
+            "a selection changes whose inspector the overlay places"
+        );
+        assert!(app.anchors_at_rest());
+        app.selected = None;
+        assert!(!app.anchors_at_rest(), "so does letting go of it");
+        assert!(app.anchors_at_rest());
+        app.focus = Some(process);
+        assert!(!app.anchors_at_rest(), "a focus changes what is drawn");
         assert!(app.anchors_at_rest());
     }
 }
