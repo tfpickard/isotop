@@ -13,6 +13,13 @@
 //! Three things need the worker to be out of the way. `Inline::settle` drops the job that is
 //! waiting and waits for the one being written, and runs before a frame goes through shared
 //! memory or the screen is cleared, so one medium's bytes never interleave with the other's.
+//! `Inline::settle` waits at most `SETTLE_LIMIT` and says whether the worker is idle: a caller
+//! that gets `false` must not write to the terminal itself, because the worker writes a frame in
+//! pieces and releases the output between them, so a direct write would land inside the frame.
+//! `Inline::direct` is that rule for a write the caller owes (the clear after a resize): it runs
+//! the write only when the worker is idle and otherwise does not run it, and the caller keeps the
+//! request and asks again later (`Terminal::clear`, `Terminal::present`). The caller is the only
+//! submitter, so a worker that is idle stays idle until the caller submits again.
 //! `Inline::shutdown` settles (up to `SETTLE_LIMIT`), stops the worker and joins it (up to
 //! `JOIN_LIMIT`), so a terminal that stopped reading cannot hold the exit up. A write that fails
 //! is reported by the next `submit`. A worker that panics clears its busy flag, stores an error
@@ -335,7 +342,7 @@ impl<S: Write + Send + Clone + 'static> Inline<S> {
 
     /// Shorter limits, for tests that stall the writer on purpose.
     #[cfg(test)]
-    fn with_limits(mut self, settle: Duration, join: Duration) -> Self {
+    pub(super) fn with_limits(mut self, settle: Duration, join: Duration) -> Self {
         self.settle_limit = settle;
         self.join_limit = join;
         self
@@ -407,7 +414,9 @@ impl<S: Write + Send + Clone + 'static> Inline<S> {
     }
 
     /// Drops the frame that is waiting and waits, up to the limit, for the one being written.
-    /// Returns whether nothing is being written any more.
+    /// Returns whether nothing is being written any more; when it is `false` the worker may still
+    /// be writing pieces of a frame, and nothing else may be written to the terminal.
+    #[must_use = "false means the worker is still writing: do not write to the terminal"]
     pub fn settle(&self) -> bool {
         let deadline = Instant::now() + self.settle_limit;
         let mut state = self.mailbox.lock();
@@ -428,10 +437,19 @@ impl<S: Write + Send + Clone + 'static> Inline<S> {
         true
     }
 
+    /// Runs `write`, a direct write to the terminal, only when the worker is idle after a
+    /// `settle`. Returns `None`, without running it, when the worker is still writing a frame
+    /// after the limit (the caller keeps the request and tries again), and the write's own result
+    /// otherwise.
+    pub fn direct<T>(&self, write: impl FnOnce() -> T) -> Option<T> {
+        self.settle().then(write)
+    }
+
     /// Settles, stops the worker and joins it, each for a limited time; a worker still stuck in
     /// a write after that is left behind and ends with the process.
     pub fn shutdown(&mut self) {
-        self.settle();
+        // Settled or not, the worker is told to stop and left behind if it is stuck.
+        let _ = self.settle();
         {
             let mut state = self.mailbox.lock();
             state.closed = true;
@@ -901,6 +919,42 @@ mod tests {
         let _release = let_go.join().unwrap();
         assert_eq!(marks(&record.bytes()), [1], "the waiting frame was dropped");
         assert!(inline.mailbox.lock().waiting.is_none());
+    }
+
+    #[test]
+    fn a_direct_write_is_not_made_while_a_frame_is_held_and_is_made_once_it_ends() {
+        let (sink, started, release) = gate();
+        let record = sink.record.clone();
+        let mut inline =
+            Inline::new(sink).with_limits(Duration::from_millis(60), Duration::from_millis(60));
+        inline.submit(marked("#1")).unwrap();
+        started.recv().unwrap();
+        // A newer frame waits behind the held one: settling drops it too.
+        inline.submit(marked("#2")).unwrap();
+        let mut ran = 0;
+        assert!(
+            inline
+                .direct(|| {
+                    ran += 1;
+                })
+                .is_none(),
+            "the settle timed out"
+        );
+        assert_eq!(ran, 0, "the write did not run");
+        assert!(record.bytes().is_empty(), "and the frame is still held");
+        assert!(inline.mailbox.lock().writing, "the worker is still active");
+        release.send(()).unwrap();
+        until_accounted(&inline, 1);
+        let direct = inline.direct(|| {
+            ran += 1;
+            record.bytes()
+        });
+        assert_eq!(ran, 1, "run once the worker is idle");
+        assert_eq!(
+            marks(&direct.unwrap()),
+            [1],
+            "after the held frame, whole; the waiting one was dropped"
+        );
     }
 
     #[test]
