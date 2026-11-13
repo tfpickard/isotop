@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 175 | 113,249 | 2,564 | 6,904 |
+| Rust | 175 | 113,431 | 2,574 | 6,917 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,091 | 843 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 91 | 0 | 15,033 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **493** | **176,581** | **18,965** | **15,271** |
+| **Total** | **493** | **176,763** | **18,975** | **15,284** |
 
 ## Rust by module
 
@@ -68,9 +68,9 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/cores.rs` | 500 | 318 |
 | `src/coop/roles.rs` | 497 | 263 |
 | `src/model/kernel.rs` | 492 | 486 |
+| `src/terminal.rs` | 487 | 503 |
 | `src/globe.rs` | 483 | 500 |
 | `src/views/flow.rs` | 475 | 43 |
-| `src/terminal.rs` | 459 | 386 |
 | `src/model/pipework/demo.rs` | 453 | 174 |
 | `src/render/raster/reference.rs` | 452 | 0 |
 | `src/coop/sim.rs` | 448 | 252 |
@@ -89,8 +89,8 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/model/thermal.rs` | 354 | 471 |
 | `src/ouija/seance.rs` | 343 | 290 |
 | `src/plumbing/draw/pipes.rs` | 343 | 60 |
+| `src/terminal/inline.rs` | 343 | 523 |
 | `src/matrix.rs` | 341 | 236 |
-| `src/terminal/inline.rs` | 339 | 489 |
 | `src/gpu/frames.rs` | 335 | 0 |
 | `src/render/raster/triangle.rs` | 331 | 20 |
 | `src/platform/linux/net.rs` | 320 | 278 |
@@ -198,7 +198,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/status.rs` | 15 | 51 |
 | `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **67,699** | **45,581** |
+| **Total** | **67,731** | **45,732** |
 
 ## Largest files
 
@@ -236,7 +236,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,531 |
+| `#[test]` functions | 1,535 |
 | Views in the registry | 27 |
 | Views with a README mapping table | 27 of 27 |
 | Direct crate dependencies | 10 |
