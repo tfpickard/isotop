@@ -8,14 +8,14 @@ tokei over the repository (ignored files and hidden directories skipped, `docs/M
 
 | Language | Files | Code | Comments | Blanks |
 |:--|--:|--:|--:|--:|
-| Rust | 175 | 113,431 | 2,574 | 6,917 |
+| Rust | 175 | 113,745 | 2,591 | 6,932 |
 | SVG | 89 | 39,920 | 9 | 0 |
 | Python | 121 | 23,091 | 843 | 3,092 |
 | WebGPU Shader Language | 1 | 255 | 27 | 40 |
 | TOML | 4 | 66 | 1 | 11 |
 | Markdown | 91 | 0 | 15,033 | 5,224 |
 | Plain Text | 12 | 0 | 488 | 0 |
-| **Total** | **493** | **176,763** | **18,975** | **15,284** |
+| **Total** | **493** | **177,077** | **18,992** | **15,299** |
 
 ## Rust by module
 
@@ -32,16 +32,16 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/armorial.rs` | 1,314 | 461 |
 | `src/cortex.rs` | 1,220 | 541 |
 | `src/tesseract.rs` | 1,054 | 561 |
+| `src/die/readings.rs` | 984 | 0 |
 | `src/ptolemy.rs` | 983 | 421 |
+| `src/die/floorplan.rs` | 968 | 0 |
 | `src/lights.rs` | 928 | 388 |
 | `src/murmuration.rs` | 923 | 792 |
-| `src/die/floorplan.rs` | 904 | 0 |
 | `src/render/raster/differential.rs` | 886 | 0 |
-| `src/die/readings.rs` | 868 | 0 |
 | `src/plumbing/paint.rs` | 806 | 0 |
 | `src/horizon/disk.rs` | 796 | 274 |
 | `src/keys.rs` | 752 | 228 |
-| `src/die.rs` | 744 | 929 |
+| `src/die.rs` | 744 | 1,063 |
 | `src/switchboard.rs` | 699 | 352 |
 | `src/platform/macos/logic.rs` | 696 | 982 |
 | `src/switchboard/lines.rs` | 694 | 621 |
@@ -198,7 +198,7 @@ Code lines per file under `src/`, counted by this script as lines that are neith
 | `src/status.rs` | 15 | 51 |
 | `src/allocations.rs` | 0 | 293 |
 | `src/harness.rs` | 0 | 569 |
-| **Total** | **67,731** | **45,732** |
+| **Total** | **67,911** | **45,866** |
 
 ## Largest files
 
@@ -215,7 +215,7 @@ The 10 longest `src/` files by physical lines. A mark means over 1,200 lines.
 | `src/platform/macos/logic.rs` | 2,045 | over limit |
 | `src/platform/linux/thermal.rs` | 1,998 | over limit |
 | `src/murmuration.rs` | 1,974 | over limit |
-| `src/cortex.rs` | 1,966 | over limit |
+| `src/die.rs` | 1,972 | over limit |
 
 ## Debt counters
 
@@ -236,7 +236,7 @@ Views come from parsing `REGISTRY` in `src/views.rs` (not from `isotop --list-vi
 
 | Counter | Count |
 |:--|--:|
-| `#[test]` functions | 1,535 |
+| `#[test]` functions | 1,539 |
 | Views in the registry | 27 |
 | Views with a README mapping table | 27 of 27 |
 | Direct crate dependencies | 10 |

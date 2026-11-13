@@ -147,27 +147,53 @@ fn height(rect: Rect) -> f32 {
     rect[3] - rect[1]
 }
 
+/// The smallest a tiled cell is allowed to be, in cells, before its gaps give way.
+const ROOMY: f32 = 3.0;
+
+/// The gap between `count` cells along a side of `extent`, and from its ends: `GAP`, unless that
+/// would leave the cells under `ROOMY`, and then a share of the side that always leaves them room
+/// (a fifth of it, split over the gaps), so a crowded box shrinks its spacing and not its cores.
+fn gap_along(extent: f32, count: usize) -> f32 {
+    let count = count as f32;
+    if (extent - GAP * (count + 1.0)) / count >= ROOMY {
+        GAP
+    } else {
+        GAP.min(0.2 * extent.max(0.0) / (count + 1.0))
+    }
+}
+
 /// `count` equal rectangles in rows of `columns` over `region`, row by row, `GAP` apart and from
-/// its edge. A row with fewer cells is as wide as a full one: the cells of a part-filled row are
-/// the size of the rest.
+/// its edge (less where that would leave the rectangles cramped: see `gap_along`). A row with
+/// fewer cells is as wide as a full one: the cells of a part-filled row are the size of the rest.
 fn tile(region: Rect, count: usize, columns: usize) -> Vec<Rect> {
     if count == 0 {
         return Vec::new();
     }
     let columns = columns.max(1);
     let rows = count.div_ceil(columns);
+    let gap = [
+        gap_along(width(region), columns),
+        gap_along(height(region), rows),
+    ];
     let cell = [
-        (width(region) - GAP * (columns as f32 + 1.0)) / columns as f32,
-        (height(region) - GAP * (rows as f32 + 1.0)) / rows as f32,
+        (width(region) - gap[0] * (columns as f32 + 1.0)) / columns as f32,
+        (height(region) - gap[1] * (rows as f32 + 1.0)) / rows as f32,
     ];
     (0..count)
         .map(|index| {
             let (column, row) = ((index % columns) as f32, (index / columns) as f32);
-            let left = region[0] + GAP + column * (cell[0] + GAP);
-            let top = region[1] + GAP + row * (cell[1] + GAP);
+            let left = region[0] + gap[0] + column * (cell[0] + gap[0]);
+            let top = region[1] + gap[1] + row * (cell[1] + gap[1]);
             [left, top, left + cell[0], top + cell[1]]
         })
         .collect()
+}
+
+/// How much of its furniture a box of `extent` cells keeps, 0 to 1, against the `full` size it
+/// was drawn for: the strip of cache, the margin for its name and the room round them shrink with
+/// a smaller box, so that the cores always have some of it left.
+fn furnish(extent: f32, full: f32) -> f32 {
+    (extent / full).clamp(0.0, 1.0)
 }
 
 /// A strip of cells, `slices` equal slices side by side, for the L3 ring.
@@ -255,12 +281,16 @@ impl Builder {
         kind: GroupKind,
         cache: Option<(Part, &'static str)>,
     ) {
-        let reserve = if cache.is_some() { 9.0 } else { 0.0 };
+        // A box 27 cells high has a 6-cell heading, a 9-cell cache strip and a cell's clearance;
+        // a lower one, where a large part packs many clusters, keeps the same shares of its
+        // height.
+        let scale = furnish(height(rect), 27.0);
+        let reserve = if cache.is_some() { 9.0 * scale } else { 0.0 };
         let region = [
             rect[0],
-            rect[1] + 6.0,
+            rect[1] + 6.0 * scale,
             rect[2],
-            rect[3] - reserve - if cache.is_some() { 1.0 } else { 0.0 },
+            rect[3] - reserve - if cache.is_some() { scale } else { 0.0 },
         ];
         let columns = cores.len().clamp(1, ROW_OF_CLUSTERS);
         let members = tile(region, cores.len(), columns)
@@ -274,7 +304,7 @@ impl Builder {
                     rect[0] + 2.0,
                     rect[3] - reserve,
                     rect[2] - 2.0,
-                    rect[3] - 2.0,
+                    rect[3] - 2.0 * scale,
                 ],
                 part,
                 label,
@@ -556,7 +586,11 @@ fn amd_plan(builder: &mut Builder, cores: &[Core], groups: &[Vec<u32>]) {
             .filter(|core| core.cpus.iter().all(|cpu| group.contains(cpu)))
             .collect();
         let top = members.len().div_ceil(2);
-        let strip_height = 10.0;
+        // A box alone on the die is 78 cells high: a 6-cell heading, a 10-cell cache strip and a
+        // cell's clearance. Where many complexes share the die each box is lower and keeps the
+        // same shares of its height, so the cores above and below the cache have some left.
+        let scale = furnish(height(rect), 78.0);
+        let strip_height = 10.0 * scale;
         let middle = (rect[1] + rect[3]) / 2.0;
         let cache = [
             rect[0] + 2.0,
@@ -564,8 +598,8 @@ fn amd_plan(builder: &mut Builder, cores: &[Core], groups: &[Vec<u32>]) {
             rect[2] - 2.0,
             middle + strip_height / 2.0,
         ];
-        let above = [rect[0], rect[1] + 6.0, rect[2], cache[1] - 1.0];
-        let below = [rect[0], cache[3] + 1.0, rect[2], rect[3] - 1.0];
+        let above = [rect[0], rect[1] + 6.0 * scale, rect[2], cache[1] - scale];
+        let below = [rect[0], cache[3] + scale, rect[2], rect[3] - scale];
         let mut placed = Vec::new();
         for (region, slice) in [(above, &members[..top]), (below, &members[top..])] {
             for (cell, core) in tile(region, slice.len(), slice.len().max(1))
@@ -696,6 +730,78 @@ pub(crate) mod tests {
         Topology { cpus }
     }
 
+    /// `topology` twice over: its CPUs as package 0, and a copy with CPU numbers 100 higher as
+    /// package 1.
+    pub(crate) fn two_packages(topology: &Topology) -> Topology {
+        let mut second = topology.clone();
+        for place in &mut second.cpus {
+            place.package = Some(1);
+            place.cpu += 100;
+            place.siblings = place.siblings.iter().map(|cpu| cpu + 100).collect();
+            place.l2 = place
+                .l2
+                .take()
+                .map(|l2| l2.iter().map(|cpu| cpu + 100).collect());
+            place.l3 = place
+                .l3
+                .take()
+                .map(|l3| l3.iter().map(|cpu| cpu + 100).collect());
+        }
+        let mut two = topology.clone();
+        two.cpus.extend(second.cpus);
+        two
+    }
+
+    /// `ccds` complexes of `cores` SMT-less cores each, one L3 per complex (one complex alone has
+    /// nothing to be told from and is drawn as the generic grid).
+    pub(crate) fn complexes(ccds: u32, cores: u32) -> Topology {
+        let mut cpus = Vec::new();
+        for ccd in 0..ccds {
+            let group: Vec<u32> = (cores * ccd..cores * (ccd + 1)).collect();
+            for &thread in &group {
+                cpus.push(cpu(
+                    thread,
+                    thread,
+                    &[thread],
+                    Some(&[thread]),
+                    Some(&group),
+                    CoreKind::Unknown,
+                    0,
+                ));
+            }
+        }
+        Topology { cpus }
+    }
+
+    /// `cores` cores with no kinds that share one L3: a big server part, drawn as the grid.
+    pub(crate) fn one_cache(cores: u32) -> Topology {
+        complexes(1, cores)
+    }
+
+    /// The shape `platform::macos::logic::topology` gives: `e` efficiency cores first, then `p`
+    /// performance cores, one logical CPU to a core, a cluster per kind, no L2, no L3.
+    pub(crate) fn apple(p: u32, e: u32) -> Topology {
+        let cpus = (0..p + e)
+            .map(|number| CpuPlace {
+                cpu: number,
+                package: Some(0),
+                die: None,
+                core_id: Some(number),
+                cluster: Some(u32::from(number < e)),
+                siblings: vec![number],
+                l2: None,
+                l3: None,
+                max_mhz: None,
+                kind: if number < e {
+                    CoreKind::Efficiency
+                } else {
+                    CoreKind::Performance
+                },
+            })
+            .collect();
+        Topology { cpus }
+    }
+
     fn rects_overlap(a: Rect, b: Rect) -> bool {
         a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
     }
@@ -802,7 +908,7 @@ pub(crate) mod tests {
 
     /// A tiled part: four P-cores, one cluster of four E-cores on the compute tile, and two
     /// low-power E-cores that share an L2 and have no L3.
-    fn tiled() -> Topology {
+    pub(crate) fn tiled() -> Topology {
         let mut topology = hybrid(4, 1, true);
         let l3: Vec<u32> = (0..12).collect();
         for place in &mut topology.cpus {
@@ -1003,22 +1109,7 @@ pub(crate) mod tests {
         assert_eq!(once, Floorplan::of(&hybrid(6, 2, true)));
         assert_ne!(once, Floorplan::of(&hybrid(4, 2, true)));
         // Only the machine's first package is drawn, and the caption says so.
-        let mut two = hybrid(4, 1, true);
-        let mut second = two.clone();
-        for place in &mut second.cpus {
-            place.package = Some(1);
-            place.cpu += 100;
-            place.siblings = place.siblings.iter().map(|cpu| cpu + 100).collect();
-            place.l2 = place
-                .l2
-                .take()
-                .map(|l2| l2.iter().map(|cpu| cpu + 100).collect());
-            place.l3 = place
-                .l3
-                .take()
-                .map(|l3| l3.iter().map(|cpu| cpu + 100).collect());
-        }
-        two.cpus.extend(second.cpus);
+        let two = two_packages(&hybrid(4, 1, true));
         let plan = Floorplan::of(&two);
         assert_eq!(
             plan.blocks.len(),
