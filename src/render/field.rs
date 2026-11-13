@@ -22,12 +22,13 @@
     not(test),
     expect(
         dead_code,
-        reason = "ouija draws flat fields of colour and hr and hive use corners and flat relief (hive also a shading); heights, owners, per-vertex shading and displaced relief have no view yet"
+        reason = "ouija draws flat fields of colour, hr, hive and die use corners and flat relief (hive also a shading, die an owner grid); heights, per-vertex shading and displaced relief have no view yet"
     )
 )]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::raster::Band;
 use super::{Camera, Color, Frame, Item, NONE, Point, shared};
 use crate::geometry::{dot, normalize};
 use crate::medium::{Grid, mix};
@@ -486,7 +487,9 @@ impl Frame {
             }
         }
     }
+}
 
+impl Band<'_> {
     /// Rasterizes one field triangle on the CPU. Each row's span comes from where the scanline
     /// crosses the triangle's edges, each crossing computed from the edge's endpoints in a fixed
     /// order (top first), so two triangles that share an edge agree on where it is and no pixel
@@ -499,6 +502,18 @@ impl Frame {
         field: &ShadedField,
     ) {
         let [a, b, c] = points;
+        let top = a[1].min(b[1]).min(c[1]);
+        let bottom = a[1].max(b[1]).max(c[1]);
+        let (band_first, band_last) = self.span();
+        let first = ((top - 0.5).ceil() as i64)
+            .max(0)
+            .max(i64::from(band_first));
+        let last = ((bottom - 0.5).floor() as i64)
+            .min(self.height as i64 - 1)
+            .min(i64::from(band_last));
+        if first > last {
+            return;
+        }
         let (bx, by) = ((b[0] - a[0]) as f64, (b[1] - a[1]) as f64);
         let (cx, cy) = ((c[0] - a[0]) as f64, (c[1] - a[1]) as f64);
         let determinant = bx * cy - cx * by;
@@ -519,12 +534,8 @@ impl Frame {
             (a[2], plane([a[2], b[2], c[2]])),
         ];
         let edges = [(a, b), (b, c), (c, a)].map(|(p, q)| Edge::new(p, q));
-        let top = a[1].min(b[1]).min(c[1]);
-        let bottom = a[1].max(b[1]).max(c[1]);
-        let first = ((top - 0.5).ceil() as i64).max(0);
-        let last = ((bottom - 0.5).floor() as i64).min(self.height as i64 - 1);
         let limit = [(field.columns - 1) as f32, (field.rows - 1) as f32];
-        let width = self.width as usize;
+        let width = self.width;
         for y in first..=last {
             let center = y as f32 + 0.5;
             let (mut low, mut high) = (f32::INFINITY, f32::NEG_INFINITY);
@@ -546,7 +557,7 @@ impl Frame {
                 (at as f32, gx as f32)
             });
             let (first_pixel, count) = (
-                y as usize * width + start as usize,
+                (y as usize - self.first) * width + start as usize,
                 (end - start + 1) as usize,
             );
             let span = first_pixel..first_pixel + count;
@@ -612,7 +623,8 @@ fn sample_span(
     pixels: &mut [u8],
     picks: &mut [u32],
 ) {
-    let columns = field.columns;
+    let (columns, rows) = (field.columns, field.rows);
+    debug_assert!(columns <= u32::MAX as usize && rows <= u32::MAX as usize);
     let texel = |i: usize, j: usize| {
         let word = field.texels[j * columns + i];
         [
@@ -622,6 +634,7 @@ fn sample_span(
             0.0,
         ]
     };
+    let owners = field.owners.as_deref();
     let mut held = ([usize::MAX; 2], [[0.0; 4]; 4]);
     let pixels = pixels.as_chunks_mut::<3>().0;
     for ((nearer, pixel), pick) in depths.iter_mut().zip(pixels).zip(picks) {
@@ -633,22 +646,28 @@ fn sample_span(
             continue;
         }
         *nearer = here;
-        let ([i, j], [i1, j1], [fx, fy]) = cell(columns, field.rows, here_u, here_v);
+        // What `cell` makes of the coordinates, and the nearest node from the same clamp. Each is
+        // in `0..=columns - 1` or a NaN, so `as u32` agrees with `as usize` (a field has fewer
+        // than 2^32 columns, or it would take more than 16 GiB), and is a cheaper conversion.
+        let (u, v) = (here_u.clamp(0.0, limit[0]), here_v.clamp(0.0, limit[1]));
+        let (i, j) = (u as u32 as usize, v as u32 as usize);
         if held.0 != [i, j] {
+            let (i1, j1) = ((i + 1).min(columns - 1), (j + 1).min(rows - 1));
             held = (
                 [i, j],
                 [texel(i, j), texel(i1, j), texel(i, j1), texel(i1, j1)],
             );
         }
         let [c00, c10, c01, c11] = held.1;
+        let (fx, fy) = (u - i as f32, v - j as f32);
         let color = lerp4(lerp4(c00, c10, fx), lerp4(c01, c11, fx), fy);
-        *pixel = [0, 1, 2].map(|k| (color[k] + 0.5) as u8);
-        *pick = field.owners.as_ref().map_or(NONE, |owners| {
-            let u = here_u.clamp(0.0, limit[0]);
-            let v = here_v.clamp(0.0, limit[1]);
+        // A lerp of bytes stays within 0 to 255 (or is a NaN, which is 0 either way), so the
+        // intermediate `i32` loses nothing that `as u8` would have clamped.
+        *pixel = [0, 1, 2].map(|k| (color[k] + 0.5) as i32 as u8);
+        *pick = owners.map_or(NONE, |owners| {
             let nearest = [
-                ((u + 0.5) as usize).min(columns - 1),
-                ((v + 0.5) as usize).min(field.rows - 1),
+                ((u + 0.5) as u32 as usize).min(columns - 1),
+                ((v + 0.5) as u32 as usize).min(rows - 1),
             ];
             owners[nearest[1] * columns + nearest[0]]
         });

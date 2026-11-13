@@ -23,7 +23,7 @@ use crate::render::{Frame, RenderInput, Scene, Thing};
 use crate::simulation::Rng;
 use crate::views::{View, ViewInfo};
 
-use camera::CameraController;
+use camera::{Anchored, CameraController};
 use feed::JournalFeed;
 pub(crate) use input::typed;
 use player::HistoryPlayer;
@@ -69,6 +69,9 @@ pub(crate) struct App {
     /// The shown view took a `q` and deferred the quit (`ViewKey::Quit`): the app ends when the
     /// view reports it is done (`Stage::quit`), or when the view lets a second `q` through.
     pub(crate) quitting: bool,
+    /// What the overlay is placed from and the frame last given to the rasterizer was drawn with:
+    /// the view, the camera, the selection, the selected thing and the focus.
+    anchored: Option<Anchored>,
 }
 
 impl App {
@@ -107,6 +110,7 @@ impl App {
             playlist: picker::playlist(&[], &available),
             picker: None,
             quitting: false,
+            anchored: None,
             available,
         };
         app.switch(view);
@@ -172,6 +176,16 @@ impl App {
     pub(crate) fn rasterize(&mut self, frame: &mut Frame) {
         self.renderer
             .rasterize(frame, self.pointer.hover.map(|hover| hover.frame));
+    }
+
+    /// Hands a frame `draw` recorded to the rasterizer and takes back the frame that is ready to
+    /// present: this one when the CPU draws, the GPU is not allowed to run behind or the camera
+    /// or the view moved since the frame before (so the overlay would not land on the pixels),
+    /// else the one before it (None for the first). See `Renderer::overlap`.
+    pub(crate) fn rasterize_ahead(&mut self, frame: Frame) -> Option<Frame> {
+        let at_rest = self.anchors_at_rest();
+        self.renderer
+            .overlap(frame, self.pointer.hover.map(|hover| hover.frame), at_rest)
     }
 
     /// Replaces the rasterizer, which starts as the CPU.

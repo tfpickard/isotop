@@ -24,7 +24,7 @@ use crate::model::{DemoOptions, Process, Snapshot};
 use crate::platform::{Source, Sources};
 use crate::render::{Backdrop, Camera, Card, ISOMETRIC, LOWEST_PITCH, Point, Scene, Stage, Thing};
 use crate::{
-    anthill, arbor, cells, coop, cores, cortex, globe, hive, horizon, hr, matrix, murmuration,
+    anthill, arbor, cells, coop, cores, cortex, die, globe, hive, horizon, hr, matrix, murmuration,
     necropolis, ouija, plumbing, ptolemy, reef, strata, switchboard, tesseract,
 };
 
@@ -953,6 +953,46 @@ pub static REGISTRY: &[ViewInfo] = &[
         // would sit behind it on the CPU and in front of it on the GPU.
         ..ViewInfo::new("lights", "LIGHTS", Backdrop::Void, || {
             Box::new(crate::lights::Lights::default())
+        })
+    },
+    ViewInfo {
+        // The die is a plan seen from above, tilted a little: the floorplan and the panel face
+        // the viewer under the default camera.
+        pitch: Some(1.05),
+        // The points are the view's own, on the cores; sockets between them say nothing here.
+        links: LinkRule::DrawnByView,
+        // A process that exits leaves the die with its point, and the field is no place for a
+        // ring.
+        flash: false,
+        // The CPU topology, the sensors, the throttle counters and RAPL, read only while the
+        // view is shown. macOS reads the topology only and reports the rest missing.
+        sources: crate::model::thermal::SOURCES,
+        // The demo's 16 CPUs as an Intel hybrid part with one core reaching TjMax every 40 s.
+        demo: DemoOptions {
+            thermal: true,
+            ..DemoOptions::NONE
+        },
+        // A minute of samples as a live run would have recorded them (the panel's sparklines and
+        // the throttle counts they baseline), then four seconds of frames a step at a time: the
+        // glow of the loaded cores is in the captured frame.
+        warmup: &[
+            Warmup {
+                phase: Phase::Replay {
+                    seconds: 60,
+                    before_start: true,
+                },
+                when: When::DemoHeadless,
+            },
+            Warmup {
+                phase: Phase::Play {
+                    seconds: 4,
+                    step: 0.1,
+                },
+                when: When::DemoHeadless,
+            },
+        ],
+        ..ViewInfo::new("die", "DIE", Backdrop::Dusk, || {
+            Box::new(die::Die::default())
         })
     },
 ];

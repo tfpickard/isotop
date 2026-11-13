@@ -562,6 +562,7 @@ impl Tree {
     /// `levels[0]` is the whole subtree, and each junction takes the area of the child that
     /// leaves there, down to the branch's own area at the tip. Leonardo's rule is the sum of
     /// the child areas and the level after their junction being the level before it.
+    #[cfg(test)]
     fn levels(&self, weights: &Weights, index: usize) -> Vec<f32> {
         let children: Vec<usize> = self.same_side(index).collect();
         let mut levels = vec![0.0; children.len() + 1];
@@ -573,14 +574,32 @@ impl Tree {
     }
 
     /// Where along the branch its radius changes: `(s, area)` pairs from the base to the tip,
-    /// with a short ramp at each junction.
-    fn stops(&self, weights: &Weights, index: usize) -> Vec<(f32, f32)> {
-        let levels = self.levels(weights, index);
-        let junctions: Vec<f32> = self
-            .same_side(index)
-            .map(|child| attachment(self.nodes[child].slot))
-            .collect();
-        let mut stops = vec![(0.0, levels[0])];
+    /// with a short ramp at each junction, into `lists.refined`, built in lists the caller keeps
+    /// from one branch to the next.
+    fn stops_into(&self, weights: &Weights, index: usize, lists: &mut Stops) {
+        let Stops {
+            children,
+            levels,
+            junctions,
+            coarse,
+            refined,
+        } = lists;
+        children.clear();
+        children.extend(self.same_side(index));
+        // `levels`: the area carried at each stretch, whole subtree first, own area last.
+        levels.clear();
+        levels.resize(children.len() + 1, 0.0);
+        levels[children.len()] = weights.own[index];
+        for step in (0..children.len()).rev() {
+            levels[step] = levels[step + 1] + weights.subtree[children[step]];
+        }
+        junctions.clear();
+        junctions.extend(
+            self.same_side(index)
+                .map(|child| attachment(self.nodes[child].slot)),
+        );
+        coarse.clear();
+        coarse.push((0.0, levels[0]));
         let mut step = 0;
         while step < junctions.len() {
             let at = junctions[step];
@@ -590,13 +609,14 @@ impl Tree {
             }
             let next = junctions.get(end).copied().unwrap_or(1.0);
             let ramp = (at + RAMP).min((at + next) * 0.5);
-            stops.push((at, levels[step]));
-            stops.push((ramp, levels[end]));
+            coarse.push((at, levels[step]));
+            coarse.push((ramp, levels[end]));
             step = end;
         }
-        stops.push((1.0, levels[junctions.len()]));
-        let mut refined = vec![stops[0]];
-        for pair in stops.windows(2) {
+        coarse.push((1.0, levels[junctions.len()]));
+        refined.clear();
+        refined.push(coarse[0]);
+        for pair in coarse.windows(2) {
             let (from, to) = (pair[0], pair[1]);
             let pieces = ((to.0 - from.0) / LONGEST_PIECE).ceil().max(1.0) as usize;
             for piece in 1..pieces {
@@ -607,8 +627,22 @@ impl Tree {
             }
             refined.push(to);
         }
-        refined
     }
+}
+
+/// The lists a branch's stops are built in, kept from one branch to the next.
+#[derive(Default)]
+struct Stops {
+    /// The children on the branch's own side.
+    children: Vec<usize>,
+    /// The area carried along each stretch.
+    levels: Vec<f32>,
+    /// Where along the branch each child leaves.
+    junctions: Vec<f32>,
+    /// The stops before long stretches are cut into pieces.
+    coarse: Vec<(f32, f32)>,
+    /// The stops: `(s, area)` pairs from the base to the tip.
+    refined: Vec<(f32, f32)>,
 }
 
 /// Depth-first, parents before children; marks what it visits.
@@ -1468,21 +1502,26 @@ impl Arbor {
         } = scene;
         let (camera, viewer) = (stage.camera, stage.camera.viewer());
         let zoom = camera.zoom * SCALE;
+        // Built again for every branch, in lists made once for the frame.
+        let mut lists = Stops::default();
+        let mut radii: Vec<f32> = Vec::new();
+        let mut points: Vec<Point> = Vec::new();
         for (index, node) in self.tree.nodes.iter().enumerate() {
             let process = node.process.map(|slot| processes[slot]);
             let pick = node.process.map_or(NONE, |slot| slot as u32);
-            let stops = self.tree.stops(weights, index);
-            let radii: Vec<f32> = stops
-                .iter()
-                .map(|&(_, area)| weights.radius(node.side, area))
-                .collect();
+            self.tree.stops_into(weights, index, &mut lists);
+            let stops = &lists.refined;
+            radii.clear();
+            radii.extend(
+                stops
+                    .iter()
+                    .map(|&(_, area)| weights.radius(node.side, area)),
+            );
             let hot = Self::lit(stage, process);
             match node.side {
                 Side::Crown => {
-                    let points: Vec<Point> = stops
-                        .iter()
-                        .map(|&(s, _)| pose.point(index, s, [0.0; 3]))
-                        .collect();
+                    points.clear();
+                    points.extend(stops.iter().map(|&(s, _)| pose.point(index, s, [0.0; 3])));
                     let base = match process {
                         None => PALE_BARK,
                         Some(process) if process.state == 'Z' && node.children.is_empty() => ZOMBIE,
@@ -1526,20 +1565,17 @@ impl Arbor {
                         base
                     };
                     let limit = SOIL_HALF - 0.4;
-                    let points: Vec<Point> = stops
-                        .iter()
-                        .map(|&(s, _)| {
-                            let at = pose.point(index, s, [0.0; 3]);
-                            let at = [
-                                at[0].clamp(-limit, limit),
-                                at[1].clamp(-limit, limit),
-                                at[2].clamp(-(SOIL_DEPTH - 0.5), -0.05),
-                            ];
-                            let moved =
-                                surface_distance(at, viewer) + 0.3 + 0.003 * dot(at, viewer);
-                            add(at, scaled(viewer, moved))
-                        })
-                        .collect();
+                    points.clear();
+                    points.extend(stops.iter().map(|&(s, _)| {
+                        let at = pose.point(index, s, [0.0; 3]);
+                        let at = [
+                            at[0].clamp(-limit, limit),
+                            at[1].clamp(-limit, limit),
+                            at[2].clamp(-(SOIL_DEPTH - 0.5), -0.05),
+                        ];
+                        let moved = surface_distance(at, viewer) + 0.3 + 0.003 * dot(at, viewer);
+                        add(at, scaled(viewer, moved))
+                    }));
                     for (pair, radius) in points.windows(2).zip(radii.windows(2)) {
                         let width = (radius[0] + radius[1]) * zoom;
                         stage.frame.ribbon(

@@ -302,28 +302,41 @@ impl Font {
     /// The strokes of `text` as polylines in cap heights, baseline at y = 0, x measured from the
     /// anchor `align` names. Each glyph's advance box begins where the last one's ended. A
     /// character the font lacks is laid out as `?`.
+    #[cfg(test)]
     pub fn lay_out(&self, text: &str, align: Align) -> Vec<Vec<[f32; 2]>> {
+        let mut strokes = Vec::new();
+        self.lay_out_with(text, align, &mut Vec::new(), |run| {
+            strokes.push(run.to_vec())
+        });
+        strokes
+    }
+
+    /// `lay_out`, handing each polyline to `each` in turn instead of collecting them. `run` is
+    /// the list each is built in, which the caller keeps from one call to the next.
+    pub fn lay_out_with(
+        &self,
+        text: &str,
+        align: Align,
+        run: &mut Vec<[f32; 2]>,
+        mut each: impl FnMut(&[[f32; 2]]),
+    ) {
         let mut pen = match align {
             Align::Start => 0.0,
             Align::Middle => -0.5 * self.advance(text),
             Align::End => -self.advance(text),
         };
-        let mut strokes = Vec::new();
         for character in text.chars() {
             let glyph = self.glyph(character);
-            for run in &glyph.strokes {
-                strokes.push(
-                    run.iter()
-                        .map(|&[x, y]| {
-                            let [across, up] = self.unit([x.saturating_sub(glyph.left), y]);
-                            [pen + across, up]
-                        })
-                        .collect(),
-                );
+            for stroke in &glyph.strokes {
+                run.clear();
+                run.extend(stroke.iter().map(|&[x, y]| {
+                    let [across, up] = self.unit([x.saturating_sub(glyph.left), y]);
+                    [pen + across, up]
+                }));
+                each(run);
             }
             pen += self.step(character);
         }
-        strokes
     }
 }
 

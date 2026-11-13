@@ -139,6 +139,9 @@ pub struct Scene {
     pub(crate) quit: bool,
     /// Allocations recycled from the previous frame.
     pub spare: Buffers,
+    /// The per-frame collections of `render`, kept so a steady-state frame allocates none of
+    /// them. Frame-wide: they hold the eased processes every view is handed.
+    scratch: Scratch,
     /// How many processes the shown view drew in the last frame: the status line's count.
     pub visible: usize,
     /// How many of the processes admitted to the last frame the shown view left out.
@@ -185,6 +188,7 @@ impl Scene {
             rows,
             modules: rows.iter().map(|row| (row.build)()).collect(),
             spare: Buffers::default(),
+            scratch: Scratch::default(),
             visible: 0,
             collapsed: 0,
         }
@@ -341,9 +345,13 @@ impl Scene {
         // that never call `record` fill the history here.
         self.history.record(snapshot, time);
         let dt = self.clock.step(time, paused);
-        let alive: HashSet<_> = snapshot.processes.iter().map(|p| p.id).collect();
-        let visual = self.ease(snapshot, &alive, time);
-        let processes = admitted(&visual, snapshot, selected, limit, focus);
+        // Taken out of the scene while the frame is drawn, since the processes borrow it.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let Scratch { alive, visual } = &mut scratch;
+        alive.clear();
+        alive.extend(snapshot.processes.iter().map(|p| p.id));
+        self.ease(snapshot, alive, time, visual);
+        let processes = admitted(visual, snapshot, selected, limit, focus);
         let row = self.row(view);
         let [cpu, memory, io] = snapshot.pressure;
         let (c, m, i) = if row.haze {
@@ -361,8 +369,7 @@ impl Scene {
             time,
         };
         let mut frame = Frame::new(width, height, sky, std::mem::take(&mut self.spare));
-        frame.identities = processes.iter().map(|p| p.id).collect();
-        frame.things.clear();
+        frame.identities.extend(processes.iter().map(|p| p.id));
         debug_assert!(
             frame.identities.len() <= THING as usize,
             "process indices stay below the thing bit"
@@ -392,10 +399,11 @@ impl Scene {
             LinkRule::Quiet => self.draw_links(&mut frame, camera, snapshot, time, lift, true, row),
             LinkRule::DrawnByView => {}
         }
-        self.flash_exits(&mut frame, camera, &alive, time, row.flash);
+        self.flash_exits(&mut frame, camera, alive, time, row.flash);
         frame.anchor = selected
             .and_then(|id| self.positions.get(&id))
             .and_then(|&p| frame.locate(camera, p));
+        self.scratch = scratch;
         frame
     }
 
@@ -423,9 +431,16 @@ impl Scene {
         }
     }
 
-    /// Takes in the frame's sample: notes births, and returns its processes with CPU and memory
-    /// eased towards the sampled values.
-    fn ease(&mut self, snapshot: &Snapshot, alive: &HashSet<Identity>, time: f32) -> Vec<Process> {
+    /// Takes in the frame's sample: notes births, and leaves its processes in `visual` with CPU
+    /// and memory eased towards the sampled values. `visual` keeps its processes between frames,
+    /// so copying a sample over them reuses their strings.
+    fn ease(
+        &mut self,
+        snapshot: &Snapshot,
+        alive: &HashSet<Identity>,
+        time: f32,
+        visual: &mut Vec<Process>,
+    ) {
         let dt = self.last_time.map_or(0.0, |previous| time - previous);
         if !(0.0..=2.0).contains(&dt) {
             self.resources.clear();
@@ -451,20 +466,25 @@ impl Scene {
                 }
             }
         }
-        snapshot
-            .processes
-            .iter()
-            .map(|p| {
-                let memory = p.memory as f32;
-                let current = self.resources.entry(p.id).or_insert((p.cpu, memory));
-                current.0 += alpha * (p.cpu - current.0);
-                current.1 += alpha * (memory - current.1);
-                let mut p = p.clone();
-                p.cpu = current.0;
-                p.memory = current.1 as u64;
-                p
-            })
-            .collect()
+        for (slot, p) in snapshot.processes.iter().enumerate() {
+            let memory = p.memory as f32;
+            let current = self.resources.entry(p.id).or_insert((p.cpu, memory));
+            current.0 += alpha * (p.cpu - current.0);
+            current.1 += alpha * (memory - current.1);
+            let eased = match visual.get_mut(slot) {
+                Some(held) => {
+                    held.clone_from(p);
+                    held
+                }
+                None => {
+                    visual.push(p.clone());
+                    &mut visual[slot]
+                }
+            };
+            eased.cpu = current.0;
+            eased.memory = current.1 as u64;
+        }
+        visual.truncate(snapshot.processes.len());
     }
 
     /// Draws the shown view.
@@ -542,7 +562,7 @@ impl Scene {
                 self.splashes.push(point);
             }
         }
-        self.previous = self.positions.clone();
+        self.previous.clone_from(&self.positions);
         self.deaths
             .retain(|&(_, died)| (0.0..FADE_SECONDS).contains(&(time - died)));
         let flashes: &[(Point, f32)] = if flash { &self.deaths } else { &[] };
@@ -651,6 +671,15 @@ impl Scene {
     }
 }
 
+/// What `Scene::render` fills every frame and keeps for the next.
+#[derive(Default)]
+struct Scratch {
+    /// The identities of the frame's sample.
+    alive: HashSet<Identity>,
+    /// The sample's processes with CPU and memory eased: what the views draw.
+    visual: Vec<Process>,
+}
+
 /// The processes a frame draws, in PID order: the focused subtree, or every process, cut to
 /// `limit` with the selection kept.
 fn admitted<'a>(
@@ -661,11 +690,14 @@ fn admitted<'a>(
     focus: Option<Identity>,
 ) -> Vec<&'a Process> {
     let allowed = focus.map(|root| descendants(snapshot, root));
-    let mut processes: Vec<&Process> = visual
-        .iter()
-        .filter(|p| allowed.as_ref().is_none_or(|set| set.contains(&p.id)))
-        .collect();
-    processes.sort_by_key(|p| p.id);
+    let mut processes: Vec<&Process> = Vec::with_capacity(visual.len());
+    processes.extend(
+        visual
+            .iter()
+            .filter(|p| allowed.as_ref().is_none_or(|set| set.contains(&p.id))),
+    );
+    // One process per identity, so the order is the same as a stable sort's, with no buffer.
+    processes.sort_unstable_by_key(|p| p.id);
     if processes.len() > limit {
         // A stable PID order keeps resource changes from continuously evicting buildings.
         if let Some(id) = selected

@@ -2,7 +2,9 @@
 //! A projective compression of the nave gives perspective without changing the shared camera.
 //! Every cloth has a reserved column and tier; neither resource ranking nor churn moves it.
 
-use crate::model::{Identity, Kind, Process, Snapshot, bounded, top_n};
+#[cfg(test)]
+use crate::model::top_n;
+use crate::model::{Identity, Kind, Process, Snapshot, bounded, top_n_of};
 use crate::palette::tint;
 use crate::render::field::{Field, Placement, Relief};
 use crate::render::{Color, NONE, Point, Stage, Title, TourTarget, label_name};
@@ -1206,12 +1208,16 @@ impl Armorial {
 }
 /// The `budget` largest processes by memory, the selected one (if a candidate) taking the last
 /// place when it would fall out, as the scene's own admission keeps it.
-fn admit(candidates: &[Process], budget: usize, selected: Option<Identity>) -> Vec<&Process> {
-    let mut admitted = top_n(candidates, budget, |p| p.memory as f64);
+fn admit<'a>(
+    candidates: &[&'a Process],
+    budget: usize,
+    selected: Option<Identity>,
+) -> Vec<&'a Process> {
+    let mut admitted = top_n_of(candidates, budget, |p| p.memory as f64);
     if let Some(id) = selected
         && budget > 0
         && !admitted.iter().any(|p| p.id == id)
-        && let Some(process) = candidates.iter().find(|p| p.id == id)
+        && let Some(&process) = candidates.iter().find(|p| p.id == id)
     {
         admitted.truncate(budget - 1);
         admitted.push(process);
@@ -1265,15 +1271,14 @@ fn helm(stage: &mut Stage, at: Point, kind: Kind, pick: u32, scale: f32) {
 impl ViewModule for Armorial {
     fn draw(&mut self, stage: &mut Stage, processes: &[&Process], snapshot: &Snapshot) -> usize {
         let budget = CAP.min(stage.limit);
-        let candidates: Vec<Process> = processes.iter().map(|p| (*p).clone()).collect();
         let selected = stage
             .selected
-            .filter(|id| candidates.iter().any(|p| p.id == *id));
-        let admitted = admit(&candidates, budget, selected);
+            .filter(|id| processes.iter().any(|p| p.id == *id));
+        let admitted = admit(processes, budget, selected);
         self.refresh(snapshot, &admitted, stage.time);
         let mut ghosts = self.ghosts(stage.time, stage.focus.is_some());
         ghosts.truncate(budget.saturating_sub(usize::from(selected.is_some())));
-        let chosen: HashSet<Identity> = admit(&candidates, budget - ghosts.len(), selected)
+        let chosen: HashSet<Identity> = admit(processes, budget - ghosts.len(), selected)
             .iter()
             .map(|p| p.id)
             .collect();

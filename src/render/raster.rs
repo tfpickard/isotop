@@ -1,73 +1,359 @@
+use std::cell::RefCell;
 use std::f32::consts::TAU;
+use std::sync::{Mutex, OnceLock};
 
-use super::frame::{BACKGROUND, Frame, Item};
+use super::field::ShadedField;
+use super::frame::{BACKGROUND, Frame, Item, Sky};
 use super::{Color, NONE, Point, shared};
 use crate::glyphs;
-use crate::palette::tint;
+
+mod shapes;
+mod triangle;
+
+#[cfg(test)]
+mod differential;
+#[cfg(test)]
+mod reference;
+
+/// A frame of fewer pixels than this is drawn on the calling thread, in one band: splitting it
+/// costs the threads, which allocate, and a list of items for each band, so it has to save more
+/// than that. (It is also what keeps a steady-state frame of 480 pixels, which the allocation
+/// ratchet counts, at the one allocation it always took.)
+const THREADED_MIN_PIXELS: usize = 256 * 1024;
+/// Bands a thread is dealt on average. More than one, so that a band that is heavy (content
+/// gathers in the middle of a frame) does not leave the other threads idle at the end.
+const BANDS_PER_THREAD: usize = 6;
+/// The fewest rows in a band: an item that touches several bands is set up in each.
+const MIN_BAND_ROWS: usize = 16;
+
+thread_local! {
+    /// The items each band of the last frame this thread drew in bands was dealt, by index.
+    static LISTS: RefCell<Vec<Vec<u32>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The threads a frame is split across: the cores this process may run on.
+fn cores() -> usize {
+    static CORES: OnceLock<usize> = OnceLock::new();
+    *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, usize::from))
+}
+
+/// `v.floor().max(0.0) as i32` without the call to `floorf` (the baseline x86-64 target has no
+/// rounding instruction): from 0 up truncation is the floor, below it the maximum wins, and a
+/// NaN gives 0 either way.
+#[inline]
+pub(super) fn first_index(v: f32) -> i32 {
+    v.max(0.0) as i32
+}
+
+/// `v.ceil().min(last) as i32` without the call to `ceilf`, for a `last` that is a whole number
+/// no more than 2^24: the ceiling commutes with the minimum, and the ceiling of what is left is
+/// its truncation, one higher if anything was cut off.
+#[inline]
+pub(super) fn last_index(v: f32, last: f32) -> i32 {
+    let v = v.min(last);
+    let truncated = v as i32;
+    truncated + i32::from(v > truncated as f32)
+}
+
+/// The rows of a frame of `height` rows that a line from `a` to `b` can reach, given the rows
+/// they are on: the positions along it are truncated, so a couple of pixels past either end
+/// cover every rounding, if both are finite and small enough for that to hold; else every row.
+fn line_rows(a: f32, b: f32, height: usize) -> (i32, i32) {
+    const REACH: f32 = 1_048_576.0;
+    if !(a.abs() <= REACH && b.abs() <= REACH) {
+        return (0, height as i32 - 1);
+    }
+    (
+        first_index(a.min(b) - 2.0),
+        last_index(a.max(b) + 2.0, height as f32 - 1.0),
+    )
+}
+
+/// How far past its radius a sphere's box reaches.
+pub(super) fn reach_of(selected: bool) -> f32 {
+    if selected {
+        shared::SELECTION_RING_WIDTH
+    } else {
+        shared::SPHERE_EDGE
+    }
+}
+
+impl Item {
+    /// The first and last rows, of a frame `height` rows high, that drawing this item can
+    /// change, and the first after the last if it changes none. It is a promise made for the
+    /// band lists: each primitive clips to its own rows by the same expressions, and this only
+    /// has to name at least those, so the cases that are awkward (lines, glyphs, NaN) say all of
+    /// them.
+    fn rows(&self, height: usize) -> (i32, i32) {
+        let last = height as f32 - 1.0;
+        match *self {
+            Self::Triangle([a, b, c], ..) => (
+                first_index(a[1].min(b[1]).min(c[1])),
+                last_index(a[1].max(b[1]).max(c[1]), last),
+            ),
+            Self::Field {
+                points: [a, b, c], ..
+            } => (
+                first_index(a[1].min(b[1]).min(c[1]) - 0.5),
+                last_index(a[1].max(b[1]).max(c[1]), last),
+            ),
+            Self::Line(a, b, _) => line_rows(a[1], b[1], height),
+            Self::Beam(a, b, ..) => line_rows(a[1], b[1], height),
+            Self::Sphere {
+                center,
+                radius,
+                selected,
+                ..
+            } => {
+                let outer = radius + reach_of(selected);
+                (
+                    first_index(center[1] - outer),
+                    last_index(center[1] + outer, last),
+                )
+            }
+            Self::Glow { center, radius, .. } | Self::Puff { center, radius, .. } => (
+                ((center[1] - radius).floor() as i32).max(0),
+                ((center[1] + radius).ceil() as i32).min(height as i32 - 1),
+            ),
+            Self::Pick { center, radius, .. } => (
+                first_index(center[1] - radius),
+                last_index(center[1] + radius, last),
+            ),
+            Self::Star([_, y], _) => (y as i32, y as i32),
+            Self::Glyph { origin, scale, .. } => {
+                // The font cell's rows in the frame, unless the scale is one whose arithmetic
+                // `glyph` does in `u32` and might wrap.
+                if scale > 4096 {
+                    return (0, height as i32 - 1);
+                }
+                let top = (origin[1] as i64).clamp(-(1 << 40), 1 << 40);
+                let rows = i64::from(glyphs::HEIGHT) * i64::from(scale);
+                (
+                    top.clamp(0, height as i64) as i32,
+                    (top + rows - 1).clamp(-1, height as i64 - 1) as i32,
+                )
+            }
+        }
+    }
+}
+
+/// Whole rows of a frame's three buffers. Every primitive draws into one of these, clipped to
+/// its rows, and a pixel's value depends on the item and the pixel alone, never on the band
+/// that holds it, so any split into bands gives the same frame as one band holding every row
+/// (`differential` holds the rasterizer to that).
+pub(super) struct Band<'a> {
+    pub(super) width: usize,
+    /// The height of the whole frame, which the sky and the bounds of a primitive are measured
+    /// against.
+    pub(super) height: usize,
+    /// The frame row of this band's first row.
+    pub(super) first: usize,
+    /// How many rows the band holds.
+    pub(super) rows: usize,
+    pub(super) pixels: &'a mut [u8],
+    pub(super) depth: &'a mut [f32],
+    pub(super) picks: &'a mut [u32],
+}
 
 impl Frame {
-    /// Rasterizes the recorded items on the CPU into pixels, depth and picking buffers.
+    /// Rasterizes the recorded items on the CPU into pixels, depth and picking buffers. Large
+    /// frames are cut into bands of rows, drawn by one thread each; the result does not depend
+    /// on how many.
     pub fn rasterize(&mut self) {
-        let n = (self.width * self.height) as usize;
-        // Every pixel is painted by the sky, so only the length matters here.
+        let pixels = self.width as usize * self.height as usize;
+        let threads = if pixels < THREADED_MIN_PIXELS {
+            1
+        } else {
+            cores()
+        };
+        let bands = if threads == 1 {
+            1
+        } else {
+            threads * BANDS_PER_THREAD
+        };
+        self.rasterize_banded(bands.min(self.height as usize / MIN_BAND_ROWS), threads);
+    }
+
+    /// `rasterize` with the frame cut into `bands` bands (at least one, at most one a row), drawn
+    /// by up to `threads` threads.
+    pub(super) fn rasterize_banded(&mut self, bands: usize, threads: usize) {
+        let (width, height) = (self.width as usize, self.height as usize);
+        let n = width * height;
         self.pixels.resize(n * 3, 0);
-        self.depth.clear();
-        self.depth.resize(n, f32::NEG_INFINITY);
-        self.picks.clear();
+        self.depth.resize(n, 0.0);
         self.picks.resize(n, NONE);
-        self.paint_sky();
-        let items = std::mem::take(&mut self.items);
-        let fields = std::mem::take(&mut self.fields);
-        for item in &items {
-            match *item {
-                Item::Triangle([a, b, c], color, pick) => self.triangle(a, b, c, color, pick),
-                Item::Line(a, b, color) => self.segment(a, b, color),
-                Item::Sphere {
-                    center,
-                    radius,
-                    depth,
-                    color,
-                    pick,
-                    selected,
-                } => self.ball(center, radius, depth, color, pick, selected),
-                Item::Glow {
-                    center,
-                    radius,
-                    color,
-                    strength,
-                } => self.halo(center, radius, color, strength),
-                Item::Puff {
-                    center,
-                    radius,
-                    color,
-                    strength,
-                } => self.puff(center, radius, color, strength.clamp(0.0, 1.0)),
-                Item::Beam(a, b, color, weight) => self.ray(a, b, color, weight),
-                Item::Star([x, y], color) => {
-                    self.pixel(x as i32, y as i32, BACKGROUND, color, NONE)
+        if n == 0 {
+            return;
+        }
+        let Self {
+            sky,
+            items,
+            fields,
+            pixels,
+            depth,
+            picks,
+            ..
+        } = self;
+        // The haze is a product of one factor per column and one per row.
+        let columns: Vec<f32> = (0..width)
+            .map(|x| sky.profile(x as f32 / width as f32, 0.0))
+            .collect();
+        let rows = height.div_ceil(bands.clamp(1, height));
+        if rows >= height {
+            let mut band = Band {
+                width,
+                height,
+                first: 0,
+                rows: height,
+                pixels,
+                depth,
+                picks,
+            };
+            band.draw(sky, &columns, items, fields, None);
+            return;
+        }
+        let bands: Vec<Band> = pixels
+            .chunks_mut(rows * width * 3)
+            .zip(depth.chunks_mut(rows * width))
+            .zip(picks.chunks_mut(rows * width))
+            .enumerate()
+            .map(|(index, ((pixels, depth), picks))| Band {
+                width,
+                height,
+                first: index * rows,
+                rows: depth.len() / width,
+                pixels,
+                depth,
+                picks,
+            })
+            .collect();
+        let threads = threads.clamp(1, bands.len());
+        // The lists of items of the bands are kept by the thread that draws the frame, so that
+        // a steady-state frame does not grow them again.
+        LISTS.with_borrow_mut(|lists| {
+            lists.resize_with(bands.len(), Vec::new);
+            lists.iter_mut().for_each(Vec::clear);
+            // Which items each band draws, in the order of the list: those whose rows reach it.
+            for (index, item) in items.iter().enumerate() {
+                let (first, last) = item.rows(height);
+                let (first, last) = (first.max(0), last.min(height as i32 - 1));
+                if first <= last {
+                    for list in &mut lists[first as usize / rows..=last as usize / rows] {
+                        list.push(index as u32);
+                    }
                 }
-                Item::Glyph {
-                    origin,
-                    scale,
-                    bits,
-                    color,
-                } => self.glyph(origin, scale, bits, color),
-                Item::Pick {
-                    center,
-                    radius,
-                    depth,
-                    pick,
-                } => self.splat(center, radius, depth, pick),
-                Item::Field { points, uv, field } => {
-                    self.field_triangle(points, uv, &fields[field as usize]);
+            }
+            let lists: &[Vec<u32>] = lists;
+            let queue = Mutex::new(bands.into_iter().zip(lists));
+            let work = || {
+                loop {
+                    let next = queue
+                        .lock()
+                        .expect("no band panics while it holds the queue")
+                        .next();
+                    let Some((mut band, list)) = next else { break };
+                    band.draw(sky, &columns, items, fields, Some(list));
+                }
+            };
+            if threads == 1 {
+                work();
+                return;
+            }
+            std::thread::scope(|scope| {
+                for _ in 1..threads {
+                    // A thread the system will not give is no loss: the bands are dealt from
+                    // the queue, so the ones that are running take the rest.
+                    let _ = std::thread::Builder::new().spawn_scoped(scope, work);
+                }
+                work();
+            });
+        });
+    }
+}
+
+impl Band<'_> {
+    /// Paints the sky into the band, clears depth and picks, and draws every item over it in
+    /// order.
+    fn draw(
+        &mut self,
+        sky: &Sky,
+        columns: &[f32],
+        items: &[Item],
+        fields: &[ShadedField],
+        list: Option<&[u32]>,
+    ) {
+        self.depth.fill(f32::NEG_INFINITY);
+        self.picks.fill(NONE);
+        self.paint_sky(sky, columns);
+        match list {
+            Some(list) => {
+                for &index in list {
+                    self.item(&items[index as usize], fields);
+                }
+            }
+            None => {
+                for item in items {
+                    self.item(item, fields);
                 }
             }
         }
-        self.items = items;
-        self.fields = fields;
+    }
+
+    /// Draws one item over what the band holds.
+    fn item(&mut self, item: &Item, fields: &[ShadedField]) {
+        match *item {
+            Item::Triangle([a, b, c], color, pick) => self.triangle(a, b, c, color, pick),
+            Item::Line(a, b, color) => self.segment(a, b, color),
+            Item::Sphere {
+                center,
+                radius,
+                depth,
+                color,
+                pick,
+                selected,
+            } => self.ball(center, radius, depth, color, pick, selected),
+            Item::Glow {
+                center,
+                radius,
+                color,
+                strength,
+            } => self.halo(center, radius, color, strength),
+            Item::Puff {
+                center,
+                radius,
+                color,
+                strength,
+            } => self.puff(center, radius, color, strength.clamp(0.0, 1.0)),
+            Item::Beam(a, b, color, weight) => self.ray(a, b, color, weight),
+            Item::Star([x, y], color) => {
+                self.pixel(x as i32, y as i32, BACKGROUND, color, NONE);
+            }
+            Item::Glyph {
+                origin,
+                scale,
+                bits,
+                color,
+            } => self.glyph(origin, scale, bits, color),
+            Item::Pick {
+                center,
+                radius,
+                depth,
+                pick,
+            } => self.splat(center, radius, depth, pick),
+            Item::Field { points, uv, field } => {
+                self.field_triangle(points, uv, &fields[field as usize]);
+            }
+        }
+    }
+
+    /// The band's first and last frame rows.
+    pub(super) fn span(&self) -> (i32, i32) {
+        let first = self.first as i32;
+        (first, first + self.rows as i32 - 1)
     }
 
     fn glyph(&mut self, origin: [f32; 2], scale: u32, bits: u128, color: Color) {
+        let (first, last) = self.span();
         for row in 0..glyphs::HEIGHT {
             for column in 0..glyphs::WIDTH {
                 if bits >> (row * glyphs::WIDTH + column) & 1 == 0 {
@@ -75,13 +361,13 @@ impl Frame {
                 }
                 for dy in 0..scale {
                     let y = origin[1] as i64 + (row * scale + dy) as i64;
-                    if !(0..self.height as i64).contains(&y) {
+                    if !(i64::from(first)..=i64::from(last)).contains(&y) {
                         continue;
                     }
                     for dx in 0..scale {
                         let x = origin[0] as i64 + (column * scale + dx) as i64;
                         if (0..self.width as i64).contains(&x) {
-                            let i = (y as usize * self.width as usize + x as usize) * 3;
+                            let i = ((y as usize - self.first) * self.width + x as usize) * 3;
                             self.pixels[i..i + 3].copy_from_slice(&color);
                         }
                     }
@@ -90,20 +376,16 @@ impl Frame {
         }
     }
 
-    fn paint_sky(&mut self) {
-        let (w, h) = (self.width as usize, self.height as usize);
-        let sky = self.sky;
-        let columns: Vec<f32> = (0..w)
-            .map(|x| sky.profile(x as f32 / w as f32, 0.0))
-            .collect();
-        for y in 0..h {
-            let v = y as f32 / h as f32;
+    /// Paints the band's rows of the sky; every pixel of a frame is painted by it.
+    fn paint_sky(&mut self, sky: &Sky, columns: &[f32]) {
+        let (w, h) = (self.width, self.height);
+        for (row, line) in self.pixels.chunks_exact_mut(w * 3).enumerate() {
+            let v = (self.first + row) as f32 / h as f32;
             let base = sky.base(v);
-            let row = sky.profile(v, 1.9);
-            let line = &mut self.pixels[y * w * 3..(y + 1) * w * 3];
+            let profile = sky.profile(v, 1.9);
             if sky.hazy() {
-                for (pixel, column) in line.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
-                    let density = row * column;
+                for (pixel, column) in line.as_chunks_mut::<3>().0.iter_mut().zip(columns) {
+                    let density = profile * column;
                     for k in 0..3 {
                         pixel[k] = (base[k] + sky.haze[k] * density).min(255.0) as u8;
                     }
@@ -117,6 +399,72 @@ impl Frame {
         }
     }
 
+    /// Writes one pixel if it is in the band and `depth` is at least as near as what is there.
+    #[inline]
+    pub(super) fn pixel(&mut self, x: i32, y: i32, depth: f32, color: Color, pick: u32) {
+        let (first, last) = self.span();
+        if x < 0 || x >= self.width as i32 || y < first || y > last {
+            return;
+        }
+        let i = (y as usize - self.first) * self.width + x as usize;
+        if depth < self.depth[i] {
+            return;
+        }
+        self.depth[i] = depth;
+        self.picks[i] = pick;
+        self.pixels[i * 3..i * 3 + 3].copy_from_slice(&color);
+    }
+
+    fn segment(&mut self, a: Point, b: Point, color: Color) {
+        let steps = (a[0] - b[0]).abs().max((a[1] - b[1]).abs()).ceil() as usize;
+        for i in 0..=steps {
+            let t = i as f32 / steps.max(1) as f32;
+            self.pixel(
+                (a[0] + (b[0] - a[0]) * t) as i32,
+                (a[1] + (b[1] - a[1]) * t) as i32,
+                a[2] + (b[2] - a[2]) * t + shared::LINE_DEPTH_BIAS,
+                color,
+                NONE,
+            );
+        }
+    }
+
+    fn ray(&mut self, a: [f32; 2], b: [f32; 2], color: Color, weight: f32) {
+        let steps = (a[0] - b[0])
+            .abs()
+            .max((a[1] - b[1]).abs())
+            .min(8000.0)
+            .ceil() as usize;
+        let (first, last) = self.span();
+        for i in 0..=steps {
+            let t = i as f32 / steps.max(1) as f32;
+            let x = (a[0] + (b[0] - a[0]) * t) as i32;
+            let y = (a[1] + (b[1] - a[1]) * t) as i32;
+            if x >= 0 && x < self.width as i32 && y >= first && y <= last {
+                let i = ((y as usize - self.first) * self.width + x as usize) * 3;
+                mix(&mut self.pixels[i..i + 3], color, weight);
+            }
+        }
+    }
+}
+
+/// `color` mixed into `pixel` by `weight`, truncated to a level.
+#[inline]
+pub(super) fn mix(pixel: &mut [u8], color: Color, weight: f32) {
+    for (channel, &target) in pixel.iter_mut().zip(&color) {
+        *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight) as u8;
+    }
+}
+
+/// `mix` rounded to the nearest level, as the GPU's blend unit rounds.
+#[inline]
+pub(super) fn mix_rounded(pixel: &mut [u8], color: Color, weight: f32) {
+    for (channel, &target) in pixel.iter_mut().zip(&color) {
+        *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight + 0.5) as u8;
+    }
+}
+
+impl Frame {
     /// Two-pixel annotation line drawn over the finished frame, ignoring depth.
     pub fn stroke(&mut self, a: [f32; 2], b: [f32; 2], color: Color) {
         let steps = (a[0] - b[0])
@@ -153,22 +501,10 @@ impl Frame {
             return;
         }
         let i = (y as usize * self.width as usize + x as usize) * 3;
-        for (channel, &target) in self.pixels[i..i + 3].iter_mut().zip(&color) {
-            *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight) as u8;
-        }
+        mix(&mut self.pixels[i..i + 3], color, weight);
     }
 
-    /// `blend` rounded to the nearest level, as the GPU's blend unit rounds.
-    fn blend_rounded(&mut self, x: i32, y: i32, color: Color, weight: f32) {
-        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-            return;
-        }
-        let i = (y as usize * self.width as usize + x as usize) * 3;
-        for (channel, &target) in self.pixels[i..i + 3].iter_mut().zip(&color) {
-            *channel = (*channel as f32 + (target as f32 - *channel as f32) * weight + 0.5) as u8;
-        }
-    }
-
+    #[cfg(test)]
     pub(super) fn pixel(&mut self, x: i32, y: i32, depth: f32, color: Color, pick: u32) {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return;
@@ -181,164 +517,89 @@ impl Frame {
         self.picks[i] = pick;
         self.pixels[i * 3..i * 3 + 3].copy_from_slice(&color);
     }
-
-    fn triangle(&mut self, a: Point, b: Point, c: Point, color: Color, pick: u32) {
-        let edge = |a: Point, b: Point, x: f32, y: f32| {
-            (x - a[0]) * (b[1] - a[1]) - (y - a[1]) * (b[0] - a[0])
-        };
-        let area = edge(a, b, c[0], c[1]);
-        if area.abs() < 0.001 {
-            return;
-        }
-        let min_x = a[0].min(b[0]).min(c[0]).floor().max(0.0) as i32;
-        let max_x = a[0].max(b[0]).max(c[0]).ceil().min(self.width as f32 - 1.0) as i32;
-        let min_y = a[1].min(b[1]).min(c[1]).floor().max(0.0) as i32;
-        let max_y = a[1]
-            .max(b[1])
-            .max(c[1])
-            .ceil()
-            .min(self.height as f32 - 1.0) as i32;
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let w0 = edge(b, c, x as f32 + 0.5, y as f32 + 0.5) / area;
-                let w1 = edge(c, a, x as f32 + 0.5, y as f32 + 0.5) / area;
-                let w2 = 1.0 - w0 - w1;
-                if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
-                    self.pixel(x, y, w0 * a[2] + w1 * b[2] + w2 * c[2], color, pick);
-                }
-            }
-        }
-    }
-
-    fn segment(&mut self, a: Point, b: Point, color: Color) {
-        let steps = (a[0] - b[0]).abs().max((a[1] - b[1]).abs()).ceil() as usize;
-        for i in 0..=steps {
-            let t = i as f32 / steps.max(1) as f32;
-            self.pixel(
-                (a[0] + (b[0] - a[0]) * t) as i32,
-                (a[1] + (b[1] - a[1]) * t) as i32,
-                a[2] + (b[2] - a[2]) * t + shared::LINE_DEPTH_BIAS,
-                color,
-                NONE,
-            );
-        }
-    }
-
-    /// Writes `pick` over a disc where `depth` is at least as near as what is drawn, as a
-    /// sphere's surface tests, leaving colour and depth alone. Samples at integer pixel
-    /// coordinates like `ball`.
-    fn splat(&mut self, center: [f32; 2], radius: f32, depth: f32, pick: u32) {
-        let x0 = (center[0] - radius).floor().max(0.0) as i32;
-        let x1 = (center[0] + radius).ceil().min(self.width as f32 - 1.0) as i32;
-        let y0 = (center[1] - radius).floor().max(0.0) as i32;
-        let y1 = (center[1] + radius).ceil().min(self.height as f32 - 1.0) as i32;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                let nx = (x as f32 - center[0]) / radius;
-                let ny = (y as f32 - center[1]) / radius;
-                let i = y as usize * self.width as usize + x as usize;
-                if nx * nx + ny * ny <= 1.0 && depth >= self.depth[i] {
-                    self.picks[i] = pick;
-                }
-            }
-        }
-    }
-
-    fn ball(&mut self, p: Point, r: f32, depth: f32, color: Color, pick: u32, selected: bool) {
-        let outer = if selected {
-            r + shared::SELECTION_RING_WIDTH
-        } else {
-            r + shared::SPHERE_EDGE
-        };
-        let x0 = (p[0] - outer).floor().max(0.0) as i32;
-        let x1 = (p[0] + outer).ceil().min(self.width as f32 - 1.0) as i32;
-        let y0 = (p[1] - outer).floor().max(0.0) as i32;
-        let y1 = (p[1] + outer).ceil().min(self.height as f32 - 1.0) as i32;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                let nx = (x as f32 - p[0]) / r;
-                let ny = (y as f32 - p[1]) / r;
-                let d = nx * nx + ny * ny;
-                if d <= 1.0 {
-                    let nz = (1.0 - d).sqrt();
-                    let light = (shared::SPHERE_AMBIENT
-                        + (-nx * shared::SPHERE_LIGHT_X - ny * shared::SPHERE_LIGHT_Y
-                            + nz * shared::SPHERE_LIGHT_Z)
-                            .max(0.0))
-                    .min(shared::SPHERE_LIGHT_MAX);
-                    self.pixel(x, y, p[2] + nz * depth, tint(color, light), pick);
-                } else if selected && d <= (outer / r).powi(2) {
-                    self.pixel(x, y, p[2], shared::SELECTION_COLOR.map(|c| c as u8), pick);
-                }
-            }
-        }
-    }
-
-    fn halo(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
-        self.disc(p, radius, color, strength, Self::blend);
-    }
-
-    fn puff(&mut self, p: [f32; 2], radius: f32, color: Color, strength: f32) {
-        self.disc(p, radius, color, strength, Self::blend_rounded);
-    }
-
-    /// Blends `color` over the pixels within `radius` of `p` with weight `strength` times the
-    /// square of one minus the distance in radii, by `blend`.
-    fn disc(
-        &mut self,
-        p: [f32; 2],
-        radius: f32,
-        color: Color,
-        strength: f32,
-        blend: fn(&mut Self, i32, i32, Color, f32),
-    ) {
-        let x0 = (p[0] - radius).floor() as i32;
-        let x1 = (p[0] + radius).ceil() as i32;
-        let y0 = (p[1] - radius).floor() as i32;
-        let y1 = (p[1] + radius).ceil() as i32;
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                let d = (x as f32 + 0.5 - p[0]).hypot(y as f32 + 0.5 - p[1]) / radius;
-                if d < 1.0 {
-                    blend(self, x, y, color, strength * (1.0 - d) * (1.0 - d));
-                }
-            }
-        }
-    }
-
-    fn ray(&mut self, a: [f32; 2], b: [f32; 2], color: Color, weight: f32) {
-        let steps = (a[0] - b[0])
-            .abs()
-            .max((a[1] - b[1]).abs())
-            .min(8000.0)
-            .ceil() as usize;
-        for i in 0..=steps {
-            let t = i as f32 / steps.max(1) as f32;
-            let x = (a[0] + (b[0] - a[0]) * t) as i32;
-            let y = (a[1] + (b[1] - a[1]) * t) as i32;
-            self.blend(x, y, color, weight);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::render::frame::{Backdrop, Buffers, sky_of};
+
+    #[test]
+    fn the_index_helpers_agree_with_floor_and_ceil() {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            0.5,
+            -0.5,
+            1.0,
+            -1.0,
+            255.5,
+            1919.999,
+            1e9,
+            -1e9,
+            f32::MAX,
+            f32::MIN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            f32::MIN_POSITIVE,
+            1.0e-45,
+            16_777_216.0,
+            4_294_967_296.0,
+            2_147_483_648.0,
+            -2_147_483_648.0,
+            -2_147_483_904.0,
+        ];
+        // Whole numbers and halves, and the floats on either side of them.
+        for k in -4..2200 {
+            for half in [0.0, 0.5] {
+                let center = (k as f32 + half).to_bits();
+                values.extend((center.saturating_sub(3)..=center + 3).map(f32::from_bits));
+            }
+        }
+        // And one pattern in four thousand of all of them.
+        values.extend((0..u32::MAX / 4093).map(|i| f32::from_bits(i * 4093)));
+        for last in [0.0, 1.0, 479.0, 1079.0, 16_383.0] {
+            for &v in &values {
+                assert_eq!(
+                    first_index(v),
+                    v.floor().max(0.0) as i32,
+                    "first_index({v})"
+                );
+                assert_eq!(
+                    last_index(v, last),
+                    v.ceil().min(last) as i32,
+                    "last_index({v}, {last})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn stacked_puffs_round_to_the_nearest_level_where_glows_truncate() {
         // Over black, a centred half-strength disc of 255 blends to 127.5, then 191.5, then 223.5.
         let mut puffs = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
         let mut glows = Frame::new(4, 4, sky_of(Backdrop::Void), Buffers::default());
-        puffs.pixels = vec![0; 48];
-        glows.pixels = vec![0; 48];
         let (mut rounded, mut truncated) = ([0u8; 3], [0u8; 3]);
         for k in 0..3 {
-            puffs.puff([1.5, 1.5], 2.0, [255; 3], 0.5);
-            glows.halo([1.5, 1.5], 2.0, [255; 3], 0.5);
+            puffs.items.push(Item::Puff {
+                center: [1.5, 1.5],
+                radius: 2.0,
+                color: [255; 3],
+                strength: 0.5,
+            });
+            glows.items.push(Item::Glow {
+                center: [1.5, 1.5],
+                radius: 2.0,
+                color: [255; 3],
+                strength: 0.5,
+            });
+            puffs.rasterize();
+            glows.rasterize();
             rounded[k] = puffs.pixels[(4 + 1) * 3];
             truncated[k] = glows.pixels[(4 + 1) * 3];
         }
+        // The three discs are stacked in one list, so the k-th frame holds k + 1 of them.
         assert_eq!(
             rounded,
             [128, 192, 224],

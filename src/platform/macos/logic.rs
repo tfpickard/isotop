@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::io_detail::OpenFile;
+use crate::model::thermal::{CpuPlace, Topology};
 use crate::model::{CoreKind, Kind, Oom, Policy, Process, Queue};
 use crate::platform::{
     AccessMode, DeletedFile, Files, Network, PipeEnd, PipeId, Remote, Source, Sources,
@@ -293,6 +294,54 @@ pub fn core_kind(cluster_type: u8) -> Option<CoreKind> {
         b'P' | b'M' => Some(CoreKind::Performance),
         _ => None,
     }
+}
+
+/// The CPU topology macOS lets isotop read, from `hw.logicalcpu`, `hw.physicalcpu` and the core
+/// kinds of the IORegistry (`core_kinds`): one package, and a cluster of every core kind that is
+/// present (the IORegistry's splits within a kind, such as the two performance clusters of a Pro
+/// or Max chip, are not read). The L2 and L3 groups and the clocks are not read either, so they
+/// are None.
+///
+/// Each CPU is its own core, except where there are two logical CPUs to each physical core (an
+/// Intel Mac with SMT): the pairs 0 and 1, 2 and 3, and so on then share one. That pairing is
+/// the numbering macOS gives and is to verify on an Intel Mac; Apple silicon has no SMT. An
+/// unreadable CPU count gives an empty topology.
+pub fn topology(
+    logical: usize,
+    physical: Option<usize>,
+    kinds: &HashMap<u32, CoreKind>,
+) -> Topology {
+    let Ok(logical) = u32::try_from(logical) else {
+        return Topology::default();
+    };
+    let paired = physical.is_some_and(|physical| physical > 0 && physical * 2 == logical as usize);
+    let cpus = (0..logical)
+        .map(|cpu| {
+            let kind = kinds.get(&cpu).copied().unwrap_or(CoreKind::Unknown);
+            let (core_id, siblings) = if paired {
+                (cpu / 2, vec![cpu / 2 * 2, cpu / 2 * 2 + 1])
+            } else {
+                (cpu, vec![cpu])
+            };
+            CpuPlace {
+                cpu,
+                package: Some(0),
+                die: None,
+                core_id: Some(core_id),
+                cluster: Some(match kind {
+                    CoreKind::Performance => 0,
+                    CoreKind::Efficiency => 1,
+                    CoreKind::Unknown => 2,
+                }),
+                siblings,
+                l2: None,
+                l3: None,
+                max_mhz: None,
+                kind,
+            }
+        })
+        .collect();
+    Topology { cpus }
 }
 
 /// A little-endian integer of one to eight bytes, the form device-tree numbers take.
@@ -1349,6 +1398,71 @@ mod tests {
     fn start_seconds_join_the_seconds_and_microseconds() {
         assert_eq!(start_seconds(1_700_000_000, 250_000), 1_700_000_000.25);
         assert_eq!(start_seconds(0, 0), 0.0);
+    }
+
+    #[test]
+    fn macos_topology_groups_clusters_by_core_kind() {
+        // An Apple chip as the IORegistry lists it: the efficiency cores first, then the
+        // performance cores, and one logical CPU to a physical core.
+        let kinds: HashMap<u32, CoreKind> = (0..10)
+            .map(|cpu| {
+                let kind = if cpu < 2 {
+                    CoreKind::Efficiency
+                } else {
+                    CoreKind::Performance
+                };
+                (cpu, kind)
+            })
+            .collect();
+        let topology = topology(10, Some(10), &kinds);
+        assert_eq!(topology.cpus.len(), 10);
+        assert_eq!(topology.packages(), [0]);
+        let cores: Vec<Vec<u32>> = topology.cores().into_iter().map(|core| core.cpus).collect();
+        assert_eq!(
+            cores,
+            (0..10).map(|cpu| vec![cpu]).collect::<Vec<_>>(),
+            "no SMT: every CPU is a core"
+        );
+        let clusters = topology.clusters();
+        assert_eq!(clusters.len(), 2, "one cluster per core kind");
+        assert_eq!(
+            (clusters[0].cpus.clone(), clusters[0].kind),
+            (vec![0, 1], CoreKind::Efficiency)
+        );
+        assert_eq!(
+            (clusters[1].cpus.clone(), clusters[1].kind),
+            ((2..10).collect::<Vec<_>>(), CoreKind::Performance)
+        );
+        assert!(clusters.iter().all(|cluster| !cluster.low_power));
+        assert!(
+            topology
+                .cpus
+                .iter()
+                .all(|place| place.l2.is_none() && place.l3.is_none() && place.max_mhz.is_none()),
+            "the caches and clocks are not read"
+        );
+        assert!(topology.l3_groups().is_empty());
+        assert_eq!(
+            topology.place(0).map(|place| place.kind),
+            Some(CoreKind::Efficiency)
+        );
+
+        // An Intel Mac has two logical CPUs to a core and no kinds: the pairs share a core and
+        // everything is one cluster.
+        let intel = topology_with(8, Some(4));
+        assert_eq!(intel.cores().len(), 4);
+        assert_eq!(intel.cores()[1].cpus, [2, 3]);
+        assert_eq!(intel.clusters().len(), 1);
+        assert_eq!(intel.clusters()[0].kind, CoreKind::Unknown);
+        // A physical count that is not half the logical one is no SMT, and an unreadable one
+        // is none either; no CPU count is no topology.
+        assert_eq!(topology_with(8, Some(6)).cores().len(), 8);
+        assert_eq!(topology_with(8, None).cores().len(), 8);
+        assert!(topology_with(0, None).is_empty());
+    }
+
+    fn topology_with(logical: usize, physical: Option<usize>) -> Topology {
+        topology(logical, physical, &HashMap::new())
     }
 
     #[test]

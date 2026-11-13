@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 pub(crate) mod exchange;
 pub(crate) mod kernel;
 pub(crate) mod pipework;
+pub(crate) mod thermal;
 
 use crate::geo;
 use crate::io_detail::{self, IoDetail, IoScan};
@@ -20,6 +21,8 @@ use crate::simulation::{Rng, hash, hash_identity, smoothing};
 use crate::threads::{self, Target, ThreadList, ThreadScan};
 use kernel::{KernelReadings, KernelScan, Readers};
 pub use pipework::{Hose, PipeHold, Severed};
+pub use thermal::Thermal;
+use thermal::ThermalPass;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Identity {
@@ -36,14 +39,7 @@ pub enum Kind {
     Container,
 }
 
-#[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "policy, started and io_detail are read by views that come after P5 and B8"
-    )
-)]
+#[derive(Debug)]
 pub struct Process {
     pub id: Identity,
     pub parent: u32,
@@ -209,6 +205,90 @@ pub struct SyscallIo {
     pub writes: f32,
 }
 
+impl Clone for Process {
+    fn clone(&self) -> Self {
+        let mut copy = Process::default();
+        copy.clone_from(self);
+        copy
+    }
+
+    /// Copies `source` into this process, reusing the capacity of its strings and lists: a
+    /// scene that keeps a process per sample and refreshes it each frame allocates nothing in
+    /// steady state. Every field is named, with no `..`, so a new one cannot be forgotten.
+    fn clone_from(&mut self, source: &Self) {
+        let Process {
+            id,
+            parent,
+            name,
+            command,
+            group,
+            kind,
+            state,
+            cpu,
+            memory,
+            io_rate,
+            read_rate,
+            write_rate,
+            written,
+            priority,
+            nice,
+            threads,
+            gpu_memory,
+            core,
+            cpu_time,
+            cgroup,
+            performance_share,
+            waiting,
+            files,
+            locks_held,
+            blocked_on,
+            system_share,
+            policy,
+            syscall_io,
+            major_faults,
+            started,
+            oom,
+            memory_detail,
+            thread_list,
+            io_detail,
+        } = source;
+        self.id = *id;
+        self.parent = *parent;
+        self.name.clone_from(name);
+        self.command.clone_from(command);
+        self.group.clone_from(group);
+        self.kind = *kind;
+        self.state = *state;
+        self.cpu = *cpu;
+        self.memory = *memory;
+        self.io_rate = *io_rate;
+        self.read_rate = *read_rate;
+        self.write_rate = *write_rate;
+        self.written = *written;
+        self.priority = *priority;
+        self.nice = *nice;
+        self.threads = *threads;
+        self.gpu_memory = *gpu_memory;
+        self.core = *core;
+        self.cpu_time = *cpu_time;
+        self.cgroup.clone_from(cgroup);
+        self.performance_share = *performance_share;
+        self.waiting = *waiting;
+        self.files.clone_from(files);
+        self.locks_held.clone_from(locks_held);
+        self.blocked_on.clone_from(blocked_on);
+        self.system_share = *system_share;
+        self.policy = *policy;
+        self.syscall_io = *syscall_io;
+        self.major_faults = *major_faults;
+        self.started = *started;
+        self.oom.clone_from(oom);
+        self.memory_detail.clone_from(memory_detail);
+        self.thread_list.clone_from(thread_list);
+        self.io_detail.clone_from(io_detail);
+    }
+}
+
 impl Default for Process {
     /// A harmless placeholder: pid 0 (never a real process), a sleeping system process, and
     /// nothing measured yet.
@@ -319,7 +399,7 @@ pub enum Blocker {
 }
 
 /// A measurement taken on the background thread, which may not have reached a process yet.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub enum Measured<T> {
     /// Not measured yet: before the first background pass, a process born since the last one,
     /// or one a budget-limited scan has not reached.
@@ -328,6 +408,24 @@ pub enum Measured<T> {
     /// Could not be read, normally for lack of permission.
     Unreadable,
     Known(T),
+}
+
+impl<T: Clone> Clone for Measured<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Measured::Pending => Measured::Pending,
+            Measured::Unreadable => Measured::Unreadable,
+            Measured::Known(value) => Measured::Known(value.clone()),
+        }
+    }
+
+    /// A known reading over a known reading is copied in place, keeping its allocations.
+    fn clone_from(&mut self, source: &Self) {
+        match (&mut *self, source) {
+            (Measured::Known(held), Measured::Known(value)) => held.clone_from(value),
+            _ => *self = source.clone(),
+        }
+    }
 }
 
 impl<T> Measured<T> {
@@ -629,6 +727,14 @@ pub struct Snapshot {
     /// pass (no cycle has finished yet); the demo numbers each sample by its time, since each
     /// one is a new reading.
     pub kernel_pass: Option<u64>,
+    /// The CPU topology, temperature sensors, thermal throttle counts and RAPL package power
+    /// (`Source::Topology`, `Temperature`, `ThrottleCounts` and `PackagePower`, `thermal::SOURCES`).
+    /// None until a background pass ran with any of the four demanded, which only a view that
+    /// declares them causes (and in the demo, for a view whose row asks for
+    /// `DemoOptions::thermal`); `Thermal::pass` numbers the pass, since the foreground samples
+    /// between two passes carry the same block. Each source that was demanded and cannot be read
+    /// is in `missing`, and its part of the block is empty (never zero).
+    pub thermal: Option<Thermal>,
     /// The journal lines that arrived while this was the newest sample (`Source::Journal`): the
     /// follower's, or the demo's. the app attaches them frame by frame, not the collector, which
     /// does not own the follower, so a collected or demo sample starts with none. A view takes in
@@ -720,7 +826,25 @@ impl Reads {
 /// and a NaN key sorts after every number, so the choice is the same in every sample that has
 /// the same keys.
 pub fn top_n(processes: &[Process], n: usize, key: impl Fn(&Process) -> f64) -> Vec<&Process> {
-    let mut keyed: Vec<(f64, &Process)> = processes.iter().map(|p| (key(p), p)).collect();
+    select_top(processes.iter(), n, key)
+}
+
+/// `top_n` over processes a caller already holds by reference, which it need not copy to ask.
+pub fn top_n_of<'a>(
+    processes: &[&'a Process],
+    n: usize,
+    key: impl Fn(&Process) -> f64,
+) -> Vec<&'a Process> {
+    select_top(processes.iter().copied(), n, key)
+}
+
+/// The choice `top_n` and `top_n_of` make.
+fn select_top<'a>(
+    processes: impl Iterator<Item = &'a Process>,
+    n: usize,
+    key: impl Fn(&Process) -> f64,
+) -> Vec<&'a Process> {
+    let mut keyed: Vec<(f64, &Process)> = processes.map(|p| (key(p), p)).collect();
     let order = |a: &(f64, &Process), b: &(f64, &Process)| match (a.0.is_nan(), b.0.is_nan()) {
         (true, true) => a.1.id.cmp(&b.1.id),
         (true, false) => std::cmp::Ordering::Greater,
@@ -893,6 +1017,8 @@ struct Extras {
     waits: HashMap<u32, Wait>,
     /// What each process sent another over loopback TCP, keyed (sender pid, receiver pid).
     sent: HashMap<(u32, u32), Hose>,
+    /// The thermal block of the last pass (`thermal::SOURCES`); None while nothing demands it.
+    thermal: Option<Thermal>,
     /// Where the busiest processes' I/O goes (`Source::IoDetail`), by identity; empty while
     /// nothing demands it, and holding only the processes the last pass reached.
     io_detail: HashMap<Identity, Measured<Arc<IoDetail>>>,
@@ -1044,6 +1170,8 @@ fn background(
         let mut io_scan = IoScan::default();
         let mut wait_scan = platform::WaitScan::new();
         let mut kept_waits = KeptWaits::default();
+        let mut thermal_scan = platform::ThermalScan::new();
+        let mut thermal_pass = ThermalPass::default();
         move || {
             // Taken before any scan reads, so that every pid the scans find is either the
             // process named here or one that took its pid since.
@@ -1146,6 +1274,7 @@ fn background(
                 &identities,
                 &mut latency,
             );
+            let thermal = thermal_pass.pass(&mut thermal_scan, &mut reads, &mut latency);
             let missing = background_gaps(gpu.is_some(), &locks).union(reads.missing);
             Extras {
                 identities,
@@ -1172,6 +1301,7 @@ fn background(
                 waits,
                 sent,
                 io_detail,
+                thermal,
             }
         }
     })
@@ -1469,6 +1599,7 @@ fn merge(snapshot: &mut Snapshot, extras: &Extras) {
     snapshot.softirqs = extras.kernel.softirqs.clone();
     snapshot.oom_kills = extras.kernel.oom_kills;
     snapshot.kernel_pass = extras.kernel.pass;
+    snapshot.thermal = extras.thermal.clone();
     snapshot.missing = snapshot.missing.union(extras.missing);
     snapshot.sources = snapshot.sources.union(extras.sources);
 }
@@ -2883,6 +3014,17 @@ pub struct DemoOptions {
     /// `oom_kills` stays None. Counts grow from a day of uptime and rates are pure functions of
     /// `time`. Off, the fields are what `kernel_counters` says.
     pub exchange: bool,
+    /// Synthesizes `Snapshot::thermal` (`thermal::demo`) for the 16 CPUs presented as an Intel
+    /// hybrid part: one package and one L3, four P-cores with SMT on CPUs 0 to 7 (core ids 0, 4,
+    /// 8 and 12) and two clusters of four E-cores on CPUs 8 to 15 (core ids 16 to 23), each
+    /// sharing an L2. Each core's sensor is a first-order lag of its CPUs' proxy
+    /// `busy * (mhz / max_mhz)^3` (the same `demo_cpu` that fills `Snapshot::cpus`), the package
+    /// sensor reads the hottest core and every sensor reports TjMax 100; P-core 8 (CPUs 4 and 5)
+    /// reaches TjMax once every 40 s, where its throttle count rises, and counts never fall. The
+    /// package's watts follow the summed proxy. It lists the four thermal sources in
+    /// `Snapshot::sources`, as a live run does while they are demanded, and changes no other
+    /// field. A pure function of `time`. Off, `thermal` is None, as in `demo`.
+    pub thermal: bool,
 }
 
 impl DemoOptions {
@@ -2906,6 +3048,7 @@ impl DemoOptions {
         plumbing: false,
         early_giant: false,
         exchange: false,
+        thermal: false,
     };
 }
 
@@ -3734,6 +3877,38 @@ fn demo_slice(kind: Kind) -> Option<&'static str> {
     }
 }
 
+/// The load of demo CPU `id` at `time`, 0 to 1: a sine of time, a phase further along for each
+/// CPU number.
+fn demo_load(time: f64, id: u32) -> f32 {
+    (time as f32 * 0.4 + id as f32 * 0.9).sin() * 0.5 + 0.5
+}
+
+/// Demo CPU `id` carrying `load`: CPUs 0 to 7 are performance cores, busy up to 90 % and clocked
+/// 1400 to 4800 MHz, and 8 to 15 efficiency cores, busy up to 60 % at 1000 to 3200 MHz.
+fn demo_cpu_with(id: u32, load: f32) -> Cpu {
+    Cpu {
+        id,
+        kind: if id < 8 {
+            CoreKind::Performance
+        } else {
+            CoreKind::Efficiency
+        },
+        busy: Some(load * if id < 8 { 0.9 } else { 0.6 }),
+        mhz: Some(if id < 8 {
+            1400.0 + 3400.0 * load
+        } else {
+            1000.0 + 2200.0 * load
+        }),
+        wait: Some((load - 0.6).max(0.0) * 3.0),
+    }
+}
+
+/// Demo CPU `id` at `time`; every CPU of `Snapshot::cpus` in the demo, and what the demo's
+/// thermal block (`thermal::demo`) derives its temperatures and power from.
+fn demo_cpu(time: f64, id: u32) -> Cpu {
+    demo_cpu_with(id, demo_load(time, id))
+}
+
 /// The demo workload at `time` for `count` base processes, with the extras `options` ask for.
 /// `DemoOptions::default()` gives the workload every view has always had.
 #[expect(clippy::too_many_lines, reason = "split in #90 (A31)")]
@@ -3870,26 +4045,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         .map(|i| (id(i), 1 + (i % 3) as u32))
         .collect();
     let wave = |rate: f64, scale: f32| ((time * rate).sin() as f32).max(0.0) * scale;
-    let cpus: Vec<Cpu> = (0..16)
-        .map(|id| {
-            let load = (time as f32 * 0.4 + id as f32 * 0.9).sin() * 0.5 + 0.5;
-            Cpu {
-                id,
-                kind: if id < 8 {
-                    CoreKind::Performance
-                } else {
-                    CoreKind::Efficiency
-                },
-                busy: Some(load * if id < 8 { 0.9 } else { 0.6 }),
-                mhz: Some(if id < 8 {
-                    1400.0 + 3400.0 * load
-                } else {
-                    1000.0 + 2200.0 * load
-                }),
-                wait: Some((load - 0.6).max(0.0) * 3.0),
-            }
-        })
-        .collect();
+    let cpus: Vec<Cpu> = (0..16).map(|id| demo_cpu(time, id)).collect();
     let mut units: HashMap<String, Unit> = HashMap::new();
     for p in processes.iter().filter(|p| !p.cgroup.is_empty()) {
         let unit = units.entry(p.cgroup.clone()).or_default();
@@ -4020,6 +4176,9 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
     if options.io_detail {
         sources.insert(Source::IoDetail);
     }
+    if options.thermal {
+        sources = sources.union(thermal::SOURCES);
+    }
     let mut snapshot = Snapshot {
         processes,
         memory_total: Some(DEMO_MEMORY_TOTAL),
@@ -4073,6 +4232,7 @@ pub fn demo_with(time: f64, count: usize, options: DemoOptions) -> Snapshot {
         softirqs,
         oom_kills,
         kernel_pass: Some(time.to_bits()),
+        thermal: options.thermal.then(|| thermal::demo::reading(time)),
         journal: crate::journal::Delivery::default(),
     };
     if options.oom_cycle {
@@ -4489,6 +4649,33 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn cloning_a_process_over_another_leaves_nothing_of_the_one_it_replaced() {
+        let rich = demo_with(
+            12.0,
+            64,
+            DemoOptions {
+                oom_and_memory_detail: true,
+                threads: true,
+                io_detail: true,
+                ..DemoOptions::NONE
+            },
+        );
+        let plain = demo(3.0, 64);
+        let mut slots = plain.processes.clone();
+        for (slot, source) in slots.iter_mut().zip(&rich.processes) {
+            slot.clone_from(source);
+        }
+        assert_eq!(format!("{slots:?}"), format!("{:?}", rich.processes));
+        // And back again, to processes that measured nothing and have other strings.
+        for (slot, source) in slots.iter_mut().zip(&plain.processes) {
+            slot.clone_from(source);
+        }
+        assert_eq!(format!("{slots:?}"), format!("{:?}", plain.processes));
+        let copy = plain.processes[5].clone();
+        assert_eq!(format!("{copy:?}"), format!("{:?}", plain.processes[5]));
+    }
 
     #[test]
     fn resource_scale_is_monotonic_and_bounded_for_multicore_cpu() {
@@ -6180,6 +6367,7 @@ mod tests {
             softirqs: Measured::Pending,
             oom_kills: None,
             kernel_pass: Some(time.to_bits()),
+            thermal: None,
             journal: crate::journal::Delivery::default(),
         }
     }
@@ -6226,6 +6414,7 @@ mod tests {
             softirqs,
             oom_kills,
             kernel_pass,
+            thermal,
             journal,
         } = snapshot;
         let link_traffic: BTreeMap<_, _> = link_traffic.iter().collect();
@@ -6246,7 +6435,7 @@ mod tests {
              {outside:?}\n{cpus:?}\n{units:?}\n\
              {remotes:?}\n{home:?} {geo:?} {unattributed_locks} {missing:?} {sources:?} {unreadable} \
              {per_cluster:?}\n{shadows:?}\n{sampler:?}\n{life:?} {life_dropped}\n{observer:?}\n\
-             {interrupts:?}\n{softirqs:?} {oom_kills:?} {kernel_pass:?}\n{journal:?}"
+             {interrupts:?}\n{softirqs:?} {oom_kills:?} {kernel_pass:?}\n{thermal:?}\n{journal:?}"
         )
     }
 
@@ -7267,6 +7456,14 @@ mod tests {
                 && !extras.pipes_partial,
             "no pipe scan ran"
         );
+        assert!(
+            extras.thermal.is_none()
+                && extras
+                    .latency
+                    .iter()
+                    .all(|(source, _)| !thermal::SOURCES.contains(*source)),
+            "no thermal file was opened and no block was made"
+        );
     }
 
     /// Lists one thread per process, leader first, and remembers which pids it was asked about.
@@ -7664,6 +7861,149 @@ mod tests {
         );
         // No process was named to the cycle, so none of what it read joins.
         assert!(extras.pipes.is_empty());
+    }
+
+    /// Waits for a background cycle that finished after `after`, and returns when.
+    fn cycle_after(thread: &Background, after: Option<Instant>) -> Instant {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let finished = thread.extras().finished;
+            if let Some(finished) = finished.filter(|&finished| Some(finished) > after) {
+                return finished;
+            }
+            assert!(Instant::now() < deadline, "a cycle finished in time");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_real_background_thread_reads_demanded_thermal_sources_into_the_snapshot() {
+        let demand = Arc::new(Mutex::new(Demand::from(thermal::SOURCES)));
+        let thread = background(
+            None,
+            Arc::new(Mutex::new(HashSet::new())),
+            Arc::clone(&demand),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .expect("the sampler thread starts");
+        let first = cycle_after(&thread, None);
+        let mut snapshot = Snapshot::default();
+        merge(&mut snapshot, &thread.extras());
+        let block = snapshot.thermal.clone().expect("demanded, so read");
+        assert_eq!(block.pass, 1);
+        for source in thermal::SOURCES.iter() {
+            // This machine has what it has: each demanded source is read or missing, never both
+            // and never neither.
+            assert_ne!(
+                snapshot.sources.contains(source),
+                snapshot.missing.contains(source),
+                "{}",
+                source.name()
+            );
+        }
+        // Where the topology could be read it is there, and where it could not it is empty and
+        // said to be missing.
+        assert_eq!(
+            block.topology.is_empty(),
+            snapshot.missing.contains(Source::Topology)
+        );
+        assert_eq!(
+            block.sensors.is_empty(),
+            snapshot.missing.contains(Source::Temperature)
+        );
+        assert_eq!(
+            block.package_watts == Measured::Unreadable,
+            snapshot.missing.contains(Source::PackagePower)
+        );
+        assert!(
+            thread
+                .extras()
+                .latency
+                .iter()
+                .any(|(source, _)| thermal::SOURCES.contains(*source)),
+            "the scans were timed"
+        );
+
+        // The next cycle numbers its pass, and the topology is not read again.
+        let second = cycle_after(&thread, Some(first));
+        merge(&mut snapshot, &thread.extras());
+        let again = snapshot.thermal.clone().expect("still demanded");
+        assert_eq!(again.pass, 2);
+        assert!(Arc::ptr_eq(&again.topology, &block.topology) || block.topology.is_empty());
+        assert!(
+            !thread
+                .extras()
+                .latency
+                .iter()
+                .any(|(source, _)| *source == Source::Topology)
+                || block.topology.is_empty(),
+            "the topology was read once"
+        );
+
+        // With the demand gone the block goes with it, and nothing is reported.
+        *demand.lock().expect("lock") = Demand::default();
+        let mut cycle = second;
+        let gone = loop {
+            cycle = cycle_after(&thread, Some(cycle));
+            let extras = thread.extras();
+            if extras.thermal.is_none() {
+                break extras.sources.union(extras.missing);
+            }
+        };
+        assert!(thermal::SOURCES.iter().all(|source| !gone.contains(source)));
+        let mut snapshot = Snapshot::default();
+        merge(&mut snapshot, &thread.extras());
+        assert!(snapshot.thermal.is_none());
+    }
+
+    #[test]
+    fn demo_thermal_is_repeatable_for_a_time() {
+        let asked = DemoOptions {
+            thermal: true,
+            ..DemoOptions::NONE
+        };
+        for time in [-90.0, 0.0, 12.0, 12.5, 4000.0] {
+            let first = demo_with(time, 16, asked);
+            let second = demo_with(time, 16, asked);
+            assert!(first.thermal.is_some(), "{time}");
+            assert_eq!(fingerprint(&first), fingerprint(&second), "{time}");
+            assert_eq!(first.thermal, second.thermal);
+        }
+        // Any order gives the same block: there is no state.
+        let late = demo_with(30.0, 16, asked).thermal;
+        demo_with(5.0, 16, asked);
+        assert_eq!(demo_with(30.0, 16, asked).thermal, late);
+        assert_ne!(
+            demo_with(30.0, 16, asked).thermal,
+            demo_with(31.0, 16, asked).thermal
+        );
+        // Asking for it changes the block and the listed sources, and nothing else.
+        let plain = demo_with(12.0, 100, DemoOptions::NONE);
+        let with = demo_with(12.0, 100, asked);
+        assert!(plain.thermal.is_none() && plain.sources.is_empty());
+        assert_eq!(with.sources, thermal::SOURCES);
+        assert_eq!(plain.processes.len(), with.processes.len());
+        assert_eq!(format!("{:?}", plain.cpus), format!("{:?}", with.cpus));
+        assert_eq!(plain.pressure, with.pressure);
+        assert_eq!(plain.missing, with.missing);
+    }
+
+    #[test]
+    fn the_demo_cpus_are_the_demo_cpu_function_and_it_keeps_the_arithmetic() {
+        let snapshot = demo(7.25, 16);
+        assert_eq!(snapshot.cpus.len(), 16);
+        for cpu in &snapshot.cpus {
+            let direct = demo_cpu(7.25, cpu.id);
+            assert_eq!(format!("{cpu:?}"), format!("{direct:?}"));
+        }
+        // The formula as it was written inline: load is a sine of time and CPU number.
+        let load = (7.25_f64 as f32 * 0.4 + 3_f32 * 0.9).sin() * 0.5 + 0.5;
+        assert_eq!(snapshot.cpus[3].busy, Some(load * 0.9));
+        assert_eq!(snapshot.cpus[3].mhz, Some(1400.0 + 3400.0 * load));
+        assert_eq!(snapshot.cpus[12].busy, Some(demo_load(7.25, 12) * 0.6));
     }
 
     #[test]

@@ -51,7 +51,43 @@ struct Live<'a> {
     /// Bytes the last frame took on the wire.
     wire: usize,
     frames: u64,
-    total_wire: u64,
+    /// A failure to make on purpose after the third frame (`ISOTOP_FORCE_PANIC`), once.
+    forced: Option<Forced>,
+}
+
+/// Which panic `ISOTOP_FORCE_PANIC` asks for. A hidden switch for the smoke test, which checks
+/// that the terminal is restored after each.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Forced {
+    /// A panic on the main thread, which owns the terminal.
+    Main,
+    /// A panic on a thread of its own, which the app must survive.
+    Thread,
+}
+
+/// The frame after which a forced panic happens.
+const FORCED_AFTER: u64 = 3;
+
+impl Forced {
+    fn from_env() -> Option<Self> {
+        match std::env::var("ISOTOP_FORCE_PANIC").ok()?.as_str() {
+            "main" => Some(Self::Main),
+            "thread" => Some(Self::Thread),
+            _ => None,
+        }
+    }
+
+    fn happen(self) {
+        match self {
+            Self::Main => panic!("forced panic on the main thread (ISOTOP_FORCE_PANIC=main)"),
+            Self::Thread => {
+                // The result is the handle of a thread that has only a panic to run.
+                let _ = std::thread::Builder::new()
+                    .name("isotop-forced-panic".to_owned())
+                    .spawn(|| panic!("forced panic on a thread (ISOTOP_FORCE_PANIC=thread)"));
+            }
+        }
+    }
 }
 
 /// Runs the interactive loop until the user quits or `--duration` passes. With `--duration` it
@@ -64,14 +100,18 @@ pub(crate) fn run(
 ) -> Outcome<()> {
     let mut live = Live::enter(options, app, collector, journal)?;
     live.run()?;
-    let (frames, total_wire, origin) = (live.frames, live.total_wire, live.origin);
+    // The frame being written inline is finished before the totals are read.
+    live.terminal.settle();
+    let (frames, origin) = (live.frames, live.origin);
+    let (total_wire, written) = live.terminal.written();
     drop(live);
     if options.duration.is_some() {
         let seconds = origin.elapsed().as_secs_f64();
         eprintln!(
-            "isotop: {frames} frames in {seconds:.2}s | {:.1} presented fps | {:.2} MiB/s inline graphics (display latency not measured)",
+            "isotop: {frames} frames in {seconds:.2}s | {:.1} presented fps | {:.2} MiB/s inline graphics (display latency not measured) | {:.1} written fps",
             frames as f64 / seconds,
-            total_wire as f64 / 1048576.0 / seconds
+            total_wire as f64 / 1048576.0 / seconds,
+            written as f64 / seconds
         );
     }
     Ok(())
@@ -88,6 +128,8 @@ impl<'a> Live<'a> {
         let terminal = Terminal::enter(options.force_graphics, options.direct)?;
         app.scene.intro = true;
         app.keyboard = terminal.keyboard;
+        // The GPU draws a frame while the next is recorded, which a headless run never does.
+        let _ = app.renderer.set_pipelined(!options.no_gpu_pipeline);
         let layout = Layout::measure(options.width, app.panel_shown())?;
         let now = Instant::now();
         Ok(Self {
@@ -106,7 +148,7 @@ impl<'a> Live<'a> {
             fed: 0.0,
             wire: 0,
             frames: 0,
-            total_wire: 0,
+            forced: Forced::from_env(),
         })
     }
 
@@ -120,13 +162,18 @@ impl<'a> Live<'a> {
             self.last_frame = Instant::now();
             self.sample(elapsed)?;
             self.follow_journal();
-            let (mut frame, render_ms) = self.render(elapsed, frame_start);
+            // The first frame the GPU is given has nothing before it to present.
+            let Some((mut frame, render_ms)) = self.render(elapsed, frame_start) else {
+                continue;
+            };
             let shown = self.present(&mut frame, render_ms)?;
             quit = self.input(frame_start + frame_interval, &frame, &shown)?;
             quit |= self.finish(frame);
             // A view that deferred the quit has played its farewell in the frame just drawn.
             quit |= self.app.farewell_over();
         }
+        // The frame the GPU still holds is finished before the terminal is given back.
+        let _ = self.app.renderer.flush();
         Ok(())
     }
 
@@ -181,16 +228,19 @@ impl<'a> Live<'a> {
         }
     }
 
-    /// Moves the camera and the tour on, and draws the frame. Also returns how long the turn has
-    /// taken so far, in milliseconds.
-    fn render(&mut self, elapsed: f32, frame_start: Instant) -> (Frame, f32) {
+    /// Moves the camera and the tour on, records the frame and gives it to the rasterizer, and
+    /// returns the frame to present: this one, or with the GPU running a frame behind the one
+    /// before it, which the GPU drew while this one was recorded. Also returns how long the turn
+    /// has taken so far, in milliseconds.
+    fn render(&mut self, elapsed: f32, frame_start: Instant) -> Option<(Frame, f32)> {
         self.app.steer(elapsed, self.tour_after);
-        let frame = self.app.render(
+        let frame = self.app.draw(
             self.layout.width,
             self.layout.height,
             self.options.limit as usize,
         );
-        (frame, frame_start.elapsed().as_secs_f32() * 1000.0)
+        let frame = self.app.rasterize_ahead(frame)?;
+        Some((frame, frame_start.elapsed().as_secs_f32() * 1000.0))
     }
 
     /// Puts the text over the frame and sends it to the terminal.
@@ -223,7 +273,11 @@ impl<'a> Live<'a> {
             &text,
         )?;
         self.frames += 1;
-        self.total_wire += self.wire as u64;
+        if self.frames == FORCED_AFTER
+            && let Some(forced) = self.forced
+        {
+            forced.happen();
+        }
         Ok(Shown { panels, pixels })
     }
 
@@ -271,6 +325,10 @@ impl<'a> Live<'a> {
 
     /// Measures the terminal again and clears it, after a resize or when the panel came or went.
     fn resize(&mut self) -> Outcome<()> {
+        // A frame still in flight has the old size, and is not shown.
+        if let Some(frame) = self.app.renderer.flush() {
+            self.app.scene.spare = frame.release();
+        }
         self.layout = Layout::measure(self.options.width, self.app.panel_shown())?;
         self.terminal.clear()?;
         Ok(())

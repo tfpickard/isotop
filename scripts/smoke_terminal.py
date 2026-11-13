@@ -12,6 +12,7 @@ import os
 import pty
 import re
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -39,6 +40,7 @@ PICKER_VISITS = [
     "plumbing",
     "armorial",
     "lights",
+    "die",
     # Last, so that the live run's final `q` is pressed on the board and plays its farewell.
     "ouija",
 ]
@@ -415,6 +417,199 @@ def exercise(binary, demo, shared_memory, keyboard):
         os.close(slave)
 
 
+# What the terminal must be sent to give the screen back, and the marks of a frame.
+SHOW_CURSOR = b"\x1b[?25h"
+HIDE_CURSOR = b"\x1b[?25l"
+MOUSE_ON = b"\x1b[?1000h"
+MOUSE_OFF = b"\x1b[?1000l"
+PIXEL_MOUSE_OFF = b"\x1b[?1016l"
+DELETE_ALL_IMAGES = b"\x1b_Ga=d,d=A,q=2\x1b\\"
+FRAME_COMMAND = b"\x1b_Ga=T,"
+FORCED_THREAD = b"thread 'isotop-forced-panic'"
+PANIC_MESSAGE = b"panicked at"
+
+
+class Ending:
+    """One way a run can end that is not a plain `q`: the hidden panic switch it sets, the signal
+    the harness sends (after three frames), and the exit status the run must have."""
+
+    def __init__(self, name, panic=None, signal_number=None):
+        self.name = name
+        self.panic = panic
+        self.signal_number = signal_number
+
+    @property
+    def status(self):
+        """Exit status the child must have: 101 after a panic on the main thread, 0 when the app
+        survives and is quit, minus the number of the signal that killed it."""
+        if self.signal_number is not None:
+            return -self.signal_number
+        return 101 if self.panic == "main" else 0
+
+
+ENDINGS = [
+    Ending("panic on the main thread", panic="main"),
+    Ending("SIGINT", signal_number=signal.SIGINT),
+    Ending("SIGTERM", signal_number=signal.SIGTERM),
+    Ending("SIGHUP", signal_number=signal.SIGHUP),
+    # The app must carry on: a panic on a thread that is not the one that owns the terminal only
+    # prints its message.
+    Ending("panic on another thread", panic="thread"),
+]
+
+
+def default_signals():
+    """Runs in the child before exec: a harness started with SIGHUP ignored (nohup) must not
+    make isotop ignore it."""
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, signal.SIG_DFL)
+
+
+def leftover_shared_memory(pid, output):
+    """Names of shared-memory objects of process `pid` that still exist. Nothing here reads
+    the frames the way a terminal does (which unlinks them), so every object the app made is
+    still the app's to remove: its ring on a normal end, a sweep when it is killed."""
+    if ON_LINUX:
+        return [name for name in os.listdir("/dev/shm") if name.startswith(f"isotop-{pid}-")]
+    prefix = f"/isotop-{pid}-"
+    names = set()
+    for match in re.finditer(rb"\x1b_G([^;\x1b]*);([A-Za-z0-9+/=]*)\x1b\\", output):
+        if b"t=s" in match.group(1).split(b","):
+            try:
+                names.add(base64.b64decode(match.group(2)).decode())
+            except (ValueError, UnicodeDecodeError):
+                pass
+    serials = [int(name[len(prefix) :]) for name in names if re.fullmatch(re.escape(prefix) + r"\d+", name)]
+    names.update(f"{prefix}{serial}" for serial in range(max(serials, default=0) + 70))
+    names.add(f"{prefix}probe")
+    found = [name for name in sorted(names) if shared_memory_exists(name)]
+    for name in found:
+        shm_unlink(name.encode())
+    return found
+
+
+def frames_in(output):
+    """How many frames the output holds: each starts a graphics command with `a=T`."""
+    return output.count(FRAME_COMMAND)
+
+
+def exercise_ending(binary, demo, ending):
+    """Runs the app in a pseudo-terminal to one of its endings and checks what the terminal was
+    given back: one keyboard pop and one alternate-screen exit, in order, the cursor shown, the
+    mouse off, the images deleted, raw mode off, no frame after any of it, the panic message once
+    and after the screen was left (or, for a panic the app survives, before), the status the
+    ending must have, and no shared-memory object left behind. The demo run speaks the keyboard
+    protocol and shared memory; the live run answers neither."""
+    keyboard = shared_memory = demo
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 120, 960, 576))
+    command = [binary, "--width", "320", "--fps", "10", "--sample-ms", "100"]
+    if demo:
+        command.append("--demo")
+    environment = {key: value for key, value in os.environ.items() if key != "ISOTOP_FORCE_PANIC"}
+    if ending.panic:
+        environment["ISOTOP_FORCE_PANIC"] = ending.panic
+    child = subprocess.Popen(
+        command, stdin=slave, stdout=slave, stderr=slave, env=environment, preexec_fn=default_signals
+    )
+    output = b""
+    answered = False
+    sent = False
+    survived_at = None
+    started = time.monotonic()
+
+    closed = False
+
+    def read(timeout):
+        """Reads what the child wrote, and says whether there was any."""
+        nonlocal output, closed
+        if not select.select([master], [], [], timeout)[0]:
+            return False
+        try:
+            data = os.read(master, 262144)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                closed = True
+                return False
+            raise
+        output += data
+        return bool(data)
+
+    try:
+        while not closed and time.monotonic() - started < 25 and child.poll() is None:
+            read(0.05)
+            if not answered and b"\x1b[c" in output:
+                # Answers come in query order: graphics, the keyboard flags, then the attributes.
+                reply = b"\x1b_Gi=31;OK\x1b\\"
+                if shared_memory:
+                    reply += b"\x1b_Gi=32;OK\x1b\\"
+                if keyboard:
+                    reply += b"\x1b[?0u"
+                os.write(master, reply + b"\x1b[?62;22c")
+                answered = True
+            if ending.signal_number is not None and not sent and frames_in(output) >= 3:
+                os.kill(child.pid, ending.signal_number)
+                sent = True
+            if ending.panic == "thread":
+                if survived_at is None and FORCED_THREAD in output:
+                    survived_at = frames_in(output)
+                if survived_at is not None and not sent and frames_in(output) >= survived_at + 3:
+                    # Still drawing, three frames after the panic: now quit.
+                    os.write(master, b"\x1b[99;5u" if keyboard else b"q")
+                    sent = True
+        assert child.poll() is not None or closed, f"{ending.name}: the run never ended: {output[-300:]!r}"
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            raise AssertionError(f"{ending.name}: the process did not exit")
+        while read(0.05):
+            pass
+        where = f"{'demo' if demo else 'live'}, {ending.name}"
+        assert child.returncode == ending.status, f"{where}: exit status {child.returncode}, expected {ending.status}"
+        if ending.panic == "thread":
+            assert survived_at is not None, f"{where}: the forced panic never happened"
+        else:
+            # The panic comes after the third frame was handed over; the encoder may not have
+            # written it yet, and a frame that was not written before the restore never is.
+            least = 2 if ending.panic == "main" else 3
+            assert frames_in(output) >= least, f"{where}: only {frames_in(output)} frames"
+        scanner = MarkScanner()
+        scanner.feed(output)
+        expected = [KEYBOARD_PUSH, KEYBOARD_POP, LEAVE_ALTERNATE_SCREEN] if keyboard else [LEAVE_ALTERNATE_SCREEN]
+        assert scanner.marks == expected, f"{where}: {scanner.marks}"
+        assert output.rfind(SHOW_CURSOR) > output.rfind(HIDE_CURSOR) >= 0, f"{where}: the cursor was left hidden"
+        assert output.rfind(MOUSE_OFF) > output.rfind(MOUSE_ON) >= 0, f"{where}: mouse capture was left on"
+        restore_start = output.find(PIXEL_MOUSE_OFF)
+        assert restore_start >= 0, f"{where}: the restore was never written"
+        assert output.count(PIXEL_MOUSE_OFF) == 1, f"{where}: restored more than once"
+        # The restore begins with a string terminator, which ends a graphics command that a frame
+        # cut off by the signal or the panic left open (and is ignored anywhere else).
+        restore_head = b"\x1b\\" + (KEYBOARD_POP if keyboard else b"") + b"\x1b[?2026l" + PIXEL_MOUSE_OFF
+        assert output.count(restore_head) == 1, f"{where}: the restore does not begin with a string terminator"
+        assert output.rfind(DELETE_ALL_IMAGES) > output.rfind(FRAME_COMMAND), f"{where}: images were left"
+        assert output.rfind(FRAME_COMMAND) < restore_start, f"{where}: a frame was written after the restore"
+        assert not (termios.tcgetattr(slave)[3] & termios.ICANON) == 0, f"{where}: raw mode was not restored"
+        left_screen = output.rfind(LEAVE_ALTERNATE_SCREEN)
+        if ending.panic == "main":
+            assert output.count(PANIC_MESSAGE) == 1, f"{where}: the message was printed {output.count(PANIC_MESSAGE)} times"
+            assert output.find(PANIC_MESSAGE) > left_screen, f"{where}: the message went to the alternate screen"
+        elif ending.panic == "thread":
+            assert output.count(PANIC_MESSAGE) == 1, f"{where}: the message was printed {output.count(PANIC_MESSAGE)} times"
+            assert output.count(FORCED_THREAD) == 1, f"{where}: the message does not name the thread"
+            assert output.find(PANIC_MESSAGE) < restore_start, f"{where}: the panic ended the app"
+        else:
+            assert PANIC_MESSAGE not in output, f"{where}: unexpected panic"
+        leftovers = leftover_shared_memory(child.pid, output)
+        assert not leftovers, f"{where}: shared memory left behind: {leftovers}"
+        print(f"{where}: {frames_in(output)} frames, restored once (exit {child.returncode}), no shared memory left")
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        os.close(master)
+        os.close(slave)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", nargs="?", default="target/release/isotop")
@@ -422,3 +617,7 @@ if __name__ == "__main__":
     # The demo run answers the Kitty keyboard query and speaks the protocol; the live run does not.
     exercise(os.path.abspath(options.binary), True, True, True)
     exercise(os.path.abspath(options.binary), False, False, False)
+    # The ways a run can end besides `q`, in each mode.
+    for demo in (True, False):
+        for ending in ENDINGS:
+            exercise_ending(os.path.abspath(options.binary), demo, ending)

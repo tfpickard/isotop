@@ -13,6 +13,7 @@ mod memory;
 mod net;
 mod nvml;
 mod pipes;
+mod thermal;
 mod threads;
 mod wait;
 
@@ -35,6 +36,9 @@ pub use journal::{JOURNAL, journal, stop_journal};
 pub use memory::{MEMORY_DETAIL, oom_scores, rollup};
 pub use nvml::Nvml as Gpu;
 pub use pipes::PipeScan;
+pub use thermal::ThermalScan;
+#[cfg(test)]
+pub use thermal::fixture_topologies;
 pub use threads::Threads;
 pub use wait::WaitScan;
 
@@ -487,12 +491,18 @@ fn cpu_line(line: &str) -> Option<(u32, Vec<u64>)> {
 
 /// Hybrid CPUs list their performance and efficiency cores as ranges such as `0-7,16`.
 fn core_kinds() -> HashMap<u32, CoreKind> {
+    core_kinds_in(Path::new("/sys"))
+}
+
+/// `core_kinds` for the sysfs tree at `sysfs`, which the thermal reader and its tests point
+/// elsewhere.
+fn core_kinds_in(sysfs: &Path) -> HashMap<u32, CoreKind> {
     let mut kinds = HashMap::new();
     for (path, kind) in [
-        ("/sys/devices/cpu_core/cpus", CoreKind::Performance),
-        ("/sys/devices/cpu_atom/cpus", CoreKind::Efficiency),
+        ("devices/cpu_core/cpus", CoreKind::Performance),
+        ("devices/cpu_atom/cpus", CoreKind::Efficiency),
     ] {
-        for id in fs::read_to_string(path)
+        for id in fs::read_to_string(sysfs.join(path))
             .map(|t| ranges(&t))
             .unwrap_or_default()
         {

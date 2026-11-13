@@ -112,10 +112,77 @@ pub(crate) fn core_name(kind: CoreKind) -> &'static str {
     }
 }
 
+/// The stops of the FLIR "ironbow" false-colour ramp, from the prototype of the die view
+/// (`docs/mockups/code/die.py`): black, deep blue, purple, magenta, red, orange, yellow, white.
+const IRONBOW: [(f32, Color); 10] = [
+    (0.00, [0, 0, 0]),
+    (0.10, [10, 4, 60]),
+    (0.24, [58, 4, 128]),
+    (0.38, [128, 8, 148]),
+    (0.52, [196, 30, 112]),
+    (0.64, [232, 76, 40]),
+    (0.76, [250, 140, 8]),
+    (0.88, [255, 206, 40]),
+    (0.96, [255, 246, 160]),
+    (1.00, [255, 255, 250]),
+];
+
+/// Entries of the ironbow table: one per level step of 1/255.
+const IRONBOW_STEPS: usize = 256;
+
+/// The ironbow colour of a level from 0 (coldest) to 1 (hottest), clamped. This is a false-colour
+/// ramp of a normalised quantity that the die view (#56) names, not a temperature to light
+/// mapping: it passes through blue and magenta, which a blackbody never does, so it is no second
+/// table beside `blackbody`, whose kelvin colours are for things that glow. Its luma rises
+/// monotonically (tested), so the order of the heat survives greyscale.
+pub(crate) fn ironbow(level: f32) -> Color {
+    static TABLE: std::sync::OnceLock<[Color; IRONBOW_STEPS]> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        std::array::from_fn(|step| {
+            let level = step as f32 / (IRONBOW_STEPS - 1) as f32;
+            let above = IRONBOW
+                .iter()
+                .position(|&(stop, _)| stop >= level)
+                .unwrap_or(IRONBOW.len() - 1)
+                .max(1);
+            let ((low, from), (high, to)) = (IRONBOW[above - 1], IRONBOW[above]);
+            mix(from, to, ((level - low) / (high - low)).clamp(0.0, 1.0))
+        })
+    });
+    // A NaN level reads as the coldest colour, so a missing value never draws hot.
+    let level = if level.is_nan() { 0.0 } else { level };
+    table[(level.clamp(0.0, 1.0) * (IRONBOW_STEPS - 1) as f32).round() as usize]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::testing::process;
+
+    #[test]
+    fn ironbow_runs_from_black_to_white_with_rising_luma() {
+        assert_eq!(ironbow(0.0), [0, 0, 0]);
+        assert_eq!(ironbow(1.0), [255, 255, 250]);
+        assert_eq!(ironbow(-3.0), ironbow(0.0));
+        assert_eq!(ironbow(9.0), ironbow(1.0));
+        assert_eq!(ironbow(f32::NAN), ironbow(0.0));
+        let luma = |[r, g, b]: Color| 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+        let ramp: Vec<f32> = (0..=255)
+            .map(|step| luma(ironbow(step as f32 / 255.0)))
+            .collect();
+        assert!(
+            ramp.windows(2).all(|pair| pair[1] >= pair[0] - 0.01),
+            "ironbow is lighter as it is hotter"
+        );
+        // The stops come out to within the table's step.
+        for (level, color) in IRONBOW {
+            let found = ironbow(level);
+            assert!(
+                (0..3).all(|k| found[k].abs_diff(color[k]) <= 12),
+                "stop {level}: {found:?} against {color:?}"
+            );
+        }
+    }
 
     #[test]
     fn palette_kind_colours_match_their_previous_literals() {

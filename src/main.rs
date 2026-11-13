@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod allocations;
 mod anthill;
 mod app;
 mod arbor;
@@ -8,6 +10,7 @@ mod cli;
 mod coop;
 mod cores;
 mod cortex;
+mod die;
 mod geo;
 mod geometry;
 mod globe;
@@ -131,7 +134,11 @@ fn start(options: &Options, view: View, available: Vec<bool>) -> Result<Startup,
     app.scene.configure(&options.view_options());
     app.scene.fps = options.fps;
     app.playlist = playlist;
-    app.set_renderer(Renderer::choose(options.renderer, options.gpu_power)?);
+    // A headless run has no pointer to read picks around, so the GPU brings every pick back.
+    app.set_renderer(
+        Renderer::choose(options.renderer, options.gpu_power, options.headless())?
+            .reading_every_pick(options.headless()),
+    );
     Ok(Startup {
         app,
         collector,

@@ -83,6 +83,14 @@
 //!     demanded; resumes after the last pid it read. None when the platform has no wait channel
 //!     to read (macOS) or the kernel hides them all (the collector then reports
 //!     `Source::WaitChannel` missing).
+//! - `ThermalScan::new() -> ThermalScan`, a `thermal::ThermalReader`, read only while one of
+//!   `Source::Topology`, `Temperature`, `ThrottleCounts` or `PackagePower` is demanded
+//!   (`thermal::SOURCES`): `topology()` is the CPUs' physical layout, `temperatures(packages)`
+//!   the CPU sensors, `throttle_counts(topology)` the thermal throttle counters and
+//!   `package_power()` the RAPL package power over the time since the previous call (None for a
+//!   source the machine cannot read, which the collector then reports missing). macOS reads the
+//!   topology and none of the other three. The pass that decides what to read and builds the
+//!   `Thermal` is `thermal::ThermalPass`, shared by both platforms.
 //! - Life events, read on the `isotop-events` thread while `Source::LifeEvents` is demanded:
 //!   - `monotonic_ns() -> u64`: CLOCK_MONOTONIC in nanoseconds, the clock of `Observed::at`;
 //!   - `open_events(queue, identities) -> Option<Sources>` (an `OpenEvents`): opens each event
@@ -239,6 +247,19 @@ pub enum Source {
     /// (`/proc/<pid>/wchan`), read for the processes that hold pipes while a view demands it.
     /// macOS has no wait channel to read.
     WaitChannel,
+    /// `Thermal::topology`, the physical layout of the CPUs: package, die, core, cluster, SMT
+    /// siblings, cache groups and the highest clock of each. A view demands it with the three
+    /// below; `Snapshot::thermal` carries them all.
+    Topology,
+    /// `Thermal::sensors`, the temperature of each CPU package, core and chiplet: hwmon
+    /// `coretemp` and `k10temp` on Linux, with package-only fallbacks. macOS reports none.
+    Temperature,
+    /// `Thermal::core_throttles` and `package_throttles`, how often the hardware throttled a core
+    /// or a package for heat: Intel only. macOS reports none.
+    ThrottleCounts,
+    /// `Thermal::package_power` and `package_watts`, the package power from RAPL energy counters,
+    /// which most kernels let only root read. macOS reports none.
+    PackagePower,
 }
 
 impl Source {
@@ -280,6 +301,10 @@ impl Source {
         Source::UnattributedIo,
         Source::JobResults,
         Source::WaitChannel,
+        Source::Topology,
+        Source::Temperature,
+        Source::ThrottleCounts,
+        Source::PackagePower,
     ];
 
     /// The source's name in lower case, as messages show it.
@@ -321,6 +346,10 @@ impl Source {
             Source::UnattributedIo => "unattributed io",
             Source::JobResults => "job results",
             Source::WaitChannel => "wait channel",
+            Source::Topology => "cpu topology",
+            Source::Temperature => "temperature",
+            Source::ThrottleCounts => "throttle counts",
+            Source::PackagePower => "package power",
         }
     }
 
@@ -786,7 +815,7 @@ pub struct DeletedFile {
 }
 
 /// The regular files one process holds open.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Files {
     /// Distinct regular files: several descriptors on one file count once.
     pub open: u32,
@@ -795,6 +824,29 @@ pub struct Files {
     /// Whether the table was larger than what was examined: `open` is then an estimate and
     /// `deleted` a lower bound.
     pub partial: bool,
+}
+
+impl Clone for Files {
+    fn clone(&self) -> Self {
+        Files {
+            open: self.open,
+            deleted: self.deleted.clone(),
+            partial: self.partial,
+        }
+    }
+
+    /// Keeps the allocation of the list of deleted files, so refreshing a process each frame
+    /// from the same sample allocates nothing.
+    fn clone_from(&mut self, source: &Self) {
+        let Files {
+            open,
+            deleted,
+            partial,
+        } = source;
+        self.open = *open;
+        self.deleted.clone_from(deleted);
+        self.partial = *partial;
+    }
 }
 
 impl Files {
@@ -906,7 +958,7 @@ mod tests {
         for (index, source) in Source::ALL.iter().enumerate() {
             assert_eq!(*source as usize, index, "{} is out of order", source.name());
         }
-        assert_eq!(Source::WaitChannel as usize + 1, Source::ALL.len());
+        assert_eq!(Source::PackagePower as usize + 1, Source::ALL.len());
     }
 
     #[test]
