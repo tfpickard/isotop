@@ -23,8 +23,10 @@ jobs:
         # results differently from 24.04's, which moves the coop, horizon and hr hashes.
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    # Warm runs take about 2 minutes; this leaves room for a cold cache and more renders.
-    timeout-minutes: 15
+    # Warm runs take a few minutes; a cold cache on macOS (clippy, the tests and the release
+    # build each compile the crate) took 15 minutes once the lavapipe and parity steps and
+    # the larger crate were added, and a cancelled job saves no cache, so leave room.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Both runner images ship rustup. With no arguments, `rustup toolchain install` installs
