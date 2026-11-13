@@ -75,6 +75,9 @@ pub struct Terminal {
     inline: Inline<FrameSink>,
     /// Bytes and frames written through shared memory.
     shared_written: (u64, u64),
+    /// A clear of the screen was asked for (`clear`) and has not been written yet because the
+    /// encoder was still writing a frame; `present` writes it first once the encoder is idle.
+    clear_pending: bool,
 }
 
 pub struct Popup {
@@ -143,6 +146,7 @@ impl Terminal {
             medium: Medium::new(false),
             inline: Inline::new(sink),
             shared_written: (0, 0),
+            clear_pending: false,
         };
         execute!(
             io::stdout(),
@@ -198,6 +202,11 @@ impl Terminal {
         panels: &[Popup],
         text: &[SafeText],
     ) -> io::Result<usize> {
+        // A clear that had to wait goes out before any frame; while the encoder is still busy
+        // with the old size's frame there is nothing to draw on, and this frame is skipped.
+        if !flush_clear(&self.inline, &mut self.clear_pending, &mut self.sink)? {
+            return Ok(self.inline.last_wire());
+        }
         let previous = self.image;
         self.image = if previous == IMAGE_A {
             IMAGE_B
@@ -216,7 +225,7 @@ impl Terminal {
         .map_err(io::Error::other)?;
         frame_tail(&mut job.tail, previous, labels, panels, text, columns, rows)?;
         let now = Instant::now();
-        if self.medium.ready(now) {
+        if shared_memory_free(&self.medium, &self.inline, now) {
             match self.transmit_shared(frame) {
                 Ok(name) => {
                     self.medium.succeeded();
@@ -231,8 +240,8 @@ impl Terminal {
                     )?;
                     output.extend_from_slice(&job.tail);
                     let size = output.len();
-                    // Not before the frame that was going inline has been written.
-                    self.inline.settle();
+                    // The encoder was idle when this was chosen (`shared_memory_free`) and only
+                    // this thread submits, so no inline frame is half written.
                     self.sink.write_all(&output)?;
                     self.shared_written.0 += size as u64;
                     self.shared_written.1 += 1;
@@ -261,14 +270,18 @@ impl Terminal {
         )
     }
 
-    /// Waits for the frame being written inline, and drops the one waiting.
+    /// Waits for the frame being written inline, and drops the one waiting. Whether it finished
+    /// within the limit does not matter to the caller, which only reads the totals afterwards.
     pub fn settle(&self) {
-        self.inline.settle();
+        let _ = self.inline.settle();
     }
 
+    /// Clears the screen and deletes every image, after a resize. When the encoder is still
+    /// writing a frame past its limit nothing is written (the frame's remaining pieces would land
+    /// after the clear); the request is kept and `present` performs it once the encoder is idle.
     pub fn clear(&mut self) -> io::Result<()> {
-        self.inline.settle();
-        self.sink.write_all(b"\x1b_Ga=d,d=A,q=2\x1b\\\x1b[2J\x1b[H")
+        self.clear_pending = true;
+        flush_clear(&self.inline, &mut self.clear_pending, &mut self.sink).map(|_| ())
     }
 }
 
@@ -286,6 +299,41 @@ impl Drop for Terminal {
             self.active = false;
         }
     }
+}
+
+/// The bytes of `Terminal::clear`: delete every image, clear the screen, home the cursor.
+const CLEAR: &[u8] = b"\x1b_Ga=d,d=A,q=2\x1b\\\x1b[2J\x1b[H";
+
+/// Writes the clear that `pending` asks for, through `sink`, once `inline` is idle, and says
+/// whether nothing is pending now. If the encoder is still writing a frame after its limit the
+/// clear is not written and stays pending, so no direct write lands inside a frame's pieces.
+fn flush_clear<S: Write + Send + Clone + 'static>(
+    inline: &Inline<S>,
+    pending: &mut bool,
+    sink: &mut impl Write,
+) -> io::Result<bool> {
+    if !*pending {
+        return Ok(true);
+    }
+    match inline.direct(|| sink.write_all(CLEAR)) {
+        None => Ok(false),
+        Some(written) => {
+            // Written or failed, the request is over: a failure is the caller's to handle.
+            *pending = false;
+            written.map(|()| true)
+        }
+    }
+}
+
+/// Whether the next frame may go through shared memory: the medium is on and no inline frame is
+/// still being written (a frame that was going inline must be finished first, so one medium's
+/// bytes never come inside the other's). When it is not, the frame goes inline.
+fn shared_memory_free<S: Write + Send + Clone + 'static>(
+    medium: &Medium,
+    inline: &Inline<S>,
+    now: Instant,
+) -> bool {
+    medium.ready(now) && inline.settle()
 }
 
 /// ST, the string terminator: the first thing a restore writes, see `restore_screen`.
@@ -593,6 +641,7 @@ pub(crate) fn draw_popup(output: &mut Vec<u8>, popup: &Popup) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex, mpsc};
 
     #[test]
     fn process_text_cannot_inject_terminal_controls() {
@@ -1027,5 +1076,142 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A sink for the encoder that keeps what it writes and holds every write until it is let
+    /// through, telling when one starts.
+    #[derive(Clone)]
+    struct Gate {
+        written: Arc<Mutex<Vec<u8>>>,
+        started: mpsc::Sender<()>,
+        pass: Arc<Mutex<mpsc::Receiver<()>>>,
+    }
+
+    impl Write for Gate {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let _ = self.started.send(());
+            // A dropped release means the test is over: let the write go.
+            let _ = self.pass.lock().unwrap().recv();
+            self.written.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// An encoder whose first frame is held in its sink.
+    struct Stalled {
+        inline: Inline<Gate>,
+        /// What the sink has written so far.
+        frame: Arc<Mutex<Vec<u8>>>,
+        /// Lets the held write go.
+        release: mpsc::Sender<()>,
+    }
+
+    /// An encoder holding its first frame in the sink, with short limits so a settle that cannot
+    /// finish gives up at once.
+    fn stalled() -> Stalled {
+        let (started, started_receiver) = mpsc::channel();
+        let (release, pass) = mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let sink = Gate {
+            written: Arc::clone(&written),
+            started,
+            pass: Arc::new(Mutex::new(pass)),
+        };
+        let mut inline =
+            Inline::new(sink).with_limits(Duration::from_millis(60), Duration::from_millis(60));
+        let mut job = inline.blank();
+        job.head.extend_from_slice(b"HEAD");
+        job.placement = "a=T,f=24,s=1,v=1,i=100,q=2".to_owned();
+        job.pixels.extend_from_slice(&[1, 2, 3]);
+        job.tail.extend_from_slice(b"TAIL");
+        inline.submit(job).unwrap();
+        started_receiver.recv().unwrap();
+        Stalled {
+            inline,
+            frame: written,
+            release,
+        }
+    }
+
+    /// Waits until the encoder has finished the frame it was writing.
+    fn until_written(inline: &Inline<Gate>) {
+        let begun = Instant::now();
+        while inline.written().1 == 0 {
+            assert!(begun.elapsed() < Duration::from_secs(10), "never written");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn a_clear_waits_for_a_frame_the_encoder_cannot_finish_and_is_written_after_it() {
+        let Stalled {
+            inline,
+            frame,
+            release,
+        } = stalled();
+        let mut screen = Vec::new();
+        let mut pending = true;
+        // The settle runs out while the worker holds the frame: nothing goes to the screen.
+        assert!(!flush_clear(&inline, &mut pending, &mut screen).unwrap());
+        assert!(pending, "the request is kept");
+        assert!(screen.is_empty(), "no clear before the frame is done");
+        assert!(frame.lock().unwrap().is_empty(), "the frame is still held");
+        // Asking again changes nothing while it is held.
+        assert!(!flush_clear(&inline, &mut pending, &mut screen).unwrap());
+        assert!(screen.is_empty());
+        release.send(()).unwrap();
+        until_written(&inline);
+        assert!(flush_clear(&inline, &mut pending, &mut screen).unwrap());
+        assert!(!pending, "performed once the worker is idle");
+        assert_eq!(screen, CLEAR);
+        let frame = frame.lock().unwrap().clone();
+        assert!(
+            frame.starts_with(b"HEAD") && frame.ends_with(b"TAIL"),
+            "the whole frame went out, and before the clear"
+        );
+        // Nothing pending: nothing written.
+        screen.clear();
+        assert!(flush_clear(&inline, &mut pending, &mut screen).unwrap());
+        assert!(screen.is_empty());
+    }
+
+    #[test]
+    fn a_frame_does_not_go_through_shared_memory_while_an_inline_one_is_being_written() {
+        let Stalled {
+            inline, release, ..
+        } = stalled();
+        let medium = Medium::new(true);
+        let now = Instant::now();
+        assert!(medium.ready(now));
+        assert!(
+            !shared_memory_free(&medium, &inline, now),
+            "the inline frame is half written: this one goes inline too"
+        );
+        release.send(()).unwrap();
+        until_written(&inline);
+        assert!(shared_memory_free(&medium, &inline, now));
+        assert!(!shared_memory_free(&Medium::new(false), &inline, now));
+    }
+
+    #[test]
+    fn a_clear_that_fails_to_write_is_reported_once_and_not_kept() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let inline = Inline::without_thread(Vec::<u8>::new());
+        let mut pending = true;
+        let error = flush_clear(&inline, &mut pending, &mut Broken).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert!(!pending);
     }
 }
