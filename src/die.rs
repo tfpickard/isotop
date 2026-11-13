@@ -1739,6 +1739,144 @@ mod tests {
     }
 
     #[test]
+    fn on_two_sockets_the_die_shows_and_follows_its_own_packages_power_and_temperature() {
+        use super::floorplan::tests::{hybrid, two_packages};
+        use crate::model::thermal::PackagePower;
+        use readings::tests::sensor;
+        let topology = two_packages(&hybrid(2, 1, true));
+        let snapshots =
+            |sensors: Vec<crate::model::thermal::Sensor>, first: f32| -> Vec<Snapshot> {
+                (1..=4)
+                    .map(|second| {
+                        let mut snapshot = measured(&topology, sensors.clone(), f64::from(second));
+                        let thermal = snapshot.thermal.as_mut().expect("thermal");
+                        thermal.package_power = vec![
+                            PackagePower {
+                                package: 0,
+                                watts: Some(first),
+                            },
+                            PackagePower {
+                                package: 1,
+                                watts: Some(60.0),
+                            },
+                        ];
+                        thermal.package_watts = Measured::Known(first + 60.0);
+                        snapshot
+                    })
+                    .collect()
+            };
+        // Socket 1's sensor and 60 W: socket 0's die reads neither as its own.
+        let other = vec![sensor("Package id 1", SensorPlace::Package(1), Some(71.0))];
+        let (scene, rows) = rows_after(&snapshots(other, 20.0));
+        let found = die(&scene).last.readings.as_ref().expect("readings");
+        assert_eq!(found.mode, Mode::Relative, "no sensor of this package");
+        assert!(
+            found
+                .coverage
+                .iter()
+                .all(|coverage| *coverage == Coverage::Unknown),
+            "no core carries the other socket's degrees"
+        );
+        assert_eq!(rows[0], "package n/a (no sensor)");
+        assert_eq!(rows[1], "RAPL 20.0 W", "this package's power, not 80 W");
+        let watch = &die(&scene).watch;
+        assert!(watch.series.points().all(|point| point.celsius.is_none()));
+        assert!(
+            watch.series.points().all(|point| point.watts == Some(20.0)),
+            "the series holds this package's watts"
+        );
+        // The heat source follows this package: more power on the other socket moves nothing.
+        let scale = |first: f32, second: f32| {
+            let mut snapshots = snapshots(Vec::new(), first);
+            for snapshot in &mut snapshots {
+                let thermal = snapshot.thermal.as_mut().expect("thermal");
+                thermal.package_power[1].watts = Some(second);
+                thermal.package_watts = Measured::Known(first + second);
+            }
+            let (scene, _) = rows_after(&snapshots);
+            die(&scene).watch.scale.value()
+        };
+        assert_eq!(scale(20.0, 60.0), scale(20.0, 5.0));
+        assert_ne!(scale(20.0, 60.0), scale(40.0, 60.0));
+    }
+
+    #[test]
+    fn every_core_of_any_plausible_topology_has_room_a_heat_source_and_an_owner() {
+        use super::floorplan::tests::{amd, apple, complexes, hybrid, one_cache, tiled};
+        let mut topologies: Vec<(String, Topology)> = vec![
+            ("hybrid 4P 2 clusters".into(), hybrid(4, 2, true)),
+            ("hybrid 6P 2 clusters".into(), hybrid(6, 2, true)),
+            ("hybrid 8P 4 clusters".into(), hybrid(8, 4, true)),
+            ("hybrid 12P 4 clusters".into(), hybrid(12, 4, true)),
+            ("hybrid 2P 1 cluster".into(), hybrid(2, 1, true)),
+            ("hybrid with no cache named".into(), hybrid(4, 2, false)),
+            ("tiled".into(), tiled()),
+            ("two ccds".into(), amd(2)),
+            ("apple 8P 2E".into(), apple(8, 2)),
+            ("apple 16P 4E".into(), apple(16, 4)),
+        ];
+        for ccds in 1..=16 {
+            for cores in 4..=8 {
+                topologies.push((format!("{ccds} ccds of {cores}"), complexes(ccds, cores)));
+            }
+        }
+        for cores in [1, 2, 3, 8, 16, 32, 64, 96, 128, 192, 256] {
+            topologies.push((format!("{cores} cores on one cache"), one_cache(cores)));
+        }
+        for (name, topology) in &topologies {
+            let layout = Layout::new(topology);
+            assert_eq!(
+                layout.plan.blocks.len(),
+                topology.cores().len(),
+                "{name}: a block a core"
+            );
+            for (index, block) in layout.plan.blocks.iter().enumerate() {
+                let [left, top, right, bottom] = block.rect;
+                assert!(
+                    right - left >= 1.0 && bottom - top >= 1.0,
+                    "{name}: {} is {:.2} by {:.2} cells",
+                    block.name,
+                    right - left,
+                    bottom - top
+                );
+                assert!(
+                    left >= 0.0 && top >= 0.0 && right <= COLUMNS as f32 && bottom <= ROWS as f32,
+                    "{name}: {} is off the die",
+                    block.name
+                );
+                let shape = &layout.shapes[index];
+                assert!(
+                    !shape.is_empty()
+                        && shape
+                            .iter()
+                            .all(|&(_, weight)| weight.is_finite() && weight > 0.0),
+                    "{name}: {}'s load makes heat",
+                    block.name
+                );
+                assert!(
+                    layout
+                        .cell_block
+                        .iter()
+                        .any(|&owner| usize::from(owner) == index),
+                    "{name}: {} owns a cell of the pick grid",
+                    block.name
+                );
+                for (other, later) in layout.plan.blocks.iter().enumerate().skip(index + 1) {
+                    let apart = right <= later.rect[0]
+                        || later.rect[2] <= left
+                        || bottom <= later.rect[1]
+                        || later.rect[3] <= top;
+                    assert!(
+                        apart,
+                        "{name}: {} overlaps block {other} ({})",
+                        block.name, later.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_floorplan_does_not_move_with_the_load_or_the_population() {
         let plans = |snapshot: &Snapshot| {
             let mut scene = Scene::new();

@@ -13,7 +13,7 @@ use std::collections::{HashMap, VecDeque};
 
 use super::floorplan::{Block, Floorplan};
 use super::heat::{self, Nudge};
-use crate::model::thermal::{CpuPlace, SensorPlace, Thermal, Topology};
+use crate::model::thermal::{CpuPlace, PackagePower, SensorPlace, Thermal, Topology};
 use crate::model::{Cpu, Measured, Snapshot};
 
 /// The temperature the colour scale ends at when no sensor reports TjMax, in degrees Celsius.
@@ -115,10 +115,12 @@ pub struct Readings {
     pub without_clock: usize,
     /// CCD sensors that read but could not be tied to cores (the cache groups do not say).
     pub unmapped_ccds: usize,
-    /// The reading of the drawn package's own sensor, else of the hottest package sensor.
+    /// The reading of the drawn package's own sensor; None where it has none (another package's
+    /// is never shown as its) or, with no package named, the hottest package sensor's.
     pub package_celsius: Option<f32>,
     /// The coolest reading of any sensor of the sample.
     pub coolest: Option<f32>,
+    /// The power of the drawn package (the machine's, on a machine with one package).
     pub watts: Measured<f32>,
 }
 
@@ -154,18 +156,7 @@ impl Readings {
                 }
             }
         }
-        let package_celsius = thermal.and_then(|thermal| {
-            plan.package
-                .and_then(|package| thermal.package_celsius(package))
-                .or_else(|| {
-                    thermal
-                        .sensors
-                        .iter()
-                        .filter(|sensor| matches!(sensor.place, SensorPlace::Package(_)))
-                        .filter_map(|sensor| sensor.celsius)
-                        .reduce(f32::max)
-                })
-        });
+        let package_celsius = thermal.and_then(|thermal| drawn_celsius(thermal, plan.package));
         // A package sensor speaks for the whole die only when nothing is any finer: beside
         // per-core sensors it is just the hottest of them.
         let finer = coverage.iter().any(|found| *found != Coverage::Unknown);
@@ -206,7 +197,9 @@ impl Readings {
                     .filter_map(|sensor| sensor.celsius)
                     .reduce(f32::min)
             }),
-            watts: thermal.map_or(Measured::Pending, |thermal| thermal.package_watts.clone()),
+            watts: thermal.map_or(Measured::Pending, |thermal| {
+                drawn_watts(thermal, plan.package)
+            }),
         }
     }
 
@@ -222,6 +215,46 @@ impl Readings {
     pub fn level(&self, value: f32) -> f32 {
         let (low, high) = self.scale();
         (value - low) / (high - low)
+    }
+}
+
+/// The reading of the package the die draws. With `package` known that is its own sensor and
+/// no other: another socket's reading is never shown as this one's, so a package whose sensor
+/// does not read has none. Where the topology names no package, the sensors cannot be tied to
+/// one either, and the hottest package sensor is the die's.
+fn drawn_celsius(thermal: &Thermal, package: Option<u32>) -> Option<f32> {
+    match package {
+        Some(package) => thermal.package_celsius(package),
+        None => thermal
+            .sensors
+            .iter()
+            .filter(|sensor| matches!(sensor.place, SensorPlace::Package(_)))
+            .filter_map(|sensor| sensor.celsius)
+            .reduce(f32::max),
+    }
+}
+
+/// The power of the package the die draws. `Thermal::package_watts` adds every package up, which
+/// is the die's power only on a machine with one; with several it is this package's own entry of
+/// `package_power`: Known with its rate, Pending until it has one, and Unreadable where other
+/// packages have a RAPL domain and this one has none. With no entry at all (RAPL not demanded or
+/// not readable) the machine's state, which says why.
+fn drawn_watts(thermal: &Thermal, package: Option<u32>) -> Measured<f32> {
+    let several = thermal.topology.packages().len() > 1;
+    let Some(package) = package.filter(|_| several) else {
+        return thermal.package_watts.clone();
+    };
+    match thermal
+        .package_power
+        .iter()
+        .find(|power| power.package == package)
+    {
+        Some(PackagePower {
+            watts: Some(watts), ..
+        }) => Measured::Known(*watts),
+        Some(_) => Measured::Pending,
+        None if thermal.package_power.is_empty() => thermal.package_watts.clone(),
+        None => Measured::Unreadable,
     }
 }
 
@@ -412,17 +445,8 @@ impl Watch {
         };
         let point = Point {
             elapsed: snapshot.elapsed,
-            celsius: package
-                .and_then(|package| thermal.package_celsius(package))
-                .or_else(|| {
-                    thermal
-                        .sensors
-                        .iter()
-                        .filter(|sensor| matches!(sensor.place, SensorPlace::Package(_)))
-                        .filter_map(|sensor| sensor.celsius)
-                        .reduce(f32::max)
-                }),
-            watts: thermal.package_watts.known().copied(),
+            celsius: drawn_celsius(thermal, package),
+            watts: drawn_watts(thermal, package).known().copied(),
             coolest: thermal
                 .sensors
                 .iter()
@@ -583,9 +607,9 @@ impl Regions {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::floorplan::tests::{amd, hybrid};
+    use super::super::floorplan::tests::{amd, hybrid, two_packages};
     use super::*;
-    use crate::model::thermal::{CoreThrottle, PackageThrottle, Sensor};
+    use crate::model::thermal::{CoreThrottle, PackagePower, PackageThrottle, Sensor};
     use crate::model::{CoreKind, DemoOptions, demo_with};
 
     pub(crate) fn cpu(id: u32, kind: CoreKind, busy: Option<f32>, mhz: Option<f32>) -> Cpu {
@@ -1017,5 +1041,125 @@ pub(crate) mod tests {
         let plan = Floorplan::of(&topology_of(&empty));
         let readings = Readings::of(&plan, &empty, &mut []);
         assert!(readings.coverage.is_empty() && readings.proxies.is_empty());
+    }
+
+    /// A two-socket sample: the drawn package is 0, and `sensors`, `power` and the machine's
+    /// total `watts` are as the background thread would report them.
+    fn two_sockets(
+        sensors: Vec<Sensor>,
+        power: Vec<PackagePower>,
+        watts: Measured<f32>,
+    ) -> (Floorplan, Snapshot) {
+        let topology = two_packages(&hybrid(2, 1, true));
+        let plan = Floorplan::of(&topology);
+        let mut snapshot = sample(topology, sensors, Vec::new(), 1.0, 1);
+        let thermal = snapshot.thermal.as_mut().expect("thermal");
+        thermal.package_power = power;
+        thermal.package_watts = watts;
+        (plan, snapshot)
+    }
+
+    fn rate(package: u32, watts: Option<f32>) -> PackagePower {
+        PackagePower { package, watts }
+    }
+
+    #[test]
+    fn the_power_shown_is_the_drawn_packages_not_the_machines() {
+        // Two sockets, 20 W and 60 W: the die is socket 0's, and the machine's 80 W is not its.
+        let both = || vec![rate(0, Some(20.0)), rate(1, Some(60.0))];
+        let power = |power: Vec<PackagePower>, total: Measured<f32>| {
+            let (plan, snapshot) = two_sockets(Vec::new(), power, total);
+            let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
+            let mut watch = Watch::default();
+            assert!(watch.ingest(&snapshot, 1.0, plan.package));
+            let point = watch.series.last().expect("a point").watts;
+            (readings.watts, point)
+        };
+        assert_eq!(
+            power(both(), Measured::Known(80.0)),
+            (Measured::Known(20.0), Some(20.0))
+        );
+        // Its own rate not known yet is Pending, whatever the other socket does.
+        assert_eq!(
+            power(vec![rate(0, None), rate(1, Some(60.0))], Measured::Pending),
+            (Measured::Pending, None)
+        );
+        // Only the other socket's domain readable: this package's power is Unreadable, never
+        // the other's.
+        assert_eq!(
+            power(vec![rate(1, Some(60.0))], Measured::Known(60.0)),
+            (Measured::Unreadable, None)
+        );
+        // No domain at all: the state the machine's total has.
+        assert_eq!(
+            power(Vec::new(), Measured::Unreadable),
+            (Measured::Unreadable, None)
+        );
+        assert_eq!(
+            power(Vec::new(), Measured::Pending),
+            (Measured::Pending, None)
+        );
+        // One package: the machine's total is its power, whatever number RAPL gives it.
+        let topology = hybrid(2, 1, true);
+        let plan = Floorplan::of(&topology);
+        let mut snapshot = sample(topology, Vec::new(), Vec::new(), 1.0, 1);
+        let thermal = snapshot.thermal.as_mut().expect("thermal");
+        thermal.package_power = vec![rate(7, Some(33.0))];
+        thermal.package_watts = Measured::Known(33.0);
+        let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
+        assert_eq!(readings.watts, Measured::Known(33.0));
+    }
+
+    #[test]
+    fn another_packages_sensor_is_never_shown_as_the_drawn_ones() {
+        let other = || vec![sensor("Package id 1", SensorPlace::Package(1), Some(71.0))];
+        let (plan, snapshot) = two_sockets(other(), Vec::new(), Measured::Pending);
+        let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
+        assert_eq!(readings.package_celsius, None);
+        assert!(
+            readings
+                .coverage
+                .iter()
+                .all(|found| *found == Coverage::Unknown),
+            "no core is covered by another socket's sensor: {:?}",
+            readings.coverage
+        );
+        assert_eq!(readings.mode, Mode::Relative, "no degrees without a sensor");
+        let mut watch = Watch::default();
+        assert!(watch.ingest(&snapshot, 1.0, plan.package));
+        assert_eq!(watch.series.last().expect("a point").celsius, None);
+        // Its own sensor beside the other's is the one shown.
+        let mut both = other();
+        both.push(sensor("Package id 0", SensorPlace::Package(0), Some(55.0)));
+        let (plan, snapshot) = two_sockets(both, Vec::new(), Measured::Pending);
+        let readings = Readings::of(&plan, &snapshot, &mut vec![0.0; plan.blocks.len()]);
+        assert_eq!(readings.package_celsius, Some(55.0));
+        assert!(
+            readings
+                .coverage
+                .iter()
+                .all(|found| *found == Coverage::Package(55.0))
+        );
+        let mut watch = Watch::default();
+        watch.ingest(&snapshot, 1.0, plan.package);
+        assert_eq!(watch.series.last().expect("a point").celsius, Some(55.0));
+        // A topology that names no package cannot say whose a package sensor is: it stays the
+        // die's, as on a machine that gives its CPUs no places.
+        let mut snapshot = Snapshot {
+            cpus: (0..4)
+                .map(|id| cpu(id, CoreKind::Unknown, Some(0.3), None))
+                .collect(),
+            ..Snapshot::default()
+        };
+        snapshot.thermal = Some(Thermal {
+            sensors: vec![sensor("Tctl", SensorPlace::Package(1), Some(63.0))],
+            pass: 1,
+            ..Thermal::default()
+        });
+        let plan = Floorplan::of(&topology_of(&snapshot));
+        assert_eq!(plan.package, None);
+        let readings = Readings::of(&plan, &snapshot, &mut [0.0; 4]);
+        assert_eq!(readings.mode, Mode::Celsius);
+        assert_eq!(readings.package_celsius, Some(63.0));
     }
 }
